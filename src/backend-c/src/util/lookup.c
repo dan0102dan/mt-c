@@ -62,7 +62,12 @@ mt_err_t mt_lookup_put(mt_lookup_t *map, const void *key, size_t len, size_t val
     if (!copy) { return MT_ERR_NOMEM; }
     if (len) { memcpy(copy, key, len); }
     size_t slot = find_slot(map, key, len, hash);
-    map->entries[slot] = (mt_lookup_entry_t){copy, len, value, hash};
+    /* Transfer key ownership explicitly; mt_lookup_clear frees each key. */
+    mt_lookup_entry_t *entry = &map->entries[slot];
+    entry->key = copy;
+    entry->key_len = len;
+    entry->value = value;
+    entry->hash = hash;
     map->len++;
     if (inserted) { *inserted = true; }
     return MT_OK;
