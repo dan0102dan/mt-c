@@ -1,0 +1,28 @@
+name: PR review workspace
+on:
+  push:
+    branches: [fix/large-subscriptions]
+    paths: [.github/workflows/review-work.yml]
+permissions:
+  contents: read
+jobs:
+  source:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.x
+      - name: Export tracked source and local test runtime
+        run: |
+          mkdir -p /tmp/mt-review
+          git archive --format=tar.gz HEAD > /tmp/mt-review/source.tar.gz
+          cp "$(command -v deno)" /tmp/mt-review/deno
+          git rev-parse HEAD > /tmp/mt-review/HEAD
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mt-review-source
+          path: /tmp/mt-review/
+          retention-days: 1
