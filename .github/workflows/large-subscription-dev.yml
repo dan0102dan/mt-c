@@ -8,15 +8,22 @@ permissions:
 jobs:
   snapshot:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v5
         with:
           persist-credentials: false
+      - name: Prepare isolated test dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libyaml-dev libmnl-dev libcjson-dev
+          tar -czf headers.tar.gz -C /usr/include yaml.h cjson libmnl
       - name: Archive tracked source for isolated regression testing
         run: git archive --format=tar.gz --output=source.tar.gz HEAD
       - uses: actions/upload-artifact@v6
         with:
           name: large-subscription-source
-          path: source.tar.gz
+          path: |
+            source.tar.gz
+            headers.tar.gz
           retention-days: 1
