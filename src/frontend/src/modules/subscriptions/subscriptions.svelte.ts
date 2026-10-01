@@ -2,9 +2,9 @@ import { t } from "../../data/locale.svelte";
 import { ChangeTracker } from "../../utils/change-tracker.svelte";
 
 import { type Subscription, type SubscriptionRule } from "../../types";
-import { randomId } from "../../utils/defaults";
 import { overlay, toast } from "../../utils/events";
 import { fetcher } from "../../utils/fetcher";
+import { buildSubscriptionUpdate, snapshotRules } from "./subscription-payload";
 
 export const SUBSCRIPTIONS_STORE_CONTEXT = Symbol("subscriptions-store");
 
@@ -48,7 +48,6 @@ export type SubscriptionDropSlotData = {
 type AddSubscriptionPayload = {
   url: string;
   name: string;
-  rules: SubscriptionRule[];
   interface: string;
   interval: number;
 };
@@ -140,6 +139,7 @@ export class SubscriptionsStore {
   renderSubscriptionsLimit = $state(1);
   renderSubscriptionsTimeout: number | null = null;
 
+  #savedRules = new Map<string, SubscriptionRule[]>();
   #forcedSubscriptionIds = new Set<string>();
   #forcedRuleIdsBySubscription = new Map<string, Set<string>>();
   #forcedSearchKey = "";
@@ -254,6 +254,7 @@ export class SubscriptionsStore {
       const fetched =
         (await fetcher.get<{ subscriptions: Subscription[] }>("/subscriptions"))?.subscriptions ??
         [];
+      this.#savedRules = new Map(fetched.map((sub) => [sub.id, snapshotRules(sub.rules)]));
       this.tracker = new ChangeTracker(fetched);
       this.dataRevision = 0;
       if (typeof window !== "undefined") {
@@ -382,25 +383,33 @@ export class SubscriptionsStore {
     this.searchPending = false;
   }
 
-  saveChanges() {
+  async saveChanges() {
     if (!this.canSave) return;
     overlay.show(t("saving changes..."));
-
     const rawData = $state.snapshot(this.data).map((subscription) => ({
       ...subscription,
       url: normalizeSubscriptionUrl(subscription.url),
     }));
-
-    fetcher
-      .put("/subscriptions", { subscriptions: rawData })
-      .then(() => {
-        this.tracker.reset(rawData);
-        overlay.hide();
-        toast.success(t("Saved"));
-      })
-      .catch(() => {
-        overlay.hide();
-      });
+    try {
+      const subscriptions = rawData.map((sub) =>
+        buildSubscriptionUpdate(sub, this.#savedRules.get(sub.id)),
+      );
+      await fetcher.put("/subscriptions", { subscriptions });
+      this.#savedRules = new Map(rawData.map((sub) => [sub.id, snapshotRules(sub.rules)]));
+      this.tracker.reset(rawData);
+      toast.success(t("Saved"));
+    } catch (error) {
+      // The fetcher reports HTTP errors. This also covers a missing/stale
+      // local baseline without ever falling back to a huge rules upload.
+      if (
+        error instanceof Error &&
+        error.message === "Subscription rules changed; reload before saving"
+      ) {
+        toast.error(t("Subscription rules changed; reload before saving"));
+      }
+    } finally {
+      overlay.hide();
+    }
   }
 
   checkRulesValidityState = () => {
@@ -443,6 +452,7 @@ export class SubscriptionsStore {
         url?: string;
       }>(`/subscriptions/${subscription.id}/sync`, { url: normalizedUrl });
 
+      this.#savedRules.set(subscription.id, snapshotRules(updated.rules));
       this.tracker.acknowledgeUpdate(subscription, {
         url: updated.url ?? normalizedUrl,
         rules: updated.rules,
@@ -470,6 +480,7 @@ export class SubscriptionsStore {
       await fetcher.delete(`/subscriptions/${removed.id}`);
       this.data.splice(index, 1);
       this.tracker.acknowledgeDelete(this.data, removed.id);
+      this.#savedRules.delete(removed.id);
       delete this.open_state[removed.id];
       this.removeForcedGroup(removed.id);
       this.markDataRevision();
@@ -483,20 +494,15 @@ export class SubscriptionsStore {
   }
 
   async addSubscription(payload: AddSubscriptionPayload) {
-    const nextSubscription: Subscription = {
-      id: randomId(),
-      name: payload.name,
-      url: payload.url,
-      rules: payload.rules,
-      enable: true,
-      interface: payload.interface || "",
-      lastUpdate: Math.floor(Date.now() / 1000),
-      interval: payload.interval,
-    };
-
     overlay.show(t("Adding..."));
     try {
-      await fetcher.post("/subscriptions", nextSubscription);
+      // Fetch/parse on the server; never echo the preview's thousands of
+      // rules back into the request, and use canonical server-assigned IDs.
+      const { subscription: nextSubscription } = await fetcher.post<{ subscription: Subscription }>(
+        "/subscriptions?fetch=true",
+        { ...payload, url: normalizeSubscriptionUrl(payload.url), enable: true },
+      );
+      this.#savedRules.set(nextSubscription.id, snapshotRules(nextSubscription.rules));
       this.data.unshift(nextSubscription);
       this.tracker.acknowledgeNewItem(this.data, nextSubscription, "start");
       this.open_state[nextSubscription.id] = true;
