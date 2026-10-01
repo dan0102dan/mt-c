@@ -13,17 +13,16 @@ jobs:
       - uses: actions/checkout@v5
         with:
           persist-credentials: false
-      - name: Prepare isolated test dependencies
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+      - name: Prepare isolated frontend test dependencies
+        working-directory: src/frontend
         run: |
-          sudo apt-get update
-          sudo apt-get install -y libyaml-dev libmnl-dev libcjson-dev
-          tar -czf headers.tar.gz -C /usr/include yaml.h cjson libmnl
-      - name: Archive tracked source for isolated regression testing
-        run: git archive --format=tar.gz --output=source.tar.gz HEAD
+          npm ci
+          tar -czf ../../frontend-deps.tar.gz node_modules
       - uses: actions/upload-artifact@v6
         with:
-          name: large-subscription-source
-          path: |
-            source.tar.gz
-            headers.tar.gz
+          name: large-subscription-frontend-deps
+          path: frontend-deps.tar.gz
           retention-days: 1
