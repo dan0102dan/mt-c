@@ -52,10 +52,7 @@ test("50k group: compact metadata/rule saves and server IDs survive a second edi
   expect(saves[0].ruleChanges).toEqual([]);
   // Existing groups may be collapsed on initial load.
   if (!(await page.locator(".rule .name input").first().isVisible())) {
-    await page
-      .locator(".group-header")
-      .first()
-      .click({ position: { x: 8, y: 8 } });
+    await page.locator(".group-header [data-collapsible-trigger]").first().click();
   }
   await page.locator(".rule .name input").first().fill("Edited rule");
   await page.locator("#save-changes").click();
