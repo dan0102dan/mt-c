@@ -28,10 +28,10 @@ jobs:
           assert hashlib.sha256(patch).hexdigest() == '7e53646d1baf9ff8054de1c59b3445bebada022bfc510c75caf147f08e3d5325'
           Path('/tmp/review.patch').write_bytes(patch)
           PY
-          git apply --index --check --unidiff-zero /tmp/review.patch
-          git apply --index --unidiff-zero /tmp/review.patch
+          git apply --index --check --unidiff-zero --exclude='.github/workflows/*' /tmp/review.patch
+          git apply --index --unidiff-zero --exclude='.github/workflows/*' /tmp/review.patch
           git diff --cached --check
-      - name: Commit fixes to the existing PR branch
+      - name: Commit source fixes to the existing PR branch
         id: commit
         run: |
           git config user.name 'github-actions[bot]'
