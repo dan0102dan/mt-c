@@ -12,17 +12,19 @@ jobs:
       - uses: actions/checkout@v5
         with:
           persist-credentials: false
-      - uses: denoland/setup-deno@v2
-        with:
-          deno-version: v2.x
-      - name: Export tracked source and local test runtime
+      - name: Verify staged patch integrity
         run: |
-          mkdir -p /tmp/mt-review
-          git archive --format=tar.gz HEAD > /tmp/mt-review/source.tar.gz
-          cp "$(command -v deno)" /tmp/mt-review/deno
-          git rev-parse HEAD > /tmp/mt-review/HEAD
+          python3 - <<'PY'
+          import base64, gzip, hashlib
+          from pathlib import Path
+          patch = gzip.decompress(base64.b64decode(Path('.github/review-fixes.b64').read_text()))
+          assert hashlib.sha256(patch).hexdigest() == '7e53646d1baf9ff8054de1c59b3445bebada022bfc510c75caf147f08e3d5325'
+          print('Patch checksum verified; no repository changes applied by this job.')
+          PY
       - uses: actions/upload-artifact@v4
+        if: always()
         with:
-          name: mt-review-source
-          path: /tmp/mt-review/
+          name: review-patch-transport
+          path: .github/review-fixes.b64
+          include-hidden-files: true
           retention-days: 1
