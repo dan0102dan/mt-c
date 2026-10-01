@@ -1,0 +1,22 @@
+name: Large subscription development snapshot
+on:
+  push:
+    branches: [fix/large-subscriptions]
+    paths: [.github/workflows/large-subscription-dev.yml]
+permissions:
+  contents: read
+jobs:
+  snapshot:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - name: Archive tracked source for isolated regression testing
+        run: git archive --format=tar.gz --output=source.tar.gz HEAD
+      - uses: actions/upload-artifact@v6
+        with:
+          name: large-subscription-source
+          path: source.tar.gz
+          retention-days: 1
