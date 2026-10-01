@@ -15,18 +15,18 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           for job in 110532909328 110535250190; do
-            gh api "repos/$GITHUB_REPOSITORY/actions/jobs/$job/logs" > "/tmp/$job.log"
+            gh api --allow-escape-sequences "repos/$GITHUB_REPOSITORY/actions/jobs/$job/logs" > "/tmp/$job.log"
           done
           python3 - <<'PY'
           import re
           from pathlib import Path
           for job in (110532909328, 110535250190):
-              lines = Path(f'/tmp/{job}.log').read_text().splitlines()
+              lines = re.sub(r'\x1b\[[0-9;]*m', '', Path(f'/tmp/{job}.log').read_text()).splitlines()
               print(f'=== JOB {job} ===')
               selected = set()
               for i, line in enumerate(lines):
-                  if re.search(r'\berror:|^.*?\s[0-9]+\) \[chromium\]|Error: locator|Expected:|Received:|failed\s*$|passed\s*\(', line):
-                      selected.update(range(max(0, i-2), min(len(lines), i+18)))
+                  if re.search(r'\berror:|\s[0-9]+\) \[chromium\]|Error: locator|Expected:|Received:|failed\s*$|passed\s*\(', line):
+                      selected.update(range(max(0, i-2), min(len(lines), i+25)))
               for i in sorted(selected):
-                  print(re.sub(r'\x1b\[[0-9;]*m', '', lines[i]))
+                  print(lines[i])
           PY
