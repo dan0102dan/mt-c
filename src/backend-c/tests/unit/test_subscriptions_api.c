@@ -8,6 +8,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/socket.h>
+#include <sys/stat.h>
 #include <sys/time.h>
 #include <unistd.h>
 
@@ -551,11 +552,53 @@ TEST sparse_update_rejects_deleted_subscription_and_unknown_rule_id(void) {
     harness_stop(h); PASS();
 }
 
+TEST persistence_failure_returns_applied_baseline_for_retry(void) {
+    harness_t *h = harness_start_mode(1); ASSERT(h);
+    ASSERT_EQ(200, do_request("POST", "/api/v1/subscriptions",
+        "{\"id\":\"aabbccdd\",\"url\":\"https://example.com/list\",\"rules\":[{\"id\":\"11223344\",\"rule\":\"one.example\",\"type\":\"domain\",\"enable\":true}]}", NULL));
+    cJSON *out = NULL;
+    ASSERT_EQ(200, do_request("GET", "/api/v1/subscriptions", NULL, &out));
+    cJSON *initial_sub = cJSON_GetArrayItem(cJSON_GetObjectItemCaseSensitive(out, "subscriptions"), 0);
+    cJSON *initial_rule = cJSON_GetArrayItem(cJSON_GetObjectItemCaseSensitive(initial_sub, "rules"), 0);
+    char rule_id[9]; snprintf(rule_id, sizeof(rule_id), "%s", jstr(initial_rule, "id"));
+    cJSON_Delete(out); out = NULL;
+    ASSERT_EQ(0, unlink(h->save_path)); ASSERT_EQ(0, rmdir(h->save_dir));
+    char change[512];
+    snprintf(change, sizeof(change), "{\"subscriptions\":[{\"id\":\"aabbccdd\",\"url\":\"https://example.com/list\",\"ruleChanges\":[{\"id\":\"%s\",\"rule\":\"one.example\",\"previousType\":\"domain\",\"previousEnable\":true,\"type\":\"namespace\",\"enable\":false}]}]}", rule_id);
+    ASSERT_EQ(500, do_request("PUT", "/api/v1/subscriptions", change, &out));
+    ASSERT_STR_EQ("PERSISTENCE_FAILED", jstr(out, "code"));
+    ASSERT(cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(out, "applied")));
+    cJSON *sub = cJSON_GetArrayItem(cJSON_GetObjectItemCaseSensitive(out, "subscriptions"), 0);
+    cJSON *rule = cJSON_GetArrayItem(cJSON_GetObjectItemCaseSensitive(sub, "rules"), 0);
+    ASSERT_STR_EQ(rule_id, jstr(rule, "id")); ASSERT_STR_EQ("namespace", jstr(rule, "type"));
+    ASSERT(cJSON_IsFalse(cJSON_GetObjectItemCaseSensitive(rule, "enable")));
+    cJSON_DeleteItemFromObjectCaseSensitive(out, "error");
+    cJSON_DeleteItemFromObjectCaseSensitive(out, "code");
+    cJSON_DeleteItemFromObjectCaseSensitive(out, "applied");
+    cJSON_DeleteItemFromObjectCaseSensitive(sub, "rules");
+    cJSON_AddArrayToObject(sub, "ruleChanges");
+    char *retry = cJSON_PrintUnformatted(out); ASSERT(retry); cJSON_Delete(out);
+    /* Preconditions stay strict: it is the editor's live baseline that moves. */
+    ASSERT_EQ(409, do_request("PUT", "/api/v1/subscriptions", change, &out));
+    ASSERT(!cJSON_HasObjectItem(out, "applied")); cJSON_Delete(out);
+    ASSERT_EQ(500, do_request("PUT", "/api/v1/subscriptions", retry, &out));
+    ASSERT_STR_EQ("PERSISTENCE_FAILED", jstr(out, "code")); cJSON_Delete(out);
+    ASSERT_EQ(0, mkdir(h->save_dir, 0700));
+    ASSERT_EQ(200, do_request("PUT", "/api/v1/subscriptions", retry, NULL)); free(retry);
+    mt_config_t loaded; mt_config_init_defaults(&loaded);
+    ASSERT_EQ(MT_OK, mt_config_load_file(&loaded, h->save_path));
+    ASSERT_EQ(1, loaded.n_subscriptions); ASSERT_EQ(1, loaded.subscriptions[0]->n_rules);
+    ASSERT_STR_EQ("namespace", loaded.subscriptions[0]->rules[0]->type);
+    ASSERT(!loaded.subscriptions[0]->rules[0]->enable);
+    mt_config_clear(&loaded); harness_stop(h); PASS();
+}
+
 GREATEST_MAIN_DEFS();
 
 int main(int argc, char **argv) {
     mt_sub_fetch_global_init();
     GREATEST_MAIN_BEGIN();
+    RUN_TEST(persistence_failure_returns_applied_baseline_for_retry);
     RUN_TEST(large_summary_creation_sparse_save_and_reload);
     RUN_TEST(url_creation_failure_does_not_leave_an_empty_subscription);
     RUN_TEST(disk_failure_is_http_error_and_url_creation_rolls_back);

@@ -27,7 +27,7 @@ test("50k subscription: summary, URL-only create, compact save, canonical IDs", 
   await page.route("**/auth", (r) => r.fulfill({ json: { enabled: false } }));
   await page.route("**/groups?with_rules=true", (r) => r.fulfill({ json: { groups: [] } }));
   await page.route("**/interfaces", (r) => r.fulfill({ json: { interfaces: [{ id: "eth0" }] } }));
-  await page.route("**/subscriptions**", async (route) => {
+  await page.route("**/api/v1/subscriptions**", async (route) => {
     const req = route.request();
     const url = new URL(req.url());
     if (url.pathname.endsWith("/rules")) {

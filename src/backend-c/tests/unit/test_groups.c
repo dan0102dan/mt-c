@@ -16,6 +16,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/socket.h>
+#include <sys/stat.h>
 #include <sys/time.h>
 #include <unistd.h>
 
@@ -607,12 +608,44 @@ TEST fifty_thousand_group_rules_full_compact_strict_and_persist(void) {
 
 TEST failed_group_save_returns_error_and_keeps_dirty_retry_possible(void) {
     harness_t *h = harness_start_saved(true); ASSERT(h);
-    ASSERT_EQ(0, rmdir(h->save_dir));
-    ASSERT_EQ(500, do_request("PUT", "/api/v1/groups?save=true", "{\"groups\":[{\"id\":\"aabbccdd\",\"name\":\"unsaved\"}]}", NULL));
     cJSON *out = NULL;
-    ASSERT_EQ(200, do_request("GET", "/api/v1/groups?with_rules=true", NULL, &out));
-    ASSERT_EQ(1, cJSON_GetArraySize(cJSON_GetObjectItemCaseSensitive(out, "groups")));
-    cJSON_Delete(out); harness_stop(h); PASS();
+    ASSERT_EQ(200, do_request("POST", "/api/v1/groups?save=true",
+        "{\"id\":\"aabbccdd\",\"name\":\"before\",\"rules\":[{\"name\":\"one\",\"rule\":\"one.example\",\"type\":\"domain\",\"enable\":true}]}", &out));
+    cJSON_Delete(out);
+    ASSERT_EQ(0, unlink(h->save_path));
+    ASSERT_EQ(0, rmdir(h->save_dir));
+    /* A full import must return the generated (not client-only) rule ID even
+     * when saving fails, otherwise subsequent compact edits cannot address it. */
+    ASSERT_EQ(500, do_request("PUT", "/api/v1/groups?save=true",
+        "{\"groups\":[{\"id\":\"aabbccdd\",\"name\":\"after\",\"rules\":[{\"id\":\"12345678\",\"name\":\"edited\",\"rule\":\"two.example\",\"type\":\"domain\",\"enable\":false}]}]}", &out));
+    ASSERT_STR_EQ("PERSISTENCE_FAILED", jstr(out, "code"));
+    ASSERT(cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(out, "applied")));
+    cJSON *groups = cJSON_GetObjectItemCaseSensitive(out, "groups");
+    cJSON *group = cJSON_GetArrayItem(groups, 0);
+    cJSON *rules = cJSON_GetObjectItemCaseSensitive(group, "rules");
+    ASSERT_EQ(1, cJSON_GetArraySize(rules));
+    char id[MT_ID_STR_LEN]; snprintf(id, sizeof(id), "%s", jstr(cJSON_GetArrayItem(rules, 0), "id"));
+    ASSERT(strcmp(id, "12345678") != 0);
+    cJSON_DeleteItemFromObjectCaseSensitive(out, "error");
+    cJSON_DeleteItemFromObjectCaseSensitive(out, "code");
+    cJSON_DeleteItemFromObjectCaseSensitive(out, "applied");
+    cJSON_DeleteItemFromObjectCaseSensitive(group, "rules");
+    cJSON_AddArrayToObject(group, "ruleChanges");
+    char *retry = cJSON_PrintUnformatted(out); ASSERT(retry); cJSON_Delete(out);
+    ASSERT_EQ(500, do_request("PUT", "/api/v1/groups?save=true", retry, &out));
+    ASSERT_STR_EQ("PERSISTENCE_FAILED", jstr(out, "code")); cJSON_Delete(out);
+    ASSERT_EQ(0, mkdir(h->save_dir, 0700));
+    ASSERT_EQ(200, do_request("PUT", "/api/v1/groups?save=true", retry, &out));
+    ASSERT(!cJSON_HasObjectItem(out, "code")); cJSON_Delete(out); free(retry);
+    mt_config_t loaded; mt_config_init_defaults(&loaded);
+    ASSERT_EQ(MT_OK, mt_config_load_file(&loaded, h->save_path));
+    ASSERT_EQ(1, loaded.n_groups); ASSERT_EQ(1, loaded.groups[0]->n_rules);
+    ASSERT_STR_EQ("after", loaded.groups[0]->name);
+    ASSERT_STR_EQ("edited", loaded.groups[0]->rules[0]->name);
+    ASSERT(!loaded.groups[0]->rules[0]->enable);
+    char persisted_id[MT_ID_STR_LEN]; mt_id_format(loaded.groups[0]->rules[0]->id, persisted_id);
+    ASSERT_STR_EQ(id, persisted_id);
+    mt_config_clear(&loaded); harness_stop(h); PASS();
 }
 
 TEST invalid_batch_preserves_existing_groups(void) {

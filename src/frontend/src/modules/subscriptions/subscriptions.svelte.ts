@@ -2,6 +2,7 @@ import { t } from "../../data/locale.svelte";
 import { ChangeTracker } from "../../utils/change-tracker.svelte";
 
 import { type Subscription, type SubscriptionRule } from "../../types";
+import { appliedSubscriptions } from "../../utils/applied-save";
 import { overlay, toast } from "../../utils/events";
 import { fetcher } from "../../utils/fetcher";
 import { buildSubscriptionUpdate, snapshotRules } from "./subscription-payload";
@@ -60,6 +61,9 @@ export class SubscriptionsStore {
   onRenderComplete?: () => void;
 
   tracker = $state(new ChangeTracker<Subscription[]>([]));
+  saving = $state(false);
+  persistencePending = $state(false);
+  hasUnsavedChanges = $derived(this.tracker.isDirty || this.persistencePending);
   data = $derived.by(() => this.tracker.data);
   dataRevision = $state(0);
   valid_rules = $state(true);
@@ -90,7 +94,9 @@ export class SubscriptionsStore {
     return errors;
   });
   valid_subscription_urls = $derived(this.subscriptionUrlErrors.size === 0);
-  canSave = $derived(this.tracker.isDirty && this.valid_rules && this.valid_subscription_urls);
+  canSave = $derived(
+    this.hasUnsavedChanges && this.valid_rules && this.valid_subscription_urls && !this.saving,
+  );
 
   open_state = $state<Record<string, boolean>>({});
 
@@ -154,7 +160,7 @@ export class SubscriptionsStore {
   #setupEffects() {
     this.#dispose = $effect.root(() => {
       $effect(() => {
-        if (typeof window === "undefined" || !this.canSave) return;
+        if (typeof window === "undefined" || !this.hasUnsavedChanges) return;
 
         const handleBeforeUnload = (event: BeforeUnloadEvent) => {
           event.preventDefault();
@@ -385,6 +391,7 @@ export class SubscriptionsStore {
 
   async saveChanges() {
     if (!this.canSave) return;
+    this.saving = true;
     overlay.show(t("saving changes..."));
     const rawData = $state.snapshot(this.data).map((subscription) => ({
       ...subscription,
@@ -397,8 +404,16 @@ export class SubscriptionsStore {
       await fetcher.put("/subscriptions", { subscriptions });
       this.#savedRules = new Map(rawData.map((sub) => [sub.id, snapshotRules(sub.rules)]));
       this.tracker.reset(rawData);
+      this.persistencePending = false;
       toast.success(t("Saved"));
     } catch (error) {
+      const applied = appliedSubscriptions(error);
+      if (applied) {
+        this.#savedRules = new Map(applied.map((sub) => [sub.id, snapshotRules(sub.rules)]));
+        this.tracker.reset(applied);
+        this.persistencePending = true;
+        this.markDataRevision();
+      }
       // The fetcher reports HTTP errors. This also covers a missing/stale
       // local baseline without ever falling back to a huge rules upload.
       if (
@@ -409,6 +424,7 @@ export class SubscriptionsStore {
       }
     } finally {
       overlay.hide();
+      this.saving = false;
     }
   }
 

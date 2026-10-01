@@ -3218,3 +3218,56 @@ See `tools/bench/large-rules.c` / `make bench_large_rules` and
 `docs/c-rewrite/large-rules-benchmark.txt` for reproducible CPU measurements.
 These are Linux x86_64 host measurements, **not Keenetic/Entware benchmarks**.
 Real SDK package validation and on-router netfilter timing remain separate.
+
+## D-68 — Distinguish runtime apply from failed persistence for retry (2026-10-01)
+
+The sparse edit preconditions introduced in D-67 deliberately remain strict.
+A failed disk write after a successful bulk PUT used to leave the editor's old
+baseline in place, so a retry replayed already-applied changes and received 409.
+
+Only a bulk group/subscription PUT whose apply phase completed successfully and
+whose subsequent configuration save failed now returns HTTP 500 with additive
+fields `code: "PERSISTENCE_FAILED"`, `applied: true` and the canonical `groups`
+or `subscriptions` collection. The original `error` field is preserved. A full
+group import may generate IDs, so the response includes those server IDs rather
+than asking the editor to guess them. Validation/apply/network failures do not
+carry this acknowledgement. Existing success responses and YAML are unchanged.
+
+The frontend accepts only a well-formed, explicitly marked HTTP 500 response,
+advances its optimistic rule baseline to that acknowledged runtime snapshot,
+and keeps a separate `persistencePending` flag. Save remains available and the
+unload warning stays active even without further edits. Retrying sends compact
+metadata/empty changes; another edit uses the applied baseline. A generic 500,
+409, malformed acknowledgement or transport error does not move the baseline.
+No error is silently changed to success; the pending flag clears only after a
+successful save response. Concurrent stale edits remain rejected.
+
+Regression coverage includes repeated disk errors, retry followed by YAML reload,
+canonical group IDs on failed full imports, and browser state for both editors.
+The browser tests separate runtime/disk fixtures and enforce preconditions;
+real HTTP handlers and filesystem failures are covered by C tests.
+
+## D-69 — Package identity mt-c, mutually exclusive with magitrickle (2026-10-01)
+
+The user requested a distinct installed package name to prevent accidental
+co-installation with upstream (or earlier C builds named `magitrickle`). Root
+packaging and both SDK recipes now emit `mt-c`. IPK metadata declares
+`Conflicts: magitrickle`; APK uses the equivalent negative dependency
+`!magitrickle`, and SDK recipes use `CONFLICTS:=magitrickle`. There is deliberately
+no `Provides`/`Replaces` or forced installation over another package's files.
+
+CI source archives, package directories, build targets and collected artifact
+names follow the new identity. Direct APK inventories and lifecycle hooks use
+`mt-c`, while the daemon `magitrickled`, init service, config/YAML paths, WebUI
+assets and routing identifiers retain their existing names and contracts.
+
+This is an explicit package migration, not an in-place package-name upgrade.
+README requires export/backup outside package-owned directories, stopping the
+old service, removing the old package and then installing the matching new
+artifact; installation hooks may restart the service. Do not promise config
+retention across removal without a backup or automatically remove dependencies.
+
+`python3 tools/tests/package_identity.py` validates real IPK archives built with
+synthetic payloads, APK staging/arguments/hooks, and evaluates both SDK package
+identity declarations. This is not a real cross-build or an on-router migration
+test. The supported target matrix is unchanged.

@@ -4,6 +4,7 @@ import { t } from "../../data/locale.svelte";
 import { ChangeTracker } from "../../utils/change-tracker.svelte";
 
 import { type Group, type Rule } from "../../types";
+import { appliedGroups } from "../../utils/applied-save";
 import { defaultGroup, defaultRule } from "../../utils/defaults";
 import { overlay, toast } from "../../utils/events";
 import { fetcher } from "../../utils/fetcher";
@@ -102,10 +103,12 @@ export class GroupsStore {
   tracker = $state(new ChangeTracker<Group[]>([]));
   #savedRules = new Map<string, Rule[]>();
   saving = $state(false);
+  persistencePending = $state(false);
+  hasUnsavedChanges = $derived(this.tracker.isDirty || this.persistencePending);
   data = $derived.by(() => this.tracker.data);
   dataRevision = $state(0);
   valid_rules = $state(true);
-  canSave = $derived(this.tracker.isDirty && this.valid_rules && !this.saving);
+  canSave = $derived(this.hasUnsavedChanges && this.valid_rules && !this.saving);
 
   open_state = $state<Record<string, boolean>>({});
 
@@ -177,7 +180,7 @@ export class GroupsStore {
   #setupEffects() {
     this.#dispose = $effect.root(() => {
       $effect(() => {
-        if (typeof window === "undefined" || !this.canSave) return;
+        if (typeof window === "undefined" || !this.hasUnsavedChanges) return;
 
         const handleBeforeUnload = (event: BeforeUnloadEvent) => {
           event.preventDefault();
@@ -619,7 +622,7 @@ export class GroupsStore {
   }
 
   async saveChanges() {
-    if (!this.tracker.isDirty || this.saving) return;
+    if (!this.hasUnsavedChanges || this.saving) return;
     this.saving = true;
     overlay.show(t("saving changes..."));
     try {
@@ -632,10 +635,21 @@ export class GroupsStore {
       // as the next edit's baseline; that used to regenerate IDs on every save.
       this.#savedRules = snapshotGroupRules(saved.groups);
       this.tracker.reset(saved.groups);
+      this.persistencePending = false;
       this.markDataRevision();
       toast.success(t("Saved"));
-    } catch {
-      // Keep the dirty state; fetcher reports the server's error.
+    } catch (error) {
+      const applied = appliedGroups(error);
+      if (applied) {
+        // Runtime apply succeeded (including newly assigned IDs), disk write did
+        // not. Retry against that exact live baseline while still warning about
+        // unsaved data, even when there are no additional editor changes.
+        this.#savedRules = snapshotGroupRules(applied);
+        this.tracker.reset(applied);
+        this.persistencePending = true;
+        this.markDataRevision();
+      }
+      // Other failures retain both the local edits and the old baseline.
     } finally {
       overlay.hide();
       this.saving = false;

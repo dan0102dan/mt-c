@@ -64,6 +64,7 @@ static mt_err_t new4_upsert(new4_list_t *l, mt_ipv4_subnet_t key, bool has_ttl, 
     memcpy(bytes, key.addr, 4); bytes[4] = key.cidr;
     size_t i;
     if (mt_lookup_get(&l->index, bytes, sizeof(bytes), &i)) {
+        if (!l->items || i >= l->n) { return MT_ERR_STATE; }
         if (improve_only) {
             bool should_overwrite = l->items[i].has_ttl && has_ttl && ttl > l->items[i].ttl;
             if (!should_overwrite) { return MT_OK; }
@@ -95,6 +96,7 @@ static mt_err_t new6_upsert(new6_list_t *l, mt_ipv6_subnet_t key, bool has_ttl, 
     memcpy(bytes, key.addr, 16); bytes[16] = key.cidr;
     size_t i;
     if (mt_lookup_get(&l->index, bytes, sizeof(bytes), &i)) {
+        if (!l->items || i >= l->n) { return MT_ERR_STATE; }
         if (improve_only) {
             bool should_overwrite = l->items[i].has_ttl && has_ttl && ttl > l->items[i].ttl;
             if (!should_overwrite) { return MT_OK; }
@@ -445,6 +447,10 @@ static void sync_diff_v4(mt_ruleset_t *rs, new4_list_t *new4, mt_err_t *err) {
         unsigned char bytes[5]; size_t j;
         memcpy(bytes, new4->items[i].subnet.addr, 4); bytes[4] = new4->items[i].subnet.cidr;
         if (mt_lookup_get(&old_index, bytes, sizeof(bytes), &j)) {
+            if (!old || !kept || j >= n_old) {
+                *err = MT_ERR_STATE;
+                mt_lookup_clear(&old_index); free(old); free(kept); return;
+            }
             kept[j] = true;
             skip = !old[j].has_timeout ||
                    (new4->items[i].has_ttl && new4->items[i].ttl < old[j].timeout);
@@ -497,6 +503,10 @@ static void sync_diff_v6(mt_ruleset_t *rs, new6_list_t *new6, mt_err_t *err) {
         unsigned char bytes[17]; size_t j;
         memcpy(bytes, new6->items[i].subnet.addr, 16); bytes[16] = new6->items[i].subnet.cidr;
         if (mt_lookup_get(&old_index, bytes, sizeof(bytes), &j)) {
+            if (!old || !kept || j >= n_old) {
+                *err = MT_ERR_STATE;
+                mt_lookup_clear(&old_index); free(old); free(kept); return;
+            }
             kept[j] = true;
             skip = !old[j].has_timeout ||
                    (new6->items[i].has_ttl && new6->items[i].ttl < old[j].timeout);

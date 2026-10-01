@@ -92,8 +92,8 @@ static mt_err_t apply_rule_changes(const cJSON *changes, mt_subscription_t *sub,
             *err_msg = "subscription rules changed; reload before saving"; err = MT_ERR_STATE; break;
         }
         mt_sub_rule_t *rule = sub->rules[index];
-        if (strcmp(rule->rule ? rule->rule : "", pattern->valuestring) ||
-            strcmp(rule->type ? rule->type : "", previous_type->valuestring) ||
+        if (strcmp(rule->rule ? rule->rule : "", pattern->valuestring) != 0 ||
+            strcmp(rule->type ? rule->type : "", previous_type->valuestring) != 0 ||
             rule->enable != (bool)cJSON_IsTrue(previous_enable)) {
             *err_msg = "subscription rules changed; reload before saving"; err = MT_ERR_STATE; break;
         }
@@ -386,7 +386,15 @@ static void handle_put_subscriptions(mt_http_req_t *req, mt_http_res_t *res, voi
         return;
     }
     if (maybe_save(ctx, req) != MT_OK) {
-        mt_http_res_write_error(res, 500, "failed to save config file; changes are active only in memory");
+        cJSON *out = cJSON_CreateObject();
+        cJSON_AddStringToObject(out, "error", "failed to save config file; changes are active only in memory");
+        cJSON_AddStringToObject(out, "code", "PERSISTENCE_FAILED");
+        cJSON_AddBoolToObject(out, "applied", true);
+        cJSON *arr = cJSON_AddArrayToObject(out, "subscriptions");
+        for (size_t i = 0; i < mt_app_subscription_count(ctx->app); i++) {
+            cJSON_AddItemToArray(arr, subscription_to_json(mt_app_subscription_at(ctx->app, i)));
+        }
+        mt_http_res_write_json(res, 500, out);
         return;
     }
     mt_http_res_write_json(res, 200, status_ok_json());
