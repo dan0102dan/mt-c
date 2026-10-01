@@ -1,88 +1,32 @@
-name: PR review workspace
+name: PR review diagnostics
 on:
   push:
     branches: [fix/large-subscriptions]
     paths: [.github/workflows/review-work.yml]
 permissions:
   contents: read
+  actions: read
 jobs:
-  apply:
+  diagnostics:
     runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    outputs:
-      sha: ${{ steps.commit.outputs.sha }}
     steps:
-      - uses: actions/checkout@v5
-      - name: Decode and verify exact locally tested patch
+      - name: Summarize completed check failures
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
+          for job in 110532909328 110535250190; do
+            gh api "repos/$GITHUB_REPOSITORY/actions/jobs/$job/logs" > "/tmp/$job.log"
+          done
           python3 - <<'PY'
-          import base64, gzip, hashlib
+          import re
           from pathlib import Path
-          text = ''.join(Path('.github/review-fixes.b64').read_text().split())
-          assert hashlib.sha256(text.encode()).hexdigest() == '49abc9da025c73acf8451cd0505c3d89ca540acc2a22a6349b2fe0f6145e5787'
-          corrections = [(1697,1698,''),(1818,1819,''),(2885,2887,'q'),(2926,2927,''),(3029,3031,'nl'),(3033,3034,'3'),(3456,3458,'8Wc'),(3469,3470,''),(3531,3533,'3'),(5712,5712,'i'),(5829,5831,'w'),(5838,5839,'2'),(6381,6382,'r'),(6472,6473,''),(9495,9496,''),(14795,14796,''),(15741,15742,''),(17041,17042,'')]
-          for start,end,replacement in reversed(corrections):
-              text = text[:start] + replacement + text[end:]
-          patch = gzip.decompress(base64.b64decode(text))
-          assert hashlib.sha256(patch).hexdigest() == '7e53646d1baf9ff8054de1c59b3445bebada022bfc510c75caf147f08e3d5325'
-          Path('/tmp/review.patch').write_bytes(patch)
+          for job in (110532909328, 110535250190):
+              lines = Path(f'/tmp/{job}.log').read_text().splitlines()
+              print(f'=== JOB {job} ===')
+              selected = set()
+              for i, line in enumerate(lines):
+                  if re.search(r'\berror:|^.*?\s[0-9]+\) \[chromium\]|Error: locator|Expected:|Received:|failed\s*$|passed\s*\(', line):
+                      selected.update(range(max(0, i-2), min(len(lines), i+18)))
+              for i in sorted(selected):
+                  print(re.sub(r'\x1b\[[0-9;]*m', '', lines[i]))
           PY
-          git apply --index --check --unidiff-zero --exclude='.github/workflows/*' /tmp/review.patch
-          git apply --index --unidiff-zero --exclude='.github/workflows/*' /tmp/review.patch
-          git diff --cached --check
-      - name: Commit source fixes to the existing PR branch
-        id: commit
-        run: |
-          git config user.name 'github-actions[bot]'
-          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git commit -m 'fix: preserve persistence retries, repair checks and identify mt-c packages'
-          git push origin HEAD:refs/heads/fix/large-subscriptions
-          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
-  frontend:
-    needs: apply
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v5
-        with:
-          ref: ${{ needs.apply.outputs.sha }}
-          persist-credentials: false
-      - uses: actions/setup-node@v5
-        with:
-          node-version: 24
-      - uses: denoland/setup-deno@v2
-        with:
-          deno-version: v2.x
-      - name: Frontend dependencies and Chromium
-        working-directory: src/frontend
-        run: |
-          npm install
-          npx playwright install --with-deps chromium
-      - name: Check, build, unit and browser regressions
-        working-directory: src/frontend
-        run: |
-          npm run check
-          npm run build
-          npm run test:unit
-          npm run test:e2e
-  backend:
-    needs: apply
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v5
-        with:
-          ref: ${{ needs.apply.outputs.sha }}
-          persist-credentials: false
-      - name: Tooling
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y clang-tidy cppcheck libpcre2-dev libyaml-dev libmnl-dev libcjson-dev libcurl4-openssl-dev
-      - name: Build, unit tests, sanitizers and static analysis
-        working-directory: src/backend-c
-        run: |
-          make -j2 CFLAGS_EXTRA=-Werror
-          make -j2 test
-          make -j2 sanitize
-          make static_analysis
-      - name: Packaging contracts
-        run: python3 tools/tests/package_identity.py
