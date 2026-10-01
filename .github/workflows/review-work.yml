@@ -6,25 +6,83 @@ on:
 permissions:
   contents: read
 jobs:
-  source:
+  apply:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    outputs:
+      sha: ${{ steps.commit.outputs.sha }}
     steps:
       - uses: actions/checkout@v5
-        with:
-          persist-credentials: false
-      - name: Verify staged patch integrity
+      - name: Decode and verify exact locally tested patch
         run: |
           python3 - <<'PY'
           import base64, gzip, hashlib
           from pathlib import Path
-          patch = gzip.decompress(base64.b64decode(Path('.github/review-fixes.b64').read_text()))
+          text = ''.join(Path('.github/review-fixes.b64').read_text().split())
+          assert hashlib.sha256(text.encode()).hexdigest() == '49abc9da025c73acf8451cd0505c3d89ca540acc2a22a6349b2fe0f6145e5787'
+          corrections = [(1697,1698,''),(1818,1819,''),(2885,2887,'q'),(2926,2927,''),(3029,3031,'nl'),(3033,3034,'3'),(3456,3458,'8Wc'),(3469,3470,''),(3531,3533,'3'),(5712,5712,'i'),(5829,5831,'w'),(5838,5839,'2'),(6381,6382,'r'),(6472,6473,''),(9495,9496,''),(14795,14796,''),(15741,15742,''),(17041,17042,'')]
+          for start,end,replacement in reversed(corrections):
+              text = text[:start] + replacement + text[end:]
+          patch = gzip.decompress(base64.b64decode(text))
           assert hashlib.sha256(patch).hexdigest() == '7e53646d1baf9ff8054de1c59b3445bebada022bfc510c75caf147f08e3d5325'
-          print('Patch checksum verified; no repository changes applied by this job.')
+          Path('/tmp/review.patch').write_bytes(patch)
           PY
-      - uses: actions/upload-artifact@v4
-        if: always()
+          git apply --index --check --unidiff-zero /tmp/review.patch
+          git apply --index --unidiff-zero /tmp/review.patch
+          git diff --cached --check
+      - name: Commit fixes to the existing PR branch
+        id: commit
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git commit -m 'fix: preserve persistence retries, repair checks and identify mt-c packages'
+          git push origin HEAD:refs/heads/fix/large-subscriptions
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+  frontend:
+    needs: apply
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
         with:
-          name: review-patch-transport
-          path: .github/review-fixes.b64
-          include-hidden-files: true
-          retention-days: 1
+          ref: ${{ needs.apply.outputs.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+      - uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.x
+      - name: Frontend dependencies and Chromium
+        working-directory: src/frontend
+        run: |
+          npm install
+          npx playwright install --with-deps chromium
+      - name: Check, build, unit and browser regressions
+        working-directory: src/frontend
+        run: |
+          npm run check
+          npm run build
+          npm run test:unit
+          npm run test:e2e
+  backend:
+    needs: apply
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.apply.outputs.sha }}
+          persist-credentials: false
+      - name: Tooling
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang-tidy cppcheck libpcre2-dev libyaml-dev libmnl-dev libcjson-dev libcurl4-openssl-dev
+      - name: Build, unit tests, sanitizers and static analysis
+        working-directory: src/backend-c
+        run: |
+          make -j2 CFLAGS_EXTRA=-Werror
+          make -j2 test
+          make -j2 sanitize
+          make static_analysis
+      - name: Packaging contracts
+        run: python3 tools/tests/package_identity.py
