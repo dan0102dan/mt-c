@@ -1,0 +1,37 @@
+name: Netfilter recovery regression
+
+on:
+  push:
+    paths:
+      - 'src/backend-c/**'
+      - '.github/workflows/check-netfilter.yml'
+  pull_request:
+    paths:
+      - 'src/backend-c/**'
+      - '.github/workflows/check-netfilter.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  recovery:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - name: Preserve the exact tested sources
+        run: git archive --format=tar.gz HEAD > "$RUNNER_TEMP/netfilter-source.tar.gz"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: netfilter-source
+          path: ${{ runner.temp }}/netfilter-source.tar.gz
+          retention-days: 3
+      - name: Install build and network-test dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libyaml-dev libpcre2-dev libmnl-dev libcjson-dev libcurl4-openssl-dev iptables ipset
+      - name: Build recovery tests with warnings as errors
+        working-directory: src/backend-c
+        run: make CFLAGS_EXTRA=-Werror build/host/tests/test_nfrebuild
+      - name: Run recovery tests
+        working-directory: src/backend-c
+        run: build/host/tests/test_nfrebuild
