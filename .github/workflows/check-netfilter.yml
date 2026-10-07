@@ -15,23 +15,39 @@ permissions:
 
 jobs:
   recovery:
+    name: Recovery (${{ matrix.frontend }})
     runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        frontend: [legacy, nft]
     steps:
       - uses: actions/checkout@v5
-      - name: Preserve the exact tested sources
-        run: git archive --format=tar.gz HEAD > "$RUNNER_TEMP/netfilter-source.tar.gz"
-      - uses: actions/upload-artifact@v4
-        with:
-          name: netfilter-source
-          path: ${{ runner.temp }}/netfilter-source.tar.gz
-          retention-days: 3
       - name: Install build and network-test dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y libyaml-dev libpcre2-dev libmnl-dev libcjson-dev libcurl4-openssl-dev iptables ipset
-      - name: Build recovery tests with warnings as errors
+          sudo update-alternatives --set iptables /usr/sbin/iptables-${{ matrix.frontend }}
+          sudo update-alternatives --set ip6tables /usr/sbin/ip6tables-${{ matrix.frontend }}
+      - name: Build recovery tests with Keenetic code enabled
+        id: build
         working-directory: src/backend-c
-        run: make CFLAGS_EXTRA=-Werror build/host/tests/test_nfrebuild
-      - name: Run recovery tests
+        run: make ENTWARE_KN=1 CFLAGS_EXTRA=-Werror build/host/tests/test_nfrebuild_recovery
+      - name: Checked fake and deterministic fault injection
+        if: steps.build.outcome == 'success'
         working-directory: src/backend-c
-        run: build/host/tests/test_nfrebuild
+        run: timeout 90s build/host/tests/test_nfrebuild_recovery -v 2>&1 | tee recovery-fake.log
+      - name: Real kernel recovery in a disposable network namespace
+        if: always() && steps.build.outcome == 'success'
+        working-directory: src/backend-c
+        run: |
+          sudo env MT_TEST_REAL_IPTABLES=1 unshare --net \
+            timeout 90s build/host/tests/test_nfrebuild_recovery -v 2>&1 | tee recovery-kernel.log
+      - name: Preserve test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: netfilter-recovery-${{ matrix.frontend }}
+          path: src/backend-c/recovery-*.log
+          retention-days: 7
