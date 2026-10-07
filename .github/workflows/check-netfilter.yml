@@ -13,6 +13,10 @@ on:
 permissions:
   contents: read
 
+defaults:
+  run:
+    shell: bash
+
 jobs:
   recovery:
     name: Recovery (${{ matrix.frontend }})
@@ -37,11 +41,14 @@ jobs:
       - name: Checked fake and deterministic fault injection
         if: steps.build.outcome == 'success'
         working-directory: src/backend-c
-        run: timeout 90s build/host/tests/test_nfrebuild_recovery -v 2>&1 | tee recovery-fake.log
+        run: |
+          set -euo pipefail
+          timeout 90s build/host/tests/test_nfrebuild_recovery -v 2>&1 | tee recovery-fake.log
       - name: Real kernel recovery in a disposable network namespace
         if: always() && steps.build.outcome == 'success'
         working-directory: src/backend-c
         run: |
+          set -euo pipefail
           sudo env MT_TEST_REAL_IPTABLES=1 unshare --net \
             timeout 90s build/host/tests/test_nfrebuild_recovery -v 2>&1 | tee recovery-kernel.log
       - name: Preserve test results
