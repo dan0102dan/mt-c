@@ -14,6 +14,28 @@ int main(void) {
     assert(command(dir, ok));
     assert(!command(dir, bad));
     assert(!command(dir, missing));
+    /* A successful intermediate fork is not enough: only a successful
+     * grandchild execve() can make launch_executable() return true. */
+    int lock = openat(dir, "launch.lock", O_RDWR | O_CREAT | O_CLOEXEC, 0600);
+    assert(lock >= 0);
+    assert(flock(lock, LOCK_EX | LOCK_NB) == 0);
+    assert(launch_executable(lock, "/bin/true"));
+    assert(!launch_executable(lock, "/nonexistent-mt-c-updater"));
+
+    /* access(X_OK) succeeds for a corrupt binary but execve() fails with
+     * ENOEXEC; the install endpoint must return 500, never a false 202. */
+    char corrupt[512];
+    assert(snprintf(corrupt, sizeof(corrupt), "%s/broken-updater", path) > 0);
+    int bad_exec = open(corrupt, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0700);
+    assert(bad_exec >= 0);
+    assert(write_all(bad_exec, "not an executable", 17));
+    assert(close(bad_exec) == 0);
+    assert(access(corrupt, X_OK) == 0);
+    assert(!launch_executable(lock, corrupt));
+    assert(unlink(corrupt) == 0);
+    assert(flock(lock, LOCK_UN) == 0);
+    close(lock);
+    assert(unlinkat(dir, "launch.lock", 0) == 0);
     char *inherited_pipe[] = {"/bin/sh", "-c", "sleep 4 & exit 0", NULL};
     struct timespec before, after;
     assert(clock_gettime(CLOCK_MONOTONIC, &before) == 0);
