@@ -1,0 +1,79 @@
+name: PR 10 recovery validation
+
+on:
+  push:
+    branches: [feat/webui-github-updates]
+    paths: [.github/workflows/pr10-review-validation.yml]
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    if: github.repository == 'dan0102dan/mt-c'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: 1182c85dbb3a8d9743aa82d8d79e58c0bfbc5c65
+          persist-credentials: false
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+      - uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.x
+      - name: Install exact frontend dependencies
+        working-directory: src/frontend
+        run: npm ci
+      - name: Format changed frontend files and save formatting-only patch
+        working-directory: src/frontend
+        run: |
+          npx prettier --write src/data/updates.svelte.ts src/modules/updates/UpdateControl.svelte src/modules/updates/releases.ts tests/unit/update-review.test.ts tests/e2e/updates-recovery.spec.ts
+          git diff --binary > "$RUNNER_TEMP/pr10-format.patch"
+      - name: Typecheck
+        id: check
+        continue-on-error: true
+        working-directory: src/frontend
+        run: npm run check
+      - name: Production frontend build
+        id: build
+        continue-on-error: true
+        working-directory: src/frontend
+        run: npm run build
+      - name: Frontend unit tests
+        id: unit
+        continue-on-error: true
+        working-directory: src/frontend
+        run: npm run test:unit
+      - name: Install Chromium
+        working-directory: src/frontend
+        run: npx playwright install --with-deps chromium
+      - name: Frontend E2E suite
+        id: e2e
+        continue-on-error: true
+        working-directory: src/frontend
+        run: npm run test:e2e
+      - name: Upload formatting patch and browser reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pr10-recovery-validation
+          path: |
+            ${{ runner.temp }}/pr10-format.patch
+            src/frontend/test-results
+            src/frontend/playwright-report
+          retention-days: 3
+      - name: Require all validation steps
+        if: always()
+        env:
+          CHECK: ${{ steps.check.outcome }}
+          BUILD: ${{ steps.build.outcome }}
+          UNIT: ${{ steps.unit.outcome }}
+          E2E: ${{ steps.e2e.outcome }}
+        run: |
+          test "$CHECK" = success
+          test "$BUILD" = success
+          test "$UNIT" = success
+          test "$E2E" = success
