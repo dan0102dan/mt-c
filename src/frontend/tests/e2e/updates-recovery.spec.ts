@@ -113,7 +113,7 @@ test("retry a failed release check without reloading or installing anything", as
   await retry.click();
   await expect(popup.getByRole("button", { name: "Update", exact: true })).toBeEnabled();
   expect(state.releaseReads).toBe(attempts + 1);
-  expect(state.infoReads).toBe(1);
+  expect(state.infoReads).toBe(2); // Manual Retry rereads the router build.
   expect(state.installs).toBe(0);
   await page.keyboard.press("Escape");
   await openPopup(page);
@@ -254,4 +254,55 @@ test("a free installer lock with an unchanged version is not success", async ({ 
   ).toBeVisible({ timeout: 10000 });
   await expect(popup.getByRole("button", { name: "Up to date" })).toHaveCount(0);
   expect(state.installs).toBe(1);
+});
+
+test("a delayed status GET cannot overwrite the accepted installation", async ({ page }) => {
+  const state = await setup(page);
+  let heldStatus: import("@playwright/test").Route | null = null;
+  await page.route("**/system/update/status", (route) => {
+    if (!heldStatus) {
+      heldStatus = route;
+      return; // Hold the initial pre-install GET until after the POST.
+    }
+    return route.fulfill({ json: state.status });
+  });
+  await page.goto("/");
+  await expect.poll(() => heldStatus !== null).toBe(true);
+  const popup = await openPopup(page);
+  await expect(popup.getByRole("button", { name: "Update", exact: true })).toBeEnabled();
+  await popup.getByRole("button", { name: "Update", exact: true }).click();
+  await expect.poll(() => state.installs).toBe(1);
+  await expect(popup.getByRole("button", { name: "Updating…" })).toBeDisabled();
+
+  await heldStatus!.fulfill({ json: { stage: "idle" } });
+  await expect(popup.getByRole("button", { name: "Updating…" })).toBeDisabled();
+  await expect(
+    popup.getByText("Update could not be confirmed; check the package manager from CLI"),
+  ).toHaveCount(0);
+
+  state.installed = "2.0.0";
+  state.status = { stage: "idle" };
+  await expect(popup.getByRole("button", { name: "Up to date" })).toBeDisabled({
+    timeout: 10000,
+  });
+  expect(state.installs).toBe(1);
+});
+
+test("manual Retry rereads the installed version after an interrupted connection", async ({
+  page,
+}) => {
+  const state = await setup(page);
+  state.offline = true;
+  await page.goto("/");
+  const popup = await openPopup(page);
+  const retry = popup.getByRole("button", { name: "Check for updates", exact: true });
+  await expect(retry).toBeEnabled();
+  expect(state.infoReads).toBe(1);
+
+  state.installed = "2.0.0";
+  state.offline = false;
+  await retry.click();
+  await expect(popup.getByRole("button", { name: "Up to date" })).toBeDisabled();
+  expect(state.infoReads).toBe(2);
+  expect(state.installs).toBe(0);
 });

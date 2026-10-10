@@ -24,7 +24,7 @@ static void wait_file(const char *path) {
     assert(!"timed out waiting for fixture");
 }
 
-static void handoff(bool apk, bool fail) {
+static void handoff(bool apk, bool fail, unsigned closed_stdio) {
     char root[] = "/tmp/mt-package-handoff-XXXXXX";
     assert(mkdtemp(root));
     int dir = open(root, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
@@ -42,7 +42,8 @@ static void handoff(bool apk, bool fail) {
     char text[4096];
     snprintf(text, sizeof(text),
         "#!/bin/sh\nset -eu\n[ ! -e /proc/self/fd/3 ]\n[ ! -e /proc/self/fd/19 ]\n"
-        "[ \"$1\" = '%s' ]\n%s[ -f \"$%d\" ]\ntouch '%s'\n"
+        "[ \"$1\" = '%s' ]\n%s[ -f \"$%d\" ]\n"
+        "echo package-manager-progress\necho package-manager-diagnostics >&2\ntouch '%s'\n"
         "while [ ! -f '%s' ]; do sleep 0.01; done\nexit %d\n",
         apk ? "add" : "install", apk ? "[ \"$2\" = '--allow-untrusted' ]\n" : "",
         apk ? 3 : 2, ready, gate, fail ? 7 : 0);
@@ -62,6 +63,10 @@ static void handoff(bool apk, bool fail) {
         int inherited = open("/dev/null", O_RDONLY);
         assert(inherited >= 0 && dup2(inherited, 19) == 19);
         assert(fcntl(19, F_SETFD, 0) == 0); /* Intentionally non-CLOEXEC. */
+        /* Simulate service managers that close some or all stdio fds. */
+        for (int stream = 0; stream < 3; stream++) {
+            if (closed_stdio & (1U << stream)) { close(stream); }
+        }
         assert(launch_install(lock, manager, package, init, temp, apk, "/dev/null"));
         close(lock);
         assert(write_all(notice[1], "x", 1));
@@ -100,9 +105,12 @@ static void handoff(bool apk, bool fail) {
 }
 
 int main(void) {
-    handoff(false, false);
-    handoff(true, false);
-    handoff(false, true);
+    for (unsigned mask = 0; mask < 8; mask++) {
+        handoff(false, false, mask);
+        handoff(true, false, mask);
+    }
+    handoff(false, true, 0);
+    handoff(true, true, 1);
     int lock = open("/dev/null", O_RDONLY | O_CLOEXEC);
     assert(lock >= 0);
     assert(!launch_install(lock, "/nonexistent-manager", "/missing-package", "/missing-init",

@@ -36,6 +36,9 @@ let mounts = 0;
 let client: ReleaseClient | null = null;
 let reconnectAttempts = 0;
 let polling: AbortSignal | null = null;
+/* A status GET from before the new install request must not replace the
+ * accepted job or clear its pending version confirmation. */
+let operationEpoch = 0;
 let infoRequest: { signal: AbortSignal; promise: Promise<void> } | null = null;
 
 function storage(): Storage | null {
@@ -104,7 +107,9 @@ export async function checkUpdates(force = false) {
   updates.checking = true;
   updates.error = "";
   try {
-    if (!updates.info) await refreshBuildInfo(signal);
+    // Explicit Retry must refresh the installed router version as well.
+    // Normal popover opens and channel switches continue using the cache.
+    if (force || !updates.info) await refreshBuildInfo(signal);
     if (signal.aborted) return;
     const result = await client!.latest(updates.preview, force, signal);
     if (signal.aborted) return;
@@ -140,8 +145,9 @@ function stopWaiting() {
 }
 
 async function pollStatus() {
-  if (!owner || owner.signal.aborted || polling === owner.signal) return;
+  if (!owner || owner.signal.aborted || polling === owner.signal || updates.submitting) return;
   const signal = owner.signal;
+  const epoch = operationEpoch;
   polling = signal;
   try {
     const status = parseStatus(
@@ -151,7 +157,8 @@ async function pollStatus() {
         timeoutMs: 7000,
       }),
     );
-    if (signal.aborted) return;
+    // Discard a GET started before a new POST, even if it arrives last.
+    if (signal.aborted || epoch !== operationEpoch) return;
     const wasActive = isActive(updates.status);
     updates.status = status;
     updates.reconnecting = false;
@@ -235,6 +242,7 @@ export async function installUpdate() {
   const signal = owner.signal;
   const release = updates.release;
   const version = parseVersion(release.tag_name)!;
+  operationEpoch++; // Invalidate earlier status GETs before submitting.
   updates.submitting = true;
   updates.installedThisSession = false;
   updates.error = "";
@@ -275,6 +283,7 @@ export async function installUpdate() {
 export function mountUpdates() {
   if (++mounts === 1) {
     owner = new AbortController();
+    operationEpoch++; // A previous mount's responses are no longer relevant.
     const signal = owner.signal;
     client = new ReleaseClient(storage());
     updates.info = null;

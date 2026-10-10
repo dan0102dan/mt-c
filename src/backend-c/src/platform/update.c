@@ -295,8 +295,13 @@ static bool launch_install(int lock, const char *manager, const char *package,
         if (grandchild < 0) { goto failed; }
         if (grandchild > 0) { close(writer); _exit(0); }
         if (dup2(inherited_lock, 3) < 0 || fcntl(3, F_SETFD, 0) < 0) { goto failed; }
-        int output = open(console, O_WRONLY | O_NOCTTY);
-        if (input < 0 || output < 0 || dup2(input, 0) < 0 || dup2(output, 1) < 0 || dup2(output, 2) < 0) {
+        /* With closed stdin/stdout/stderr, open() could return 0/1/2.
+         * Reserve a high descriptor before dup2(input,0) so a console
+         * stream cannot be replaced by the short-lived gate socket. */
+        int raw_output = open(console, O_WRONLY | O_NOCTTY | O_CLOEXEC);
+        int output = raw_output >= 0 ? fcntl(raw_output, F_DUPFD_CLOEXEC, 5) : -1;
+        if (raw_output >= 0) { close(raw_output); }
+        if (output < 0 || dup2(input, 0) < 0 || dup2(output, 1) < 0 || dup2(output, 2) < 0) {
             goto failed;
         }
         for (int fd = 4; fd < max_fd; fd++) {
