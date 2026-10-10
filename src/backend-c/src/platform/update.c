@@ -230,29 +230,83 @@ static void handle_status(mt_http_req_t *req, mt_http_res_t *res, void *ud) {
 /* Only async-signal-safe operations between fork and exec in a threaded daemon.
  * A different executable name avoids Entware's killall magitrickled; setsid and
  * double-fork detach the worker from the HTTP connection/service process. */
-static bool launch(int lock) {
+/* The intermediate child cannot acknowledge the worker on its behalf:
+ * access(X_OK) does not imply execve() will succeed (missing ELF loader,
+ * corrupted binary, etc). A close-on-exec pipe provides the handshake:
+ * an errno value means setup/exec failed; EOF means the grandchild exec'd.
+ * Keep the write end away from fd 3, which carries the inherited lock. */
+static bool launch_executable(int lock, const char *executable) {
+    int ack[2];
+    if (pipe2(ack, O_CLOEXEC) != 0) { return false; }
+    if (ack[1] == 3) {
+        int high = fcntl(ack[1], F_DUPFD_CLOEXEC, 4);
+        if (high < 0) { close(ack[0]); close(ack[1]); return false; }
+        close(ack[1]);
+        ack[1] = high;
+    }
+
     pid_t child = fork();
-    if (child < 0) { return false; }
+    if (child < 0) { close(ack[0]); close(ack[1]); return false; }
     if (child == 0) {
-        if (setsid() < 0) { _exit(127); }
+        close(ack[0]);
+        if (setsid() < 0) { goto exec_failed; }
         pid_t worker = fork();
-        if (worker < 0) { _exit(127); }
-        if (worker > 0) { _exit(0); }
-        if (lock != 3 && dup2(lock, 3) < 0) { _exit(127); }
-        if (fcntl(3, F_SETFD, 0) < 0) { _exit(127); }
+        if (worker < 0) { goto exec_failed; }
+        if (worker > 0) { close(ack[1]); _exit(0); }
+        if (lock != 3 && dup2(lock, 3) < 0) { goto exec_failed; }
+        if (fcntl(3, F_SETFD, 0) < 0) { goto exec_failed; }
         sigset_t empty;
-        sigemptyset(&empty);
-        sigprocmask(SIG_SETMASK, &empty, NULL);
-        char *const args[] = {UPDATER, "--worker", NULL};
+        if (sigemptyset(&empty) || sigprocmask(SIG_SETMASK, &empty, NULL)) {
+            goto exec_failed;
+        }
+        char *const args[] = {(char *)executable, "--worker", NULL};
         char *const env[] = {"PATH=/opt/sbin:/opt/bin:/usr/sbin:/usr/bin:/sbin:/bin", "LC_ALL=C", "HOME=/root", NULL};
-        execve(UPDATER, args, env);
+        execve(executable, args, env);
+
+exec_failed:
+        /* Only async-signal-safe functions are called in the forked child. */
+        int exec_error = errno ? errno : EIO;
+        (void)write(ack[1], &exec_error, sizeof(exec_error));
         _exit(127);
     }
-    int status;
+
+    close(ack[1]);
+    /* Bound the handshake so a wedged pre-exec worker cannot freeze epoll.
+     * A timeout also terminates the newly detached process group. */
+    bool confirmed = false;
+    struct timespec started, current;
+    if (clock_gettime(CLOCK_MONOTONIC, &started) == 0) {
+        for (;;) {
+            if (clock_gettime(CLOCK_MONOTONIC, &current) != 0) { break; }
+            int64_t elapsed_ms = (int64_t)(current.tv_sec - started.tv_sec) * 1000 +
+                                 (int64_t)(current.tv_nsec - started.tv_nsec) / 1000000;
+            if (elapsed_ms >= 3000) { break; }
+            struct pollfd pfd = {.fd = ack[0], .events = POLLIN | POLLHUP};
+            int ready = poll(&pfd, 1, (int)(3000 - elapsed_ms));
+            if (ready < 0 && errno == EINTR) { continue; }
+            if (ready <= 0) { break; }
+            int exec_error = 0;
+            ssize_t n;
+            do { n = read(ack[0], &exec_error, sizeof(exec_error)); }
+            while (n < 0 && errno == EINTR);
+            confirmed = n == 0; /* EOF: the worker reached execve(). */
+            break;
+        }
+    }
+    close(ack[0]);
+    if (!confirmed) {
+        /* setsid() creates a group led by child; kill a stalled pre-exec
+         * worker before reporting an unsuccessful launch. */
+        (void)kill(-child, SIGKILL);
+        (void)kill(child, SIGKILL);
+    }
+    int status = 0;
     pid_t waited;
     do { waited = waitpid(child, &status, 0); } while (waited < 0 && errno == EINTR);
-    return waited == child && WIFEXITED(status) && WEXITSTATUS(status) == 0;
+    return confirmed && waited == child && WIFEXITED(status) && WEXITSTATUS(status) == 0;
 }
+
+static bool launch(int lock) { return launch_executable(lock, UPDATER); }
 
 static void handle_install(mt_http_req_t *req, mt_http_res_t *res, void *ud) {
     mt_system_ctx_t *ctx = ud;
