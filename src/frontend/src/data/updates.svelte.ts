@@ -109,11 +109,11 @@ export async function checkUpdates(force = false) {
   updates.release = null;
   updates.checkedAt = 0;
   try {
-    // Explicit Retry must refresh the installed router version as well.
-    // Each popup open and channel change checks GitHub afresh.
+    // Explicit Retry also refreshes the router's installed version.
+    // Ordinary popup opens use the release list already loaded for this page.
     if (force || !updates.info) await refreshBuildInfo(signal);
     if (signal.aborted) return;
-    const result = await client!.latest(updates.preview, signal);
+    const result = await client!.latest(updates.preview, force, signal);
     if (signal.aborted) return;
     updates.release = result.release;
     updates.checkedAt = result.checkedAt;
@@ -130,15 +130,16 @@ export function setUpdateChannel(preview: boolean) {
   if (updates.submitting || updates.checking || updates.reconnecting || isActive(updates.status))
     return;
   updates.preview = preview;
-  updates.release = null;
-  updates.checkedAt = 0;
+  // Stable/dev use the same response from page load; switching never fetches.
+  const selected = client?.cached(preview);
+  updates.release = selected?.release ?? null;
+  updates.checkedAt = selected?.checkedAt ?? 0;
+  if (selected) updates.error = selected.release ? "" : "No releases found for this channel";
   try {
     storage()?.setItem("mt-c.update-preview", String(preview));
   } catch {
     /* Optional. */
   }
-  // Switching channels checks the current release list rather than a cached snapshot.
-  void checkUpdates();
 }
 
 function stopWaiting() {

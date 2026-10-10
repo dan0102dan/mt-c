@@ -226,23 +226,41 @@ export function candidate(release: Release | null, info: BuildInfo | null) {
   return { newer: true, asset, reason: info.can_install ? "" : info.reason };
 }
 
-/** A release check always requests current GitHub metadata, never a saved list. */
+/** Both channels are selected from one release list loaded for this page. */
 export type ReleaseResult = { release: Release | null; checkedAt: number };
 type ReleaseList = { releases: Release[]; checkedAt: number };
 
-/** Concurrent checks share one network request. Every subsequent check
- * contacts GitHub; no localStorage, TTL or stale ETag results are reused. */
+/** One GitHub request loads stable and preview candidates for the current page.
+ * Completed data is kept in memory only; a reload starts a new request.
+ * Manual Retry may force a new request without an automatic timed refresh. */
 export class ReleaseClient {
   private inFlight: Promise<ReleaseList> | null = null;
+  private snapshot: ReleaseList | null = null;
   private blockedUntil = 0;
   constructor(private request: typeof fetch = (...args) => fetch(...args)) {}
 
-  async latest(preview: boolean, signal?: AbortSignal): Promise<ReleaseResult> {
-    if (Date.now() < this.blockedUntil) throw new Error("GitHub rate limit; try again later");
+  cached(preview: boolean): ReleaseResult | null {
+    if (!this.snapshot) return null;
+    return {
+      release: selectRelease(this.snapshot.releases, preview),
+      checkedAt: this.snapshot.checkedAt,
+    };
+  }
+
+  async latest(preview: boolean, force = false, signal?: AbortSignal): Promise<ReleaseResult> {
+    if (!force && this.snapshot) return this.cached(preview)!;
     if (!this.inFlight) {
-      this.inFlight = this.load(signal).finally(() => {
-        this.inFlight = null;
-      });
+      if (Date.now() < this.blockedUntil) throw new Error("GitHub rate limit; try again later");
+      // A failed manual refresh must not leave the previous selection active.
+      this.snapshot = null;
+      this.inFlight = this.load(signal)
+        .then((result) => {
+          this.snapshot = result;
+          return result;
+        })
+        .finally(() => {
+          this.inFlight = null;
+        });
     }
     const result = await this.inFlight;
     return { release: selectRelease(result.releases, preview), checkedAt: result.checkedAt };

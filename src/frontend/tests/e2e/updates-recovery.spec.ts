@@ -120,30 +120,38 @@ test("retry a failed release check without reloading or installing anything", as
   await page.keyboard.press("Escape");
   await openPopup(page);
   await expect(popup.getByRole("button", { name: "Update", exact: true })).toBeEnabled();
-  expect(state.releaseReads).toBe(attempts + 2); // Reopening checks GitHub again.
+  expect(state.releaseReads).toBe(attempts + 1); // Reopening reuses this page's result.
 });
 
-test("reopening the popup and switching dev always fetches fresh releases", async ({ page }) => {
+test("page load fetches both channels; popup and dev switch never refetch", async ({ page }) => {
   const state = await setup(page);
   await page.goto("/");
+  // The page loads the same release list for both stable and preview.
+  await expect.poll(() => state.releaseReads).toBe(1);
   const popup = await openPopup(page);
   await expect(popup.getByRole("link", { name: "2.0.0 · Release notes" })).toBeVisible();
-  const initial = state.releaseReads;
 
-  await page.keyboard.press("Escape");
+  // A newly published release is only discovered by a fresh page load,
+  // never silently fetched by the popup or a channel switch.
   state.release = "3.0.0";
-  await openPopup(page);
-  await expect(popup.getByRole("link", { name: "3.0.0 · Release notes" })).toBeVisible();
-  expect(state.releaseReads).toBe(initial + 1);
-
   state.previewRelease = "5.0.0";
+  await page.keyboard.press("Escape");
+  await openPopup(page);
+  await expect(popup.getByRole("link", { name: "2.0.0 · Release notes" })).toBeVisible();
   const toggle = popup.getByRole("switch", { name: "dev" });
   await toggle.click();
-  await expect(popup.getByRole("link", { name: "5.0.0 · Release notes" })).toBeVisible();
-  expect(state.releaseReads).toBe(initial + 2);
+  await expect(popup.getByRole("link", { name: "4.0.0 · Release notes" })).toBeVisible();
   await toggle.click();
-  await expect(popup.getByRole("link", { name: "3.0.0 · Release notes" })).toBeVisible();
-  expect(state.releaseReads).toBe(initial + 3);
+  await expect(popup.getByRole("link", { name: "2.0.0 · Release notes" })).toBeVisible();
+  expect(state.releaseReads).toBe(1);
+
+  await page.reload();
+  await expect.poll(() => state.releaseReads).toBe(2);
+  const reloaded = await openPopup(page);
+  await expect(reloaded.getByRole("link", { name: "3.0.0 · Release notes" })).toBeVisible();
+  await reloaded.getByRole("switch", { name: "dev" }).click();
+  await expect(reloaded.getByRole("link", { name: "5.0.0 · Release notes" })).toBeVisible();
+  expect(state.releaseReads).toBe(2);
   expect(state.installs).toBe(0);
 });
 
@@ -201,7 +209,7 @@ test("reopening during a job which then fails restores the manual retry candidat
   expect(state.installs).toBe(1);
 });
 
-test("dev channel refreshes GitHub and preference survives reload", async ({ page }) => {
+test("dev channel selects locally and preference survives reload", async ({ page }) => {
   const state = await setup(page);
   await page.goto("/");
   let popup = await openPopup(page);
@@ -214,13 +222,13 @@ test("dev channel refreshes GitHub and preference survives reload", async ({ pag
   await expect(popup.getByRole("link", { name: "2.0.0 · Release notes" })).toBeVisible();
   await toggle.click();
   const countBeforeReload = state.releaseReads;
-  expect(countBeforeReload).toBeGreaterThanOrEqual(4);
+  expect(countBeforeReload).toBe(1);
 
   await page.reload();
   popup = await openPopup(page);
   await expect(popup.getByRole("switch", { name: "dev" })).toBeChecked();
   await expect(popup.getByRole("link", { name: "4.0.0 · Release notes" })).toBeVisible();
-  expect(state.releaseReads).toBeGreaterThan(countBeforeReload);
+  expect(state.releaseReads).toBe(countBeforeReload + 1);
   expect(state.infoReads).toBe(2);
 });
 

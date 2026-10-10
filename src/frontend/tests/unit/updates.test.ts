@@ -43,16 +43,6 @@ function release(tag = "0.8.3"): Release {
     ],
   };
 }
-function storage() {
-  const entries = new Map<string, string>();
-  return {
-    getItem: (key: string) => entries.get(key) ?? null,
-    setItem: (key: string, value: string) => {
-      entries.set(key, value);
-    },
-  };
-}
-
 Deno.test("numeric versions, package revisions and snapshots never imply a downgrade", () => {
   assert.equal(compareVersions("0.8.10", "0.8.9"), 1);
   assert.equal(compareVersions("0.8.3", "0.8.2.2"), 1);
@@ -147,7 +137,7 @@ Deno.test("runtime responses are validated, not merely cast", () => {
 });
 
 Deno.test(
-  "every release check contacts GitHub without a saved response or router credentials",
+  "page-load fetch is shared by both channels and never sends router credentials",
   async () => {
     let calls = 0;
     let tag = "0.8.3";
@@ -161,8 +151,14 @@ Deno.test(
       return new Response(JSON.stringify([release(tag)]));
     });
     assert.equal((await client.latest(false)).release?.tag_name, "0.8.3");
+    assert.equal(client.cached(true)?.release?.tag_name, "0.8.3");
     tag = "0.8.4";
-    assert.equal((await client.latest(false)).release?.tag_name, "0.8.4");
+    assert.equal((await client.latest(false)).release?.tag_name, "0.8.3");
+    assert.equal((await client.latest(true)).release?.tag_name, "0.8.3");
+    assert.equal(calls, 1);
+    // Explicit Retry is the only refresh within the current page.
+    assert.equal((await client.latest(false, true)).release?.tag_name, "0.8.4");
+    assert.equal(client.cached(true)?.release?.tag_name, "0.8.4");
     assert.equal(calls, 2);
   },
 );
@@ -190,9 +186,11 @@ Deno.test("empty and failed release checks never reuse the previous selection", 
     return new Response(null, { status: 404 });
   });
   assert.equal((await client.latest(false)).release?.tag_name, "0.8.3");
-  assert.equal((await client.latest(false)).release, null);
-  await assert.rejects(client.latest(false), /offline/);
-  await assert.rejects(client.latest(false), /Cannot check GitHub releases/);
+  assert.equal((await client.latest(false, true)).release, null);
+  assert.equal(client.cached(false)?.release, null);
+  await assert.rejects(client.latest(false, true), /offline/);
+  assert.equal(client.cached(false), null);
+  await assert.rejects(client.latest(false, true), /Cannot check GitHub releases/);
   assert.equal(calls, 4);
 });
 
@@ -208,7 +206,7 @@ Deno.test("rate-limit backoff prevents repeated blocked requests", async () => {
 });
 
 Deno.test(
-  "simultaneous stable/dev requests share a fetch; later switches fetch again",
+  "simultaneous stable/dev requests share a fetch; channel switching stays local",
   async () => {
     const stable = release("0.8.2.2");
     const preview = { ...release(), prerelease: true, published_at: "2026-10-11T12:00:00Z" };
@@ -225,9 +223,11 @@ Deno.test(
     assert.equal(stableResult.release?.tag_name, "0.8.2.2");
     assert.equal(previewResult.release?.tag_name, "0.8.3");
     assert.equal(calls, 1);
+    assert.equal(client.cached(true)?.release?.tag_name, "0.8.3");
+    assert.equal(client.cached(false)?.release?.tag_name, "0.8.2.2");
     assert.equal((await client.latest(true)).release?.tag_name, "0.8.3");
     assert.equal((await client.latest(false)).release?.tag_name, "0.8.2.2");
-    assert.equal(calls, 3);
+    assert.equal(calls, 1);
   },
 );
 
@@ -252,5 +252,5 @@ Deno.test("the shared fetch selects by published date beyond the first 20 entrie
   });
   assert.equal((await client.latest(false)).release?.tag_name, "1.1.0");
   assert.equal((await client.latest(true)).release?.tag_name, "1.1.0");
-  assert.equal(calls, 2);
+  assert.equal(calls, 1);
 });
