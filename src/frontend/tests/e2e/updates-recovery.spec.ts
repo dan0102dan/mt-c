@@ -154,7 +154,7 @@ test("a failed post-install version read retries only GET and keeps installation
   await expect(popup.getByRole("button", { name: "Updating…", exact: true })).toBeDisabled();
   state.installed = "2.0.0";
   state.failedInfoReads = 1;
-  state.status = job("succeeded");
+  state.status = { stage: "idle" }; // new daemon has no persisted success record
   await expect(
     popup.getByText("Installed version could not be confirmed", { exact: true }),
   ).toBeVisible();
@@ -219,4 +219,39 @@ test("update popup remains inside the mobile viewport", async ({ page }) => {
   expect(bounds).not.toBeNull();
   expect(bounds!.x).toBeGreaterThanOrEqual(0);
   expect(bounds!.x + bounds!.width).toBeLessThanOrEqual(390);
+});
+
+test("reconnect after daemon restart confirms version without a persisted job", async ({
+  page,
+}) => {
+  const state = await setup(page);
+  await page.goto("/");
+  let popup = await openPopup(page);
+  await popup.getByRole("button", { name: "Update", exact: true }).click();
+  await expect(popup.getByRole("button", { name: "Updating…" })).toBeDisabled();
+  state.status = { stage: "installing", external: true };
+  await page.reload();
+  popup = await openPopup(page);
+  await expect(popup.getByRole("button", { name: "Updating…" })).toBeDisabled();
+  state.installed = "2.0.0";
+  state.status = { stage: "idle" };
+  await expect(popup.getByRole("button", { name: "Up to date" })).toBeDisabled({ timeout: 10000 });
+  expect(state.installs).toBe(1);
+  await expect
+    .poll(() => page.evaluate(() => sessionStorage.getItem("mt-c.update-pending.v1")))
+    .toBeNull();
+});
+
+test("a free installer lock with an unchanged version is not success", async ({ page }) => {
+  const state = await setup(page);
+  await page.goto("/");
+  const popup = await openPopup(page);
+  await popup.getByRole("button", { name: "Update", exact: true }).click();
+  await expect(popup.getByRole("button", { name: "Updating…" })).toBeDisabled();
+  state.status = { stage: "idle" };
+  await expect(
+    popup.getByText("Update could not be confirmed; check the package manager from CLI"),
+  ).toBeVisible({ timeout: 10000 });
+  await expect(popup.getByRole("button", { name: "Up to date" })).toHaveCount(0);
+  expect(state.installs).toBe(1);
 });
