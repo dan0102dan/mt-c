@@ -359,8 +359,17 @@ static void handle_install(mt_http_req_t *req, mt_http_res_t *res, void *ud) {
     cJSON_AddStringToObject(state, "previous_version", MT_VERSION);
     cJSON_AddNumberToObject(state, "started_at", (double)time(NULL));
     bool written = write_json(dir, "request.json", request) && write_json(dir, "status.json", state);
+    if (!written) { cJSON_Delete(state); goto done; }
+    if (!launch(lock)) {
+        error = "Cannot execute updater";
+        (void)setstr(state, "stage", "failed");
+        (void)setstr(state, "error", error);
+        cJSON_AddNumberToObject(state, "finished_at", (double)time(NULL));
+        (void)write_json(dir, "status.json", state);
+        cJSON_Delete(state);
+        goto done;
+    }
     cJSON_Delete(state);
-    if (!written || !launch(lock)) { goto done; }
     cJSON *out = cJSON_CreateObject();
     if (!out) { goto done; }
     cJSON_AddStringToObject(out, "job_id", job_id);
