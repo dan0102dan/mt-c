@@ -3431,3 +3431,82 @@ values; existing configurations containing it must be edited to the accepted
 range before loading. Defaults, ordering, ties, and omitted-field behavior
 remain as defined in D-73. Boundary tests cover acceptance of 999 and rejection
 of 1000, including preservation of live and persisted state on invalid writes.
+
+## D-74 — Browser-discovered GitHub Releases and privileged WebUI updates (2026-10-10)
+
+Status: **accepted, additive C-only API**. The user requested an update
+notification and on-demand installation from the WebUI without SSH or a CLI.
+This is an intentional extension to the frozen Go-parity API (D-27/D-29 and
+`compatibility-contract.md` §2), **not** a claim that the old Go daemon exposed
+these routes. The C router retains its existing API/configuration behaviour;
+the new install operation explicitly interrupts the daemon during a package
+upgrade. No config-version bump or automatic update policy is introduced.
+
+Routine discovery lives in the Svelte browser, not the epoll daemon: stable
+uses GitHub `/repos/dan0102dan/mt-c/releases/latest`; optional preview uses
+`/releases?per_page=20` and the most recently published non-draft entry.
+Browser requests are cached by channel for an hour (ETag/rate-limit handling)
+and send no router JWT to GitHub. Closing the browser does not prevent a
+previously started installation from finishing. The daemon does not poll GitHub
+or trust browser-supplied asset URLs, paths, checksums or commands.
+
+`mt_system_register_routes()` now also calls `mt_update_register_routes()` on
+the TCP WebUI and Unix-socket routers. The three new, observable API routes
+(all under `/api/v1`) are:
+
+- `GET /system/update`: **200** JSON
+  `{"installed_version":string,"installed_revision":integer,
+  "asset_suffix":string,"can_install":boolean,"reason":string}`.
+  Build identity and current installation capability only, with no network
+  access. A missing/unsupported target or non-root caller is expressed through
+  `can_install:false` and `reason` rather than a failing GET; out-of-memory
+  returns **500**.
+- `GET /system/update/status`: **200** persisted `status.json` or
+  `{"stage":"idle"}` when no attempt exists. Stages are `idle`, `queued`,
+  `checking`, `downloading`, `verifying`, `backing_up`, `installing`,
+  `restarting`, `succeeded`, `failed` and `interrupted`. Non-idle jobs
+  carry a 32-hex-character `job_id`; the stored status can also contain
+  `tag`, `previous_version`, `target_version`, `target_revision`,
+  `package_size`, `backup_path`, `error`, `started_at`, `finished_at`,
+  and `package_installed`. An active status whose worker lock is no longer
+  held is **reported** as `interrupted`; it is not an automatic retry.
+  Unreadable existing status or allocation failure returns **500**.
+- `POST /system/update/install`: requires JSON content-type and exactly
+  `{"tag":string,"release_id":positive_safe_integer,"preview":boolean}`.
+  **202** JSON `{"job_id":"<32 hex>","stage":"queued"}` means the request
+  was queued, not installed. **400** = wrong content type/cross-site request,
+  invalid input, unknown/dev version or release not newer; **403** =
+  unavailable updater/platform/permissions or missing verified root JWT;
+  **409** = another worker holds the update lock; **500** = failure to save
+  current configuration, prepare state or start the helper. Error bodies use
+  the established `{"error":string}` shape. Existing TCP auth middleware
+  can return **401** before these handlers.
+
+Unlike other Unix-socket endpoints, **installation explicitly requires a
+currently valid root-user JWT on both transports**, even when normal WebUI auth
+is disabled. Read endpoints retain ordinary middleware behaviour. Both reads
+advertise `Cache-Control: no-store`; no remote release metadata is served by
+the new API. This is a deliberate authorization exception to the historical
+unauthenticated Unix-socket contract (D-27).
+
+The API atomically records request/job state under
+`<MT_APP_STATE_DIR>/update`, with a root-owned private directory and a
+non-blocking `flock`. A separately packaged `mt-c-updater` executable is
+double-forked/detached from the daemon, so `opkg`/`apk` maintainer scripts may
+restart the routing service without killing the active installer. The helper
+re-queries the selected GitHub release, validates the release ID/tag and exact
+compiled target (including Entware `_kn`, OpenWrt firmware version, package
+architecture and IPK/APK format), bounds download sizes and verifies the
+release asset's SHA-256 before invoking the package manager. The digest
+protects integrity against download corruption, not a compromised publisher.
+It backs up configuration and auth state, persists bounded logs/status, and
+only reports success after the restarted daemon serves the expected version
+and package revision. An interrupted or failed package-manager upgrade is
+**not transactional** and has no automatic binary rollback.
+
+The Deno development mock implements the same three routes with simulated
+root authorization and an in-memory, timed update lifecycle; it **never**
+downloads, runs a package manager or restarts a device. Regression tests
+cover matching/version rules, process boundaries and mock request/status
+contracts. This does not constitute a real Entware/Keenetic/OpenWrt upgrade
+test. See `docs/webui-updates.md` and `compatibility-contract.md` §§2, 10.
