@@ -15,6 +15,7 @@ async function setup(page: Page) {
     status: { stage: "idle" } as UpdateStatus,
     installed: "1.0.0",
     release: "2.0.0",
+    previewRelease: "4.0.0",
     offline: false,
     failedInfoReads: 0,
     infoReads: 0,
@@ -22,9 +23,7 @@ async function setup(page: Page) {
     installs: 0,
   };
   await page.route("**/auth", (route) => route.fulfill({ json: { enabled: false } }));
-  await page.route("**/groups?with_rules=true", (route) =>
-    route.fulfill({ json: { groups: [] } }),
-  );
+  await page.route("**/groups?with_rules=true", (route) => route.fulfill({ json: { groups: [] } }));
   await page.route("**/interfaces", (route) => route.fulfill({ json: { interfaces: [] } }));
   await page.route("**/system/update", (route) => {
     state.infoReads++;
@@ -53,6 +52,7 @@ async function setup(page: Page) {
     expect(route.request().url()).toContain("releases?per_page=100");
     if (state.offline) return route.fulfill({ status: 503, json: {} });
     const name = `mt-c_${state.release}-1_test.ipk`;
+    const previewName = `mt-c_${state.previewRelease}-1_test.ipk`;
     const downloadBase = "https://github.com/dan0102dan/mt-c/releases/download";
     return route.fulfill({
       json: [
@@ -66,6 +66,22 @@ async function setup(page: Page) {
             {
               name,
               browser_download_url: `${downloadBase}/${state.release}/${name}`,
+              state: "uploaded",
+              size: 123,
+              digest: `sha256:${"a".repeat(64)}`,
+            },
+          ],
+        },
+        {
+          id: 101,
+          tag_name: state.previewRelease,
+          draft: false,
+          prerelease: true,
+          published_at: "2026-10-10T00:00:00Z",
+          assets: [
+            {
+              name: previewName,
+              browser_download_url: `${downloadBase}/${state.previewRelease}/${previewName}`,
               state: "uploaded",
               size: 123,
               digest: `sha256:${"a".repeat(64)}`,
@@ -105,7 +121,9 @@ test("retry a failed release check without reloading or installing anything", as
   expect(state.releaseReads).toBe(attempts + 1);
 });
 
-test("refresh an expired list while fresh opens and channel switches stay local", async ({ page }) => {
+test("refresh an expired list while fresh opens and channel switches stay local", async ({
+  page,
+}) => {
   const state = await setup(page);
   await page.goto("/");
   const popup = await openPopup(page);
@@ -168,4 +186,37 @@ test("reopening during a job which then fails restores the manual retry candidat
   await popup.getByRole("button", { name: "Update", exact: true }).click();
   await expect(popup.getByRole("button", { name: "Updating…", exact: true })).toBeDisabled();
   expect(state.installs).toBe(1);
+});
+
+test("dev channel switches locally and survives a reload", async ({ page }) => {
+  const state = await setup(page);
+  await page.goto("/");
+  let popup = await openPopup(page);
+  const toggle = popup.getByRole("switch", { name: "dev" });
+  await expect(popup.getByRole("link", { name: "2.0.0 · Release notes" })).toBeVisible();
+  await toggle.click();
+  await expect(toggle).toBeChecked();
+  await expect(popup.getByRole("link", { name: "4.0.0 · Release notes" })).toBeVisible();
+  await toggle.click();
+  await expect(popup.getByRole("link", { name: "2.0.0 · Release notes" })).toBeVisible();
+  await toggle.click();
+  expect(state.releaseReads).toBe(1);
+
+  await page.reload();
+  popup = await openPopup(page);
+  await expect(popup.getByRole("switch", { name: "dev" })).toBeChecked();
+  await expect(popup.getByRole("link", { name: "4.0.0 · Release notes" })).toBeVisible();
+  expect(state.releaseReads).toBe(1);
+  expect(state.infoReads).toBe(2);
+});
+
+test("update popup remains inside the mobile viewport", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await setup(page);
+  await page.goto("/");
+  const popup = await openPopup(page);
+  const bounds = await popup.boundingBox();
+  expect(bounds).not.toBeNull();
+  expect(bounds!.x).toBeGreaterThanOrEqual(0);
+  expect(bounds!.x + bounds!.width).toBeLessThanOrEqual(390);
 });

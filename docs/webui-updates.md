@@ -166,7 +166,7 @@ read/install request validation, status progression and concurrent-install locks
 were replaced for this feature.
 
 Regression coverage for the review fixes: `test_update_release.c` and
-`tests/unit/update-review.test.ts` exercise shared channel selection beyond the
+`tests/unit/updates.test.ts` exercise shared channel selection beyond the
 old 20-item window and APK SDK snapshot identities. `test_update_process.c` forces
 a separate worker to publish success/failure between a status read and its lock
 probe, using real file locks and atomic replacement. The test only substitutes
