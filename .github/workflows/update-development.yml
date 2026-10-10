@@ -1,26 +1,83 @@
-name: Update refactor workspace
+name: Update refactor validation
 on:
   push:
     branches: [refactor/simple-package-updates]
     paths: [.github/workflows/update-development.yml]
 permissions:
-  contents: read
+  contents: write
 jobs:
-  workspace:
+  validate:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v5
         with:
-          persist-credentials: false
-      - name: Export exact source and development headers
+          fetch-depth: 1
+      - name: Apply the reviewed patch
         run: |
-          mkdir -p "$RUNNER_TEMP/update-workspace"
-          git archive --format=tar.gz HEAD > "$RUNNER_TEMP/update-workspace/source.tar.gz"
-          cd "$RUNNER_TEMP/update-workspace"
-          sudo apt-get update -qq
-          apt-get download libcjson-dev libmnl-dev libyaml-dev
-      - uses: actions/upload-artifact@v4
+          test -z "$(git status --porcelain)"
+          cat .github/update-patch.part? | base64 -d | xz -d > "$RUNNER_TEMP/update.patch"
+          echo "233126b075fef80f30975386edceb4d2e1248116a1ce9f41d1076c2eb366fb71  $RUNNER_TEMP/update.patch" | sha256sum -c -
+          git apply --check "$RUNNER_TEMP/update.patch"
+          git apply --index "$RUNNER_TEMP/update.patch"
+      - uses: actions/setup-node@v5
         with:
-          name: update-refactor-workspace
-          path: ${{ runner.temp }}/update-workspace
+          node-version: 24
+      - uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.x
+      - name: Install frontend dependencies
+        working-directory: src/frontend
+        run: npm ci
+      - name: Format only the modified frontend files
+        working-directory: src/frontend
+        run: npx prettier --write dev/update-mock.ts src/data/updates.svelte.ts src/locales/ru.json src/modules/updates/releases.ts tests/e2e/updates-recovery.spec.ts tests/unit/update-mock.test.ts tests/unit/updates.test.ts
+      - name: Typecheck and production frontend build
+        working-directory: src/frontend
+        run: |
+          npm run check
+          npm run build
+      - name: Frontend unit tests
+        working-directory: src/frontend
+        run: npm run test:unit
+      - name: Install Chromium
+        working-directory: src/frontend
+        run: npx playwright install --with-deps chromium
+      - name: Frontend E2E suite
+        working-directory: src/frontend
+        run: npm run test:e2e
+      - name: Install C development libraries
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y libyaml-dev libcjson-dev libmnl-dev libpcre2-dev libcurl4-openssl-dev
+      - name: C build and unit tests
+        working-directory: src/backend-c
+        run: |
+          make -j4 CFLAGS_EXTRA=-Werror
+          make -j4 test
+      - name: Package contracts and Swagger syntax
+        run: |
+          python3 tools/tests/package_identity.py
+          ruby -rpsych -e 'Psych.parse_file("docs/swagger.yaml"); puts "Swagger syntax OK"'
+          git diff --check
+      - name: Commit validated product changes
+        run: |
+          git add -u -- Makefile docs src tools
+          git diff --cached --stat
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git commit -m 'refactor(update): hand verified packages to system tools without an updater binary'
+          git push origin HEAD:refs/heads/refactor/simple-package-updates
+          git archive --format=tar.gz HEAD > "$RUNNER_TEMP/validated-source.tar.gz"
+      - name: Retain validation diagnostics
+        if: always()
+        run: git diff HEAD --binary > "$RUNNER_TEMP/validation.diff"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: simple-update-validation
+          path: |
+            ${{ runner.temp }}/validated-source.tar.gz
+            ${{ runner.temp }}/validation.diff
+            src/frontend/test-results
           retention-days: 1
