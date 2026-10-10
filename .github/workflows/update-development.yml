@@ -1,0 +1,26 @@
+name: Update refactor workspace
+on:
+  push:
+    branches: [refactor/simple-package-updates]
+    paths: [.github/workflows/update-development.yml]
+permissions:
+  contents: read
+jobs:
+  workspace:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - name: Export exact source and development headers
+        run: |
+          mkdir -p "$RUNNER_TEMP/update-workspace"
+          git archive --format=tar.gz HEAD > "$RUNNER_TEMP/update-workspace/source.tar.gz"
+          cd "$RUNNER_TEMP/update-workspace"
+          sudo apt-get update -qq
+          apt-get download libcjson-dev libmnl-dev libyaml-dev
+      - uses: actions/upload-artifact@v4
+        with:
+          name: update-refactor-workspace
+          path: ${{ runner.temp }}/update-workspace
+          retention-days: 1
