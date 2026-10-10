@@ -50,10 +50,21 @@ typedef struct mt_group {
     char *iface; /* yaml key: interface; configured primary, never runtime active */
     char *profile; /* optional stable profile ID; authoritative when nonempty */
     bool enable;
+    bool from_subscription; /* runtime only; user groups default to false */
     uint16_t priority;
     mt_rule_t **rules;
     size_t n_rules;
 } mt_group_t;
+
+/* Internal ordering key, never persisted in priority. The low bit gives a
+ * user group precedence over a subscription only when their numbers match:
+ * group(p) < subscription(p + 1). Equal keys retain the stable ID tie-break
+ * in the iptables compiler. Both initial enable and rebuild use this key. */
+_Static_assert(MT_PRIORITY_MAX <= (UINT16_MAX - 1u) / 2u,
+               "routing priority key must fit in uint16_t");
+static inline uint16_t mt_group_routing_order(const mt_group_t *g) {
+    return (uint16_t)(2u * g->priority + (g->from_subscription ? 0u : 1u));
+}
 
 typedef struct mt_sub_rule {
     mt_id_t id;
