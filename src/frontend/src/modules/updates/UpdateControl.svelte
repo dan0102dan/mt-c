@@ -200,7 +200,8 @@
   }
   :global(.update-popover) {
     z-index: 50;
-    width: min(220px, calc(100vw - 16px));
+    width: max-content;
+    max-width: calc(100vw - 16px);
     box-sizing: border-box;
     max-height: var(--bits-popover-content-available-height);
     overflow: auto;
@@ -248,6 +249,7 @@
     width: 100%;
   }
   .update-action :global(button.accent) {
+    overflow: hidden;
     transition:
       border-color 0.3s ease,
       color 0.3s ease,
