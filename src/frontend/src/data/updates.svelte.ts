@@ -110,7 +110,7 @@ export async function checkUpdates(force = false) {
   updates.checkedAt = 0;
   try {
     // Explicit Retry must refresh the installed router version as well.
-    // Normal popover opens and channel switches continue using the cache.
+    // Each popup open and channel change checks GitHub afresh.
     if (force || !updates.info) await refreshBuildInfo(signal);
     if (signal.aborted) return;
     const result = await client!.latest(updates.preview, signal);

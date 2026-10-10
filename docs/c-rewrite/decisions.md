@@ -3610,3 +3610,27 @@ transaction. CLI recovery is still necessary for failed or power-interrupted
 installs. Older loaded WebUI versions may need a page reload on the first upgrade
 to this volatile-status contract. Tests and platform checks are described in
 `docs/webui-updates.md`; a mocked or host process test is not a real router upgrade.
+
+## D-77 — Fresh GitHub release checks in WebUI (2026-10-11)
+
+Status: **accepted at the user's request**, superseding D-74's one-hour
+browser release-list cache and local-only stable/dev switching.
+
+The version popup should never claim to know whether an update is available
+based solely on metadata fetched up to an hour earlier. The browser fetches
+`/repos/dan0102dan/mt-c/releases?per_page=100` when its update component
+first mounts, whenever the version popup is opened, and whenever stable/dev
+is changed. Overlapping checks may share a single **in-flight** request;
+completed results are not reused for subsequent user-initiated checks.
+Do not persist release lists/ETags to localStorage, and request with HTTP
+`cache: "no-store"`. The only localStorage use retained is the selected
+preview-channel preference. Router JWTs are never sent to GitHub.
+
+The previous release selection is hidden while a check runs. A request
+failure, empty response, or channel with no release must not be rendered
+as "Up to date"; the user may manually Retry. Preserve in-memory GitHub
+403/429 rate-limit backoff so repeated clicks do not hammer a blocked API.
+This change concerns **discovery freshness**, not upgrade permission:
+release-version comparison, root authorization, exact package matching,
+verification and one-install-at-a-time safeguards are unchanged. An older
+release such as 0.8.4.1 is still not an upgrade to 0.8.5~git....
