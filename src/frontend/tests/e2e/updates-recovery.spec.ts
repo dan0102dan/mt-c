@@ -17,6 +17,7 @@ async function setup(page: Page) {
     release: "2.0.0",
     previewRelease: "4.0.0",
     offline: false,
+    emptyReleases: false,
     failedInfoReads: 0,
     infoReads: 0,
     releaseReads: 0,
@@ -51,6 +52,7 @@ async function setup(page: Page) {
     state.releaseReads++;
     expect(route.request().url()).toContain("releases?per_page=100");
     if (state.offline) return route.fulfill({ status: 503, json: {} });
+    if (state.emptyReleases) return route.fulfill({ json: [] });
     const name = `mt-c_${state.release}-1_test.ipk`;
     const previewName = `mt-c_${state.previewRelease}-1_test.ipk`;
     const downloadBase = "https://github.com/dan0102dan/mt-c/releases/download";
@@ -118,30 +120,41 @@ test("retry a failed release check without reloading or installing anything", as
   await page.keyboard.press("Escape");
   await openPopup(page);
   await expect(popup.getByRole("button", { name: "Update", exact: true })).toBeEnabled();
-  expect(state.releaseReads).toBe(attempts + 1);
+  expect(state.releaseReads).toBe(attempts + 2); // Reopening checks GitHub again.
 });
 
-test("refresh an expired list while fresh opens and channel switches stay local", async ({
-  page,
-}) => {
+test("reopening the popup and switching dev always fetches fresh releases", async ({ page }) => {
   const state = await setup(page);
   await page.goto("/");
   const popup = await openPopup(page);
   await expect(popup.getByRole("link", { name: "2.0.0 · Release notes" })).toBeVisible();
-  await expect(popup.getByRole("switch", { name: "dev" })).toBeEnabled();
-  expect(state.releaseReads).toBe(1);
+  const initial = state.releaseReads;
+
   await page.keyboard.press("Escape");
   state.release = "3.0.0";
-  await page.evaluate(() => {
-    const later = Date.now() + 60 * 60 * 1000 + 1;
-    Date.now = () => later;
-  });
   await openPopup(page);
   await expect(popup.getByRole("link", { name: "3.0.0 · Release notes" })).toBeVisible();
-  await expect(popup.getByRole("switch", { name: "dev" })).toBeEnabled();
-  for (let i = 0; i < 4; i++) await popup.getByRole("switch", { name: "dev" }).click();
-  expect(state.releaseReads).toBe(2);
-  expect(state.infoReads).toBe(1);
+  expect(state.releaseReads).toBe(initial + 1);
+
+  state.previewRelease = "5.0.0";
+  const toggle = popup.getByRole("switch", { name: "dev" });
+  await toggle.click();
+  await expect(popup.getByRole("link", { name: "5.0.0 · Release notes" })).toBeVisible();
+  expect(state.releaseReads).toBe(initial + 2);
+  await toggle.click();
+  await expect(popup.getByRole("link", { name: "3.0.0 · Release notes" })).toBeVisible();
+  expect(state.releaseReads).toBe(initial + 3);
+  expect(state.installs).toBe(0);
+});
+
+test("empty GitHub release lists never claim the router is up to date", async ({ page }) => {
+  const state = await setup(page);
+  state.emptyReleases = true;
+  await page.goto("/");
+  const popup = await openPopup(page);
+  await expect(popup.getByText("No releases found for this channel")).toBeVisible();
+  await expect(popup.getByRole("button", { name: "Up to date" })).toHaveCount(0);
+  expect(state.installs).toBe(0);
 });
 
 test("a failed post-install version read retries only GET and keeps installation disabled", async ({
@@ -188,7 +201,7 @@ test("reopening during a job which then fails restores the manual retry candidat
   expect(state.installs).toBe(1);
 });
 
-test("dev channel switches locally and survives a reload", async ({ page }) => {
+test("dev channel refreshes GitHub and preference survives reload", async ({ page }) => {
   const state = await setup(page);
   await page.goto("/");
   let popup = await openPopup(page);
@@ -200,13 +213,14 @@ test("dev channel switches locally and survives a reload", async ({ page }) => {
   await toggle.click();
   await expect(popup.getByRole("link", { name: "2.0.0 · Release notes" })).toBeVisible();
   await toggle.click();
-  expect(state.releaseReads).toBe(1);
+  const countBeforeReload = state.releaseReads;
+  expect(countBeforeReload).toBeGreaterThanOrEqual(4);
 
   await page.reload();
   popup = await openPopup(page);
   await expect(popup.getByRole("switch", { name: "dev" })).toBeChecked();
   await expect(popup.getByRole("link", { name: "4.0.0 · Release notes" })).toBeVisible();
-  expect(state.releaseReads).toBe(1);
+  expect(state.releaseReads).toBeGreaterThan(countBeforeReload);
   expect(state.infoReads).toBe(2);
 });
 

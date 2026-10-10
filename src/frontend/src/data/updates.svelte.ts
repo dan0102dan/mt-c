@@ -106,15 +106,18 @@ export async function checkUpdates(force = false) {
   const signal = owner.signal;
   updates.checking = true;
   updates.error = "";
+  updates.release = null;
+  updates.checkedAt = 0;
   try {
     // Explicit Retry must refresh the installed router version as well.
     // Normal popover opens and channel switches continue using the cache.
     if (force || !updates.info) await refreshBuildInfo(signal);
     if (signal.aborted) return;
-    const result = await client!.latest(updates.preview, force, signal);
+    const result = await client!.latest(updates.preview, signal);
     if (signal.aborted) return;
     updates.release = result.release;
     updates.checkedAt = result.checkedAt;
+    if (!result.release) updates.error = "No releases found for this channel";
   } catch (error) {
     if (!signal.aborted)
       updates.error = error instanceof Error ? error.message : "Cannot check GitHub releases";
@@ -127,14 +130,15 @@ export function setUpdateChannel(preview: boolean) {
   if (updates.submitting || updates.checking || updates.reconnecting || isActive(updates.status))
     return;
   updates.preview = preview;
-  const cached = client?.cached(preview);
-  updates.release = cached?.release ?? null;
-  updates.checkedAt = cached?.checkedAt ?? 0;
+  updates.release = null;
+  updates.checkedAt = 0;
   try {
     storage()?.setItem("mt-c.update-preview", String(preview));
   } catch {
     /* Optional. */
   }
+  // Switching channels checks the current release list rather than a cached snapshot.
+  void checkUpdates();
 }
 
 function stopWaiting() {
@@ -285,7 +289,7 @@ export function mountUpdates() {
     owner = new AbortController();
     operationEpoch++; // A previous mount's responses are no longer relevant.
     const signal = owner.signal;
-    client = new ReleaseClient(storage());
+    client = new ReleaseClient();
     updates.info = null;
     updates.status = { stage: "idle" };
     updates.error = "";
@@ -301,9 +305,8 @@ export function mountUpdates() {
     } catch {
       /* Default stable. */
     }
-    const cached = client.cached(updates.preview);
-    updates.release = cached?.release ?? null;
-    updates.checkedAt = cached?.checkedAt ?? 0;
+    updates.release = null;
+    updates.checkedAt = 0;
     void (async () => {
       await pollStatus();
       if (signal.aborted) return;

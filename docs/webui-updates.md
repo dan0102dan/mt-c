@@ -2,10 +2,13 @@
 
 ## Flow
 
-WebUI loads `dan0102dan/mt-c/releases?per_page=100` once into a shared one-hour
-browser cache (ETag/backoff). Stable chooses the most recently published non-draft,
-non-prerelease entry; dev also includes prereleases. Channel switches stay local.
-Opening the version popover refreshes expired metadata; errors expose Retry.
+WebUI requests `dan0102dan/mt-c/releases?per_page=100` on page load, every
+version-popover opening, and each stable/dev channel switch. Stable chooses the
+most recently published non-draft, non-prerelease entry; dev also includes
+prereleases. Release lists are **not persisted or reused** via localStorage,
+ETags, or TTL. While checking, previous results are hidden; empty/error
+responses never display a false "Up to date". Simultaneous checks share one
+in-flight request, with GitHub rate-limit backoff. Errors expose Retry.
 Router tokens are never sent to GitHub. Actions-only artifacts are not updates.
 
 On Update, **the existing daemon** prepares the package on a background thread.

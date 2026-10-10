@@ -246,6 +246,7 @@
   "No compatible package": "В релизе нет совместимого пакета",
   "Package verification metadata missing": "Отсутствуют или некорректны данные для проверки пакета",
   "GitHub rate limit; try again later": "Достигнут лимит запросов GitHub; повторите проверку позже",
+  "No releases found for this channel": "Не найдено релизов для выбранного канала",
   "Cannot check GitHub releases": "Не удалось проверить релизы GitHub",
   "Update start was not confirmed; no automatic retry was made": "Запуск обновления не подтверждён; автоматический повтор не выполнялся",
   "Installed version could not be confirmed": "Не удалось подтвердить установленную версию",
