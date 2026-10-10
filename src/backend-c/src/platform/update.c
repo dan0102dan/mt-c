@@ -266,7 +266,9 @@ static bool launch_executable(int lock, const char *executable) {
 exec_failed: {
         /* Only async-signal-safe functions are called in the forked child. */
         int exec_error = errno ? errno : EIO;
-        (void)write(ack[1], &exec_error, sizeof(exec_error));
+        ssize_t sent;
+        do { sent = write(ack[1], &exec_error, sizeof(exec_error)); }
+        while (sent < 0 && errno == EINTR);
         _exit(127);
     }
     }
