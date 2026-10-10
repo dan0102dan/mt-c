@@ -118,12 +118,31 @@ credentials preservation, restart/reconnect, helper surviving maintainer scripts
 page reload during update, and recovery from package-manager failure. Unit tests do
 not establish device-specific service-manager behavior.
 
+## Development backend mock
+
+`src/frontend/dev/backend-mock.ts` registers the same three
+`/api/v1/system/update` routes from `dev/update-mock.ts`. The mock reports
+an intentionally old Entware/Keenetic build (`0.8.2.1`,
+`entware_aarch64-3.10_kn.ipk`) to make the update button testable against
+published releases; the browser still requests **real GitHub metadata**.
+Read endpoints return the production response shape instead of a 404.
+A simulated install accepts the development root login token, checks the
+exact JSON shape and higher target version, returns 202 and progresses
+through update stages based on elapsed time. A concurrent attempt returns
+409, while invalid/non-newer input returns 400 and a non-root token returns
+403. Completion updates only the **mock's in-memory** installed version.
+
+The mock does **not** download packages, verify a real release, execute a
+package manager, modify the filesystem or restart the router. It is only a
+frontend/development contract simulator, not proof of installation safety.
+
 ## Tests
 
 `make -C src/backend-c test` discovers the release/version tests and the subprocess
 regression test. `make -C src/backend-c sanitize` applies ASan/UBSan. Frontend tests
-in `tests/unit/updates.test.ts` run in the existing `npm run test:unit` suite and cover
+in `tests/unit/updates.test.ts` and `tests/unit/update-mock.test.ts` run in the existing `npm run test:unit` suite and cover
 version ordering, target/checksum/URL matching, response validation, caching, ETags,
-rate limits, blocked browser storage and omitted GitHub credentials. Existing
+rate limits, blocked browser storage and omitted GitHub credentials, plus mocked
+read/install request validation, status progression and concurrent-install locks. Existing
 `npm run check`, build and format checks still apply; no dependencies or workflows
 were replaced for this feature.
