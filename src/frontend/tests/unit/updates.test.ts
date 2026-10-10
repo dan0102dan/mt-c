@@ -2,15 +2,15 @@ import assert from "node:assert/strict";
 
 import {
   CACHE_TTL,
-  RELEASE_API,
-  RELEASE_WEB,
-  ReleaseClient,
   candidate,
   compareVersions,
   parseBuildInfo,
   parseRelease,
   parseStatus,
   pickRelease,
+  RELEASE_API,
+  RELEASE_WEB,
+  ReleaseClient,
   type BuildInfo,
   type Release,
 } from "../../src/modules/updates/releases.ts";
@@ -32,20 +32,24 @@ function release(tag = "0.8.3"): Release {
     published_at: "2026-10-10T12:00:00Z",
     draft: false,
     prerelease: false,
-    assets: [{
-      name,
-      browser_download_url: `${RELEASE_WEB}/download/${tag}/${name}`,
-      state: "uploaded",
-      size: 300000,
-      digest: `sha256:${"a".repeat(64)}`,
-    }],
+    assets: [
+      {
+        name,
+        browser_download_url: `${RELEASE_WEB}/download/${tag}/${name}`,
+        state: "uploaded",
+        size: 300000,
+        digest: `sha256:${"a".repeat(64)}`,
+      },
+    ],
   };
 }
 function storage() {
   const entries = new Map<string, string>();
   return {
     getItem: (key: string) => entries.get(key) ?? null,
-    setItem: (key: string, value: string) => { entries.set(key, value); },
+    setItem: (key: string, value: string) => {
+      entries.set(key, value);
+    },
   };
 }
 
@@ -61,14 +65,18 @@ Deno.test("numeric versions, package revisions and snapshots never imply a downg
   assert.equal(compareVersions("0.8.3-rev0", "0.8.2"), null);
 });
 
-Deno.test("stable excludes prereleases; preview selects latest published rather than array order", () => {
-  const newer = { ...release(), prerelease: true };
-  const old = { ...release("0.8.2.2"), published_at: "2026-10-01T12:00:00Z" };
-  assert.throws(() => pickRelease(newer, false));
-  assert.equal(pickRelease([old, newer], true)?.tag_name, "0.8.3");
-  assert.equal(pickRelease([{ ...newer, draft: true }, old], true)?.tag_name, "0.8.2.2");
-  assert.equal(pickRelease([], true), null);
-});
+Deno.test(
+  "stable excludes prereleases; preview selects latest published rather than array order",
+  () => {
+    const newer = { ...release(), prerelease: true };
+    const old = { ...release("0.8.2.2"), published_at: "2026-10-01T12:00:00Z" };
+    assert.equal(pickRelease([newer], false), null);
+    assert.equal(pickRelease([old, newer], false)?.tag_name, "0.8.2.2");
+    assert.equal(pickRelease([old, newer], true)?.tag_name, "0.8.3");
+    assert.equal(pickRelease([{ ...newer, draft: true }, old], true)?.tag_name, "0.8.2.2");
+    assert.equal(pickRelease([], true), null);
+  },
+);
 
 Deno.test("exact asset, checksum and official URL required", () => {
   assert.ok(candidate(release(), info).asset);
@@ -96,12 +104,22 @@ Deno.test("OpenWrt ABI/firmware and APK revision spelling are explicit", () => {
     item.assets[0].name = `mt-c_0.8.3-${revision}_${build.asset_suffix}`;
     item.assets[0].browser_download_url = `${RELEASE_WEB}/download/0.8.3/${item.assets[0].name}`;
     assert.ok(candidate(item, build).asset);
-    assert.equal(candidate(item, { ...build, asset_suffix: "openwrt-24.10.4_aarch64_cortex-a53.ipk" }).asset, null);
+    assert.equal(
+      candidate(item, { ...build, asset_suffix: "openwrt-24.10.4_aarch64_cortex-a53.ipk" }).asset,
+      null,
+    );
   }
 });
 
 Deno.test("installation capability is not inferred from finding a release", () => {
-  assert.equal(candidate(release(), { ...info, can_install: false, reason: "Sign in as root to install updates" }).reason, "Sign in as root to install updates");
+  assert.equal(
+    candidate(release(), {
+      ...info,
+      can_install: false,
+      reason: "Sign in as root to install updates",
+    }).reason,
+    "Sign in as root to install updates",
+  );
   assert.equal(candidate(release(), { ...info, installed_version: "0.9.0" }).newer, false);
   assert.equal(candidate(release(), { ...info, asset_suffix: "" }).asset, null);
 });
@@ -119,10 +137,10 @@ Deno.test("browser checks cache for one hour and never sends router credentials"
   let count = 0;
   const request: typeof fetch = async (url, options) => {
     count++;
-    assert.equal(String(url), `${RELEASE_API}/latest`);
+    assert.equal(String(url), `${RELEASE_API}?per_page=100`);
     assert.equal(options?.credentials, "omit");
     assert.equal(new Headers(options?.headers).has("Authorization"), false);
-    return new Response(JSON.stringify(release()), { headers: { ETag: '"first"' } });
+    return new Response(JSON.stringify([release()]), { headers: { ETag: '"first"' } });
   };
   const client = new ReleaseClient(cache, request);
   await client.latest(false, false);
@@ -134,9 +152,14 @@ Deno.test("browser checks cache for one hour and never sends router credentials"
 
 Deno.test("expired cache uses ETag and accepts 304 without reading a JSON body", async () => {
   const cache = storage();
-  cache.setItem("mt-c.releases.v1.false", JSON.stringify({
-    release: release(), checkedAt: Date.now() - CACHE_TTL - 1000, etag: '"old"',
-  }));
+  cache.setItem(
+    "mt-c.releases.v2",
+    JSON.stringify({
+      releases: [release()],
+      checkedAt: Date.now() - CACHE_TTL - 1000,
+      etag: '"old"',
+    }),
+  );
   const client = new ReleaseClient(cache, async (_url, options) => {
     assert.equal(new Headers(options?.headers).get("If-None-Match"), '"old"');
     return new Response(null, { status: 304 });
@@ -144,41 +167,69 @@ Deno.test("expired cache uses ETag and accepts 304 without reading a JSON body",
   assert.equal((await client.latest(false, false)).release?.tag_name, "0.8.3");
 });
 
-Deno.test("404 clears stale release and ETag; manual checks cannot bypass rate backoff", async () => {
-  const cache = storage();
-  cache.setItem("mt-c.releases.v1.false", JSON.stringify({ release: release(), checkedAt: 0, etag: '"old"' }));
-  const missing = new ReleaseClient(cache, async () => new Response(null, { status: 404 }));
-  const result = await missing.latest(false, true);
-  assert.equal(result.release, null);
-  assert.equal(result.etag, "");
-  let calls = 0;
-  const limited = new ReleaseClient(null, async () => {
-    calls++;
-    return new Response(null, { status: 403, headers: { "Retry-After": "60" } });
-  });
-  await assert.rejects(limited.latest(false, true), /rate limit/);
-  await assert.rejects(limited.latest(false, true), /rate limit/);
-  assert.equal(calls, 1);
-});
+Deno.test(
+  "404 clears stale release and ETag; manual checks cannot bypass rate backoff",
+  async () => {
+    const cache = storage();
+    cache.setItem(
+      "mt-c.releases.v2",
+      JSON.stringify({ releases: [release()], checkedAt: 0, etag: '"old"' }),
+    );
+    const missing = new ReleaseClient(cache, async () => new Response(null, { status: 404 }));
+    const result = await missing.latest(false, true);
+    assert.equal(result.release, null);
+    assert.equal(result.etag, "");
+    let calls = 0;
+    const limited = new ReleaseClient(null, async () => {
+      calls++;
+      return new Response(null, { status: 403, headers: { "Retry-After": "60" } });
+    });
+    await assert.rejects(limited.latest(false, true), /rate limit/);
+    await assert.rejects(limited.latest(false, true), /rate limit/);
+    assert.equal(calls, 1);
+  },
+);
 
-Deno.test("overlapping checks share a request; stable and preview caches remain separate", async () => {
-  const cache = storage();
-  let calls = 0;
-  const client = new ReleaseClient(cache, async (url) => {
-    calls++;
-    await Promise.resolve();
-    return new Response(JSON.stringify(String(url).includes("per_page") ? [release()] : release()));
-  });
-  await Promise.all([client.latest(false, false), client.latest(false, false)]);
-  assert.equal(calls, 1);
-  await client.latest(true, false);
-  assert.equal(calls, 2);
-});
+Deno.test(
+  "overlapping channels share a request and toggling selects from one cached list",
+  async () => {
+    const cache = storage();
+    let calls = 0;
+    const stable = release("0.8.2.2");
+    const preview = { ...release(), prerelease: true, published_at: "2026-10-11T12:00:00Z" };
+    const client = new ReleaseClient(cache, async () => {
+      calls++;
+      await Promise.resolve();
+      return new Response(JSON.stringify([stable, preview]));
+    });
+    const [stableResult, previewResult] = await Promise.all([
+      client.latest(false, false),
+      client.latest(true, false),
+    ]);
+    assert.equal(stableResult.release?.tag_name, "0.8.2.2");
+    assert.equal(previewResult.release?.tag_name, "0.8.3");
+    assert.equal(client.cached(false)?.release?.tag_name, "0.8.2.2");
+    assert.equal(client.cached(true)?.release?.tag_name, "0.8.3");
+    await client.latest(true, false);
+    await client.latest(false, false);
+    assert.equal(calls, 1);
+  },
+);
 
 Deno.test("blocked storage is optional and failed network does not become up-to-date", async () => {
-  const denied = { getItem: () => { throw new Error("blocked"); }, setItem: () => { throw new Error("blocked"); } };
-  const client = new ReleaseClient(denied, async () => new Response(JSON.stringify(release())));
+  const denied = {
+    getItem: () => {
+      throw new Error("blocked");
+    },
+    setItem: () => {
+      throw new Error("blocked");
+    },
+  };
+  const client = new ReleaseClient(denied, async () => new Response(JSON.stringify([release()])));
   assert.equal((await client.latest(false, false)).release?.tag_name, "0.8.3");
-  const offline = new ReleaseClient(null, async () => { throw new TypeError("offline"); });
+  assert.equal(client.cached(true)?.release?.tag_name, "0.8.3");
+  const offline = new ReleaseClient(null, async () => {
+    throw new TypeError("offline");
+  });
   await assert.rejects(offline.latest(false, false), /offline/);
 });

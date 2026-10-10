@@ -28,8 +28,17 @@ export type Release = {
   assets: Asset[];
 };
 export const STAGES = [
-  "idle", "queued", "checking", "downloading", "verifying", "backing_up",
-  "installing", "restarting", "succeeded", "failed", "interrupted",
+  "idle",
+  "queued",
+  "checking",
+  "downloading",
+  "verifying",
+  "backing_up",
+  "installing",
+  "restarting",
+  "succeeded",
+  "failed",
+  "interrupted",
 ] as const;
 export type UpdateStatus = {
   stage: (typeof STAGES)[number];
@@ -51,9 +60,14 @@ function text(value: unknown, limit = 16384): value is string {
   return typeof value === "string" && value.length <= limit;
 }
 export function parseBuildInfo(value: unknown): BuildInfo {
-  if (!record(value) || !text(value.installed_version, 128) ||
-    !integer(value.installed_revision) || !text(value.asset_suffix, 192) ||
-    typeof value.can_install !== "boolean" || !text(value.reason, 256)) {
+  if (
+    !record(value) ||
+    !text(value.installed_version, 128) ||
+    !integer(value.installed_revision) ||
+    !text(value.asset_suffix, 192) ||
+    typeof value.can_install !== "boolean" ||
+    !text(value.reason, 256)
+  ) {
     throw new Error("Invalid update response");
   }
   return {
@@ -87,7 +101,10 @@ export function isActive(status: UpdateStatus): boolean {
 }
 
 export function parseVersion(input: string, revision = 1) {
-  const match = /^(v?\d{1,9}\.\d{1,9}(?:\.\d{1,9}){0,2})(?:(-rev)(\d{1,9})|(~git\d{14}\.[a-fA-F0-9]{7,40}))?$/.exec(input);
+  const match =
+    /^(v?\d{1,9}\.\d{1,9}(?:\.\d{1,9}){0,2})(?:(-rev)(\d{1,9})|(~git\d{14}\.[a-fA-F0-9]{7,40}))?$/.exec(
+      input,
+    );
   if (!match || !integer(revision)) return null;
   const parts = match[1].replace(/^v/, "").split(".").map(Number);
   while (parts.length < 4) parts.push(0);
@@ -107,96 +124,176 @@ export function compareVersions(a: string, b: string, aRevision = 1, bRevision =
 }
 
 export function parseRelease(value: unknown): Release {
-  if (!record(value) || !integer(value.id) || !text(value.tag_name, 80) ||
-    typeof value.draft !== "boolean" || typeof value.prerelease !== "boolean" ||
-    !text(value.published_at, 20) || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/.test(value.published_at) ||
-    !Number.isFinite(Date.parse(value.published_at)) || !Array.isArray(value.assets)) {
+  if (
+    !record(value) ||
+    !integer(value.id) ||
+    !text(value.tag_name, 80) ||
+    typeof value.draft !== "boolean" ||
+    typeof value.prerelease !== "boolean" ||
+    !text(value.published_at, 20) ||
+    !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/.test(value.published_at) ||
+    !Number.isFinite(Date.parse(value.published_at)) ||
+    !Array.isArray(value.assets)
+  ) {
     throw new Error("Invalid release metadata");
   }
   const assets: Asset[] = [];
   for (const item of value.assets) {
-    if (!record(item) || !text(item.name, 256) || !text(item.browser_download_url, 1024) ||
-      !text(item.state, 32) || !integer(item.size)) continue;
-    assets.push({ name: item.name, browser_download_url: item.browser_download_url,
-      state: item.state, size: item.size, digest: text(item.digest, 128) ? item.digest : null });
+    if (
+      !record(item) ||
+      !text(item.name, 256) ||
+      !text(item.browser_download_url, 1024) ||
+      !text(item.state, 32) ||
+      !integer(item.size)
+    )
+      continue;
+    assets.push({
+      name: item.name,
+      browser_download_url: item.browser_download_url,
+      state: item.state,
+      size: item.size,
+      digest: text(item.digest, 128) ? item.digest : null,
+    });
   }
   return {
-    id: value.id, tag_name: value.tag_name,
+    id: value.id,
+    tag_name: value.tag_name,
     name: text(value.name, 256) ? value.name : value.tag_name,
     body: text(value.body, 65536) ? value.body : "",
-    published_at: value.published_at, draft: value.draft, prerelease: value.prerelease, assets,
+    published_at: value.published_at,
+    draft: value.draft,
+    prerelease: value.prerelease,
+    assets,
   };
 }
-export function pickRelease(value: unknown, preview: boolean): Release | null {
-  if (!preview) {
-    const release = parseRelease(value);
-    if (release.draft || release.prerelease) throw new Error("Invalid release metadata");
-    return release;
-  }
+function parseReleases(value: unknown): Release[] {
   if (!Array.isArray(value)) throw new Error("Invalid release metadata");
-  const published = value.filter((item) => record(item) && item.draft === false && item.published_at);
-  const releases = published.map(parseRelease);
-  return releases.reduce<Release | null>((latest, item) =>
-    !latest || item.published_at > latest.published_at ? item : latest, null);
+  return value
+    .filter((item) => record(item) && item.draft === false && item.published_at)
+    .map(parseRelease);
+}
+export function pickRelease(value: unknown, preview: boolean): Release | null {
+  return selectRelease(parseReleases(value), preview);
+}
+function selectRelease(releases: Release[], preview: boolean): Release | null {
+  return releases.reduce<Release | null>(
+    (latest, item) =>
+      (!preview && item.prerelease) || (latest && item.published_at <= latest.published_at)
+        ? latest
+        : item,
+    null,
+  );
 }
 export function candidate(release: Release | null, info: BuildInfo | null) {
   if (!info || !release) return { newer: false, asset: null, reason: "" };
   const target = parseVersion(release.tag_name);
-  const comparison = compareVersions(release.tag_name, info.installed_version, 1, info.installed_revision);
+  const comparison = compareVersions(
+    release.tag_name,
+    info.installed_version,
+    1,
+    info.installed_revision,
+  );
   if (!target || target.development || comparison === null) {
     return { newer: false, asset: null, reason: "Unknown installed or release version" };
   }
   if (comparison <= 0) return { newer: false, asset: null, reason: "" };
   if (!info.asset_suffix) return { newer: true, asset: null, reason: "Unsupported build target" };
   const names = [`mt-c_${target.base}-${target.revision}_${info.asset_suffix}`];
-  if (info.asset_suffix.endsWith(".apk")) names.push(`mt-c_${target.base}-r${target.revision}_${info.asset_suffix}`);
+  if (info.asset_suffix.endsWith(".apk"))
+    names.push(`mt-c_${target.base}-r${target.revision}_${info.asset_suffix}`);
   const matches = release.assets.filter((item) => names.includes(item.name));
-  if (matches.length !== 1) return { newer: true, asset: null,
-    reason: matches.length ? "Ambiguous package assets" : "No compatible package" };
+  if (matches.length !== 1)
+    return {
+      newer: true,
+      asset: null,
+      reason: matches.length ? "Ambiguous package assets" : "No compatible package",
+    };
   const asset = matches[0];
-  if (asset.state !== "uploaded" || asset.size > 64 * 1024 * 1024 ||
+  if (
+    asset.state !== "uploaded" ||
+    asset.size > 64 * 1024 * 1024 ||
     !/^sha256:[a-f0-9]{64}$/.test(asset.digest ?? "") ||
-    asset.browser_download_url !== `${RELEASE_WEB}/download/${release.tag_name}/${asset.name}`) {
+    asset.browser_download_url !== `${RELEASE_WEB}/download/${release.tag_name}/${asset.name}`
+  ) {
     return { newer: true, asset: null, reason: "Package verification metadata missing" };
   }
   return { newer: true, asset, reason: info.can_install ? "" : info.reason };
 }
 
 export type ReleaseCache = { release: Release | null; checkedAt: number; etag: string };
+type ReleaseListCache = { releases: Release[]; checkedAt: number; etag: string };
 type StorageLike = Pick<Storage, "getItem" | "setItem">;
+const RELEASE_CACHE_KEY = "mt-c.releases.v2";
 
-/** Per-channel cache and in-flight de-duplication. A router JWT is NEVER sent
- * to GitHub. Storage may be disabled (private browsing/quota), without failure. */
+/** One shared list for both channels. A router JWT is NEVER sent to GitHub.
+ * Memory keeps channel switching local even when browser storage is blocked. */
 export class ReleaseClient {
-  private inFlight = new Map<boolean, Promise<ReleaseCache>>();
-  private blockedUntil = new Map<boolean, number>();
-  constructor(private storage: StorageLike | null, private request: typeof fetch = fetch) {}
+  private inFlight: Promise<ReleaseListCache> | null = null;
+  private blockedUntil = 0;
+  private snapshot: ReleaseListCache | null = null;
+  constructor(
+    private storage: StorageLike | null,
+    private request: typeof fetch = (...args) => fetch(...args),
+  ) {}
+
+  private readCache(): ReleaseListCache | null {
+    if (this.snapshot) return this.snapshot;
+    try {
+      const value: unknown = JSON.parse(this.storage?.getItem(RELEASE_CACHE_KEY) ?? "null");
+      if (
+        !record(value) ||
+        typeof value.checkedAt !== "number" ||
+        !Number.isFinite(value.checkedAt) ||
+        !text(value.etag, 256)
+      )
+        return null;
+      this.snapshot = {
+        checkedAt: value.checkedAt,
+        etag: value.etag,
+        releases: parseReleases(value.releases),
+      };
+      return this.snapshot;
+    } catch {
+      return null;
+    }
+  }
 
   cached(preview: boolean): ReleaseCache | null {
-    try {
-      const value: unknown = JSON.parse(this.storage?.getItem(`mt-c.releases.v1.${preview}`) ?? "null");
-      if (!record(value) || typeof value.checkedAt !== "number" || !Number.isFinite(value.checkedAt) ||
-        !text(value.etag, 256)) return null;
-      return { checkedAt: value.checkedAt, etag: value.etag,
-        release: value.release === null ? null : parseRelease(value.release) };
-    } catch { return null; }
+    const cached = this.readCache();
+    return cached
+      ? {
+          release: selectRelease(cached.releases, preview),
+          checkedAt: cached.checkedAt,
+          etag: cached.etag,
+        }
+      : null;
   }
 
-  latest(preview: boolean, force: boolean, signal?: AbortSignal): Promise<ReleaseCache> {
-    const pending = this.inFlight.get(preview);
-    if (pending) return pending;
-    const cached = this.cached(preview);
+  async latest(preview: boolean, force: boolean, signal?: AbortSignal): Promise<ReleaseCache> {
+    const cached = this.readCache();
     const age = cached ? Date.now() - cached.checkedAt : Infinity;
-    if (!force && cached && age >= 0 && age < CACHE_TTL) return Promise.resolve(cached);
-    if (Date.now() < (this.blockedUntil.get(preview) ?? 0)) {
-      return Promise.reject(new Error("GitHub rate limit; try again later"));
+    let result: ReleaseListCache;
+    if (this.inFlight) result = await this.inFlight;
+    else if (!force && cached && age >= 0 && age < CACHE_TTL) result = cached;
+    else {
+      if (Date.now() < this.blockedUntil) throw new Error("GitHub rate limit; try again later");
+      const operation = this.load(cached, signal).finally(() => {
+        this.inFlight = null;
+      });
+      this.inFlight = operation;
+      result = await operation;
     }
-    const operation = this.load(preview, cached, signal).finally(() => this.inFlight.delete(preview));
-    this.inFlight.set(preview, operation);
-    return operation;
+    return {
+      release: selectRelease(result.releases, preview),
+      checkedAt: result.checkedAt,
+      etag: result.etag,
+    };
   }
 
-  private async load(preview: boolean, cached: ReleaseCache | null, signal?: AbortSignal): Promise<ReleaseCache> {
+  private async load(
+    cached: ReleaseListCache | null,
+    signal?: AbortSignal,
+  ): Promise<ReleaseListCache> {
     const controller = new AbortController();
     const abort = () => controller.abort();
     signal?.addEventListener("abort", abort, { once: true });
@@ -205,27 +302,42 @@ export class ReleaseClient {
     try {
       const headers: Record<string, string> = { Accept: "application/vnd.github+json" };
       if (cached?.etag) headers["If-None-Match"] = cached.etag;
-      const response = await this.request(`${RELEASE_API}${preview ? "?per_page=20" : "/latest"}`, {
-        credentials: "omit", headers, signal: controller.signal, cache: "no-cache",
+      const response = await this.request(`${RELEASE_API}?per_page=100`, {
+        credentials: "omit",
+        headers,
+        signal: controller.signal,
+        cache: "no-cache",
       });
       if (response.status === 403 || response.status === 429) {
         const reset = Number(response.headers.get("X-RateLimit-Reset")) * 1000;
         const retry = Number(response.headers.get("Retry-After")) * 1000;
-        this.blockedUntil.set(preview, Math.max(Date.now() + 60000,
-          Number.isFinite(reset) ? reset : 0, Date.now() + (Number.isFinite(retry) ? retry : 0)));
+        this.blockedUntil = Math.max(
+          Date.now() + 60000,
+          Number.isFinite(reset) ? reset : 0,
+          Date.now() + (Number.isFinite(retry) ? retry : 0),
+        );
         throw new Error("GitHub rate limit; try again later");
       }
-      let release: Release | null;
-      if (response.status === 304 && cached) release = cached.release;
-      else if (response.status === 404) release = null;
+      let releases: Release[];
+      if (response.status === 304 && cached) releases = cached.releases;
+      else if (response.status === 404) releases = [];
       else {
         if (!response.ok) throw new Error("Cannot check GitHub releases");
         const raw = await response.text();
         if (raw.length > 4 * 1024 * 1024) throw new Error("Invalid release metadata");
-        release = pickRelease(JSON.parse(raw) as unknown, preview);
+        releases = parseReleases(JSON.parse(raw));
       }
-      const result = { release, checkedAt: Date.now(), etag: response.status === 404 ? "" : response.headers.get("ETag") ?? cached?.etag ?? "" };
-      try { this.storage?.setItem(`mt-c.releases.v1.${preview}`, JSON.stringify(result)); } catch { /* optional cache */ }
+      const result = {
+        releases,
+        checkedAt: Date.now(),
+        etag: response.status === 404 ? "" : (response.headers.get("ETag") ?? cached?.etag ?? ""),
+      };
+      this.snapshot = result;
+      try {
+        this.storage?.setItem(RELEASE_CACHE_KEY, JSON.stringify(result));
+      } catch {
+        /* optional cache */
+      }
       return result;
     } finally {
       clearTimeout(timeout);

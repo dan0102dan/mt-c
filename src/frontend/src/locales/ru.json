@@ -1,4 +1,12 @@
 {
+  "Up to date": "Установлена актуальная версия",
+  "Release notes": "Описание релиза",
+  "Updating…": "Обновление…",
+  "Refresh the page in your browser.": "Обновите страницу в браузере.",
+  "Press ⌘R to reload the page.": "Нажмите ⌘R, чтобы перезагрузить страницу.",
+  "Press F5 to reload the page.": "Нажмите F5, чтобы перезагрузить страницу.",
+  "New version available": "Доступна новая версия",
+  "Update": "Обновить",
   "Group priority": "Приоритет группы",
   "Subscription priority": "Приоритет подписки",
   "Decrease priority": "Уменьшить приоритет",

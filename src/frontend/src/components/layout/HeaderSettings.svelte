@@ -8,10 +8,6 @@
 
   import { Info, Locale, LogOut } from "../ui/icons";
 
-  const version = import.meta.env.VITE_PKG_VERSION || "0.0.0";
-  const isDev =
-    import.meta.env.VITE_PKG_VERSION_IS_DEV?.toLowerCase() === "true" || version === "0.0.0";
-
   let infoIsOpen = $state(false);
 
   const rotateLocale = () => {
@@ -27,15 +23,6 @@
 </script>
 
 <div class="container">
-  <div class="version">
-    <Tooltip value={`${t("build")}: ${version}`}>
-      <span class="version-text">{version}</span>
-    </Tooltip>
-    {#if isDev}
-      <div class="under-construction">dev</div>
-    {/if}
-  </div>
-
   <UpdateControl />
 
   <div class="info">
@@ -74,18 +61,6 @@
 <InfoDialog bind:open={infoIsOpen} />
 
 <style>
-  .under-construction {
-    background: repeating-linear-gradient(45deg, #ffcc00, #ffcc00 10px, #ff6600 10px, #ff6600 20px);
-    color: black;
-    font-weight: bold;
-    padding: 4px 4px;
-    border-radius: 4px;
-    box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
-    flex: 0 0 auto;
-    margin-left: 0.5rem;
-    white-space: nowrap;
-  }
-
   .container {
     display: flex;
     flex-direction: row;
@@ -93,30 +68,6 @@
     gap: 0.8rem;
     min-width: 0;
     flex: 1;
-  }
-
-  .version {
-    display: grid;
-    grid-template-columns: minmax(0, 1fr) auto;
-    align-items: center;
-    flex: 1;
-    min-width: 0;
-  }
-
-  .version :global(> *:first-child) {
-    min-width: 0;
-    display: block;
-    overflow: hidden;
-  }
-
-  .version-text {
-    display: block;
-    font-size: smaller;
-    color: var(--text-2);
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    width: 100%;
   }
 
   .locale,

@@ -3442,11 +3442,12 @@ these routes. The C router retains its existing API/configuration behaviour;
 the new install operation explicitly interrupts the daemon during a package
 upgrade. No config-version bump or automatic update policy is introduced.
 
-Routine discovery lives in the Svelte browser, not the epoll daemon: stable
-uses GitHub `/repos/dan0102dan/mt-c/releases/latest`; optional preview uses
-`/releases?per_page=20` and the most recently published non-draft entry.
-Browser requests are cached by channel for an hour (ETag/rate-limit handling)
-and send no router JWT to GitHub. Closing the browser does not prevent a
+Routine discovery lives in the Svelte browser, not the epoll daemon. The browser
+loads `/repos/dan0102dan/mt-c/releases?per_page=100` once and selects the most
+recently published non-draft entry locally, excluding prereleases for stable.
+Switching the preview toggle uses the same list without router or GitHub requests.
+The shared list is cached for an hour (ETag/rate-limit handling).
+Browser requests send no router JWT to GitHub. Closing the browser does not prevent a
 previously started installation from finishing. The daemon does not poll GitHub
 or trust browser-supplied asset URLs, paths, checksums or commands.
 

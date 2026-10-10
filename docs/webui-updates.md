@@ -3,25 +3,29 @@
 ## Responsibility and user flow
 
 The browser checks `dan0102dan/mt-c` GitHub Releases directly. No release-check
-scheduler or GitHub cache is added to the routing daemon. A one-hour, per-channel
-browser cache supports conditional ETag requests, overlapping request coalescing,
-manual checks and rate-limit backoff. Router credentials are never sent to GitHub.
-Settings contains the update section; the header shows an update/progress button.
+scheduler or GitHub cache is added to the routing daemon. A shared one-hour
+browser cache supports conditional ETag requests, overlapping request coalescing
+and rate-limit backoff. Router credentials are never sent to GitHub.
+Clicking the header version opens a compact popup with the update button,
+release notes and a preview-channel toggle.
 
-Stable uses `/releases/latest` and rejects draft/prerelease metadata. Opt-in preview
-selects the most recently published non-draft release from `/releases?per_page=20`.
+The browser loads one shared list from `/releases?per_page=100`. Stable selects
+the most recently published non-draft, non-prerelease entry; opt-in preview also
+includes prereleases. Switching channels selects from that list locally and
+does not query GitHub or the router again.
 This bounded window is not a scan of every historical release. Unknown version
 formats fail closed; numeric two-to-four-component tags, `-revN` and the project's
 `~git<UTC timestamp>.<commit>` installed development versions are supported. A
 preview flag is independent of the tag format. Versions and package revisions are
 compared numerically, never lexicographically. Downgrades are not offered or accepted.
 
-Installation requires explicit confirmation. The dialog warns about unsaved browser
-edits and service interruption. Closing the dialog or tab does not cancel a router
-job. After restart, the browser reconnects without repeated network-error toasts;
+Installation starts only when the user clicks Update. Closing the popup or tab
+does not cancel a router job. After restart, the browser reconnects without repeated network-error toasts;
 it never automatically repeats an uncertain install POST. Success requires the
 new daemon's version and package revision. Reload is explicit to avoid discarding
-browser drafts. The normal application authorisation behavior is unchanged.
+browser drafts. The reload hint is shown only for an installation observed on the
+current page and disappears after reload. The normal application authorisation
+behavior is unchanged.
 
 ## Additive API
 
