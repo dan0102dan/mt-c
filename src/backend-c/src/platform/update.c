@@ -263,11 +263,12 @@ static bool launch_executable(int lock, const char *executable) {
         char *const env[] = {"PATH=/opt/sbin:/opt/bin:/usr/sbin:/usr/bin:/sbin:/bin", "LC_ALL=C", "HOME=/root", NULL};
         execve(executable, args, env);
 
-exec_failed:
+exec_failed: {
         /* Only async-signal-safe functions are called in the forked child. */
         int exec_error = errno ? errno : EIO;
         (void)write(ack[1], &exec_error, sizeof(exec_error));
         _exit(127);
+    }
     }
 
     close(ack[1]);
