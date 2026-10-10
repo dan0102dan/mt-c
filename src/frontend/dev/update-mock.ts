@@ -122,8 +122,9 @@ export function registerMockUpdateRoutes(
       parsed.development ||
       newer === null ||
       newer <= 0 ||
+      typeof body.release_id !== "number" ||
       !Number.isSafeInteger(body.release_id) ||
-      (body.release_id as number) < 1 ||
+      body.release_id < 1 ||
       typeof body.preview !== "boolean"
     ) {
       return c.json({ error: "Invalid or non-newer release" }, 400);
