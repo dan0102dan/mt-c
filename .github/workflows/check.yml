@@ -8,6 +8,14 @@ on:
       - '!.github/workflows/check.yml'
 
 jobs:
+  swagger:
+    name: Validate Swagger contract
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Check YAML syntax, duplicate keys and update routes
+        run: ruby tools/tests/check_swagger.rb
+
   test_frontend:
     name: Frontend testing
     runs-on: ubuntu-latest
