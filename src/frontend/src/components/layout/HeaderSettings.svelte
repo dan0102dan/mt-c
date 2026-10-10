@@ -1,6 +1,7 @@
 <script lang="ts">
   import { authState, token } from "../../data/auth.svelte";
   import { locale, locales, t } from "../../data/locale.svelte";
+  import UpdateControl from "../../modules/updates/UpdateControl.svelte";
   import InfoDialog from "../InfoDialog.svelte";
   import Button from "../ui/Button.svelte";
   import Tooltip from "../ui/Tooltip.svelte";
@@ -34,6 +35,8 @@
       <div class="under-construction">dev</div>
     {/if}
   </div>
+
+  <UpdateControl />
 
   <div class="info">
     <Tooltip value={t("About this app")}>
