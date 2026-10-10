@@ -3570,3 +3570,58 @@ downloads, runs a package manager or restarts a device. Regression tests
 cover matching/version rules, process boundaries and mock request/status
 contracts. This does not constitute a real Entware/Keenetic/OpenWrt upgrade
 test. See `docs/webui-updates.md` and `compatibility-contract.md` §§2, 10.
+
+
+### D-74 amendment — One daemon and system package-manager handoff (2026-10-10)
+
+At the user's request, simplify updating to one installed `magitrickled` binary.
+The separate `mt-c-updater` executable and its worker mode are removed; neither a
+second daemon instance nor a re-exec mode is introduced. This supersedes D-74's
+persistent-job, private-log, configuration-backup and helper-launch behavior.
+
+The API accepts preparation with HTTP 202 and a volatile job ID. A joinable
+thread in the daemon re-fetches the same 100-release list as WebUI, validates the
+release/channel/version/platform and streams the package with SHA-256 and size
+checks. It never waits on GitHub in the DNS/API loop. Daemon teardown cancels and
+joins preparation only, not an installation already handed off to the OS.
+
+After verification, a fixed `/bin/sh -c` command invokes `opkg install` or
+`apk add --allow-untrusted` with separate positional arguments. `setsid` and
+process detachment allow package hooks to stop/restart the daemon normally;
+Entware `rc.func` and OpenWrt `procd` do not need new PID or process-name handling.
+The shell only pipes package-manager output to the system `logger` with tag
+`mt-c-install` and cleans the temporary download when the command finishes.
+There is no second installed program, script file, supervisor daemon, retry loop,
+custom installation journal or rollback. System log retention is the device's
+policy, not a promise by mt-c. Operators diagnose failed installs through the
+normal system/package-manager tools or CLI.
+
+A root-owned runtime flock at `<MT_SOCK_PATH>.update-lock` serializes preparation
+and installation across daemon restarts. Only the handoff shell inherits it:
+package-manager/logger children close that descriptor so a daemon started by a
+package hook cannot retain the lock. The lock inode is never unlinked while it
+might have holders. This lock is not saved job history.
+
+The existing three routes and authorization rules remain. `GET /system/update`
+still reports the running build. `GET /system/update/status` now returns RAM-only
+`queued/checking/downloading/verifying/failed` preparation data, or `installing`
+while the system command owns the lock. A restarted daemon can report installing
+without a job ID/target; after the command exits it returns idle, not succeeded.
+No `status.json`, `request.json`, `install.log`, before-update backups or terminal
+installation result is created. Existing legacy files are ignored, not used as
+proof of an update. HTTP 500 covers preparation setup/thread failure, not a
+promise to observe a future package-manager failure synchronously.
+
+WebUI retains its shared release cache and current visual design. It remembers
+an initiated target only for the current page, reconnects to the existing API,
+and confirms the running version/revision rather than waiting for a persisted
+`succeeded` record. Missing or mismatched confirmation is never success. Retry
+reads are bounded after connection loss/confirmation failure; the install POST
+is never automatically repeated. Reloading the browser does not recreate job
+history. Config remains preserved through the normal save and package conffiles.
+
+Regression coverage: genuine detached subprocess lifetime and flock ownership,
+output forwarding and temp cleanup using harmless stand-ins; release/checksum
+rules; single-binary IPK/APK inventories; browser reconnection to idle without a
+saved result and rejection of an unconfirmed install. Real on-device testing of
+Entware/Keenetic and both OpenWrt package managers remains a rollout prerequisite.

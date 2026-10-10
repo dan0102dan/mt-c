@@ -74,24 +74,23 @@ Routes (all under `/api/v1`):
 | POST /system/config/save | 200 `{}`? (writes config; error → 500) |
 | POST /system/hooks/netfilterd | body `{"type","table"}`; triggers iptables re-commit; 200 |
 | **GET /system/update (D-74)** | **200** `{"installed_version":string,"installed_revision":positive_integer,"asset_suffix":string,"can_install":bool,"reason":string}`; purely local, no GitHub request; capability failures are described in `reason`, allocation failure → **500** |
-| **GET /system/update/status (D-74)** | **200** `{"stage":"idle"}` when no job, otherwise persisted job JSON; stages `queued/checking/downloading/verifying/backing_up/installing/restarting/succeeded/failed/interrupted`; invalid/unreadable persisted status or allocation failure → **500** |
-| **POST /system/update/install (D-74)** | JSON `{"tag":string,"release_id":positive_safe_integer,"preview":bool}` (exact fields); accepted → **202** `{"job_id":"<32 hex>","stage":"queued"}`; invalid/non-newer/cross-site/wrong content type → **400**, missing verified root JWT/unavailable installer → **403**, active update → **409**, preparation failure → **500** |
+| **GET /system/update/status (D-74 amended)** | **200** volatile preparation/job JSON or `{"stage":"idle"}`; `installing` can omit job ID after daemon restart while the runtime lock is held; no saved terminal result. Lock inspection/allocation failure → **500** |
+| **POST /system/update/install (D-74 amended)** | JSON `{"tag":string,"release_id":positive_safe_integer,"preview":bool}`; **202** `{"job_id":"<32 hex>","stage":"queued","target_version":string,"target_revision":integer}` accepts in-daemon preparation, not a completed install. Invalid/non-newer/cross-site → **400**, missing verified root JWT/unavailable tools → **403**, active runtime lock → **409**, config/setup/thread failure → **500** |
 
-D-74 routes are an **intentional additive C-only contract**, absent from the
-historical Go parity surface. Both new GET responses have
-`Cache-Control: no-store`. Non-idle status includes `job_id`; optional
-persisted fields are `tag`, `previous_version`, `target_version`,
-`target_revision`, `package_size`, `backup_path`, `error`,
-`started_at`, `finished_at` and `package_installed`.
-The `interrupted` state is synthesized if an active job's lock is no longer
-held. POST requires a verified **root** JWT even when normal HTTP auth is
-disabled and when called through the Unix socket. Existing TCP auth
-middleware may first return 401. The 202 response does not mean installation
-succeeded; the client must poll the status route and, after restart, confirm
-the reported installed version/revision. Errors retain the usual JSON
-`{"error":"..."}` body. Verify via unit/HTTP contract tests plus
-on-router MAN tests; the older Go differential harness has no equivalent
-route (see D-74 and `docs/webui-updates.md`).
+D-74 routes are intentional C-only additions. Both reads use `Cache-Control:
+no-store`. Preparation status in memory can contain `job_id`, `tag`,
+`target_version`, `target_revision` and a transient `error`; stages are
+`queued/checking/downloading/verifying/failed`. `installing` represents a live
+system-package command, possibly without job identity after a restart. `idle`
+is not a success record. WebUI confirms the actual running version via the
+build-info route. No install result or error file survives the daemon.
+
+POST requires a verified root JWT on both transports even when ordinary HTTP
+auth is disabled; existing middleware may first return 401. Errors retain
+`{"error":"..."}`. The single daemon prepares the verified local package and
+detaches a fixed shell invocation of system `opkg`/`apk`, which runs normal
+package hooks. Output goes to system `logger`; no mt-c-owned installer log or
+rollback is promised. See the D-74 amendment and `docs/webui-updates.md`.
 
 Details to freeze exactly (from code):
 
@@ -314,13 +313,14 @@ Source: root Makefile, `files/**`, CI workflow.
 - Upgrade path: package replace + service restart; config preserved via
   conffiles; C binary must load the Go-era config byte-for-byte and (on
   save) keep the documented shape.
-- D-74 adds a separately packaged `mt-c-updater` helper: the WebUI begins
-  a root-authorized, on-demand `opkg`/`apk` installation of an exact GitHub
-  release asset after version/platform and SHA-256 validation. Persisted
-  `<AppStateDir>/update` status, bounded logs and pre-install config/auth
-  backups survive the daemon restart. The upgrade is non-transactional;
-  automatic binary rollback is **not** promised. Device testing is still
-  required; see `docs/webui-updates.md`.
+- D-74 (amended) ships only `magitrickled`. Package preparation runs in a daemon
+  thread; a detached system package manager installs the verified local package
+  and invokes ordinary service hooks. The runtime flock prevents overlapping
+  jobs. No extra updater executable, persisted status/error log, special
+  before-update backups or automatic binary rollback is part of the contract.
+  System output/CLI is used for installation diagnostics; device testing remains
+  required. See `docs/webui-updates.md`.
+
 - Deps (must stay valid for the C build): Entware `libc, iptables`
   (+socat `_kn`); OpenWrt `libc, iptables-nft, iptables-mod-conntrack-extra,
   kmod-ipt-nat, kmod-ipt-ipset, ip6tables-nft`.

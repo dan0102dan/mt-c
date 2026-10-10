@@ -1,5 +1,5 @@
-/* Browser-discovered GitHub releases; the independent installer revalidates
- * everything. No release polling or network I/O runs in the daemon loop. */
+/* Browser-discovered GitHub releases; preparation runs on demand in a daemon
+ * thread. No periodic GitHub polling or network waits in the API/DNS loop. */
 #ifndef MAGITRICKLE_UPDATE_H
 #define MAGITRICKLE_UPDATE_H
 
@@ -49,6 +49,7 @@ const char *mt_update_resolve(const char *json, size_t len, bool preview,
 struct mt_httpd;
 struct mt_system_ctx;
 void mt_update_register_routes(struct mt_httpd *http, struct mt_system_ctx *ctx);
-/* Only called by the separately packaged mt-c-updater, with inherited lock fd 3. */
-int mt_update_worker(void);
+/* Cancel/join package preparation before daemon teardown. Does not wait for
+ * or terminate an already detached opkg/apk installation. */
+void mt_update_shutdown(void);
 #endif

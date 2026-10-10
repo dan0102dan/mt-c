@@ -83,7 +83,12 @@ export function parseStatus(value: unknown): UpdateStatus {
     throw new Error("Invalid update response");
   }
   const stage = STAGES.find((item) => item === value.stage)!;
-  if (stage !== "idle" && (!text(value.job_id, 32) || !/^[a-f0-9]{32}$/.test(value.job_id))) {
+  const hasJob = text(value.job_id, 32) && /^[a-f0-9]{32}$/.test(value.job_id);
+  // After restart, the runtime package lock has no persisted job attached.
+  if (
+    (stage !== "idle" && stage !== "installing" && !hasJob) ||
+    (value.job_id !== undefined && !hasJob)
+  ) {
     throw new Error("Invalid update response");
   }
   return {

@@ -154,7 +154,7 @@ test("a failed post-install version read retries only GET and keeps installation
   await expect(popup.getByRole("button", { name: "Updating…", exact: true })).toBeDisabled();
   state.installed = "2.0.0";
   state.failedInfoReads = 1;
-  state.status = job("succeeded");
+  state.status = { stage: "idle" }; // New daemon: no saved result.
   await expect(
     popup.getByText("Installed version could not be confirmed", { exact: true }),
   ).toBeVisible();
@@ -219,4 +219,41 @@ test("update popup remains inside the mobile viewport", async ({ page }) => {
   expect(bounds).not.toBeNull();
   expect(bounds!.x).toBeGreaterThanOrEqual(0);
   expect(bounds!.x + bounds!.width).toBeLessThanOrEqual(390);
+});
+
+test("a restarted daemon needs no saved job record to confirm its running version", async ({
+  page,
+}) => {
+  const state = await setup(page);
+  await page.goto("/");
+  const popup = await openPopup(page);
+  await popup.getByRole("button", { name: "Update", exact: true }).click();
+  await expect(popup.getByRole("button", { name: "Updating…", exact: true })).toBeDisabled();
+  state.status = { stage: "installing" }; // Runtime lock, no persisted job ID.
+  state.installed = "2.0.0";
+  await expect(popup.getByRole("button", { name: "Updating…", exact: true })).toBeDisabled();
+  state.status = { stage: "idle" };
+  await expect(popup.getByRole("button", { name: "Up to date", exact: true })).toBeDisabled({
+    timeout: 10000,
+  });
+  expect(state.installs).toBe(1);
+});
+
+test("idle with the old version never counts as an installed update", async ({ page }) => {
+  const state = await setup(page);
+  await page.goto("/");
+  const popup = await openPopup(page);
+  await popup.getByRole("button", { name: "Update", exact: true }).click();
+  await expect(popup.getByRole("button", { name: "Updating…", exact: true })).toBeDisabled();
+  state.status = { stage: "idle" };
+  await expect(popup.getByText("Installed version could not be confirmed")).toBeVisible();
+  await page.evaluate(() => {
+    const later = Date.now() + 120001;
+    Date.now = () => later;
+  });
+  await expect(
+    popup.getByText("Update was not confirmed. Check system logs or CLI.", { exact: true }),
+  ).toBeVisible({ timeout: 10000 });
+  expect(state.installs).toBe(1);
+  await expect(popup.getByRole("button", { name: "Up to date", exact: true })).toHaveCount(0);
 });

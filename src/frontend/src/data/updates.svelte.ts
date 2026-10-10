@@ -3,6 +3,7 @@ import {
   isActive,
   parseBuildInfo,
   parseStatus,
+  parseVersion,
   ReleaseClient,
   type BuildInfo,
   type Release,
@@ -30,8 +31,10 @@ let generation = 0;
 let mounts = 0;
 let client: ReleaseClient | null = null;
 let reconnectAttempts = 0;
-let awaitingTag: string | null = null;
-let observedJob: string | null = null;
+// Only the current page remembers what it requested; the router stores no job history.
+let expectedUpdate: UpdateStatus | null = null;
+let recoveryStartedAt = 0;
+const RECOVERY_TIMEOUT = 120000;
 let pendingConfirmation: UpdateStatus | null = null;
 let polling: AbortSignal | null = null;
 let infoRequest: { signal: AbortSignal; promise: Promise<void> } | null = null;
@@ -116,7 +119,10 @@ async function confirmInstallation(signal: AbortSignal) {
   ) {
     throw new Error("Installed version could not be confirmed");
   }
+  updates.status = { ...expected, stage: "succeeded" };
   pendingConfirmation = null;
+  expectedUpdate = null;
+  recoveryStartedAt = 0;
   updates.reconnecting = false;
   reconnectAttempts = 0;
   updates.error = "";
@@ -142,23 +148,28 @@ async function pollStatus() {
       }),
     );
     if (signal.aborted) return;
-    if (awaitingTag && status.tag !== awaitingTag) {
-      updates.error = "Update start was not confirmed; no automatic retry was made";
-      updates.reconnecting = false;
-      awaitingTag = null;
-      return;
-    }
     const wasActive = isActive(updates.status);
-    if (awaitingTag) updates.error = "";
-    awaitingTag = null;
-    if (isActive(status)) observedJob = status.job_id ?? null;
+    // A page opened during preparation can observe the target in RAM. After
+    // the daemon restarts, an active system manager has no saved job identity.
+    if (!expectedUpdate && isActive(status) && status.target_version && status.target_revision) {
+      expectedUpdate = status;
+    }
     updates.status = status;
     updates.reconnecting = false;
     reconnectAttempts = 0;
-    if (status.stage === "succeeded" && observedJob === status.job_id) {
-      pendingConfirmation = status;
+    recoveryStartedAt = 0;
+    if (expectedUpdate && (status.stage === "idle" || status.stage === "succeeded")) {
+      pendingConfirmation = expectedUpdate;
+      recoveryStartedAt = Date.now();
       updates.reconnecting = true;
       await confirmInstallation(signal);
+    } else if (status.stage === "failed" || status.stage === "interrupted") {
+      expectedUpdate = null;
+      if (wasActive) {
+        updates.info = null;
+        await refreshBuildInfo(signal);
+        if (!signal.aborted) void checkUpdates();
+      }
     } else if (wasActive && !isActive(status)) {
       // A page reopened during an update must regain a usable candidate even
       // when the worker fails. The package may have changed before failure.
@@ -174,9 +185,19 @@ async function pollStatus() {
         updates.submitting ||
         updates.reconnecting
       ) {
-        updates.reconnecting = true;
-        reconnectAttempts++;
-        if (pendingConfirmation) updates.error = "Installed version could not be confirmed";
+        recoveryStartedAt ||= Date.now();
+        if (Date.now() - recoveryStartedAt >= RECOVERY_TIMEOUT) {
+          // Stop waiting, not the package manager. Never infer success or retry POST.
+          updates.error = "Update was not confirmed. Check system logs or CLI.";
+          updates.status = { stage: "idle" };
+          updates.reconnecting = false;
+          expectedUpdate = null;
+          pendingConfirmation = null;
+        } else {
+          updates.reconnecting = true;
+          reconnectAttempts++;
+          if (pendingConfirmation) updates.error = "Installed version could not be confirmed";
+        }
       } else {
         updates.error = error instanceof Error ? error.message : "Invalid update response";
       }
@@ -214,7 +235,14 @@ export async function installUpdate() {
   const release = updates.release;
   updates.submitting = true;
   updates.installedThisSession = false;
-  awaitingTag = release.tag_name;
+  const target = parseVersion(release.tag_name)!;
+  expectedUpdate = {
+    stage: "queued",
+    tag: release.tag_name,
+    target_version: target.base,
+    target_revision: target.revision,
+  };
+  recoveryStartedAt = 0;
   updates.error = "";
   try {
     const result = parseStatus(
@@ -233,7 +261,7 @@ export async function installUpdate() {
     );
     if (signal.aborted) return;
     updates.status = result;
-    observedJob = result.job_id ?? null;
+    if (expectedUpdate) expectedUpdate.job_id = result.job_id;
   } catch {
     if (!signal.aborted) {
       // The response can be lost after acceptance. Never blindly retry the POST.
@@ -263,8 +291,8 @@ export function mountUpdates() {
     updates.submitting = false;
     updates.reconnecting = false;
     updates.installedThisSession = false;
-    awaitingTag = null;
-    observedJob = null;
+    expectedUpdate = null;
+    recoveryStartedAt = 0;
     pendingConfirmation = null;
     reconnectAttempts = 0;
     try {

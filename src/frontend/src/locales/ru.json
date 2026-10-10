@@ -1,4 +1,5 @@
 {
+  "Update was not confirmed. Check system logs or CLI.": "Обновление не подтверждено. Проверьте системный журнал или CLI.",
   "Up to date": "Установлена актуальная версия",
   "Release notes": "Описание релиза",
   "Updating…": "Обновление…",
