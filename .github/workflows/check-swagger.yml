@@ -1,0 +1,25 @@
+name: Swagger API contract
+
+on:
+  push:
+    paths:
+      - 'docs/swagger.yaml'
+      - 'tools/tests/check_swagger.rb'
+      - '.github/workflows/check-swagger.yml'
+  pull_request:
+    paths:
+      - 'docs/swagger.yaml'
+      - 'tools/tests/check_swagger.rb'
+      - '.github/workflows/check-swagger.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    name: Validate Swagger YAML
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Validate syntax, duplicate keys and update API schemas
+        run: ruby tools/tests/check_swagger.rb
