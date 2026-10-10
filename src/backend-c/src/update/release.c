@@ -41,11 +41,19 @@ bool mt_update_version_parse(const char *text, uint32_t revision, mt_update_vers
     }
     /* Build-system snapshots sort before the release with the same core.
      * Unknown formats fail closed rather than accidentally downgrading. */
-    if (strncmp(p, "~git", 4) != 0) { return false; }
+    /* OpenWrt's APK SDK puts the package-safe _pre timestamp in MT_VERSION.
+     * Accept that installed identity too, but never as an update target. */
+    bool apk_snapshot = strncmp(p, "_pre", 4) == 0;
+    if (!apk_snapshot && strncmp(p, "~git", 4) != 0) { return false; }
     p += 4;
     for (unsigned i = 0; i < 14; i++) {
         if (*p < '0' || *p > '9') { return false; }
         p++;
+    }
+    if (apk_snapshot) {
+        if (*p) { return false; }
+        out->development = true;
+        return true;
     }
     if (*p++ != '.') { return false; }
     unsigned digits = 0;
@@ -102,15 +110,16 @@ const char *mt_update_resolve(const char *json, size_t len, bool preview,
     if (!root) { return "Invalid release metadata"; }
     const char *error = "Release changed; check again";
     const cJSON *release = NULL;
-    if (preview && cJSON_IsArray(root)) {
+    /* Same bounded list and published_at policy as the browser, for BOTH
+     * channels. /latest's designation is not necessarily this selection. */
+    if (cJSON_IsArray(root)) {
         const cJSON *item;
         cJSON_ArrayForEach(item, root) {
-            if (published(item) && (!release || strcmp(string(item, "published_at"), string(release, "published_at")) > 0)) {
+            if (published(item) && (preview || cJSON_IsFalse(cJSON_GetObjectItemCaseSensitive(item, "prerelease"))) &&
+                (!release || strcmp(string(item, "published_at"), string(release, "published_at")) > 0)) {
                 release = item;
             }
         }
-    } else if (!preview && published(root) && cJSON_IsFalse(cJSON_GetObjectItemCaseSensitive(root, "prerelease"))) {
-        release = root;
     }
     const cJSON *id = cJSON_GetObjectItemCaseSensitive(release, "id");
     if (!release || strcmp(string(release, "tag_name"), tag) || !cJSON_IsNumber(id) ||

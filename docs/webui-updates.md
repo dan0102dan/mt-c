@@ -12,10 +12,16 @@ release notes and a preview-channel toggle.
 The browser loads one shared list from `/releases?per_page=100`. Stable selects
 the most recently published non-draft, non-prerelease entry; opt-in preview also
 includes prereleases. Switching channels selects from that list locally and
-does not query GitHub or the router again.
+does not query GitHub or the router again. Reopening the popup checks cache
+freshness: a fresh list causes no network request; a missing or expired list is
+loaded once. After an error the same primary button offers a manual check, without
+starting an installation. GitHub rate-limit backoff still applies to manual retries.
 This bounded window is not a scan of every historical release. Unknown version
 formats fail closed; numeric two-to-four-component tags, `-revN` and the project's
-`~git<UTC timestamp>.<commit>` installed development versions are supported. A
+`~git<UTC timestamp>.<commit>` installed development versions are supported.
+Both C and TypeScript also recognize the APK SDK's `_pre<14-digit UTC timestamp>`
+installed identity. These two snapshot forms sort before the corresponding release
+and are never accepted as release update targets. A
 preview flag is independent of the tag format. Versions and package revisions are
 compared numerically, never lexicographically. Downgrades are not offered or accepted.
 
@@ -25,7 +31,11 @@ it never automatically repeats an uncertain install POST. Success requires the
 new daemon's version and package revision. Reload is explicit to avoid discarding
 browser drafts. The reload hint is shown only for an installation observed on the
 current page and disappears after reload. The normal application authorisation
-behavior is unchanged.
+behavior is unchanged. If the confirmation GET fails, the UI keeps installation
+disabled and retries the version read until it can confirm the expected version
+and revision; it never retries the install POST. Reopening a page during an active
+job loads local build information too. A later failure restores the candidate for
+an explicit manual retry without requiring another page reload.
 
 ## Additive API
 
@@ -48,7 +58,9 @@ Read endpoints do not contact GitHub and use `Cache-Control: no-store`.
 
 Stages: `queued`, `checking`, `downloading`, `verifying`, `backing_up`, `installing`,
 `restarting`, `succeeded`, `failed`, `interrupted`. A stale active state without a
-live worker lock is reported as interrupted rather than permanently busy. A new
+live worker lock is reported as interrupted rather than permanently busy. The
+handler re-reads the status while holding that lock, preserving a final success or
+failure published between the original read and the lock probe. A new
 manual attempt can acquire the released lock. The UI cannot show live logs while
 the daemon itself is stopped; it reconnects and reads the persisted state.
 
@@ -76,8 +88,10 @@ The API saves the current server-side config and atomically writes a request und
 It has a fixed executable path and clean environment; unneeded inherited descriptors
 and the lock descriptor in package-manager children are closed.
 
-The helper re-fetches the selected channel from the fixed repository, verifies the
-release ID/tag is still current, rejects a non-newer version, and resolves exactly
+The helper independently re-fetches `/releases?per_page=100` from the fixed
+repository for both channels and applies the same published-at/channel policy as
+the browser (not `/latest` or a shorter preview window). It verifies the release
+ID/tag is still current, rejects a non-newer version, and resolves exactly
 one platform asset. It requires an uploaded asset, bounded positive size, and a
 SHA-256 digest. HTTPS certificate/host checks remain enabled. Redirects are bounded
 and restricted to the GitHub release download hosts. Downloading is streaming to a
@@ -150,3 +164,12 @@ rate limits, blocked browser storage and omitted GitHub credentials, plus mocked
 read/install request validation, status progression and concurrent-install locks. Existing
 `npm run check`, build and format checks still apply; no dependencies or workflows
 were replaced for this feature.
+
+Regression coverage for the review fixes: `test_update_release.c` and
+`tests/unit/update-review.test.ts` exercise shared channel selection beyond the
+old 20-item window and APK SDK snapshot identities. `test_update_process.c` forces
+a separate worker to publish success/failure between a status read and its lock
+probe, using real file locks and atomic replacement. The test only substitutes
+file ownership to run on unprivileged CI, never in production. Playwright's
+`tests/e2e/updates-recovery.spec.ts` covers failed-check Retry, stale-cache popup
+reopening, post-install version-read recovery and a reopened job that later fails.

@@ -7,6 +7,7 @@
   import Tooltip from "../../components/ui/Tooltip.svelte";
   import { t } from "../../data/locale.svelte";
   import {
+    checkUpdates,
     installUpdate,
     mountUpdates,
     setUpdateChannel,
@@ -44,8 +45,9 @@
         !busy),
   );
   const canUpdate = $derived(
-    !busy && !completed && !updates.checking && !!choice.asset && !choice.reason,
+    !busy && !completed && !updates.checking && !updates.error && !!choice.asset && !choice.reason,
   );
+  const canRetry = $derived(!busy && !updates.checking && !!updates.error);
   const buildHint = $derived(
     choice.newer
       ? t("New version available")
@@ -72,7 +74,12 @@
 </script>
 
 <div class="version">
-  <Popover.Root bind:open={updates.dialogOpen}>
+  <Popover.Root
+    bind:open={updates.dialogOpen}
+    onOpenChange={(open) => {
+      if (open) void checkUpdates();
+    }}
+  >
     <Tooltip value={hint}>
       <Popover.Trigger
         class="version-trigger"
@@ -94,14 +101,20 @@
         collisionPadding={8}
         aria-label={t("Software update")}
       >
-        <div class="update-action" class:ready={canUpdate} class:busy aria-busy={busy}>
+        <div class="update-action" class:ready={canUpdate || canRetry} class:busy aria-busy={busy}>
           <Button
             type="button"
             class="accent"
-            inactive={!canUpdate && !busy}
-            disabled={!canUpdate}
-            onclick={() => void installUpdate()}
-            >{busy ? t("Updating…") : upToDate ? t("Up to date") : t("Update")}</Button
+            inactive={!canUpdate && !canRetry && !busy}
+            disabled={!canUpdate && !canRetry}
+            onclick={() => void (canRetry ? checkUpdates(true) : installUpdate())}
+            >{busy
+              ? t("Updating…")
+              : canRetry
+                ? t("Check for updates")
+                : upToDate
+                  ? t("Up to date")
+                  : t("Update")}</Button
           >
         </div>
         <div role="status" aria-live="polite">

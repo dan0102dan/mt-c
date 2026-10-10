@@ -31,7 +31,11 @@ static cJSON *fixture(const char *tag, const char *suffix, const char *date, boo
 }
 
 static const char *resolve(cJSON *root, bool preview, const char *tag, const char *suffix, mt_update_asset_t *out) {
-    char *json = cJSON_PrintUnformatted(root);
+    /* Both channels now consume the same release-list response. */
+    cJSON *list = cJSON_IsArray(root) ? NULL : cJSON_CreateArray();
+    if (!cJSON_IsArray(root)) { assert(list && cJSON_AddItemReferenceToArray(list, root)); }
+    char *json = cJSON_PrintUnformatted(list ? list : root);
+    cJSON_Delete(list);
     assert(json);
     const char *error = mt_update_resolve(json, strlen(json), preview, tag, 100, suffix, "0.8.2.2", 1, out);
     free(json);
@@ -55,6 +59,19 @@ int main(void) {
     CHECK(mt_update_version_compare(&a, &b) > 0);
     CHECK(mt_update_version_parse("0.8.3", 2, &b));
     CHECK(mt_update_version_compare(&a, &b) == 0);
+    CHECK(mt_update_version_parse("0.8.4_pre20261010140000", 1, &a));
+    CHECK(a.development && strcmp(a.base, "0.8.4") == 0);
+    CHECK(mt_update_version_parse("0.8.4", 1, &b));
+    CHECK(mt_update_version_compare(&a, &b) < 0);
+    CHECK(mt_update_version_parse("0.8.3", 1, &b));
+    CHECK(mt_update_version_compare(&a, &b) > 0);
+    CHECK(mt_update_version_parse("0.8.4~git20261010140000.abcdef0", 1, &b));
+    CHECK(mt_update_version_compare(&a, &b) == 0);
+    const char *bad_apk[] = {"0.8.4_pre2026101014000", "0.8.4_pre202610101400000",
+                            "0.8.4_pre20261010140000.abcdef0", "0.8.4_pre20261010140000-rev1"};
+    for (size_t i = 0; i < sizeof(bad_apk) / sizeof(bad_apk[0]); i++) {
+        CHECK(!mt_update_version_parse(bad_apk[i], 1, &a));
+    }
     const char *bad[] = {"", "unattached", "1", "1.2.3.4.5", "1.2.", "1.2-rev0", "1.2-rc1", "1.2;reboot", "1.2/../../x", "9999999999.1", "1.2~git123.abcdef0"};
     for (size_t i = 0; i < sizeof(bad) / sizeof(bad[0]); i++) { CHECK(!mt_update_version_parse(bad[i], 1, &a)); }
     CHECK(mt_update_download_host_allowed("https://github.com/dan0102dan/mt-c/releases/download/0.8.3/test.ipk"));
@@ -100,6 +117,33 @@ int main(void) {
     CHECK(mt_update_resolve("{", 1, false, "0.8.3", 100, suffix, "0.8.2.2", 1, &out) != NULL);
     CHECK(mt_update_resolve("{}", 2, false, "0.8.3", 100, suffix, "0.8.4", 1, &out) != NULL);
     CHECK(mt_update_resolve("{}", 2, false, "0.8.3", 100, suffix, "unattached", 1, &out) != NULL);
+    /* Later publication, not highest SemVer or GitHub's /latest designation. */
+    list = cJSON_CreateArray();
+    cJSON_AddItemToArray(list, fixture("2.0.0", suffix, "2026-10-01T00:00:00Z", false));
+    cJSON_AddItemToArray(list, fixture("1.1.0", suffix, "2026-10-03T00:00:00Z", false));
+    cJSON_AddItemToArray(list, fixture("3.0.0", suffix, "2026-10-04T00:00:00Z", true));
+    CHECK(resolve(list, false, "1.1.0", suffix, &out) == NULL);
+    CHECK(resolve(list, false, "2.0.0", suffix, &out) != NULL);
+    CHECK(resolve(list, false, "3.0.0", suffix, &out) != NULL);
+    CHECK(resolve(list, true, "3.0.0", suffix, &out) == NULL);
+    cJSON_Delete(list);
+
+    /* A later-published release can occur beyond the old 20-item window. */
+    list = cJSON_CreateArray();
+    for (unsigned i = 0; i < 30; i++) {
+        cJSON_AddItemToArray(list, fixture("0.8.2.2", suffix, "2026-10-01T00:00:00Z", true));
+    }
+    cJSON_AddItemToArray(list, fixture("0.8.3", suffix, "2026-10-09T00:00:00Z", false));
+    CHECK(resolve(list, false, "0.8.3", suffix, &out) == NULL);
+    CHECK(resolve(list, true, "0.8.3", suffix, &out) == NULL);
+    char *json = cJSON_PrintUnformatted(list);
+    CHECK(json != NULL);
+    CHECK(mt_update_resolve(json, strlen(json), false, "0.8.3", 100, suffix,
+                            "0.8.3_pre20261008140000", 1, &out) == NULL);
+    CHECK(mt_update_resolve(json, strlen(json), false, "0.8.3_pre20261009140000", 100, suffix,
+                            "0.8.2.2", 1, &out) != NULL);
+    free(json);
+    cJSON_Delete(list);
     printf("%u update release checks passed\n", checks);
     return 0;
 }

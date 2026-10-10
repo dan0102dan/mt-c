@@ -201,6 +201,31 @@ static bool active(const char *stage) {
     return strcmp(stage, "idle") && strcmp(stage, "succeeded") && strcmp(stage, "failed") && strcmp(stage, "interrupted");
 }
 
+/* The worker may finish between the initial snapshot and the lock probe.
+ * Re-read while holding the lock before synthesizing an interrupted result. */
+static bool refresh_unlocked_status(int dir, cJSON **snapshot) {
+    int lock = open_lock(dir);
+    if (lock < 0) { return false; }
+    bool ok = true;
+    if (flock(lock, LOCK_EX | LOCK_NB) == 0) {
+        cJSON *latest = read_json(dir, "status.json");
+        if (!latest) {
+            ok = false;
+        } else {
+            cJSON_Delete(*snapshot);
+            *snapshot = latest;
+            if (active(str(latest, "stage"))) {
+                ok = setstr(latest, "stage", "interrupted") &&
+                     setstr(latest, "error", "Update interrupted; check installation before retrying");
+            }
+        }
+    } else if (errno != EWOULDBLOCK && errno != EAGAIN) {
+        ok = false;
+    }
+    close(lock);
+    return ok;
+}
+
 static void handle_status(mt_http_req_t *req, mt_http_res_t *res, void *ud) {
     (void)req; (void)ud;
     int dir = open_dir(false);
@@ -211,15 +236,11 @@ static void handle_status(mt_http_req_t *req, mt_http_res_t *res, void *ud) {
         }
         obj = cJSON_CreateObject();
         if (obj) { cJSON_AddStringToObject(obj, "stage", "idle"); }
-    } else if (active(str(obj, "stage"))) {
-        int lock = open_lock(dir);
-        if (lock >= 0) {
-            if (flock(lock, LOCK_EX | LOCK_NB) == 0) {
-                setstr(obj, "stage", "interrupted");
-                setstr(obj, "error", "Update interrupted; check installation before retrying");
-            }
-            close(lock);
-        }
+    } else if (active(str(obj, "stage")) && !refresh_unlocked_status(dir, &obj)) {
+        cJSON_Delete(obj);
+        close(dir);
+        mt_http_res_write_error(res, 500, "Cannot read update status");
+        return;
     }
     if (dir >= 0) { close(dir); }
     mt_http_res_set_header(res, "Cache-Control", "no-store");
@@ -443,8 +464,10 @@ static CURL *http_client(transfer_t *t, const char *url) {
     return curl;
 }
 
-static bool fetch_metadata(bool preview, transfer_t *t) {
-    CURL *curl = http_client(t, preview ? MT_UPDATE_API "?per_page=20" : MT_UPDATE_API "/latest");
+static bool fetch_metadata(transfer_t *t) {
+    /* Share the browser's bounded list, but fetch it independently at install
+     * time. Both sides select by published_at with the same channel filter. */
+    CURL *curl = http_client(t, MT_UPDATE_API "?per_page=100");
     if (!curl) { return false; }
     struct curl_slist *headers = curl_slist_append(NULL, "Accept: application/vnd.github+json");
     if (!headers) { curl_easy_cleanup(curl); return false; }
@@ -640,7 +663,7 @@ int mt_update_worker(void) {
     error = "Cannot contact GitHub; try again later";
     curl_ready = curl_global_init(CURL_GLOBAL_DEFAULT) == CURLE_OK;
     bool preview = cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(request, "preview"));
-    if (!curl_ready || !fetch_metadata(preview, &metadata)) { goto done; }
+    if (!curl_ready || !fetch_metadata(&metadata)) { goto done; }
     error = mt_update_resolve(metadata.data, metadata.len, preview, str(request, "tag"), (uint64_t)id->valuedouble,
                               suffix, MT_VERSION, MT_PACKAGE_REVISION, &asset);
     free(metadata.data); metadata.data = NULL;

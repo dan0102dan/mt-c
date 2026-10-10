@@ -102,7 +102,7 @@ export function isActive(status: UpdateStatus): boolean {
 
 export function parseVersion(input: string, revision = 1) {
   const match =
-    /^(v?\d{1,9}\.\d{1,9}(?:\.\d{1,9}){0,2})(?:(-rev)(\d{1,9})|(~git\d{14}\.[a-fA-F0-9]{7,40}))?$/.exec(
+    /^(v?\d{1,9}\.\d{1,9}(?:\.\d{1,9}){0,2})(?:(-rev)(\d{1,9})|(~git\d{14}\.[a-fA-F0-9]{7,40}|_pre\d{14}))?$/.exec(
       input,
     );
   if (!match || !integer(revision)) return null;
