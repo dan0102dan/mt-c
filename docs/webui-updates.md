@@ -72,12 +72,13 @@ a manual page reload to display the new version.
 - `POST /api/v1/system/update/install`: exactly
   `{"tag":"0.9.0","release_id":123,"preview":false}`. 202 with `job_id` and
   `stage:"queued"` acknowledges an accepted preparation thread, not successful
-  download/exec/install. Bad/non-newer input: 400; root/target/manager unavailable:
+  download/exec/install. Bad/non-newer input: 400; unsupported target or unavailable installer:
   403; another job: 409; config save/lock/allocation/thread creation failure: 500.
 
-Both GET routes return `Cache-Control: no-store`. Installation requires a verified
-root JWT on TCP and Unix sockets, including when ordinary WebUI auth is disabled.
-Existing auth middleware may first return 401. Errors retain `{"error":"..."}`.
+Both GET routes return `Cache-Control: no-store`. No separate root-user
+JWT is required for an update; the existing WebUI authentication policy applies.
+The daemon still needs root privileges to run the package manager. Existing
+HTTP auth middleware may return 401. Errors retain `{"error":"..."}`.
 Numeric two-to-four-component tags and package revisions are compared numerically;
 installed `~git...` and APK `_pre...` versions sort before their matching release.
 Unknown formats, unavailable exact targets, missing digests and downgrades fail closed.

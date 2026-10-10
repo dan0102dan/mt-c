@@ -118,9 +118,9 @@ Deno.test("installation capability is not inferred from finding a release", () =
     candidate(release(), {
       ...info,
       can_install: false,
-      reason: "Sign in as root to install updates",
+      reason: "Installer unavailable",
     }).reason,
-    "Sign in as root to install updates",
+    "Installer unavailable",
   );
   assert.equal(candidate(release(), { ...info, installed_version: "0.9.0" }).newer, false);
   assert.equal(candidate(release(), { ...info, asset_suffix: "" }).asset, null);

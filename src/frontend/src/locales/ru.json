@@ -252,7 +252,6 @@
   "Installed version could not be confirmed": "Не удалось подтвердить установленную версию",
   "Could not confirm update start; checking router status": "Не удалось подтвердить запуск обновления; проверяется состояние роутера",
   "Installer unavailable": "Установщик недоступен",
-  "Sign in as root to install updates": "Для установки обновлений войдите под root",
   "Update interrupted; check installation before retrying": "Обновление прервано; проверьте установленную версию перед повтором",
   "Invalid release tag": "Некорректный тег релиза",
   "No newer version": "Новой версии нет",

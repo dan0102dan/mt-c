@@ -3635,3 +3635,21 @@ This change concerns **discovery freshness**, not upgrade permission:
 release-version comparison, root authorization, exact package matching,
 verification and one-install-at-a-time safeguards are unchanged. An older
 release such as 0.8.4.1 is still not an upgrade to 0.8.5~git....
+
+## D-78 — Use ordinary WebUI access policy for update installation (2026-10-11)
+
+Status: **accepted at the user's request**. The separate requirement for a
+verified JWT whose subject is `root` is removed from the update API.
+Ordinary HTTP WebUI authentication, where enabled, is unchanged; Unix-socket
+transport continues to follow its existing access rules. The release-info
+endpoint now determines `can_install` from the process environment and
+package-manager capability instead of the requester's identity.
+
+The daemon still requires system root privileges to invoke `opkg` or `apk`.
+Official release selection, newer-version enforcement, platform/architecture
+validation, HTTPS and SHA-256 checks, same-origin request validation and
+exclusive installation locking remain mandatory. The update API accepts
+release identifiers, not arbitrary URLs or shell commands.
+
+This supersedes D-74's special update authorization rule. D-75 and D-77
+remain applicable to the update handoff and release discovery behaviors.
