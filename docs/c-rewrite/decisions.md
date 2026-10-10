@@ -3464,6 +3464,28 @@ Both initial enable and live/rebuild staging calculate the same key.
 Stored priority values, defaults (300/100), accepted range (1–999), DNS
 set membership, profile failover, and unrelated firewall rules are unchanged.
 
+### D-73 amendment — Reject cross-source ID collisions (2026-10-10)
+
+User groups and subscriptions use the same netfilter chain/ipset naming format
+based on their eight-hex-digit ID. A group and subscription with identical IDs
+would therefore share a jump target, and the ordered iptables compiler would
+deduplicate the two entries before their group/subscription tie-break could
+apply. This is not fixed merely by giving them distinct effective priorities.
+
+The IDs of user groups and subscriptions must now be disjoint, irrespective of
+configured priority or enabled state. A cross-source collision is rejected with
+`MT_ERR_EXIST` during YAML loading, API single-object creation (HTTP 409), and
+bulk group/subscription updates (HTTP 409, without changing live state).
+Startup also checks programmatically constructed configurations. SIGHUP reload
+rechecks after retaining groups omitted from the YAML overlay, before touching
+live routes; conflicts leave the previous configuration active. Existing
+configurations with cross-source duplicate IDs must assign a new unique ID to
+one resource before they can be loaded.
+
+IDs are not silently rewritten; valid existing resource IDs, netfilter
+names, and the group's precedence over subscriptions on a numeric tie remain
+unchanged. Neither priority values nor the tie-break calculation are changed.
+
 Regression tests in `test_priority_source.c` cover equal-value source
 precedence independent of arrival order and IDs, a strictly higher
 subscription priority, live reordering, disable/re-enable and rebuild,

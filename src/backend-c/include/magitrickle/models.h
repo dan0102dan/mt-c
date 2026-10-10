@@ -185,6 +185,10 @@ mt_err_t mt_app_config_clone(mt_app_config_t *dst, const mt_app_config_t *src);
 
 mt_err_t mt_config_init_defaults(mt_config_t *c);
 void mt_config_clear(mt_config_t *c);
+/* A group and subscription must never share an ID: both otherwise use the
+ * same chain/ipset names, so their ordered jumps collapse into one.
+ * Checks cross-source IDs only; returns MT_ERR_EXIST on a collision. */
+mt_err_t mt_config_check_route_id_collisions(const mt_config_t *c);
 mt_err_t mt_config_add_group(mt_config_t *c, mt_group_t *g);
 /* Frees c->groups[idx] and shifts the remaining pointers down (idx must
  * be < c->n_groups). */

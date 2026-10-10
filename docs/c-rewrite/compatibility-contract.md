@@ -230,6 +230,10 @@ transcripts + IT in netns.
   are reconciled in ascending effective priority/source/ID order because MARK
   and CONNMARK saving do not terminate traversal. All matching DNS sets remain
   populated, and unrelated firewall rules retain their relative order.
+  Cross-source duplicate group/subscription IDs are rejected (D-73 amendment)
+  because both sources otherwise generate identical chain/ipset names. YAML
+  loading and API bulk updates fail instead of silently changing IDs, while
+  invalid SIGHUP overlays preserve the active configuration.
 
 ## 8. Subscriptions
 
