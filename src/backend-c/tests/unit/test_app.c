@@ -91,6 +91,7 @@ TEST cross_source_ids_rejected_in_app_create(void) {
     ASSERT_EQ(MT_OK, mt_config_add_group(&cfg, group));
     mt_subscription_t *sub = make_subscription_with_id("aabbccdd");
     ASSERT(sub);
+    sub->priority = group->priority; /* same ID and same priority */
     ASSERT_EQ(MT_OK, mt_config_add_subscription(&cfg, sub));
     ASSERT_EQ(MT_ERR_EXIST, mt_config_check_route_id_collisions(&cfg));
     mt_cache_t *cache = mt_cache_create(0);

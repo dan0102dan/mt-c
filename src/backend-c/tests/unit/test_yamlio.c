@@ -122,6 +122,7 @@ TEST duplicate_ids_fail(void)
 TEST cross_source_ids_rejected_in_yaml(void)
 {
     mt_config_t cfg;
+    /* Regress the exact bug: identical source IDs and numeric priorities. */
     const char *collision =
         "configVersion: 0.7.0\n"
         "groups:\n"
@@ -129,7 +130,7 @@ TEST cross_source_ids_rejected_in_yaml(void)
         "    priority: 300\n"
         "subscriptions:\n"
         "  - id: aabbccdd\n"
-        "    priority: 999\n";
+        "    priority: 300\n";
     ASSERT_EQ(MT_OK, mt_config_init_defaults(&cfg));
     ASSERT_EQ(MT_ERR_EXIST, load_str(&cfg, collision));
     mt_config_clear(&cfg);
