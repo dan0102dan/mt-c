@@ -1,0 +1,42 @@
+name: Update refactor build inputs
+on:
+  push:
+    branches: [refactor/system-package-update]
+    paths: [.github/workflows/update-build-snapshot.yml]
+permissions:
+  contents: read
+jobs:
+  snapshot:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: c6a97b676b7d54038291067037e391091374b734
+          persist-credentials: false
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+      - uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.x
+      - name: Prepare source and development headers
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y libcjson-dev libyaml-dev libmnl-dev
+          mkdir -p "$RUNNER_TEMP/build-inputs/include" "$RUNNER_TEMP/build-inputs/bin"
+          cp -a /usr/include/cjson /usr/include/yaml.h /usr/include/libmnl "$RUNNER_TEMP/build-inputs/include/"
+          cp "$(command -v deno)" "$RUNNER_TEMP/build-inputs/bin/deno"
+          git archive HEAD | gzip > "$RUNNER_TEMP/build-inputs/source.tar.gz"
+      - name: Install locked frontend dependencies
+        working-directory: src/frontend
+        run: npm ci
+      - name: Archive dependencies
+        run: |
+          tar -C src/frontend -czf "$RUNNER_TEMP/build-inputs/node_modules.tar.gz" node_modules
+          tar -C "$RUNNER_TEMP/build-inputs" -czf "$RUNNER_TEMP/mt-c-build-inputs.tar.gz" .
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mt-c-build-inputs
+          path: ${{ runner.temp }}/mt-c-build-inputs.tar.gz
+          retention-days: 1
