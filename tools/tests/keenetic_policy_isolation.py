@@ -9,7 +9,7 @@ BACKEND = [
     b'failed to load interface aliases',
 ]
 FRONTEND = [
-    b'/keenetic/policy', b'Use Keenetic policy', b'keenetic-policy-enabled',
+    b'/keenetic/policy', b'Use policy based filter', b'keenetic-policy-enabled',
     'Политика Keenetic'.encode(),
 ]
 
