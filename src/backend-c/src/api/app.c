@@ -15,7 +15,9 @@
 #include <string.h>
 #include <time.h>
 
+#ifdef MT_ENTWARE_KN
 #include "magitrickle/keenetic_rci.h"
+#endif
 #include "magitrickle/log.h"
 #include "magitrickle/lookup.h"
 #include "magitrickle/netfilter_cleaner.h"
@@ -1186,8 +1188,8 @@ mt_err_t mt_app_list_interfaces(const mt_app_t *app, mt_iface_info_t **out, size
     }
     freeifaddrs(ifap);
 
-    /* Friendly names, when the platform can supply them (Keenetic RCI;
-     * a no-op empty set elsewhere). Go's interfaces.List logged the
+#ifdef MT_ENTWARE_KN
+    /* Friendly names from Keenetic RCI. Go's interfaces.List logged the
      * error at debug level and carried on with unnamed interfaces --
      * an unreachable RCI must never fail the interface list itself. */
     mt_kn_aliases_t aliases = {0};
@@ -1201,6 +1203,7 @@ mt_err_t mt_app_list_interfaces(const mt_app_t *app, mt_iface_info_t **out, size
         }
     }
     mt_kn_aliases_free(&aliases);
+#endif
 
     *out = arr;
     *out_n = n;
