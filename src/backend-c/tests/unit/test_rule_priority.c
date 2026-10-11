@@ -9,6 +9,7 @@
 #include "fake_iptables.h"
 #include "fake_ipset_nl.h"
 
+#include <arpa/inet.h>
 #include <assert.h>
 #include <stdint.h>
 
@@ -369,7 +370,6 @@ typedef struct {
     unsigned family;
     uint8_t address[16];
     bool reply;
-    bool local;
     uint32_t mark;
     uint32_t connmark;
 } packet_t;
@@ -385,8 +385,19 @@ static bool evaluate_chain(const char *chain, packet_t *packet, unsigned depth) 
         const mt_ipt_rule_t *rule = rules[i];
         const char *direction = rule_option(rule, "--ctdir");
         if (direction && strcmp(direction, "REPLY") == 0 && !packet->reply) { continue; }
-        const char *local = rule_option(rule, "--dst-type");
-        if (local && strcmp(local, "LOCAL") == 0 && !packet->local) { continue; }
+        if (rule_option(rule, "--dst-type")) { return false; } /* unsupported on the target */
+        const char *destination = rule_option(rule, "-d");
+        if (destination) {
+            char host[INET6_ADDRSTRLEN];
+            size_t length = strcspn(destination, "/");
+            if (length >= sizeof(host)) { return false; }
+            memcpy(host, destination, length); host[length] = '\0';
+            uint8_t address[16];
+            unsigned bits = packet->family == 0 ? 32u : 128u;
+            if (destination[length] && strtoul(destination + length + 1, NULL, 10) != bits) { return false; }
+            if (inet_pton(packet->family == 0 ? AF_INET : AF_INET6, host, address) != 1) { return false; }
+            if (memcmp(address, packet->address, packet->family == 0 ? 4u : 16u) != 0) { continue; }
+        }
         const char *mark_match = rule_option(rule, "--mark");
         if (mark_match) {
             char *end = NULL;
@@ -541,6 +552,12 @@ TEST live_profile_reconfiguration_preserves_rule_priority(void) {
 #ifdef MT_ENTWARE_KN
 TEST policy_membership_is_checked_before_any_group_overwrites_the_mark(void) {
     make_links();
+    /* Local DNS must bypass routing even if the destination belongs to a
+     * group. Use actual assigned loopback addresses, not a synthetic flag. */
+    const mt_ipv4_subnet_t local4 = {.addr = {127,0,0,1}, .cidr = 32};
+    const mt_ipv6_subnet_t local6 = {.addr = {0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1}, .cidr = 128};
+    ASSERT_EQ(MT_OK, mt_ipset_add4(fixture.sets[0], local4, NULL));
+    ASSERT_EQ(MT_OK, mt_ipset_add6(fixture.sets[0], local6, NULL));
     mt_kn_policy_config_t config = {.enabled = true, .policy_id = "Policy0"};
     mt_kn_policy_scope_t scope;
     ASSERT_EQ(MT_OK, mt_kn_policy_scope_init(&scope, &config, "TST_"));
@@ -571,7 +588,8 @@ TEST policy_membership_is_checked_before_any_group_overwrites_the_mark(void) {
                 ASSERT_EQ(applies ? 101u : initial, packet.connmark);
                 /* A router-local DNS packet must keep its original policy
                  * until nat/PREROUTING can perform its own scoped DNAT. */
-                packet.mark = initial; packet.connmark = initial; packet.local = true;
+                packet.mark = initial; packet.connmark = initial;
+                memcpy(packet.address, family ? local6.addr : local4.addr, family ? 16u : 4u);
                 ASSERT(evaluate_chain("PREROUTING", &packet, 0));
                 ASSERT_EQ(initial, packet.mark); ASSERT_EQ(initial, packet.connmark);
             }

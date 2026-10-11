@@ -314,10 +314,25 @@ static void schedule_route_reconcile(struct daemon *d)
     }
 }
 
+#ifdef MT_ENTWARE_KN
+/* Policy gates contain exact local-address exceptions, not xt_addrtype.
+ * Refresh them on topology events through the existing coalescing worker.
+ * Do NOT trigger this on route changes: MT writes those during a rebuild. */
+static void refresh_policy_addresses(struct daemon *d)
+{
+    if (!d->app || !d->cfg || !d->cfg->app.keenetic_policy.enabled) { return; }
+    mt_err_t err = mt_app_force_commit_iptables(d->app);
+    if (err != MT_OK) { MT_ERROR("failed to refresh policy local addresses: %s", mt_err_str(err)); }
+}
+#endif
+
 static void on_link_up(const char *iface_name, bool up, void *ud)
 {
     struct daemon *d = ud;
     MT_DEBUG("interface changed: %s up=%d", iface_name, (int)up);
+#ifdef MT_ENTWARE_KN
+    refresh_policy_addresses(d);
+#endif
     schedule_route_reconcile(d);
 }
 
@@ -325,6 +340,9 @@ static void on_addr_change(const char *iface_name, void *ud)
 {
     struct daemon *d = ud;
     MT_DEBUG("interface address changed: %s", iface_name);
+#ifdef MT_ENTWARE_KN
+    refresh_policy_addresses(d);
+#endif
     schedule_route_reconcile(d);
 }
 
@@ -337,6 +355,9 @@ static void on_netlink_resync(void *ud)
 {
     struct daemon *d = ud;
     MT_WARN("netlink notification lost or watcher reconnected; resynchronizing routes");
+#ifdef MT_ENTWARE_KN
+    refresh_policy_addresses(d);
+#endif
     schedule_route_reconcile(d);
 }
 
