@@ -353,7 +353,7 @@ test.describe("Shared settings toolbar", () => {
       await expect(add).toHaveCount(0);
       await expect(page.locator(".settings-page .page-controls")).toHaveCount(1);
       await expect(save(page)).toHaveCount(1);
-      await expect(save(page)).toBeDisabled();
+      await expect(save(page)).toBeEnabled();
       expect(state.writes).toBe(0);
       expect(state.profileWrites).toBe(0);
       // The common button survives the transition rather than being replaced
@@ -364,23 +364,20 @@ test.describe("Shared settings toolbar", () => {
       await page.setViewportSize({ width, height: 900 });
       await page.evaluate(() => window.scrollTo(0, document.documentElement.scrollHeight));
       await expect(heading).toHaveAccessibleName("Interface priority profiles");
+      await expect(name).toHaveValue("Unsaved profile name");
       await panel(page).getByRole("switch", { name: "Processing mode", exact: true }).click();
+      // Save always applies ALL dirty sections, regardless of toolbar title.
       await save(page).click();
       await expect(save(page)).toBeDisabled();
       expect(state.writes).toBe(1);
-      expect(state.profileWrites).toBe(0);
-      expect(state.profiles[0].name).toBe("VPN 1");
+      expect(state.profileWrites).toBe(1);
+      expect(state.profiles[0].name).toBe("Unsaved profile name");
       await page.setViewportSize({ width, height: 900 });
       await page.evaluate(() => window.scrollTo(0, 0));
       await expect(heading).toHaveAccessibleName("Interface priority profiles");
       await expect(page.getByRole("button", { name: "Add profile", exact: true })).toBeVisible();
       await expect(name).toHaveValue("Unsaved profile name");
-      await name.focus();
-      await expect(save(page)).toBeEnabled();
-      await save(page).click();
       await expect(save(page)).toBeDisabled();
-      expect(state.profileWrites).toBe(1);
-      expect(state.writes).toBe(1);
       expect(state.settings.mode).toBe("exclude");
       expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(
         width,
@@ -413,5 +410,80 @@ test.describe("Shared settings toolbar", () => {
     await page.getByRole("button", { name: "Add profile", exact: true }).click();
     await expect(page.getByPlaceholder("Profile name", { exact: true })).toHaveCount(1);
     expect(state.profileWrites).toBe(0);
+  });
+});
+
+
+test.describe("Save applies to the entire Settings page", () => {
+  test.skip(!keenetic, "Keenetic-only editor");
+  test("a profile edit remains saveable while viewing policy", async ({ page }) => {
+    await page.setViewportSize({ width: 390, height: 540 });
+    const state = await backend(page, true);
+    state.profiles = [{
+      id: "one", name: "Original", interfaces: ["tun0"], on_unavailable: "blackhole",
+    }];
+    await openSettings(page);
+    await page.getByPlaceholder("Profile name", { exact: true }).fill("New name");
+    await page.evaluate(() => window.scrollTo(0, document.documentElement.scrollHeight));
+    await expect(save(page)).toBeEnabled();
+    await save(page).click();
+    await expect.poll(() => state.profileWrites).toBe(1);
+    expect(state.writes).toBe(0);
+    expect(state.profiles[0].name).toBe("New name");
+    await expect(save(page)).toBeDisabled();
+  });
+
+  test("a policy edit remains saveable while viewing profiles", async ({ page }) => {
+    const state = await backend(page, true);
+    await openSettings(page);
+    await panel(page).getByRole("switch", { name: "Processing mode", exact: true }).click();
+    await page.evaluate(() => window.scrollTo(0, 0));
+    await expect(save(page)).toBeEnabled();
+    await save(page).click();
+    await expect.poll(() => state.writes).toBe(1);
+    expect(state.profileWrites).toBe(0);
+    expect(state.settings.mode).toBe("exclude");
+    await expect(save(page)).toBeDisabled();
+  });
+
+  test("invalid changes block all writes until corrected", async ({ page }) => {
+    const state = await backend(page, true);
+    state.profiles = [{
+      id: "one", name: "Original", interfaces: ["tun0"], on_unavailable: "blackhole",
+    }];
+    await openSettings(page);
+    const name = page.getByPlaceholder("Profile name", { exact: true });
+    await name.fill("");
+    await panel(page).getByRole("switch", { name: "Processing mode", exact: true }).click();
+    await expect(save(page)).toBeDisabled();
+    expect(state.profileWrites).toBe(0);
+    expect(state.writes).toBe(0);
+    await name.fill("Repaired");
+    await expect(save(page)).toBeEnabled();
+    await save(page).click();
+    await expect.poll(() => state.profileWrites).toBe(1);
+    await expect.poll(() => state.writes).toBe(1);
+    expect(state.profiles[0].name).toBe("Repaired");
+    await expect(save(page)).toBeDisabled();
+  });
+
+  test("partial disk failure retries only the remaining dirty section", async ({ page }) => {
+    const state = await backend(page, true);
+    state.profiles = [{
+      id: "one", name: "Original", interfaces: ["tun0"], on_unavailable: "blackhole",
+    }];
+    await openSettings(page);
+    await page.getByPlaceholder("Profile name", { exact: true }).fill("Saved once");
+    await panel(page).getByRole("switch", { name: "Processing mode", exact: true }).click();
+    state.diskFailure = true;
+    await save(page).click();
+    await expect.poll(() => state.profileWrites).toBe(1);
+    await expect.poll(() => state.writes).toBe(1);
+    await expect(save(page)).toBeEnabled();
+    state.diskFailure = false;
+    await save(page).click();
+    await expect.poll(() => state.writes).toBe(2);
+    expect(state.profileWrites).toBe(1);
+    await expect(save(page)).toBeDisabled();
   });
 });

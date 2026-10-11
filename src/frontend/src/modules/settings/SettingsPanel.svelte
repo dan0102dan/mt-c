@@ -3,6 +3,7 @@
   import { onMount, setContext } from "svelte";
 
   import PageControls from "../../components/layout/PageControls.svelte";
+  import { toast } from "../../utils/events";
   import { t } from "../../data/locale.svelte";
   import ProfilesPanel from "./ProfilesPanel.svelte";
 
@@ -15,30 +16,46 @@
   let page: HTMLDivElement;
   let toolbar: HTMLDivElement;
   let sections = $state.raw<SettingsSection[]>([]);
-  let active = $state.raw<SettingsSection>();
+  let saving = $state(false);
   let titleIndex = $state(0);
   const visibleSection = $derived(sections[titleIndex]);
-  const controls = $derived(active?.controls());
   const visibleControls = $derived(visibleSection?.controls());
+  const dirty = $derived(sections.some((section) => section.controls().dirty));
+  const invalid = $derived(
+    sections.find((section) => section.controls().dirty && !section.controls().canSave)?.controls(),
+  );
+  const canSave = $derived(dirty && !saving && !invalid);
+  const saveLabel = $derived(
+    saving ? t("Saving...") : invalid?.saveLabel ?? t("Save Changes"),
+  );
 
-  function add() {
-    active = visibleSection;
-    visibleControls?.onAdd?.();
+  async function saveAll() {
+    if (!canSave) return;
+    // Both section APIs persist the same configuration file: serialize
+    // writes. The failed section remains dirty; other edits still save.
+    const pending = sections.filter((section) => section.controls().dirty);
+    saving = true;
+    let succeeded = 0;
+    let failed = 0;
+    try {
+      for (const section of pending) {
+        try {
+          await section.controls().onSave();
+          succeeded++;
+        } catch {
+          failed++;
+        }
+      }
+      if (!failed) toast.success(t("Settings saved"));
+      else if (succeeded) toast.warning(t("Some settings could not be saved"));
+    } finally {
+      saving = false;
+    }
   }
 
   setContext<RegisterSection>(SETTINGS_SECTIONS, (section) => {
     sections = [...sections, section];
-    active ??= section;
-    // A short page may show both editors without enough room to scroll.
-    // Pointer/keyboard interaction chooses the editor without saving it.
-    const activate = () => {
-      active = section;
-    };
-    section.element.addEventListener("pointerdown", activate);
-    section.element.addEventListener("focusin", activate);
     return () => {
-      section.element.removeEventListener("pointerdown", activate);
-      section.element.removeEventListener("focusin", activate);
       sections = sections.filter((s) => s !== section);
       if (active === section) active = sections[0];
       titleIndex = Math.min(titleIndex, Math.max(0, sections.length - 1));
@@ -55,7 +72,6 @@
       });
       if (next !== titleIndex) {
         titleIndex = next;
-        active = sections[next];
       }
     };
     // Geometry is measured only when layout changes, never on scroll.
@@ -102,14 +118,14 @@
 <div class="settings-page" bind:this={page}>
   <div class="settings-toolbar" bind:this={toolbar}>
     <PageControls
-      canSave={controls?.canSave ?? false}
-      saveDirty={controls?.dirty}
-      onSave={() => controls?.onSave()}
+      {canSave}
+      saveDirty={dirty}
+      onSave={() => void saveAll()}
       saveButtonId="save-settings"
-      saveLabel={controls?.saveLabel ?? t("Save Changes")}
+      {saveLabel}
       addLabel={visibleControls?.addLabel}
       canAdd={visibleControls?.canAdd ?? false}
-      onAdd={visibleControls?.onAdd ? add : undefined}
+      onAdd={visibleControls?.onAdd}
       contextual={sections.length > 1}
     >
       {#snippet search()}

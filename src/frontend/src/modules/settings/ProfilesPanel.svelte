@@ -32,11 +32,10 @@
   async function save() {
     try {
       await saveProfiles();
-      toast.success(t("Profiles saved"));
-    } catch {
-      // Request failures already use the shared fetcher notification.
+    } catch (error) {
       if (profiles.persistencePending)
         toast.error(t("Changes are applied but not saved to disk. Retry saving."));
+      throw error;
     }
   }
 </script>
@@ -49,6 +48,7 @@
     title: t("Interface priority profiles"),
     addLabel: t("Add profile"),
     canAdd: !unavailable,
+    dirty,
     canSave: dirty && !unavailable && !validation,
     onAdd: addProfile,
     onSave: save,

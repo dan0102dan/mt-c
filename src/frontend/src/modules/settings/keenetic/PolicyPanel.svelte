@@ -15,7 +15,6 @@
     selectedPolicyId,
   } from "./state.svelte";
 
-  import { toast } from "../../../utils/events";
   import { settingsSection } from "../section-controls";
   import ru from "./ru.json";
 
@@ -48,13 +47,7 @@
     return () => clearInterval(timer);
   });
   async function save() {
-    if (!valid || policy.saving || !policy.loaded) return;
-    try {
-      await savePolicySettings();
-      toast.success(t("Policy settings saved"));
-    } catch {
-      /* Shared fetcher reports failures; disk retry also stays visible below. */
-    }
+    await savePolicySettings();
   }
 </script>
 
@@ -66,7 +59,7 @@
     title: t("Keenetic policy"),
     dirty,
     canSave: dirty && policy.loaded && !policy.saving && valid,
-    onSave: () => void save(),
+    onSave: save,
     saveLabel: policy.saving ? t("Saving...") : t("Save Changes"),
   })}
 >

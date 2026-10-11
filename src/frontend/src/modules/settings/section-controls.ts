@@ -3,9 +3,9 @@ import { getContext } from "svelte";
 export type SectionControls = {
   title: string;
   canSave: boolean;
-  dirty?: boolean;
+  dirty: boolean;
   saveLabel: string;
-  onSave: () => void;
+  onSave: () => Promise<void>;
   addLabel?: string;
   canAdd?: boolean;
   onAdd?: () => void;
@@ -17,8 +17,8 @@ export type SettingsSection = {
 export const SETTINGS_SECTIONS = Symbol("settings-sections");
 export type RegisterSection = (section: SettingsSection) => () => void;
 
-// Editors own their draft/save logic. Only the active toolbar is shared;
-// generic builds never have to import the Keenetic editor or its state.
+// Each section owns its draft and API write. The page coordinates one Save
+// across all dirty sections; generic builds never import Keenetic code.
 export function settingsSection() {
   const register = getContext<RegisterSection>(SETTINGS_SECTIONS);
   return (element: HTMLElement, controls: () => SectionControls) => ({
