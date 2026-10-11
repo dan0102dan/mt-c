@@ -79,5 +79,6 @@ jobs:
         with:
           name: keenetic-policy-browser
           path: src/frontend/node_modules/.playwright-results
+          include-hidden-files: true
           if-no-files-found: ignore
           retention-days: 7

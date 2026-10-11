@@ -138,7 +138,9 @@ test.describe("Keenetic policy settings", () => {
     expect(state.settings.policy_id).toBe("Policy0");
     state.listFailure = true;
     await panel(page).getByRole("button", { name: "Refresh policies", exact: true }).click();
-    await expect(panel(page).getByRole("alert")).toContainText("Failed to load Keenetic policies");
+    await expect(
+      panel(page).getByRole("alert").filter({ hasText: "Failed to load Keenetic policies" }),
+    ).toBeVisible();
     await panel(page).getByRole("switch").click();
     await expect(save(page)).toBeEnabled();
     await save(page).click();
