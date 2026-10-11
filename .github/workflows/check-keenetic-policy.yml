@@ -1,0 +1,83 @@
+name: Keenetic policy isolation and behavior
+on:
+  pull_request:
+    paths:
+      - 'Makefile'
+      - 'src/backend-c/**'
+      - 'src/frontend/**'
+      - 'tools/tests/**'
+      - '.github/workflows/check-keenetic-policy.yml'
+      - '.github/workflows/build.yml'
+  push:
+    paths:
+      - 'Makefile'
+      - 'src/backend-c/**'
+      - 'src/frontend/**'
+      - 'tools/tests/**'
+      - '.github/workflows/check-keenetic-policy.yml'
+      - '.github/workflows/build.yml'
+permissions:
+  contents: read
+jobs:
+  policy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+      - name: Install C dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y libpcre2-dev libyaml-dev libmnl-dev libcjson-dev libcurl4-openssl-dev
+      - name: Build and test both backend variants
+        run: |
+          make -C src/backend-c -j2 BUILD=policy-generic ENTWARE_KN=0 CFLAGS_EXTRA=-Werror all test
+          make -C src/backend-c -j2 BUILD=policy-kn ENTWARE_KN=1 CFLAGS_EXTRA=-Werror all test
+      - name: Policy sanitizer suites
+        working-directory: src/backend-c
+        run: |
+          make -j2 BUILD=policy-sanitize ENTWARE_KN=1 CFLAGS_EXTRA=-Werror \
+            OPT='-O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer' \
+            LDFLAGS='-fsanitize=address,undefined' \
+            build/policy-sanitize/tests/test_keenetic_policy \
+            build/policy-sanitize/tests/test_keenetic_policy_api \
+            build/policy-sanitize/tests/test_rule_priority
+          for name in test_keenetic_policy test_keenetic_policy_api test_rule_priority; do
+            ASAN_OPTIONS=detect_leaks=1:halt_on_error=1 UBSAN_OPTIONS=halt_on_error=1 build/policy-sanitize/tests/$name
+          done
+      - run: npm ci
+        working-directory: src/frontend
+      - run: npm run check
+        working-directory: src/frontend
+      - name: Build isolated frontend variants
+        working-directory: src/frontend
+        run: |
+          VITE_ENTWARE_KN=0 npm run build -- --outDir ../../.build/policy-generic-ui
+          VITE_ENTWARE_KN=1 npm run build -- --outDir ../../.build/policy-kn-ui
+      - name: Check actual payload absence and package contracts
+        run: |
+          python3 tools/tests/keenetic_policy_isolation.py \
+            --generic-binary src/backend-c/build/policy-generic/magitrickled-c \
+            --keenetic-binary src/backend-c/build/policy-kn/magitrickled-c \
+            --generic-frontend .build/policy-generic-ui --keenetic-frontend .build/policy-kn-ui
+          python3 tools/tests/package_identity.py
+          python3 tools/tests/frontend_variants.py
+      - run: npx playwright install --with-deps chromium
+        working-directory: src/frontend
+      - name: Browser tests, both frontend variants
+        working-directory: src/frontend
+        env:
+          POLICY_SCREENSHOTS: '1'
+        run: |
+          VITE_ENTWARE_KN=0 npx playwright test keenetic-policy.spec.ts
+          VITE_ENTWARE_KN=1 npx playwright test keenetic-policy.spec.ts
+      - name: Policy browser artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: keenetic-policy-browser
+          path: src/frontend/node_modules/.playwright-results
+          if-no-files-found: ignore
+          retention-days: 7

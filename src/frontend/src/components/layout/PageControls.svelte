@@ -8,12 +8,12 @@
 
   type Props = {
     search?: Snippet;
-    addLabel: string;
+    addLabel?: string;
     canSave: boolean;
     canAdd?: boolean;
     controlsClass?: string;
     actionsClass?: string;
-    onAdd: () => void;
+    onAdd?: () => void;
     onSave: () => void;
     saveButtonId?: string;
     saveLabel: string;
@@ -43,7 +43,7 @@
   }: Props = $props();
 
   let importInputRef = $state<HTMLInputElement>();
-  let actionsCount = $derived(2 + (onImport ? 1 : 0) + (onExport ? 1 : 0));
+  let actionsCount = $derived(1 + (onAdd ? 1 : 0) + (onImport ? 1 : 0) + (onExport ? 1 : 0));
   let actionsReserve = $derived(`${actionsCount * 48 + Math.max(0, actionsCount - 1) * 8 + 4}px`);
 </script>
 
@@ -94,9 +94,11 @@
       </Tooltip>
     {/if}
 
-    <Tooltip value={addLabel}>
-      <Button onclick={onAdd} aria-label={addLabel} disabled={!canAdd}><Add size={22} /></Button>
-    </Tooltip>
+    {#if onAdd && addLabel}
+      <Tooltip value={addLabel}>
+        <Button onclick={onAdd} aria-label={addLabel} disabled={!canAdd}><Add size={22} /></Button>
+      </Tooltip>
+    {/if}
   </div>
 </div>
 

@@ -3,6 +3,9 @@
 #include "magitrickle/profiles.h"
 
 #include <errno.h>
+#ifdef MT_ENTWARE_KN
+#include <stdatomic.h>
+#endif
 #include <ifaddrs.h>
 #include <linux/if.h>
 #include <net/if.h>
@@ -23,6 +26,13 @@
 #include "magitrickle/subparse.h"
 
 struct mt_app {
+#ifdef MT_ENTWARE_KN
+    /* Desired state is written on the event loop; active scope is published
+     * under nf_mu when a rebuild begins. All rulesets borrow its stable address. */
+    mt_kn_policy_scope_t policy_scope, policy_desired;
+    atomic_uint_fast64_t policy_generation, policy_applied;
+    atomic_int policy_apply_error;
+#endif
     mt_config_t *cfg;
     /* Immutable startup helper names: rulesets borrow these, not the
      * reloadable configuration strings. */
@@ -98,6 +108,9 @@ static void app_nf_leave(mt_app_t *app) {
 static mt_ruleset_deps_t ruleset_deps(mt_app_t *app) {
     mt_ruleset_deps_t deps = {
         .config = app->cfg,
+#ifdef MT_ENTWARE_KN
+        .policy = &app->policy_scope,
+#endif
         .ipt4 = app->ipt4,
         .ipt6 = app->ipt6,
         .rtnl = app->rtnl,
@@ -233,6 +246,17 @@ mt_app_t *mt_app_create(const mt_app_deps_t *deps) {
     app->pipeline = deps->pipeline;
     app->start_idx = deps->start_idx;
 
+#ifdef MT_ENTWARE_KN
+    atomic_init(&app->policy_generation, 1);
+    atomic_init(&app->policy_applied, 1);
+    atomic_init(&app->policy_apply_error, MT_OK);
+    if (mt_kn_policy_scope_init(&app->policy_scope, &app->cfg->app.keenetic_policy, app->chain_prefix) != MT_OK ||
+        mt_kn_policy_prepare(&app->policy_scope, app->ipt4) != MT_OK ||
+        mt_kn_policy_prepare(&app->policy_scope, app->ipt6) != MT_OK) {
+        mt_app_destroy(app); return NULL;
+    }
+    app->policy_desired = app->policy_scope;
+#endif
     mt_ruleset_deps_t rdeps = ruleset_deps(app);
     for (size_t i = 0; i < app->cfg->n_groups; i++) {
         mt_ruleset_t *rs = mt_ruleset_new(app->cfg->groups[i], &rdeps);
@@ -1326,6 +1350,15 @@ done:
             }
         }
     }
+#ifdef MT_ENTWARE_KN
+    if (err == MT_OK && !mt_kn_policy_config_equal(&app->policy_desired.config, &app->cfg->app.keenetic_policy)) {
+        mt_kn_policy_config_t policy = app->cfg->app.keenetic_policy;
+        /* Unlock before requesting a pass (test builds may run it synchronously). */
+        app_nf_leave(app);
+        err = mt_app_policy_set(app, &policy, false, 0);
+        app_nf_enter(app);
+    }
+#endif
     free(groups); free(subs); free(synth); free(old_groups_enabled); free(old_subs_enabled);
     mt_ruleset_snapshot_free(snapshot); mt_config_clear(&next);
     app_nf_leave(app);
@@ -1338,6 +1371,9 @@ mt_err_t mt_app_save_config(mt_app_t *app, const char *path, const char *version
 
 void mt_app_set_port_remap(mt_app_t *app, mt_port_remap_t *remap) {
     app->port_remap = remap;
+#ifdef MT_ENTWARE_KN
+    mt_port_remap_set_policy(remap, &app->policy_scope);
+#endif
 }
 
 /* One pass of the rebuild, with the netfilter lock already held. */
@@ -1369,6 +1405,12 @@ static mt_err_t rebuild_netfilter_locked(mt_app_t *app, mt_cancel_t *cancel) {
     err = mt_netfilter_register_base_chains(app->ipt4, app->ipt6);
     if (err != MT_OK) { return err; }
 
+#ifdef MT_ENTWARE_KN
+    app->policy_scope = app->policy_desired;
+    err = mt_kn_policy_prepare(&app->policy_scope, app->ipt4);
+    if (err == MT_OK) { err = mt_kn_policy_prepare(&app->policy_scope, app->ipt6); }
+    if (err != MT_OK) { return err; }
+#endif
     err = mt_port_remap_prepare_iptables(app->port_remap);
     if (err != MT_OK) { return err; }
 
@@ -1407,6 +1449,10 @@ mt_err_t mt_app_rebuild_netfilter(mt_app_t *app, mt_cancel_t *cancel) {
     if (app->ipt6) { mt_ipt_set_cancel(app->ipt6, cancel); }
 
     mt_err_t err = rebuild_netfilter_locked(app, cancel);
+#ifdef MT_ENTWARE_KN
+    atomic_store(&app->policy_apply_error, (int)err);
+    if (err == MT_OK) { atomic_store(&app->policy_applied, atomic_load(&app->policy_generation)); }
+#endif
 
     if (app->ipt4) { mt_ipt_set_cancel(app->ipt4, NULL); }
     if (app->ipt6) { mt_ipt_set_cancel(app->ipt6, NULL); }
@@ -1616,3 +1662,45 @@ mt_err_t mt_app_reconcile_routes(mt_app_t *app, const char *interface_name)
     if (app->nf_mu_ready) { pthread_mutex_unlock(&app->nf_mu); }
     return result;
 }
+
+#ifdef MT_ENTWARE_KN
+void mt_app_policy_get(const mt_app_t *app, mt_kn_policy_config_t *config,
+                        bool *ready, bool *applied, mt_err_t *apply_error)
+{
+    if (config) { *config = app->cfg->app.keenetic_policy; }
+    if (ready) { *ready = app->policy_desired.ready; }
+    if (applied) { *applied = atomic_load(&app->policy_applied) == atomic_load(&app->policy_generation); }
+    if (apply_error) { *apply_error = (mt_err_t)atomic_load(&app->policy_apply_error); }
+}
+mt_err_t mt_app_policy_set(mt_app_t *app, const mt_kn_policy_config_t *config, bool ready, uint32_t mark)
+{
+    mt_kn_policy_scope_t desired;
+    mt_err_t err = mt_kn_policy_scope_init(&desired, config, app->chain_prefix);
+    if (err != MT_OK || (ready && mark > MT_KN_POLICY_MASK)) { return MT_ERR_INVAL; }
+    desired.ready = config->enabled && ready;
+    desired.mark = desired.ready ? mark : 0;
+    /* Desired state is loop-owned. An unchanged periodic RCI result must not
+     * interrupt an in-flight netfilter rebuild or take its mutex. */
+    bool changed = !mt_kn_policy_config_equal(&app->policy_desired.config, config) ||
+                   app->policy_desired.ready != desired.ready || app->policy_desired.mark != desired.mark;
+    if (!changed) {
+        if (!app->committer && atomic_load(&app->policy_apply_error) != MT_OK) {
+            return mt_app_rebuild_netfilter(app, NULL);
+        }
+        return MT_OK;
+    }
+    app_nf_enter(app);
+    app->cfg->app.keenetic_policy = *config;
+    if (changed) {
+        app->policy_desired = desired;
+        atomic_fetch_add(&app->policy_generation, 1);
+        atomic_store(&app->policy_apply_error, MT_OK);
+    }
+    app_nf_leave(app);
+    if (changed) {
+        if (app->committer) { mt_nfcommit_request(app->committer); }
+        else { return mt_app_rebuild_netfilter(app, NULL); }
+    }
+    return MT_OK;
+}
+#endif

@@ -345,4 +345,12 @@ mt_err_t mt_app_start_netfilter_committer(mt_app_t *app);
  * down. */
 void mt_app_stop_netfilter_committer(mt_app_t *app);
 
+#ifdef MT_ENTWARE_KN
+void mt_app_policy_get(const mt_app_t *app, mt_kn_policy_config_t *config,
+                        bool *ready, bool *applied, mt_err_t *apply_error);
+/* Validation and model publication on the loop; netfilter I/O stays on the
+ * existing committer. Config is saved separately, with existing retry semantics. */
+mt_err_t mt_app_policy_set(mt_app_t *app, const mt_kn_policy_config_t *config,
+                            bool ready, uint32_t mark);
+#endif
 #endif /* MAGITRICKLE_APP_H */

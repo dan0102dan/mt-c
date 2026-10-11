@@ -1,4 +1,6 @@
 <script lang="ts">
+  import PlatformSettings from "#platform/settings";
+
   import ProfilesPanel from "./ProfilesPanel.svelte";
 </script>
 
@@ -7,6 +9,7 @@
   <section class="settings-section" aria-labelledby="interface-priority-profiles">
     <ProfilesPanel />
   </section>
+  <PlatformSettings />
 </div>
 
 <style>

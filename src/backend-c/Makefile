@@ -24,11 +24,9 @@ MT_VERSION ?= unattached
 MT_BUILD_TARGET ?=
 MT_PACKAGE_REVISION ?= 1
 
-# Set to any non-empty value to enable Keenetic (Entware `_kn`) platform
-# behavior -- currently just the ignored-interfaces list in api/app.c
-# (mirrors Go's constant.IgnoredInterfaces under its entware_kn build
-# tag). Root Makefile derives this from PLATFORM/TARGET the same way it
-# derives GO_TAGS' entware_kn tag.
+# Set to 1 for Keenetic (Entware `_kn`) behavior, including policy scope.
+# Root Makefile derives this solely from PLATFORM/TARGET. Keep separate
+# BUILD directories for native test variants, just as target builds do.
 ENTWARE_KN ?=
 
 # Target platform (entware|openwrt), passed through by the root Makefile.
@@ -51,7 +49,7 @@ CFLAGS   += $(CSTD) $(OPT) $(WARNINGS) -Iinclude -MMD -MP \
             -D_POSIX_C_SOURCE=200809L \
             -DMT_VERSION=\"$(MT_VERSION)\" -fno-common \
             -DMT_BUILD_TARGET=\"$(MT_BUILD_TARGET)\" -DMT_PACKAGE_REVISION=$(MT_PACKAGE_REVISION) \
-            $(if $(ENTWARE_KN),-DMT_ENTWARE_KN) \
+            $(if $(filter 1,$(ENTWARE_KN)),-DMT_ENTWARE_KN) \
             $(if $(filter entware,$(PLATFORM)),-DMT_PLATFORM_ENTWARE) \
             $(if $(filter openwrt,$(PLATFORM)),-DMT_PLATFORM_OPENWRT)
 # CI passes CFLAGS_EXTRA=-Werror; local builds stay warning-tolerant.
@@ -167,6 +165,12 @@ INTERFACES_SRCS := \
 LIB_SRCS := $(CORE_SRCS) $(CONFIG_SRCS) $(NETFILTER_SRCS) $(API_SRCS) $(SUBSCRIPTIONS_SRCS) \
             $(INTERFACES_SRCS)
 
+KEENETIC_POLICY_SRCS :=
+ifeq ($(strip $(ENTWARE_KN)),1)
+KEENETIC_POLICY_SRCS := src/netfilter/keenetic_policy.c src/interfaces/keenetic_policy_rci.c src/api/keenetic_policy_api.c
+endif
+LIB_SRCS += $(KEENETIC_POLICY_SRCS)
+
 MAIN_SRC := src/main/main.c
 CONFIGTOOL_SRC := src/tools/configtool.c
 DNSTOOL_SRC := src/tools/dnstool.c
@@ -180,6 +184,7 @@ SUBSCRIPTIONS_OBJS := $(SUBSCRIPTIONS_SRCS:%.c=$(BUILDDIR)/%.o)
 INTERFACES_OBJS := $(INTERFACES_SRCS:%.c=$(BUILDDIR)/%.o)
 LIB_OBJS := $(CORE_OBJS) $(CONFIG_OBJS) $(NETFILTER_OBJS) $(API_OBJS) $(SUBSCRIPTIONS_OBJS) \
             $(INTERFACES_OBJS)
+LIB_OBJS += $(KEENETIC_POLICY_SRCS:%.c=$(BUILDDIR)/%.o)
 MAIN_OBJ := $(MAIN_SRC:%.c=$(BUILDDIR)/%.o)
 CONFIGTOOL_OBJ := $(CONFIGTOOL_SRC:%.c=$(BUILDDIR)/%.o)
 DNSTOOL_OBJ := $(DNSTOOL_SRC:%.c=$(BUILDDIR)/%.o)

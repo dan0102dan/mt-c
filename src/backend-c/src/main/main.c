@@ -27,6 +27,9 @@
 #include <time.h>
 
 #include "magitrickle/app.h"
+#ifdef MT_ENTWARE_KN
+#include "magitrickle/keenetic_policy_api.h"
+#endif
 #include "magitrickle/auth.h"
 #include "magitrickle/dns_cache.h"
 #include "magitrickle/dnspipeline.h"
@@ -62,6 +65,9 @@
 #define MT_SUBSCRIPTION_AUTO_UPDATE_INTERVAL_MS 60000
 
 struct daemon {
+#ifdef MT_ENTWARE_KN
+    mt_kn_policy_service_t *policy_service;
+#endif
     mt_loop_t *loop;
     mt_dnsproxy_t *proxy;
     mt_cache_t *cache;
@@ -100,6 +106,10 @@ static int64_t now_unix(void)
 static void daemon_teardown(struct daemon *d)
 {
     mt_update_shutdown();
+#ifdef MT_ENTWARE_KN
+    mt_kn_policy_service_destroy(d->policy_service);
+    d->policy_service = NULL;
+#endif
     mt_sub_fetcher_destroy(d->fetcher);
     d->fetcher = NULL;
     /* After joining I/O workers: the committer thread reads the ruleset registry and
@@ -646,6 +656,7 @@ int main(int argc, char **argv)
             mt_config_clear(&cfg);
             return 1;
         }
+#ifndef MT_ENTWARE_KN
         err = mt_port_remap_enable(d.port_remap);
         if (err != MT_OK) {
             MT_ERROR("failed to override DNS: %s", mt_err_str(err));
@@ -653,6 +664,7 @@ int main(int argc, char **argv)
             mt_config_clear(&cfg);
             return 1;
         }
+#endif
     }
 
     /* ---- app layer: per-group netfilter rulesets + HTTP mutation API -------- */
@@ -673,6 +685,19 @@ int main(int argc, char **argv)
         mt_config_clear(&cfg);
         return 1;
     }
+#ifdef MT_ENTWARE_KN
+    /* Attach the unresolved (closed) policy scope before the first DNAT rule.
+     * There must be no all-client DNS interception window on a saved boot. */
+    mt_app_set_port_remap(d.app, d.port_remap);
+    if (d.port_remap && (err = mt_port_remap_enable(d.port_remap)) != MT_OK) {
+        MT_ERROR("failed to enable scoped DNS remap: %s", mt_err_str(err));
+        daemon_teardown(&d); mt_config_clear(&cfg); return 1;
+    }
+    if (mt_kn_policy_service_create(d.loop, d.app, config_path, MT_VERSION, NULL, &d.policy_service) != MT_OK) {
+        MT_ERROR("failed to create Keenetic policy service");
+        daemon_teardown(&d); mt_config_clear(&cfg); return 1;
+    }
+#endif
     for (size_t i = 0; i < mt_app_user_group_count(d.app); i++) {
         mt_ruleset_t *rs = mt_app_user_group_at(d.app, i);
         err = mt_ruleset_enable(rs);
@@ -765,6 +790,12 @@ int main(int argc, char **argv)
     }
     mt_groups_register_routes(d.http_unix, &groups_ctx);
     mt_system_register_routes(d.http_unix, &system_ctx);
+#ifdef MT_ENTWARE_KN
+    if (mt_kn_policy_register_routes(d.http_unix, d.policy_service) != MT_OK) {
+        MT_ERROR("failed to register Keenetic policy routes");
+        daemon_teardown(&d); mt_config_clear(&cfg); return 1;
+    }
+#endif
     mt_subs_register_routes(d.http_unix, &subs_ctx);
     mt_httpd_route(d.http_unix, "GET", "/api/v1/auth", mt_auth_status_handler, &auth_ctx);
     mt_httpd_route(d.http_unix, "POST", "/api/v1/auth", mt_auth_login_handler, &auth_ctx);
@@ -791,6 +822,12 @@ int main(int argc, char **argv)
         }
         mt_groups_register_routes(d.http_tcp, &groups_ctx);
         mt_system_register_routes(d.http_tcp, &system_ctx);
+#ifdef MT_ENTWARE_KN
+        if (mt_kn_policy_register_routes(d.http_tcp, d.policy_service) != MT_OK) {
+            MT_ERROR("failed to register Keenetic policy routes");
+            daemon_teardown(&d); mt_config_clear(&cfg); return 1;
+        }
+#endif
         mt_subs_register_routes(d.http_tcp, &subs_ctx);
         mt_httpd_route(d.http_tcp, "GET", "/api/v1/auth", mt_auth_status_handler, &auth_ctx);
         mt_httpd_route(d.http_tcp, "POST", "/api/v1/auth", mt_auth_login_handler, &auth_ctx);

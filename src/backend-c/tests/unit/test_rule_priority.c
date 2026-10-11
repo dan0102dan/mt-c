@@ -369,6 +369,7 @@ typedef struct {
     unsigned family;
     uint8_t address[16];
     bool reply;
+    bool local;
     uint32_t mark;
     uint32_t connmark;
 } packet_t;
@@ -384,6 +385,17 @@ static bool evaluate_chain(const char *chain, packet_t *packet, unsigned depth) 
         const mt_ipt_rule_t *rule = rules[i];
         const char *direction = rule_option(rule, "--ctdir");
         if (direction && strcmp(direction, "REPLY") == 0 && !packet->reply) { continue; }
+        const char *local = rule_option(rule, "--dst-type");
+        if (local && strcmp(local, "LOCAL") == 0 && !packet->local) { continue; }
+        const char *mark_match = rule_option(rule, "--mark");
+        if (mark_match) {
+            char *end = NULL;
+            uint32_t wanted = (uint32_t)strtoul(mark_match, &end, 0);
+            uint32_t mask = *end == '/' ? (uint32_t)strtoul(end + 1, NULL, 0) : UINT32_MAX;
+            bool inverse = false;
+            for (size_t j = 0; j < rule->n_parts; j++) { inverse |= strcmp(rule->parts[j], "!") == 0; }
+            if (((packet->mark & mask) == wanted) == inverse) { continue; }
+        }
         const char *set = rule_option(rule, "--match-set");
         if (set && !set_contains(set, packet->family, packet->address)) { continue; }
         const char *target = rule_option(rule, "-j");
@@ -526,12 +538,59 @@ TEST live_profile_reconfiguration_preserves_rule_priority(void) {
     PASS();
 }
 
+#ifdef MT_ENTWARE_KN
+TEST policy_membership_is_checked_before_any_group_overwrites_the_mark(void) {
+    make_links();
+    mt_kn_policy_config_t config = {.enabled = true, .policy_id = "Policy0"};
+    mt_kn_policy_scope_t scope;
+    ASSERT_EQ(MT_OK, mt_kn_policy_scope_init(&scope, &config, "TST_"));
+    scope.mark = 0xffffd00;
+    for (unsigned mode = 0; mode < 3; mode++) {
+        scope.config.mode = mode == 1 ? MT_KN_POLICY_EXCLUDE : MT_KN_POLICY_INCLUDE;
+        scope.ready = mode != 2;
+        for (unsigned family = 0; family < 2; family++) {
+            mt_fake_ipt_reset(fixture.fake[family]); mt_ipt_reset_staged(fixture.ipt[family]);
+        }
+        ASSERT_EQ(MT_OK, mt_netfilter_register_base_chains(fixture.ipt[0], fixture.ipt[1]));
+        for (unsigned family = 0; family < 2; family++) {
+            ASSERT_EQ(MT_OK, mt_kn_policy_prepare(&scope, fixture.ipt[family]));
+            mt_ipset_to_link_set_policy(fixture.links[family], &scope);
+        }
+        ASSERT_EQ(MT_OK, prepare_links());
+        for (unsigned family = 0; family < 2; family++) {
+            for (unsigned member = 0; member < 2; member++) {
+                packet_t packet = {.family = family, .mark = UINT32_C(0x60000000) | (member ? scope.mark : scope.mark + 1)};
+                const uint8_t v4[4] = {198,51,100,42};
+                const uint8_t v6[16] = {0x20,1,0x0d,0xb8,0xab,0xcd,0,0,0,0,0,0,0,0,0,0x42};
+                memcpy(packet.address, family ? v6 : v4, family ? 16u : 4u);
+                packet.connmark = packet.mark;
+                uint32_t initial = packet.mark;
+                ASSERT(evaluate_chain("PREROUTING", &packet, 0));
+                bool applies = mode != 2 && (mode == 1 ? !member : member);
+                ASSERT_EQ(applies ? 101u : initial, packet.mark);
+                ASSERT_EQ(applies ? 101u : initial, packet.connmark);
+                /* A router-local DNS packet must keep its original policy
+                 * until nat/PREROUTING can perform its own scoped DNAT. */
+                packet.mark = initial; packet.connmark = initial; packet.local = true;
+                ASSERT(evaluate_chain("PREROUTING", &packet, 0));
+                ASSERT_EQ(initial, packet.mark); ASSERT_EQ(initial, packet.connmark);
+            }
+        }
+    }
+    for (unsigned i = 0; i < 2; i++) { mt_ipset_to_link_set_policy(fixture.links[i], NULL); }
+    PASS();
+}
+#endif
+
 GREATEST_MAIN_DEFS();
 
 int main(int argc, char **argv) {
     GREATEST_MAIN_BEGIN();
     SET_SETUP(fixture_setup, NULL);
     SET_TEARDOWN(fixture_teardown, NULL);
+#ifdef MT_ENTWARE_KN
+    RUN_TEST(policy_membership_is_checked_before_any_group_overwrites_the_mark);
+#endif
     RUN_TEST(live_priority_changes_reorder_existing_jumps);
     RUN_TEST(priority_reorder_preserves_foreign_slots_and_normal_append);
     RUN_TEST(duplicate_managed_jumps_are_removed_without_touching_other_rules);
