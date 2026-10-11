@@ -94,7 +94,7 @@ test("generic UI has no policy feature or policy requests", async ({ page }) => 
 
 test.describe("Keenetic policy settings", () => {
   test.skip(!keenetic, "Keenetic-only bundle");
-  test("off by default, explicit save, include/exclude and reload", async ({ page }, testInfo) => {
+  test("off by default, explicit save, include/exclude and reload", async ({ page }) => {
     const state = await backend(page);
     await openSettings(page);
     const toggle = panel(page).getByRole("switch");
@@ -103,7 +103,7 @@ test.describe("Keenetic policy settings", () => {
     await toggle.click();
     await expect(panel(page).getByRole("radio")).toHaveCount(2);
     await expect(save(page)).toBeDisabled();
-    await panel(page).locator('[data-select-trigger][aria-label="Router policy"]').click();
+    await panel(page).getByRole("button", { name: "Router policy", exact: true }).click();
     await page.getByRole("option", { name: /VPN.*Policy0/ }).click();
     expect(state.writes).toBe(0);
     await save(page).click();
@@ -122,8 +122,6 @@ test.describe("Keenetic policy settings", () => {
       }),
     ).toBeChecked();
     await expect(toggle).toBeChecked();
-    if (process.env.POLICY_SCREENSHOTS)
-      await panel(page).screenshot({ path: testInfo.outputPath("policy-desktop.png") });
   });
   test("missing policy is retained; RCI failure never blocks disabling", async ({ page }) => {
     const state = await backend(page, true);
@@ -176,7 +174,7 @@ test.describe("Keenetic policy settings", () => {
     await panel(page)
       .getByRole("radio", { name: "Do not process devices in the selected policy", exact: true })
       .check();
-    await panel(page).locator('[data-select-trigger][aria-label="Router policy"]').click();
+    await panel(page).getByRole("button", { name: "Router policy", exact: true }).click();
     await page.getByRole("option", { name: /VPN.*Policy1/ }).click();
     await panel(page).getByRole("button", { name: "Refresh policies", exact: true }).click();
     await expect.poll(() => state.settingsReads, { timeout: 7000 }).toBeGreaterThan(1);
@@ -187,7 +185,7 @@ test.describe("Keenetic policy settings", () => {
       }),
     ).toBeChecked();
     await expect(
-      panel(page).locator('[data-select-trigger][aria-label="Router policy"]'),
+      panel(page).getByRole("button", { name: "Router policy", exact: true }),
     ).toContainText("VPN");
     await save(page).click();
     await expect.poll(() => state.settings.policy_id).toBe("Policy1");
@@ -202,10 +200,14 @@ test.describe("Keenetic policy settings", () => {
       .getByRole("radio", { name: "Do not process devices in the selected policy", exact: true })
       .check();
     await expect(save(page)).toBeEnabled();
-    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(
-      true,
+    await expect(save(page)).toBeInViewport();
+    expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(
+      390,
     );
     await save(page).click();
     await expect(save(page)).toBeDisabled();
+    expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(
+      390,
+    );
   });
 });
