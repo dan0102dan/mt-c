@@ -1261,17 +1261,21 @@ mt_err_t mt_app_reload_config(mt_app_t *app, const char *path) {
     if (err != MT_OK) { mt_config_clear(&next); return err; }
 
     size_t ng = next.n_groups, ns = next.n_subscriptions;
+    app_nf_enter(app);
+    /* One immutable size per old registry: allocation, capture, retirement
+     * and rollback must describe the same snapshot, including empty sets.
+     * Only the loop thread replaces these arrays; nf_mu excludes rebuilds. */
+    const size_t old_ng = app->n_rulesets, old_ns = app->n_sub_rulesets;
     mt_ruleset_t **groups = ng ? calloc(ng, sizeof(*groups)) : NULL;
     mt_ruleset_t **subs = ns ? calloc(ns, sizeof(*subs)) : NULL;
     mt_group_t **synth = ns ? calloc(ns, sizeof(*synth)) : NULL;
-    bool *old_groups_enabled = app->n_rulesets ? calloc(app->n_rulesets, sizeof(bool)) : NULL;
-    bool *old_subs_enabled = app->n_sub_rulesets ? calloc(app->n_sub_rulesets, sizeof(bool)) : NULL;
+    bool *old_groups_enabled = old_ng ? calloc(old_ng, sizeof(*old_groups_enabled)) : NULL;
+    bool *old_subs_enabled = old_ns ? calloc(old_ns, sizeof(*old_subs_enabled)) : NULL;
     mt_ruleset_snapshot_t *snapshot = NULL;
     bool touched = false, swapped = false;
     mt_config_t old = {0};
-    app_nf_enter(app);
     if ((ng && !groups) || (ns && (!subs || !synth)) ||
-        (app->n_rulesets && !old_groups_enabled) || (app->n_sub_rulesets && !old_subs_enabled)) {
+        (old_ng && !old_groups_enabled) || (old_ns && !old_subs_enabled)) {
         err = MT_ERR_NOMEM; goto done;
     }
     mt_ruleset_deps_t deps = ruleset_deps(app); /* stable cfg address */
@@ -1288,17 +1292,17 @@ mt_err_t mt_app_reload_config(mt_app_t *app, const char *path) {
         snapshot = mt_ruleset_snapshot_build(&next);
         if (!snapshot) { err = MT_ERR_NOMEM; goto done; }
     }
-    for (size_t i = 0; i < app->n_rulesets; i++) {
+    for (size_t i = 0; i < old_ng; i++) {
         old_groups_enabled[i] = mt_ruleset_runtime_enabled(app->rulesets[i]);
     }
-    for (size_t i = 0; i < app->n_sub_rulesets; i++) {
+    for (size_t i = 0; i < old_ns; i++) {
         old_subs_enabled[i] = mt_ruleset_runtime_enabled(app->sub_rulesets[i]);
     }
     touched = true;
-    for (size_t i = 0; err == MT_OK && i < app->n_rulesets; i++) {
+    for (size_t i = 0; err == MT_OK && i < old_ng; i++) {
         err = mt_ruleset_disable(app->rulesets[i]);
     }
-    for (size_t i = 0; err == MT_OK && i < app->n_sub_rulesets; i++) {
+    for (size_t i = 0; err == MT_OK && i < old_ns; i++) {
         err = mt_ruleset_disable(app->sub_rulesets[i]);
     }
     if (err != MT_OK) { goto done; }
@@ -1312,8 +1316,8 @@ mt_err_t mt_app_reload_config(mt_app_t *app, const char *path) {
         }
     }
     if (err != MT_OK) { goto done; }
-    for (size_t i = 0; i < app->n_rulesets; i++) { mt_ruleset_free(app->rulesets[i]); }
-    for (size_t i = 0; i < app->n_sub_rulesets; i++) {
+    for (size_t i = 0; i < old_ng; i++) { mt_ruleset_free(app->rulesets[i]); }
+    for (size_t i = 0; i < old_ns; i++) {
         mt_ruleset_free(app->sub_rulesets[i]); mt_group_free(app->sub_synth_groups[i]);
     }
     free(app->rulesets); free(app->sub_rulesets); free(app->sub_synth_groups);
@@ -1344,7 +1348,7 @@ done:
         for (size_t family = 0; family < 2; family++) {
             mt_ruleset_t **sets = family ? app->sub_rulesets : app->rulesets;
             bool *enabled = family ? old_subs_enabled : old_groups_enabled;
-            size_t count = family ? app->n_sub_rulesets : app->n_rulesets;
+            size_t count = family ? old_ns : old_ng;
             for (size_t i = 0; i < count; i++) {
                 if (!enabled[i]) { continue; }
                 mt_err_t restore = mt_ruleset_enable(sets[i]);
