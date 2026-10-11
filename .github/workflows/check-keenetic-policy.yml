@@ -68,8 +68,6 @@ jobs:
         working-directory: src/frontend
       - name: Browser tests, both frontend variants
         working-directory: src/frontend
-        env:
-          POLICY_SCREENSHOTS: '1'
         run: |
           VITE_ENTWARE_KN=0 npx playwright test keenetic-policy.spec.ts
           VITE_ENTWARE_KN=1 npx playwright test keenetic-policy.spec.ts
