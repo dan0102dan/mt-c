@@ -3,9 +3,10 @@
   import { onMount, setContext } from "svelte";
 
   import PageControls from "../../components/layout/PageControls.svelte";
-  import { toast } from "../../utils/events";
   import { t } from "../../data/locale.svelte";
   import ProfilesPanel from "./ProfilesPanel.svelte";
+
+  import { toast } from "../../utils/events";
 
   import {
     SETTINGS_SECTIONS,
@@ -25,9 +26,7 @@
     sections.find((section) => section.controls().dirty && !section.controls().canSave)?.controls(),
   );
   const canSave = $derived(dirty && !saving && !invalid);
-  const saveLabel = $derived(
-    saving ? t("Saving...") : invalid?.saveLabel ?? t("Save Changes"),
-  );
+  const saveLabel = $derived(saving ? t("Saving...") : (invalid?.saveLabel ?? t("Save Changes")));
 
   async function saveAll() {
     if (!canSave) return;
@@ -57,7 +56,6 @@
     sections = [...sections, section];
     return () => {
       sections = sections.filter((s) => s !== section);
-      if (active === section) active = sections[0];
       titleIndex = Math.min(titleIndex, Math.max(0, sections.length - 1));
     };
   });
