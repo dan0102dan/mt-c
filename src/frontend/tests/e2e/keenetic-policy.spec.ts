@@ -104,30 +104,89 @@ test("generic UI has no policy feature or policy requests", async ({ page }) => 
 
 test.describe("Keenetic policy settings", () => {
   test.skip(!keenetic, "Keenetic-only bundle");
+  for (const width of [1280, 390]) {
+    test(`mt default follows the policy list and saves its ID (${width}px)`, async ({ page }) => {
+      await page.setViewportSize({ width, height: width === 390 ? 844 : 900 });
+      const state = await backend(page);
+      await openSettings(page);
+      await panel(page)
+        .getByRole("switch", { name: "Use policy based filter", exact: true })
+        .click();
+      const picker = panel(page).getByRole("button", { name: "Router policy", exact: true });
+      await expect(picker).toHaveText("mt");
+      await expect(save(page)).toBeDisabled();
+      await expect(save(page)).not.toHaveClass(/inactive/);
+      await expect(
+        panel(page).getByText('Create the "mt" policy in Keenetic, then reload this page.'),
+      ).toBeVisible();
+      await expect(panel(page).getByRole("button", { name: "Refresh policies" })).toHaveCount(0);
+      await picker.click();
+      await expect(page.getByRole("option", { name: "mt", exact: true })).toBeVisible();
+      await page.keyboard.press("Escape");
+      state.policies.push({ id: "Policy42", name: "mt", available: true });
+      await page.reload();
+      await panel(page)
+        .getByRole("switch", { name: "Use policy based filter", exact: true })
+        .click();
+      await expect(picker).toHaveText("mt");
+      await expect(save(page)).toBeEnabled();
+      const mode = panel(page).getByRole("switch", { name: "Processing mode", exact: true });
+      await expect(
+        panel(page).getByText("Include: MT processes only devices in the selected policy", {
+          exact: true,
+        }),
+      ).toBeVisible();
+      await mode.click();
+      await expect(
+        panel(page).getByText(
+          "Exclude: MT processes all devices except those in the selected policy",
+          { exact: true },
+        ),
+      ).toBeVisible();
+      await mode.click();
+      await page.locator(".locale button").click();
+      await expect(
+        panel(page).getByText("Include: MT обрабатывает только устройства выбранной политики", {
+          exact: true,
+        }),
+      ).toBeVisible();
+      await page.locator(".locale button").click();
+      expect(state.writes).toBe(0);
+      await save(page).click();
+      await expect(save(page)).toBeDisabled();
+      expect(state.settings).toEqual({ enabled: true, policy_id: "Policy42", mode: "include" });
+      await page.reload();
+      await expect(picker).toHaveText("mt");
+      expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(
+        width,
+      );
+    });
+  }
   test("off by default, explicit save, include/exclude and reload", async ({ page }) => {
     const state = await backend(page);
     await openSettings(page);
-    const toggle = panel(page).getByRole("switch");
+    const toggle = panel(page).getByRole("switch", {
+      name: "Use policy based filter",
+      exact: true,
+    });
     await expect(toggle).not.toBeChecked();
-    expect(state.listReads).toBe(0);
+    await expect.poll(() => state.listReads).toBe(1);
     await toggle.click();
-    await expect(panel(page).getByRole("radio")).toHaveCount(2);
+    await expect(panel(page).getByRole("switch")).toHaveCount(2);
     await expect(save(page)).toBeDisabled();
     await panel(page).getByRole("button", { name: "Router policy", exact: true }).click();
-    await page.getByRole("option", { name: /VPN.*Policy0/ }).click();
+    await page.getByRole("option", { name: "VPN", exact: true }).nth(0).click();
     expect(state.writes).toBe(0);
     await save(page).click();
     await expect(save(page)).toBeDisabled();
     expect(state.settings).toEqual({ enabled: true, policy_id: "Policy0", mode: "include" });
-    await panel(page)
-      .getByRole("radio", { name: "Do not process devices in the selected policy", exact: true })
-      .check();
+    await panel(page).getByRole("switch", { name: "Processing mode", exact: true }).click();
     await save(page).click();
     await expect.poll(() => state.settings.mode).toBe("exclude");
     await page.reload();
     await expect(
-      panel(page).getByRole("radio", {
-        name: "Do not process devices in the selected policy",
+      panel(page).getByRole("switch", {
+        name: "Processing mode",
         exact: true,
       }),
     ).toBeChecked();
@@ -138,18 +197,14 @@ test.describe("Keenetic policy settings", () => {
     state.policies = [];
     await openSettings(page);
     await expect(
-      panel(page).getByText(
-        "The selected policy is missing or unavailable. Select another policy or disable the filter.",
-        { exact: true },
-      ),
-    ).toBeVisible();
+      panel(page).getByRole("button", { name: "Router policy", exact: true }),
+    ).toContainText("Policy0");
+    await expect(save(page)).toBeDisabled();
     expect(state.settings.policy_id).toBe("Policy0");
     state.listFailure = true;
-    await panel(page).getByRole("button", { name: "Refresh policies", exact: true }).click();
-    await expect(
-      panel(page).getByRole("alert").filter({ hasText: "Failed to load Keenetic policies" }),
-    ).toBeVisible();
-    await panel(page).getByRole("switch").click();
+    await page.reload();
+    await expect.poll(() => state.listReads).toBe(2);
+    await panel(page).getByRole("switch", { name: "Use policy based filter", exact: true }).click();
     await expect(save(page)).toBeEnabled();
     await save(page).click();
     await expect(save(page)).toBeDisabled();
@@ -161,8 +216,10 @@ test.describe("Keenetic policy settings", () => {
   }) => {
     const state = await backend(page, true);
     await openSettings(page);
-    await expect(panel(page).getByRole("switch")).toBeChecked();
-    await panel(page).getByRole("switch").click();
+    await expect(
+      panel(page).getByRole("switch", { name: "Use policy based filter", exact: true }),
+    ).toBeChecked();
+    await panel(page).getByRole("switch", { name: "Use policy based filter", exact: true }).click();
     state.diskFailure = true;
     await save(page).click();
     await expect(
@@ -178,19 +235,16 @@ test.describe("Keenetic policy settings", () => {
     await expect(panel(page).getByRole("alert")).toHaveCount(0);
     expect(state.writes).toBe(2);
   });
-  test("list refresh and status polling preserve unsaved mode and ID", async ({ page }) => {
+  test("status polling preserves unsaved mode and ID", async ({ page }) => {
     const state = await backend(page, true);
     await openSettings(page);
-    await panel(page)
-      .getByRole("radio", { name: "Do not process devices in the selected policy", exact: true })
-      .check();
+    await panel(page).getByRole("switch", { name: "Processing mode", exact: true }).click();
     await panel(page).getByRole("button", { name: "Router policy", exact: true }).click();
-    await page.getByRole("option", { name: /VPN.*Policy1/ }).click();
-    await panel(page).getByRole("button", { name: "Refresh policies", exact: true }).click();
+    await page.getByRole("option", { name: "VPN", exact: true }).nth(1).click();
     await expect.poll(() => state.settingsReads, { timeout: 7000 }).toBeGreaterThan(1);
     await expect(
-      panel(page).getByRole("radio", {
-        name: "Do not process devices in the selected policy",
+      panel(page).getByRole("switch", {
+        name: "Processing mode",
         exact: true,
       }),
     ).toBeChecked();
@@ -205,10 +259,10 @@ test.describe("Keenetic policy settings", () => {
     await page.setViewportSize({ width: 390, height: 844 });
     await backend(page, true);
     await openSettings(page);
-    await expect(panel(page).getByRole("switch")).toBeChecked();
-    await panel(page)
-      .getByRole("radio", { name: "Do not process devices in the selected policy", exact: true })
-      .check();
+    await expect(
+      panel(page).getByRole("switch", { name: "Use policy based filter", exact: true }),
+    ).toBeChecked();
+    await panel(page).getByRole("switch", { name: "Processing mode", exact: true }).click();
     await expect(save(page)).toBeEnabled();
     await expect(save(page)).toBeInViewport();
     expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(
@@ -247,7 +301,8 @@ test.describe("Shared settings toolbar", () => {
       await expect(heading).toHaveAccessibleName("Interface priority profiles");
       await expect(panel(page).getByRole("heading", { name: "Keenetic policy" })).toBeInViewport();
       await expect(page.getByRole("button", { name: "Add profile", exact: true })).toBeVisible();
-      await page.setViewportSize({ width, height: 400 });
+      // The compact policy section needs a shorter viewport to cross the toolbar.
+      await page.setViewportSize({ width, height: width > 700 ? 180 : 240 });
       const inlineHeading = page.locator("#keenetic-policy-title");
       const add = page.getByRole("button", { name: "Add profile", exact: true });
       async function placeHeading(offset: number) {
@@ -306,18 +361,21 @@ test.describe("Shared settings toolbar", () => {
       expect(
         await button!.evaluate((node) => node === document.querySelector("#save-settings")),
       ).toBe(true);
-      await panel(page)
-        .getByRole("radio", { name: "Do not process devices in the selected policy", exact: true })
-        .check();
+      await page.setViewportSize({ width, height: 900 });
+      await page.evaluate(() => window.scrollTo(0, document.documentElement.scrollHeight));
+      await expect(heading).toHaveAccessibleName("Interface priority profiles");
+      await panel(page).getByRole("switch", { name: "Processing mode", exact: true }).click();
       await save(page).click();
       await expect(save(page)).toBeDisabled();
       expect(state.writes).toBe(1);
       expect(state.profileWrites).toBe(0);
       expect(state.profiles[0].name).toBe("VPN 1");
+      await page.setViewportSize({ width, height: 900 });
       await page.evaluate(() => window.scrollTo(0, 0));
       await expect(heading).toHaveAccessibleName("Interface priority profiles");
       await expect(page.getByRole("button", { name: "Add profile", exact: true })).toBeVisible();
       await expect(name).toHaveValue("Unsaved profile name");
+      await name.focus();
       await expect(save(page)).toBeEnabled();
       await save(page).click();
       await expect(save(page)).toBeDisabled();
@@ -336,7 +394,10 @@ test.describe("Shared settings toolbar", () => {
     const state = await backend(page);
     await openSettings(page);
     const heading = page.locator(".settings-toolbar").getByRole("heading", { level: 2 });
-    const toggle = panel(page).getByRole("switch");
+    const toggle = panel(page).getByRole("switch", {
+      name: "Use policy based filter",
+      exact: true,
+    });
     await toggle.focus();
     await expect(heading).toHaveAccessibleName("Interface priority profiles");
     await expect(panel(page).getByRole("heading", { name: "Keenetic policy" })).toBeInViewport();

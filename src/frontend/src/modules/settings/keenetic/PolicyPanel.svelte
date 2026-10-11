@@ -12,6 +12,7 @@
     policyDirty,
     refreshPolicies,
     savePolicySettings,
+    selectedPolicyId,
   } from "./state.svelte";
 
   import { toast } from "../../../utils/events";
@@ -22,31 +23,20 @@
   Object.assign(locales.ru, ru);
   const section = settingsSection();
   const dirty = $derived(policyDirty());
-  const selected = $derived(policy.policies.find((p) => p.id === policy.draft.policy_id));
+  const selectedId = $derived(selectedPolicyId());
+  const selected = $derived(policy.policies.find((p) => p.id === selectedId));
   const valid = $derived(
     !policy.draft.enabled ||
       Boolean(selected?.available && policy.listLoaded && !policy.listFailed),
   );
-  const options = $derived(
-    policy.policies.map((p) => ({
-      value: p.id,
-      label: p.name || p.id,
-      description: `${p.id}${p.available ? "" : ` · ${t("Policy unavailable")}`}`,
-    })),
-  );
-  const status = $derived(
-    {
-      disabled: "Policy filter is off. MT works for all devices as before.",
-      ready: "Policy filter is active.",
-      applying: "Applying policy filter...",
-      unavailable:
-        "The policy is unavailable. MT does not process new traffic until it becomes available or the filter is disabled.",
-      error: "Could not apply the policy filter. Check the system log and retry or disable it.",
-    }[policy.runtime.state],
-  );
+  const options = $derived([
+    ...(policy.policies.some((p) => p.name === "mt") ? [] : [{ value: "", label: "mt" }]),
+    ...policy.policies.map((p) => ({ value: p.id, label: p.name || p.id })),
+  ]);
 
   onMount(() => {
     void fetchPolicySettings();
+    if (!policy.listLoaded && !policy.listFailed) void refreshPolicies();
     const timer = setInterval(() => {
       if (
         policy.loaded &&
@@ -57,17 +47,8 @@
     }, 3000);
     return () => clearInterval(timer);
   });
-  $effect(() => {
-    if (
-      policy.loaded &&
-      policy.draft.enabled &&
-      !policy.listLoaded &&
-      !policy.listing &&
-      !policy.listFailed
-    )
-      void refreshPolicies();
-  });
   async function save() {
+    if (!valid || policy.saving || !policy.loaded) return;
     try {
       await savePolicySettings();
       toast.success(t("Policy settings saved"));
@@ -83,17 +64,13 @@
   aria-busy={policy.saving}
   use:section={() => ({
     title: t("Keenetic policy"),
+    dirty,
     canSave: dirty && policy.loaded && !policy.saving && valid,
     onSave: () => void save(),
     saveLabel: policy.saving ? t("Saving...") : t("Save Changes"),
   })}
 >
   <h2 id="keenetic-policy-title">{t("Keenetic policy")}</h2>
-  <p class="description">
-    {t(
-      "MT rules still choose destinations and interfaces. This setting only selects which devices they apply to.",
-    )}
-  </p>
 
   {#if !policy.loaded}
     <Placeholder variant={policy.failed ? "error" : "loading"} minHeight="auto">
@@ -106,89 +83,68 @@
       {/snippet}
     </Placeholder>
   {:else}
-    <fieldset disabled={policy.saving}>
-      <div class="switch-row">
-        <label for="keenetic-policy-enabled">{t("Use Keenetic policy")}</label>
-        <Switch
-          id="keenetic-policy-enabled"
-          bind:checked={policy.draft.enabled}
-          aria-label={t("Use Keenetic policy")}
-        />
+    <fieldset class="policy-layout" class:enabled={policy.draft.enabled} disabled={policy.saving}>
+      <div class="policy-switches">
+        <div class="switch-row">
+          <Switch
+            id="keenetic-policy-enabled"
+            bind:checked={policy.draft.enabled}
+            aria-label={t("Use policy based filter")}
+          />
+          <label for="keenetic-policy-enabled">{t("Use policy based filter")}</label>
+        </div>
+        {#if policy.draft.enabled}
+          <div class="switch-row mode-switch">
+            <Switch
+              id="keenetic-policy-mode"
+              bind:checked={
+                () => policy.draft.mode === "exclude",
+                (checked) => (policy.draft.mode = checked ? "exclude" : "include")
+              }
+              aria-label={t("Processing mode")}
+            />
+            <label for="keenetic-policy-mode">
+              {policy.draft.mode === "include"
+                ? t("Include: MT processes only devices in the selected policy")
+                : t("Exclude: MT processes all devices except those in the selected policy")}
+            </label>
+          </div>
+        {/if}
       </div>
       {#if policy.draft.enabled}
-        <div class="policy-choice">
-          <span id="keenetic-policy-label">{t("Router policy")}</span>
-          <div class="picker-row">
-            <Select
-              {options}
-              bind:selected={policy.draft.policy_id}
-              ariaLabel={t("Router policy")}
-              disabled={policy.listing || policy.saving}
-              missingLabel={policy.draft.policy_id
-                ? `${policy.draft.policy_id} · ${t("Policy unavailable")}`
-                : t("Select a policy")}
-            />
-            <Button
-              disabled={policy.listing || policy.saving}
-              onclick={() => void refreshPolicies()}
-            >
-              {policy.listing ? t("Loading...") : t("Refresh policies")}
-            </Button>
+        <div class="policy-fields">
+          <div class="policy-choice">
+            <span id="keenetic-policy-label">{t("Router policy")}</span>
+            <div class="picker-row">
+              <Select
+                {options}
+                compact
+                bind:selected={() => selectedId, (id) => (policy.draft.policy_id = id)}
+                ariaLabel={t("Router policy")}
+                disabled={policy.listing || policy.saving}
+                missingLabel={policy.draft.policy_id
+                  ? `${policy.draft.policy_id} · ${t("Policy unavailable")}`
+                  : "mt"}
+              />
+              {#if !policy.listing && !valid}
+                <p class="validation" role="status">
+                  {policy.listFailed
+                    ? t("Could not load policies. Reload the page to retry.")
+                    : !selectedId
+                      ? t('Create the "mt" policy in Keenetic, then reload this page.')
+                      : t("Select an available policy to save.")}
+                </p>
+              {/if}
+            </div>
           </div>
-          {#if policy.listFailed}
-            <p class="notice" role="alert">
-              {t(
-                "Failed to load Keenetic policies. Your selection has been kept. Retry the refresh or disable the filter.",
-              )}
-            </p>
-          {:else if policy.listLoaded && !policy.policies.length && !policy.draft.policy_id}
-            <p class="notice">
-              {t("No policies found. Create a policy in Keenetic, then refresh this list.")}
-            </p>
-          {:else if policy.listLoaded && policy.draft.policy_id && !selected?.available}
-            <p class="notice" role="alert">
-              {t(
-                "The selected policy is missing or unavailable. Select another policy or disable the filter.",
-              )}
-            </p>
-          {/if}
         </div>
-        <fieldset class="modes">
-          <legend>{t("Processing mode")}</legend>
-          <label class="mode">
-            <input
-              type="radio"
-              name="keenetic-policy-mode"
-              value="include"
-              bind:group={policy.draft.mode}
-            />
-            <span>{t("Process only devices in the selected policy")}</span>
-          </label>
-          <label class="mode">
-            <input
-              type="radio"
-              name="keenetic-policy-mode"
-              value="exclude"
-              bind:group={policy.draft.mode}
-            />
-            <span>{t("Do not process devices in the selected policy")}</span>
-          </label>
-          <p class="description">
-            {t("Unprocessed devices use normal Keenetic routing. Their traffic is not blocked.")}
-          </p>
-        </fieldset>
       {/if}
     </fieldset>
-    <p class="runtime" role="status">{t(status)}</p>
-    {#if dirty}<p class="description">{t("Changes will take effect after saving.")}</p>{/if}
     {#if policy.persistencePending}
       <p class="notice" role="alert">
         {t("Changes are applied but not saved to disk. Retry saving.")}
       </p>
     {/if}
-    <p class="description">
-      {t("Already established connections may keep their previous route until they reconnect.")}
-    </p>
   {/if}
 </section>
 
@@ -204,29 +160,36 @@
     padding: 0;
     margin: 0;
   }
-  .description {
-    color: var(--text-2);
-    line-height: 1.5;
-    margin: 0.6rem 0;
-  }
   .switch-row {
     display: flex;
     align-items: center;
-    justify-content: space-between;
-    gap: 1rem;
-    padding: 1rem 0;
+    gap: 0.65rem;
+    padding: 0.5rem 0;
+    line-height: 1.5;
+  }
+  .policy-layout.enabled {
+    display: grid;
+    grid-template-columns: minmax(0, 3fr) minmax(0, 2fr);
+    gap: 1.5rem;
+    align-items: stretch;
+  }
+  .policy-switches {
+    min-width: 0;
+  }
+  .policy-fields {
+    min-width: 0;
+    border-left: 1px solid var(--bg-light-extra);
+    padding: 0.5rem 0 0.5rem 1.5rem;
   }
   .policy-choice {
-    display: flex;
-    flex-direction: column;
+    display: grid;
     gap: 0.5rem;
-    margin: 0.5rem 0 1.25rem;
+  }
+  .policy-choice > span {
+    line-height: 1.5;
+    color: var(--text-2);
   }
   .picker-row {
-    display: flex;
-    flex-wrap: wrap;
-    align-items: center;
-    gap: 0.75rem;
     min-width: 0;
   }
   .picker-row :global(.select-wrap),
@@ -234,20 +197,31 @@
     max-width: 100%;
     min-width: 0;
   }
-  .modes legend {
-    margin-bottom: 0.75rem;
+  .picker-row :global([data-select-trigger]) {
+    padding: 0.3rem 0.5rem;
+    background: var(--bg-light);
+    border: 1px solid var(--bg-light-extra);
   }
-  .mode {
-    display: flex;
+  .picker-row :global([data-select-trigger]:hover),
+  .picker-row :global([data-select-trigger]:focus-visible) {
+    background: var(--bg-light-extra);
+  }
+  .mode-switch {
     align-items: flex-start;
-    gap: 0.65rem;
-    padding: 0.5rem 0;
-    cursor: pointer;
-    line-height: 1.5;
+    padding: 0.4rem 0;
   }
-  .mode input {
-    margin-top: 0.25rem;
-    accent-color: var(--accent);
+  .mode-switch :global([data-switch-root]) {
+    margin-top: 0.2rem;
+  }
+  .switch-row label {
+    cursor: pointer;
+  }
+  .validation {
+    margin: 0.5rem 0 0;
+    color: var(--text-2);
+    font-size: 0.8rem;
+    font-style: italic;
+    line-height: 1.5;
   }
   .notice {
     color: var(--text);
@@ -256,18 +230,18 @@
     padding-left: 0.75rem;
     margin: 0.5rem 0;
   }
-  .runtime {
-    line-height: 1.5;
-    margin-bottom: 0.5rem;
-  }
-  .policy-settings :global(button:focus-visible),
-  .mode input:focus-visible {
+  .policy-settings :global(button:focus-visible) {
     outline: 2px solid var(--accent);
     outline-offset: 3px;
   }
-  @media (max-width: 570px) {
-    .picker-row {
-      align-items: stretch;
+  @media (max-width: 700px) {
+    .policy-layout.enabled {
+      grid-template-columns: minmax(0, 1fr);
+      gap: 1rem;
+    }
+    .policy-fields {
+      border-left: 0;
+      padding: 0;
     }
   }
 </style>

@@ -22,6 +22,9 @@ export const policy = $state({
   listLoaded: false,
   listFailed: false,
 });
+export function selectedPolicyId() {
+  return policy.draft.policy_id || policy.policies.find((p) => p.name === "mt")?.id || "";
+}
 export function policyDirty() {
   return policy.persistencePending || JSON.stringify(policy.draft) !== policy.baseline;
 }
@@ -113,7 +116,15 @@ export async function savePolicySettings() {
   policy.saving = true;
   generation++;
   try {
-    accept(decodeStatus(await fetcher.put<unknown>("/keenetic/policy", { ...policy.draft })), true);
+    accept(
+      decodeStatus(
+        await fetcher.put<unknown>("/keenetic/policy", {
+          ...policy.draft,
+          policy_id: policy.draft.enabled ? selectedPolicyId() : policy.draft.policy_id,
+        }),
+      ),
+      true,
+    );
     policy.persistencePending = false;
   } catch (error) {
     if (error instanceof HttpError) {

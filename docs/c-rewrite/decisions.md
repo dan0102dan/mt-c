@@ -3672,3 +3672,15 @@ build-target-specific, with a compile-time platform alias instead of runtime
 hiding. The KN YAML fixture intentionally gains `app.keeneticPolicy`; the
 ordinary golden configuration is unchanged. See `docs/keenetic-policy.md` for
 API, lifecycle/failure behavior, build isolation and hardware acceptance.
+
+The WebUI defaults an unset selection to the policy named `mt`, resolving its
+actual ID from the current policy list on save. Existing selections are retained.
+If `mt` is absent, it remains the default option; enabling cannot be saved until
+an available policy is selected. The list loads when the editor opens and is
+refetched on page reload, without a refresh button. A single switch selects
+include/exclude with a changing label; policy options have no ID descriptions.
+Backend defaults and the disabled-by-default behavior are unchanged.
+
+The policy editor highlights Save whenever its draft changes, independently of
+validation. An unavailable policy still disables submission and shows a concise
+inline explanation; switching the filter off remains saveable without RCI.

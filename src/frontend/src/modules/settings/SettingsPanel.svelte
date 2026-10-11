@@ -103,6 +103,7 @@
   <div class="settings-toolbar" bind:this={toolbar}>
     <PageControls
       canSave={controls?.canSave ?? false}
+      saveDirty={controls?.dirty}
       onSave={() => controls?.onSave()}
       saveButtonId="save-settings"
       saveLabel={controls?.saveLabel ?? t("Save Changes")}
