@@ -366,11 +366,12 @@ test.describe("Shared settings toolbar", () => {
       await expect(heading).toHaveAccessibleName("Interface priority profiles");
       await expect(name).toHaveValue("Unsaved profile name");
       await panel(page).getByRole("switch", { name: "Processing mode", exact: true }).click();
-      // Save always applies ALL dirty sections, regardless of toolbar title.
+      // Wait for both API writes: Save is disabled during the first request
+      // as well as after completion, so its disabled state is not an ack.
       await save(page).click();
+      await expect.poll(() => state.profileWrites).toBe(1);
+      await expect.poll(() => state.writes).toBe(1);
       await expect(save(page)).toBeDisabled();
-      expect(state.writes).toBe(1);
-      expect(state.profileWrites).toBe(1);
       expect(state.profiles[0].name).toBe("Unsaved profile name");
       await page.setViewportSize({ width, height: 900 });
       await page.evaluate(() => window.scrollTo(0, 0));
