@@ -228,7 +228,7 @@ test.describe("Shared settings toolbar", () => {
     test(`scroll changes the heading and Add action, not drafts or the Save node (${width}px)`, async ({
       page,
     }) => {
-      await page.setViewportSize({ width, height: 844 });
+      await page.setViewportSize({ width, height: 900 });
       const state = await backend(page, true);
       state.profiles = Array.from({ length: 8 }, (_, i) => ({
         id: `profile${i}`,
@@ -243,8 +243,59 @@ test.describe("Shared settings toolbar", () => {
       await expect(save(page)).toBeEnabled();
       const button = await save(page).elementHandle();
       await page.evaluate(() => window.scrollTo(0, document.documentElement.scrollHeight));
+      // Reaching the bottom must preserve a still-visible section's title and Add.
+      await expect(heading).toHaveAccessibleName("Interface priority profiles");
+      await expect(panel(page).getByRole("heading", { name: "Keenetic policy" })).toBeInViewport();
+      await expect(page.getByRole("button", { name: "Add profile", exact: true })).toBeVisible();
+      await page.setViewportSize({ width, height: 400 });
+      const inlineHeading = page.locator("#keenetic-policy-title");
+      const add = page.getByRole("button", { name: "Add profile", exact: true });
+      async function placeHeading(offset: number) {
+        await page.evaluate((offset) => {
+          const title = document.querySelector("#keenetic-policy-title")!.getBoundingClientRect();
+          const toolbar = document.querySelector(".settings-toolbar")!.getBoundingClientRect();
+          window.scrollBy(0, title.bottom - toolbar.height - offset);
+        }, offset);
+      }
+      await placeHeading(36);
+      await expect(heading).toHaveAccessibleName("Interface priority profiles");
+      await expect(inlineHeading).toBeInViewport();
+      await expect(add).toBeVisible();
+      await expect(page.locator(".context-add")).toHaveCSS("opacity", "1");
+
+      // Crossing the boundary starts the title fade and the Add transition, even if scrolling stops.
+      const titleNode = await inlineHeading.elementHandle();
+      await placeHeading(-4);
       await expect(heading).toHaveAccessibleName("Keenetic policy");
-      await expect(page.getByRole("button", { name: "Add profile", exact: true })).toHaveCount(0);
+      const stoppedAt = await page.evaluate(() => window.scrollY);
+      await expect(page.locator(".context-add")).toHaveCSS("opacity", "0");
+      await expect(page.locator(".title-layer.current")).toHaveCSS("opacity", "1");
+      await expect(page.locator(".title-layer:not(.current)")).toHaveCSS("opacity", "0");
+      await expect(page.locator(".title-layer.current")).toHaveText("Keenetic policy");
+      expect(await page.evaluate(() => window.scrollY)).toBe(stoppedAt);
+      await expect(add).toHaveCount(0);
+      // The section heading stays in normal document flow; no floating copies or position updates.
+      await expect(inlineHeading).toHaveCSS("position", "static");
+      for (const offset of [36, -8, 44, -16, 36]) {
+        await placeHeading(offset);
+        await expect(heading).toHaveAccessibleName(
+          offset > 0 ? "Interface priority profiles" : "Keenetic policy",
+        );
+        expect(
+          await titleNode!.evaluate(
+            (node) => node === document.querySelector("#keenetic-policy-title"),
+          ),
+        ).toBe(true);
+      }
+      await expect(page.locator(".title-layer.current")).toHaveCSS("opacity", "1");
+      await expect(page.locator(".title-layer:not(.current)")).toHaveCSS("opacity", "0");
+      await expect(page.locator(".title-layer.current")).toHaveText("Interface priority profiles");
+      await expect(heading).toHaveAccessibleName("Interface priority profiles");
+      await expect(add).toBeVisible();
+      await expect(page.locator(".context-add")).toHaveCSS("opacity", "1");
+      await page.evaluate(() => window.scrollTo(0, document.documentElement.scrollHeight));
+      await expect(heading).toHaveAccessibleName("Keenetic policy");
+      await expect(add).toHaveCount(0);
       await expect(page.locator(".settings-page .page-controls")).toHaveCount(1);
       await expect(save(page)).toHaveCount(1);
       await expect(save(page)).toBeDisabled();
@@ -287,8 +338,9 @@ test.describe("Shared settings toolbar", () => {
     const heading = page.locator(".settings-toolbar").getByRole("heading", { level: 2 });
     const toggle = panel(page).getByRole("switch");
     await toggle.focus();
-    await expect(heading).toHaveAccessibleName("Keenetic policy");
-    await expect(page.getByRole("button", { name: "Add profile", exact: true })).toHaveCount(0);
+    await expect(heading).toHaveAccessibleName("Interface priority profiles");
+    await expect(panel(page).getByRole("heading", { name: "Keenetic policy" })).toBeInViewport();
+    await expect(page.getByRole("button", { name: "Add profile", exact: true })).toBeVisible();
     await expect(save(page)).toBeDisabled();
     await toggle.press("Space");
     await expect(toggle).toBeChecked();
@@ -297,5 +349,8 @@ test.describe("Shared settings toolbar", () => {
     await expect(save(page)).toBeDisabled();
     await expect(page.locator(".settings-page .page-controls")).toHaveCount(1);
     await expect(save(page)).toHaveCount(1);
+    await page.getByRole("button", { name: "Add profile", exact: true }).click();
+    await expect(page.getByPlaceholder("Profile name", { exact: true })).toHaveCount(1);
+    expect(state.profileWrites).toBe(0);
   });
 });

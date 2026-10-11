@@ -45,7 +45,10 @@
   }: Props = $props();
 
   let importInputRef = $state<HTMLInputElement>();
-  let actionsCount = $derived(1 + (onAdd ? 1 : 0) + (onImport ? 1 : 0) + (onExport ? 1 : 0));
+  // Keep the title width stable while contextual Add enters or leaves.
+  let actionsCount = $derived(
+    1 + (onAdd || contextual ? 1 : 0) + (onImport ? 1 : 0) + (onExport ? 1 : 0),
+  );
   let actionsReserve = $derived(`${actionsCount * 48 + Math.max(0, actionsCount - 1) * 8 + 4}px`);
 </script>
 
@@ -126,7 +129,10 @@
     position: sticky;
     top: 0;
     z-index: 5;
-    background: color-mix(in oklab, var(--bg-dark) 92%, var(--bg-dark-extra) 8%);
+    background: var(
+      --page-controls-background,
+      color-mix(in oklab, var(--bg-dark) 92%, var(--bg-dark-extra) 8%)
+    );
   }
 
   .page-controls.no-search {
@@ -153,10 +159,10 @@
     opacity: 0;
     transform: translateX(16px);
     transition:
-      width 220ms cubic-bezier(0.2, 0, 0.2, 1),
-      margin-left 220ms cubic-bezier(0.2, 0, 0.2, 1),
-      opacity 160ms ease,
-      transform 220ms cubic-bezier(0.2, 0, 0.2, 1);
+      width var(--context-transition, 220ms cubic-bezier(0.2, 0, 0.2, 1)),
+      margin-left var(--context-transition, 220ms cubic-bezier(0.2, 0, 0.2, 1)),
+      opacity var(--context-transition, 160ms ease),
+      transform var(--context-transition, 220ms cubic-bezier(0.2, 0, 0.2, 1));
   }
   .context-add.present {
     width: calc(22px + 1.2rem + 2px);

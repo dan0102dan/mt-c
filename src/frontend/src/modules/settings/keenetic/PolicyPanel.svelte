@@ -79,7 +79,7 @@
 
 <section
   class="policy-settings"
-  aria-label={t("Keenetic policy")}
+  aria-labelledby="keenetic-policy-title"
   aria-busy={policy.saving}
   use:section={() => ({
     title: t("Keenetic policy"),
@@ -88,6 +88,7 @@
     saveLabel: policy.saving ? t("Saving...") : t("Save Changes"),
   })}
 >
+  <h2 id="keenetic-policy-title">{t("Keenetic policy")}</h2>
   <p class="description">
     {t(
       "MT rules still choose destinations and interfaces. This setting only selects which devices they apply to.",
@@ -192,6 +193,11 @@
 </section>
 
 <style>
+  h2 {
+    margin: 0 0 1rem;
+    color: var(--text-2);
+    font: 600 1.3rem / 1.4 var(--font);
+  }
   fieldset {
     min-width: 0;
     border: 0;

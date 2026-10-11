@@ -16,7 +16,15 @@
   let toolbar: HTMLDivElement;
   let sections = $state.raw<SettingsSection[]>([]);
   let active = $state.raw<SettingsSection>();
+  let titleIndex = $state(0);
+  const visibleSection = $derived(sections[titleIndex]);
   const controls = $derived(active?.controls());
+  const visibleControls = $derived(visibleSection?.controls());
+
+  function add() {
+    active = visibleSection;
+    visibleControls?.onAdd?.();
+  }
 
   setContext<RegisterSection>(SETTINGS_SECTIONS, (section) => {
     sections = [...sections, section];
@@ -33,40 +41,60 @@
       section.element.removeEventListener("focusin", activate);
       sections = sections.filter((s) => s !== section);
       if (active === section) active = sections[0];
+      titleIndex = Math.min(titleIndex, Math.max(0, sections.length - 1));
     };
   });
 
   onMount(() => {
-    let frame = 0;
-    const update = () => {
-      frame = 0;
-      if (!page.getClientRects().length || !sections.length) return;
-      if (window.scrollY <= 0) {
-        active = sections[0];
-        return;
+    let intersection: IntersectionObserver | undefined;
+    const passed = new Set<SettingsSection>();
+    const selectHeading = () => {
+      let next = 0;
+      sections.forEach((section, index) => {
+        if (passed.has(section)) next = index;
+      });
+      if (next !== titleIndex) {
+        titleIndex = next;
+        active = sections[next];
       }
-      const line = toolbar.getBoundingClientRect().bottom + 12;
-      let next = sections[0];
+    };
+    // Geometry is measured only when layout changes, never on scroll.
+    // CSS sticky owns the toolbar; the observer only switches its title and actions.
+    const observeHeadings = () => {
+      if (!page.getClientRects().length) return;
+      intersection?.disconnect();
+      const inset = toolbar.getBoundingClientRect().height;
+      passed.clear();
+      const targets = new Map<Element, SettingsSection>();
       for (const section of sections) {
-        if (section.element.getBoundingClientRect().top <= line) next = section;
+        const anchor = section.element.querySelector(":scope > h2");
+        if (!anchor) continue;
+        targets.set(anchor, section);
+        if (anchor.getBoundingClientRect().bottom <= inset) passed.add(section);
       }
-      // The final editor may be shorter than a screen. It still becomes
-      // active at the bottom even when it cannot reach the sticky header.
-      if (page.getBoundingClientRect().bottom <= window.innerHeight + 2) {
-        next = sections.at(-1)!;
-      }
-      active = next;
+      selectHeading();
+      intersection = new IntersectionObserver(
+        (entries) => {
+          if (!page.getClientRects().length) return;
+          for (const entry of entries) {
+            const section = targets.get(entry.target)!;
+            if (!entry.isIntersecting && entry.boundingClientRect.bottom <= inset)
+              passed.add(section);
+            else passed.delete(section);
+          }
+          selectHeading();
+        },
+        { rootMargin: `-${inset}px 0px 0px 0px`, threshold: 0 },
+      );
+      for (const anchor of targets.keys()) intersection.observe(anchor);
     };
-    const schedule = () => {
-      if (!frame) frame = requestAnimationFrame(update);
-    };
-    window.addEventListener("scroll", schedule, { passive: true });
-    window.addEventListener("resize", schedule);
-    if (window.scrollY > 0) schedule();
+    const resize = new ResizeObserver(observeHeadings);
+    resize.observe(page);
+    resize.observe(toolbar);
+    observeHeadings();
     return () => {
-      cancelAnimationFrame(frame);
-      window.removeEventListener("scroll", schedule);
-      window.removeEventListener("resize", schedule);
+      resize.disconnect();
+      intersection?.disconnect();
     };
   });
 </script>
@@ -78,18 +106,20 @@
       onSave={() => controls?.onSave()}
       saveButtonId="save-settings"
       saveLabel={controls?.saveLabel ?? t("Save Changes")}
-      addLabel={controls?.addLabel}
-      canAdd={controls?.canAdd ?? false}
-      onAdd={controls?.onAdd}
+      addLabel={visibleControls?.addLabel}
+      canAdd={visibleControls?.canAdd ?? false}
+      onAdd={visibleControls?.onAdd ? add : undefined}
       contextual={sections.length > 1}
     >
       {#snippet search()}
-        <h2 class="settings-title">
-          {#each sections as section (section)}
-            <span class:current={section === active} aria-hidden={section !== active}>
-              {section.controls().title}
-            </span>
-          {/each}
+        <h2 class="settings-title" aria-label={visibleControls?.title}>
+          <span class="settings-title-viewport" aria-hidden="true">
+            {#each sections as section, index (section)}
+              <span class="title-layer" class:current={index === titleIndex}>
+                {section.controls().title}
+              </span>
+            {/each}
+          </span>
         </h2>
       {/snippet}
     </PageControls>
@@ -108,6 +138,8 @@
     position: sticky;
     top: 0;
     z-index: 5;
+    --page-controls-background: var(--bg-dark);
+    --context-transition: 220ms cubic-bezier(0.2, 0, 0.2, 1);
   }
   .settings-sections {
     display: flex;
@@ -120,25 +152,26 @@
     margin: 0;
     min-height: var(--row-h);
     color: var(--text-2);
-    font: 600 1.3rem var(--font);
+    font: 600 1.3rem / 1.4 var(--font);
   }
-  .settings-title span {
+  .settings-title-viewport {
+    display: grid;
+    position: relative;
+    overflow: hidden;
+  }
+  .title-layer {
     grid-area: 1 / 1;
-    opacity: 0;
-    transform: translateY(-6px);
-    transition:
-      opacity 180ms ease,
-      transform 220ms cubic-bezier(0.2, 0, 0.2, 1);
     pointer-events: none;
+    opacity: 0;
+    transition: opacity var(--context-transition);
   }
-  .settings-title .current {
+  .title-layer.current {
     opacity: 1;
-    transform: translateY(0);
   }
   @media (prefers-reduced-motion: reduce) {
-    .settings-title span {
+    .title-layer,
+    .title-layer.current {
       transition: none;
-      transform: none;
     }
   }
 </style>
