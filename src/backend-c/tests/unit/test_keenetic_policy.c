@@ -52,7 +52,7 @@ TEST policy_json_handles_ids_names_and_hex_marks(void)
     ASSERT_FALSE(entries[3].available);
     free(entries);
     ASSERT_EQ(MT_OK, mt_kn_policy_parse("{} \n", 4, &entries, &count));
-    ASSERT_EQ(0u, count); free(entries); PASS();
+    ASSERT_EQ(0u, count); ASSERT(entries == NULL); free(entries); PASS();
 }
 TEST malformed_or_ambiguous_inventory_never_becomes_an_empty_success(void)
 {

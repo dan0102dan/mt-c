@@ -49,8 +49,11 @@ mt_err_t mt_kn_policy_parse(const char *json, size_t len, mt_kn_policy_entry_t *
     if (status) { cJSON_Delete(root); return MT_ERR_UPSTREAM; }
     int number = cJSON_GetArraySize(root);
     if (number < 0 || (unsigned)number > MT_KN_POLICY_LIST_LIMIT) { cJSON_Delete(root); return MT_ERR_LIMIT; }
-    mt_kn_policy_entry_t *out = number ? calloc((size_t)number, sizeof(*out)) : NULL;
-    if (number && !out) { cJSON_Delete(root); return MT_ERR_NOMEM; }
+    /* An empty inventory owns no allocation. Keep it out of the population
+     * path so that every entry below has non-NULL storage. */
+    if (number == 0) { cJSON_Delete(root); return MT_OK; }
+    mt_kn_policy_entry_t *out = calloc((size_t)number, sizeof(*out));
+    if (!out) { cJSON_Delete(root); return MT_ERR_NOMEM; }
     size_t n = 0;
     mt_err_t err = MT_OK;
     const cJSON *item;
