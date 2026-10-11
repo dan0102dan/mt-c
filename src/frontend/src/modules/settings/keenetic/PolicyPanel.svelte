@@ -1,7 +1,6 @@
 <script lang="ts">
   import { onMount } from "svelte";
 
-  import PageControls from "../../../components/layout/PageControls.svelte";
   import Button from "../../../components/ui/Button.svelte";
   import Placeholder from "../../../components/ui/Placeholder.svelte";
   import Select from "../../../components/ui/Select.svelte";
@@ -16,10 +15,12 @@
   } from "./state.svelte";
 
   import { toast } from "../../../utils/events";
+  import { settingsSection } from "../section-controls";
   import ru from "./ru.json";
 
   // This module and its translations are never imported by generic builds.
   Object.assign(locales.ru, ru);
+  const section = settingsSection();
   const dirty = $derived(policyDirty());
   const selected = $derived(policy.policies.find((p) => p.id === policy.draft.policy_id));
   const valid = $derived(
@@ -78,17 +79,15 @@
 
 <section
   class="policy-settings"
-  aria-labelledby="keenetic-policy-heading"
+  aria-label={t("Keenetic policy")}
   aria-busy={policy.saving}
+  use:section={() => ({
+    title: t("Keenetic policy"),
+    canSave: dirty && policy.loaded && !policy.saving && valid,
+    onSave: () => void save(),
+    saveLabel: policy.saving ? t("Saving...") : t("Save Changes"),
+  })}
 >
-  <PageControls
-    canSave={dirty && policy.loaded && !policy.saving && valid}
-    onSave={() => void save()}
-    saveButtonId="save-keenetic-policy"
-    saveLabel={policy.saving ? t("Saving...") : t("Save policy settings")}
-  >
-    {#snippet search()}<h2 id="keenetic-policy-heading">{t("Keenetic policy")}</h2>{/snippet}
-  </PageControls>
   <p class="description">
     {t(
       "MT rules still choose destinations and interfaces. This setting only selects which devices they apply to.",
@@ -193,11 +192,6 @@
 </section>
 
 <style>
-  h2 {
-    margin: 0;
-    color: var(--text-2);
-    font: 600 1.3rem var(--font);
-  }
   fieldset {
     min-width: 0;
     border: 0;

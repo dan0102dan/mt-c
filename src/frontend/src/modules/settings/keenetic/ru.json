@@ -21,6 +21,5 @@
   "The selected policy is missing or unavailable. Select another policy or disable the filter.": "Выбранная политика удалена или недоступна. Выберите другую или отключите фильтр.",
   "Changes will take effect after saving.": "Изменения вступят в силу после сохранения.",
   "Already established connections may keep their previous route until they reconnect.": "Уже установленные соединения могут сохранять прежний маршрут до переподключения.",
-  "Policy settings saved": "Настройки политики сохранены",
-  "Save policy settings": "Сохранить настройки политики"
+  "Policy settings saved": "Настройки политики сохранены"
 }

@@ -12,6 +12,7 @@
     canSave: boolean;
     canAdd?: boolean;
     controlsClass?: string;
+    contextual?: boolean;
     actionsClass?: string;
     onAdd?: () => void;
     onSave: () => void;
@@ -31,6 +32,7 @@
     canSave,
     canAdd = true,
     controlsClass = "",
+    contextual = false,
     exportLabel,
     importAccept = ".mtrickle",
     importLabel,
@@ -57,7 +59,7 @@
     </div>
   {/if}
 
-  <div class={`page-controls-actions ${actionsClass}`}>
+  <div class={`page-controls-actions ${actionsClass}`} class:contextual>
     <Tooltip value={saveLabel}>
       <Button
         onclick={onSave}
@@ -94,7 +96,15 @@
       </Tooltip>
     {/if}
 
-    {#if onAdd && addLabel}
+    {#if contextual}
+      <div class="context-add" class:present={Boolean(onAdd)} inert={!onAdd} aria-hidden={!onAdd}>
+        <Tooltip value={addLabel ?? ""}>
+          <Button onclick={onAdd} aria-label={addLabel} disabled={!onAdd || !canAdd}>
+            <Add size={22} />
+          </Button>
+        </Tooltip>
+      </div>
+    {:else if onAdd && addLabel}
       <Tooltip value={addLabel}>
         <Button onclick={onAdd} aria-label={addLabel} disabled={!canAdd}><Add size={22} /></Button>
       </Tooltip>
@@ -131,6 +141,42 @@
     display: flex;
     align-items: center;
     gap: 0.5rem;
+  }
+
+  .page-controls-actions.contextual {
+    gap: 0;
+  }
+  .context-add {
+    width: 0;
+    margin-left: 0;
+    overflow: clip;
+    opacity: 0;
+    transform: translateX(16px);
+    transition:
+      width 220ms cubic-bezier(0.2, 0, 0.2, 1),
+      margin-left 220ms cubic-bezier(0.2, 0, 0.2, 1),
+      opacity 160ms ease,
+      transform 220ms cubic-bezier(0.2, 0, 0.2, 1);
+  }
+  .context-add.present {
+    width: calc(22px + 1.2rem + 2px);
+    margin-left: 0.5rem;
+    opacity: 1;
+    transform: translateX(0);
+  }
+  .context-add :global(button) {
+    flex-shrink: 0;
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .context-add {
+      transition: none;
+      transform: none;
+    }
+    .page-controls,
+    .page-controls-search,
+    .page-controls-actions {
+      transition: none !important;
+    }
   }
 
   @media (max-width: 570px) {

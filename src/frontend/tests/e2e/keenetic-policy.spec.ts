@@ -1,5 +1,7 @@
 import { expect, test, type Page } from "@playwright/test";
 
+import type { Profile } from "../../src/types";
+
 const keenetic = process.env.VITE_ENTWARE_KN === "1";
 type Settings = { enabled: boolean; policy_id: string; mode: "include" | "exclude" };
 async function backend(page: Page, enabled = false) {
@@ -9,6 +11,8 @@ async function backend(page: Page, enabled = false) {
       { id: "Policy0", name: "VPN", available: true },
       { id: "Policy1", name: "VPN", available: true },
     ],
+    profiles: [] as Profile[],
+    profileWrites: 0,
     writes: 0,
     listReads: 0,
     settingsReads: 0,
@@ -54,7 +58,11 @@ async function backend(page: Page, enabled = false) {
       return;
     }
     if (path === "/profiles") {
-      await route.fulfill({ json: { profiles: [] } });
+      if (req.method() === "PUT") {
+        state.profileWrites++;
+        state.profiles = req.postDataJSON().profiles;
+      }
+      await route.fulfill({ json: { profiles: state.profiles } });
       return;
     }
     if (path === "/groups") {
@@ -66,7 +74,7 @@ async function backend(page: Page, enabled = false) {
       return;
     }
     if (path === "/system/interfaces") {
-      await route.fulfill({ json: { interfaces: [] } });
+      await route.fulfill({ json: { interfaces: [{ id: "blackhole" }, { id: "tun0" }] } });
       return;
     }
     await route.fulfill({ json: { version: "test" } });
@@ -81,7 +89,7 @@ async function openSettings(page: Page) {
   await expect(page.getByRole("button", { name: "Add profile", exact: true })).toBeVisible();
 }
 const panel = (page: Page) => page.locator(".policy-settings");
-const save = (page: Page) => page.locator("#save-keenetic-policy");
+const save = (page: Page) => page.locator("#save-settings");
 
 test("generic UI has no policy feature or policy requests", async ({ page }) => {
   test.skip(keenetic, "generic build only");
@@ -90,6 +98,8 @@ test("generic UI has no policy feature or policy requests", async ({ page }) => 
   await expect(panel(page)).toHaveCount(0);
   expect(state.settingsReads).toBe(0);
   expect(state.listReads).toBe(0);
+  await expect(page.locator(".settings-page .page-controls")).toHaveCount(1);
+  await expect(save(page)).toHaveCount(1);
 });
 
 test.describe("Keenetic policy settings", () => {
@@ -209,5 +219,83 @@ test.describe("Keenetic policy settings", () => {
     expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(
       390,
     );
+  });
+});
+
+test.describe("Shared settings toolbar", () => {
+  test.skip(!keenetic, "Keenetic-only editor; generic keeps a single section");
+  for (const width of [1280, 390]) {
+    test(`scroll changes the heading and Add action, not drafts or the Save node (${width}px)`, async ({
+      page,
+    }) => {
+      await page.setViewportSize({ width, height: 844 });
+      const state = await backend(page, true);
+      state.profiles = Array.from({ length: 8 }, (_, i) => ({
+        id: `profile${i}`,
+        name: `VPN ${i + 1}`,
+        interfaces: ["tun0"],
+        on_unavailable: "blackhole",
+      }));
+      await openSettings(page);
+      const heading = page.locator(".settings-toolbar").getByRole("heading", { level: 2 });
+      const name = page.getByPlaceholder("Profile name", { exact: true }).first();
+      await name.fill("Unsaved profile name");
+      await expect(save(page)).toBeEnabled();
+      const button = await save(page).elementHandle();
+      await page.evaluate(() => window.scrollTo(0, document.documentElement.scrollHeight));
+      await expect(heading).toHaveAccessibleName("Keenetic policy");
+      await expect(page.getByRole("button", { name: "Add profile", exact: true })).toHaveCount(0);
+      await expect(page.locator(".settings-page .page-controls")).toHaveCount(1);
+      await expect(save(page)).toHaveCount(1);
+      await expect(save(page)).toBeDisabled();
+      expect(state.writes).toBe(0);
+      expect(state.profileWrites).toBe(0);
+      // The common button survives the transition rather than being replaced
+      // by a second section-specific Save, even during rapid scroll changes.
+      expect(
+        await button!.evaluate((node) => node === document.querySelector("#save-settings")),
+      ).toBe(true);
+      await panel(page)
+        .getByRole("radio", { name: "Do not process devices in the selected policy", exact: true })
+        .check();
+      await save(page).click();
+      await expect(save(page)).toBeDisabled();
+      expect(state.writes).toBe(1);
+      expect(state.profileWrites).toBe(0);
+      expect(state.profiles[0].name).toBe("VPN 1");
+      await page.evaluate(() => window.scrollTo(0, 0));
+      await expect(heading).toHaveAccessibleName("Interface priority profiles");
+      await expect(page.getByRole("button", { name: "Add profile", exact: true })).toBeVisible();
+      await expect(name).toHaveValue("Unsaved profile name");
+      await expect(save(page)).toBeEnabled();
+      await save(page).click();
+      await expect(save(page)).toBeDisabled();
+      expect(state.profileWrites).toBe(1);
+      expect(state.writes).toBe(1);
+      expect(state.settings.mode).toBe("exclude");
+      expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(
+        width,
+      );
+    });
+  }
+  test("short pages select the editor by keyboard focus, also with reduced motion", async ({
+    page,
+  }) => {
+    await page.emulateMedia({ reducedMotion: "reduce" });
+    const state = await backend(page);
+    await openSettings(page);
+    const heading = page.locator(".settings-toolbar").getByRole("heading", { level: 2 });
+    const toggle = panel(page).getByRole("switch");
+    await toggle.focus();
+    await expect(heading).toHaveAccessibleName("Keenetic policy");
+    await expect(page.getByRole("button", { name: "Add profile", exact: true })).toHaveCount(0);
+    await expect(save(page)).toBeDisabled();
+    await toggle.press("Space");
+    await expect(toggle).toBeChecked();
+    expect(state.writes).toBe(0);
+    await toggle.press("Space");
+    await expect(save(page)).toBeDisabled();
+    await expect(page.locator(".settings-page .page-controls")).toHaveCount(1);
+    await expect(save(page)).toHaveCount(1);
   });
 });
