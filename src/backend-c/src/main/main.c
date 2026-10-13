@@ -29,6 +29,7 @@
 #include "magitrickle/app.h"
 #ifdef MT_ENTWARE_KN
 #include "magitrickle/keenetic_policy_api.h"
+#include "magitrickle/keenetic_ifstate_service.h"
 #endif
 #include "magitrickle/auth.h"
 #include "magitrickle/dns_cache.h"
@@ -67,6 +68,13 @@
 struct daemon {
 #ifdef MT_ENTWARE_KN
     mt_kn_policy_service_t *policy_service;
+    mt_kn_ifstate_t *interface_states;
+    mt_kn_ifstate_service_t *interface_service;
+    /* Event bursts are bounded; overflow degrades to all profiles, never
+     * direct-interface routes. Kernel events still reconcile all routes. */
+    char ndm_names[64][16];
+    size_t n_ndm_names;
+    bool ndm_all, kernel_reconcile;
 #endif
     mt_loop_t *loop;
     mt_dnsproxy_t *proxy;
@@ -107,6 +115,8 @@ static void daemon_teardown(struct daemon *d)
 {
     mt_update_shutdown();
 #ifdef MT_ENTWARE_KN
+    mt_kn_ifstate_service_destroy(d->interface_service);
+    d->interface_service = NULL;
     mt_kn_policy_service_destroy(d->policy_service);
     d->policy_service = NULL;
 #endif
@@ -129,6 +139,10 @@ static void daemon_teardown(struct daemon *d)
     }
     mt_app_destroy(d->app);
     d->app = NULL;
+#ifdef MT_ENTWARE_KN
+    mt_kn_ifstate_free(d->interface_states);
+    d->interface_states = NULL;
+#endif
 
     if (d->port_remap) {
         mt_port_remap_disable(d->port_remap);
@@ -279,8 +293,24 @@ static void on_route_reconcile_timer(mt_loop_t *loop, void *ud)
 {
     struct daemon *d = ud;
     d->route_reconcile_timer = 0;
-    mt_err_t err = mt_app_reconcile_routes(d->app, NULL);
+    mt_err_t err = MT_OK;
+#ifdef MT_ENTWARE_KN
+    if (d->kernel_reconcile) { err = mt_app_reconcile_routes(d->app, NULL); }
+    else if (d->ndm_all) { err = mt_app_reconcile_profiles(d->app, NULL); }
+    else {
+        for (size_t i = 0; i < d->n_ndm_names; i++) {
+            mt_err_t item = mt_app_reconcile_profiles(d->app, d->ndm_names[i]);
+            if (err == MT_OK) { err = item; }
+        }
+    }
+#else
+    err = mt_app_reconcile_routes(d->app, NULL);
+#endif
     if (err == MT_OK) {
+#ifdef MT_ENTWARE_KN
+        d->kernel_reconcile = d->ndm_all = false;
+        d->n_ndm_names = 0;
+#endif
         d->route_retry_ms = 0;
         return;
     }
@@ -304,7 +334,7 @@ static void on_route_reconcile_timer(mt_loop_t *loop, void *ud)
     }
 }
 
-static void schedule_route_reconcile(struct daemon *d)
+static void arm_route_reconcile(struct daemon *d)
 {
     if (d->route_reconcile_timer) { return; }
     if (mt_loop_add_timer(d->loop, 20, 0, on_route_reconcile_timer, d,
@@ -314,7 +344,27 @@ static void schedule_route_reconcile(struct daemon *d)
     }
 }
 
+static void schedule_route_reconcile(struct daemon *d)
+{
 #ifdef MT_ENTWARE_KN
+    d->kernel_reconcile = true;
+#endif
+    arm_route_reconcile(d);
+}
+
+#ifdef MT_ENTWARE_KN
+static void on_ndm_state_changed(void *ud, const char *name)
+{
+    struct daemon *d = ud;
+    if (!d->ndm_all) {
+        for (size_t i = 0; i < d->n_ndm_names; i++) {
+            if (!strcmp(d->ndm_names[i], name)) { return; }
+        }
+        if (d->n_ndm_names == sizeof(d->ndm_names) / sizeof(*d->ndm_names)) { d->ndm_all = true; }
+        else { snprintf(d->ndm_names[d->n_ndm_names++], sizeof(*d->ndm_names), "%s", name); }
+    }
+    arm_route_reconcile(d);
+}
 /* Policy gates contain exact local-address exceptions, not xt_addrtype.
  * Refresh them on topology events through the existing coalescing worker.
  * Do NOT trigger this on route changes: MT writes those during a rebuild. */
@@ -356,6 +406,7 @@ static void on_netlink_resync(void *ud)
     struct daemon *d = ud;
     MT_WARN("netlink notification lost or watcher reconnected; resynchronizing routes");
 #ifdef MT_ENTWARE_KN
+    mt_kn_ifstate_service_resync(d->interface_service);
     refresh_policy_addresses(d);
 #endif
     schedule_route_reconcile(d);
@@ -707,6 +758,12 @@ int main(int argc, char **argv)
         return 1;
     }
 #ifdef MT_ENTWARE_KN
+    d.interface_states = mt_kn_ifstate_new(on_ndm_state_changed, &d);
+    if (!d.interface_states) {
+        MT_ERROR("failed to allocate NDM interface state");
+        daemon_teardown(&d); mt_config_clear(&cfg); return 1;
+    }
+    mt_app_set_interface_states(d.app, d.interface_states);
     /* Attach the unresolved (closed) policy scope before the first DNAT rule.
      * There must be no all-client DNS interception window on a saved boot. */
     mt_app_set_port_remap(d.app, d.port_remap);
@@ -828,6 +885,14 @@ int main(int argc, char **argv)
         return 1;
     }
     MT_INFO("Unix socket API listening on %s", MT_SOCK_PATH);
+#ifdef MT_ENTWARE_KN
+    if (mt_kn_ifstate_service_create(d.loop, d.interface_states, MT_KN_IFSTATE_LOST_PATH,
+                                      NULL, &d.interface_service) != MT_OK ||
+        mt_kn_ifstate_register_hook(d.http_unix, d.interface_service) != MT_OK) {
+        MT_ERROR("failed to start NDM interface notifications");
+        daemon_teardown(&d); mt_config_clear(&cfg); return 1;
+    }
+#endif
 
     mt_static_ctx_t static_ctx = {
         .skins_dir = MT_APP_SHARE_DIR "/skins",

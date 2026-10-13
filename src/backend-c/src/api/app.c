@@ -32,6 +32,7 @@ struct mt_app {
     /* Desired state is written on the event loop; active scope is published
      * under nf_mu when a rebuild begins. All rulesets borrow its stable address. */
     mt_kn_policy_scope_t policy_scope, policy_desired;
+    const mt_kn_ifstate_t *interface_states;
     atomic_uint_fast64_t policy_generation, policy_applied;
     atomic_int policy_apply_error;
 #endif
@@ -112,6 +113,7 @@ static mt_ruleset_deps_t ruleset_deps(mt_app_t *app) {
         .config = app->cfg,
 #ifdef MT_ENTWARE_KN
         .policy = &app->policy_scope,
+        .interface_states = app->interface_states,
 #endif
         .ipt4 = app->ipt4,
         .ipt6 = app->ipt6,
@@ -1640,8 +1642,11 @@ mt_err_t mt_app_replace_profiles(mt_app_t *app, mt_config_t *incoming,
     return err;
 }
 
-mt_err_t mt_app_reconcile_routes(mt_app_t *app, const char *interface_name)
+static mt_err_t reconcile_routes(mt_app_t *app, const char *interface_name, bool profiles_only)
 {
+#ifndef MT_ENTWARE_KN
+    (void)profiles_only;
+#endif
     if (!app) { return MT_ERR_INVAL; }
     /* Never lose an event while a committer rebuild owns the mutex.
      * Return AGAIN to the event-loop retry queue; do not interrupt the
@@ -1655,6 +1660,12 @@ mt_err_t mt_app_reconcile_routes(mt_app_t *app, const char *interface_name)
         mt_ruleset_t **sets = family ? app->sub_rulesets : app->rulesets;
         size_t count = family ? app->n_sub_rulesets : app->n_rulesets;
         for (size_t i = 0; i < count; i++) {
+#ifdef MT_ENTWARE_KN
+            if (profiles_only) {
+                const mt_group_t *g = mt_ruleset_group(sets[i]);
+                if (!g->profile || !g->profile[0]) { continue; }
+            }
+#endif
             if (interface_name && !mt_ruleset_uses_interface(sets[i], interface_name)) {
                 continue;
             }
@@ -1670,7 +1681,22 @@ mt_err_t mt_app_reconcile_routes(mt_app_t *app, const char *interface_name)
     return result;
 }
 
+mt_err_t mt_app_reconcile_routes(mt_app_t *app, const char *interface_name)
+{
+    return reconcile_routes(app, interface_name, false);
+}
+
 #ifdef MT_ENTWARE_KN
+void mt_app_set_interface_states(mt_app_t *app, const mt_kn_ifstate_t *state)
+{
+    app->interface_states = state;
+    for (size_t i = 0; i < app->n_rulesets; i++) { mt_ruleset_set_interface_states(app->rulesets[i], state); }
+    for (size_t i = 0; i < app->n_sub_rulesets; i++) { mt_ruleset_set_interface_states(app->sub_rulesets[i], state); }
+}
+mt_err_t mt_app_reconcile_profiles(mt_app_t *app, const char *name)
+{
+    return reconcile_routes(app, name, true);
+}
 void mt_app_policy_get(const mt_app_t *app, mt_kn_policy_config_t *config,
                         bool *ready, bool *applied, mt_err_t *apply_error)
 {
