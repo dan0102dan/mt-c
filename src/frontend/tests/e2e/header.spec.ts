@@ -82,10 +82,10 @@ test.describe("Header Settings", () => {
     await expect(dialog.getByText("Issue Tracker", { exact: true })).toBeVisible();
     await expect(dialog.getByText("GitHub Repository", { exact: true })).toBeVisible();
     await expect(
-      dialog.getByRole("link", { name: "https://github.com/dan0102dan/mt-c/issues" }),
+      dialog.getByRole("link", { name: "https://github.com/dan0102dan/mt-c/issues", exact: true }),
     ).toHaveAttribute("href", "https://github.com/dan0102dan/mt-c/issues");
     await expect(
-      dialog.getByRole("link", { name: "https://github.com/dan0102dan/mt-c" }),
+      dialog.getByRole("link", { name: "https://github.com/dan0102dan/mt-c", exact: true }),
     ).toHaveAttribute("href", "https://github.com/dan0102dan/mt-c");
 
     // Check translations after switching language.
