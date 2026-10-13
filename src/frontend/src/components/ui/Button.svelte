@@ -83,8 +83,7 @@
     }
 
     &.accent.inactive {
-      border: 1px solid var(--bg-light-extra) !important;
-      background: var(--bg-light) !important;
+      background: var(--bg-light-extra) !important;
       color: var(--text-2);
     }
 
@@ -116,13 +115,13 @@
     &.accent {
       position: relative;
       z-index: 0;
-      padding: 0.6rem;
-      border: 1px solid transparent !important;
+      padding: calc(0.6rem + 1px);
+      border: 0 !important;
       background: transparent !important;
       color: color-mix(in srgb, var(--accent), transparent 20%);
       clip-path: inset(0 round 0.5rem);
-      /* clip-path clips paint, not scrollable overflow from the rotating
-         200% border layer. Contain that decoration inside this button. */
+      /* Keep the painted border inside the padding box so paint containment
+         does not clip it. The extra padding preserves the button's size. */
       contain: paint;
       transition:
         color 0.3s ease,
@@ -134,8 +133,10 @@
       position: absolute;
       top: 50%;
       left: 50%;
+      /* A square keeps the rotating layer over the whole outline of wide
+         buttons, including Update, at every angle. */
       width: 200%;
-      height: 200%;
+      aspect-ratio: 1;
       z-index: -2;
       background-color: var(--bg-light-extra);
       background-image: conic-gradient(transparent 180deg, var(--accent) 360deg);
@@ -150,7 +151,7 @@
       content: "";
       position: absolute;
       z-index: -1;
-      inset: 0;
+      inset: 1px;
       background: var(--bg-light);
       border-radius: calc(0.5rem - 1px);
     }
