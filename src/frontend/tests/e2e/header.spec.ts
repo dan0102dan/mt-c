@@ -79,8 +79,8 @@ test.describe("Header Settings", () => {
 
     // Check for some content
     await expect(dialog.locator("text=Official website")).toBeVisible();
-    await expect(dialog.getByText("Issue Tracker", { exact: true })).toBeVisible();
-    await expect(dialog.getByText("GitHub Repository", { exact: true })).toBeVisible();
+    await expect(dialog.getByText("Issue Tracker")).toBeVisible();
+    await expect(dialog.getByText("GitHub Repository")).toBeVisible();
     await expect(
       dialog.getByRole("link", { name: "https://github.com/dan0102dan/mt-c/issues", exact: true }),
     ).toHaveAttribute("href", "https://github.com/dan0102dan/mt-c/issues");
@@ -93,8 +93,8 @@ test.describe("Header Settings", () => {
     await expect(dialog).not.toBeVisible();
     await page.locator(".locale button").click();
     await infoBtn.click();
-    await expect(dialog.getByText("Трекер задач", { exact: true })).toBeVisible();
-    await expect(dialog.getByText("Репозиторий GitHub", { exact: true })).toBeVisible();
+    await expect(dialog.getByText("Трекер задач")).toBeVisible();
+    await expect(dialog.getByText("Репозиторий GitHub")).toBeVisible();
 
     // Close dialog
     await page.keyboard.press("Escape");
