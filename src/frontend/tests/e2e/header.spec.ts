@@ -93,6 +93,8 @@ test.describe("Header Settings", () => {
     await expect(dialog).not.toBeVisible();
     await page.locator(".locale button").click();
     await infoBtn.click();
+    await expect(dialog.locator("[data-dialog-title]")).toHaveText("Инфо");
+    await expect(dialog.locator(".build")).toContainText("билд:");
     await expect(dialog.getByText("Трекер багов")).toBeVisible();
     await expect(dialog.getByText("Репозиторий GitHub")).toBeVisible();
 

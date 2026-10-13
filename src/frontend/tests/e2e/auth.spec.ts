@@ -29,6 +29,15 @@ test.describe("Authentication", () => {
     await expect(authPage.passwordInput).toBeVisible();
   });
 
+  test("uses original Russian labels on the login page", async ({ page }) => {
+    await page.addInitScript(() => {
+      localStorage.setItem("locale", JSON.stringify({ value: "ru" }));
+    });
+    await authPage.goto();
+    await expect(page.locator(".helper-text")).toContainText("креденшелы entware");
+    await expect(page.locator(".info-btn button")).toHaveAttribute("aria-label", "Инфо");
+  });
+
   test("should login successfully", async ({ page }) => {
     // Mock login success
     await page.route("**/auth", async (route) => {
