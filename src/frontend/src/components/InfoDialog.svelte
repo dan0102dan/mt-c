@@ -3,7 +3,7 @@
   import GenericDialog from "./ui/GenericDialog.svelte";
   import GenericIcon from "./ui/GenericIcon.svelte";
 
-  import { Bug, Gitlab, Globe, Sponsorship } from "./ui/icons";
+  import { Bug, Github, Globe, Sponsorship } from "./ui/icons";
 
   const version = import.meta.env.VITE_PKG_VERSION || "0.0.0";
 
@@ -34,26 +34,26 @@
           <Bug size={22} />
         </div>
         <div class="text">
-          {t("Bug Tracker")}
+          {t("Issue Tracker")}
           <a
             target="_blank"
             rel="noopener noreferrer"
-            href="https://gitlab.com/magitrickle/magitrickle/-/boards"
-            >https://gitlab.com/magitrickle/magitrickle/-/boards</a
+            href="https://github.com/dan0102dan/mt-c/issues"
+            >https://github.com/dan0102dan/mt-c/issues</a
           >
         </div>
       </div>
       <div class="block">
         <div class="icon">
-          <Gitlab size={22} />
+          <Github size={22} />
         </div>
         <div class="text">
-          {t("GitLab Repository")}
+          {t("GitHub Repository")}
           <a
             target="_blank"
             rel="noopener noreferrer"
-            href="https://gitlab.com/magitrickle/magitrickle"
-            >https://gitlab.com/magitrickle/magitrickle</a
+            href="https://github.com/dan0102dan/mt-c"
+            >https://github.com/dan0102dan/mt-c</a
           >
         </div>
       </div>

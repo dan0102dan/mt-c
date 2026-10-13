@@ -79,7 +79,24 @@ test.describe("Header Settings", () => {
 
     // Check for some content
     await expect(dialog.locator("text=Official website")).toBeVisible();
-    await expect(dialog.locator("text=Bug Tracker")).toBeVisible();
+    await expect(dialog.getByText("Issue Tracker")).toBeVisible();
+    await expect(dialog.getByText("GitHub Repository")).toBeVisible();
+    await expect(
+      dialog.getByRole("link", { name: "https://github.com/dan0102dan/mt-c/issues", exact: true }),
+    ).toHaveAttribute("href", "https://github.com/dan0102dan/mt-c/issues");
+    await expect(
+      dialog.getByRole("link", { name: "https://github.com/dan0102dan/mt-c", exact: true }),
+    ).toHaveAttribute("href", "https://github.com/dan0102dan/mt-c");
+
+    // Check translations after switching language.
+    await page.keyboard.press("Escape");
+    await expect(dialog).not.toBeVisible();
+    await page.locator(".locale button").click();
+    await infoBtn.click();
+    await expect(dialog.locator("[data-dialog-title]")).toHaveText("Инфо");
+    await expect(dialog.locator(".build")).toContainText("Билд:");
+    await expect(dialog.getByText("Трекер багов")).toBeVisible();
+    await expect(dialog.getByText("Репозиторий GitHub")).toBeVisible();
 
     // Close dialog
     await page.keyboard.press("Escape");
