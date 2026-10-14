@@ -1,169 +1,230 @@
 #!/usr/bin/env python3
-"""Regenerate self-contained dark SVG charts for real-router benchmarks.
+"""Rebuild README router charts in the original borderless, theme-aware SVG style.
 
-Reads the original JSONL measurements and plots the median/min–max of three
-UDP capacity repeats. Uses only the Python standard library. Never plots a
-RAM-guarded (unmeasured) run as a zero.
+Requires only Python 3 stdlib. Reads original JSONL (not the historical
+host-only baseline) and plots median + min/max for three UDP capacity runs.
+RAM-guarded cases are marked as unmeasured instead of plotting zeros.
 """
 
 import argparse
 import json
 import math
+import statistics
 from pathlib import Path
 from xml.sax.saxutils import escape
 
 
+# The layout and accent colors deliberately follow the original hand-authored
+# README SVGs: transparent canvas, no card border, circular markers, fine grid,
+# numeric labels and automatically adapting text colors.
+BLUE = "#4f73c6"
+PALE_BLUE = "#c8d9fa"
+LEFT, RIGHT, TOP, BOTTOM = 150, 1120, 218, 550
+X_MIN, X_MAX = 85, 130000
+LABELED_RULES = {100, 1000, 10000, 20000}
+
+# Keep the existing measurement units and log-scaled axes: the real-router
+# results span orders of magnitude, unlike the three-point historic plots.
 CHARTS = (
-    ("rps", "Пропускная способность DNS", "Успешных запросов / с", "benchmark-throughput.svg", 22, 1200, (30, 50, 100, 200, 500, 1000)),
-    ("cost", "CPU на один DNS-запрос", "CPU демона, мс / запрос", "benchmark-cpu.svg", .75, 125, (1, 2, 5, 10, 20, 50, 100)),
-    ("rss", "Потребление памяти (RSS)", "RSS демона, MiB", "benchmark-memory.svg", 2.4, 32, (3, 5, 10, 20, 30)),
+    ("rps", "Пропускная способность DNS", "Успешные запросы / с",
+     "benchmark-throughput.svg", 15, 1300, (20, 50, 100, 200, 500, 1000)),
+    ("cost", "CPU на один успешный DNS-запрос", "CPU демона, мс / запрос",
+     "benchmark-cpu.svg", 0.55, 160, (1, 2, 5, 10, 20, 50, 100)),
+    ("rss", "Потребление памяти (RSS)", "RSS демона, MiB",
+     "benchmark-memory.svg", 2, 40, (3, 5, 10, 20, 30)),
 )
 
-BLUE = "#4A90FF"
-GOLD = "#FFE18A"
-WHITE = "#F7F8FA"
-SOFT = "#AEB4BF"
-AXIS = "#D8DCE3"
-DIM = "#777E89"
-LEFT, RIGHT, TOP, BOTTOM = 171.6, 1125.6, 215.76, 633.36
+
+def num(n):
+    """Stable, compact numeric SVG attributes."""
+    return f"{n:.3f}".rstrip("0").rstrip(".")
 
 
-def fmt(number):
-    """Stable compact three-decimal SVG coordinates."""
-    return f"{number:.3f}".rstrip("0").rstrip(".")
+def text(x, y, label, css="", extra=""):
+    return (f'<text x="{num(x)}" y="{num(y)}" class="{css}" {extra}>'
+            f'{escape(str(label))}</text>')
 
 
-def metric(row, kind):
+def measured(row, kind):
     if kind == "rps":
         return row["rps"]
     if kind == "rss":
         return row["after"]["VmRSS"] / 1024
-    return row["cpu_pct"] / 100 * row["cpu_interval_sec"] / row["ok"] * 1000
+    # CPU pct: 100% means one full logical core. Successful answers only in
+    # denominator, while CPU also includes processing failed requests.
+    return (row["cpu_pct"] / 100 * row["cpu_interval_sec"]
+            / row["ok"] * 1000)
 
 
-def text(x, y, content, css_class="", extra=""):
-    return (f'<text x="{fmt(x)}" y="{fmt(y)}" class="{css_class}" {extra}>'
-            f'{escape(content)}</text>')
+def readable_value(kind, value):
+    if kind == "rps":
+        return f"{value:.0f}"
+    if kind == "cost":
+        return f"{value:.2f}" if value < 10 else f"{value:.1f}"
+    return f"{value:.1f}"
 
 
-def render_chart(rows, failures, kind, title, ylabel, lo, hi, ticks):
-    x = lambda n: LEFT + math.log(n / 85) / math.log(130000 / 85) * (RIGHT - LEFT)
-    y = lambda n: BOTTOM - math.log(n / lo) / math.log(hi / lo) * (BOTTOM - TOP)
-    output = []
-    add = output.append
+def draw_chart(loads, failures, kind, title, ylabel, min_y, max_y, y_ticks):
+    def x_pos(value):
+        return LEFT + math.log(value / X_MIN) / math.log(X_MAX / X_MIN) * (RIGHT - LEFT)
 
-    add('<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="870" '
-        'viewBox="0 0 1200 870" role="img" aria-labelledby="chart-title chart-desc">')
-    add(f'<title id="chart-title">{escape(title)} — mt-c против MagiTrickle</title>')
-    add('<desc id="chart-desc">Производительность на MT7621, UDP, 10 клиентов. '
-        'Логарифмические шкалы. Медиана и min–max трёх запусков по 20 секунд. '
-        'Провалы по памяти при 50 и 100 тысячах правил не являются нулевыми значениями.</desc>')
-    add(f'''<style>
-.title {{ font: 700 34px Inter, Arial, sans-serif; fill: {WHITE} }}
-.sub {{ font: 16px Inter, Arial, sans-serif; fill: {SOFT} }}
-.legend {{ font: 18px Inter, Arial, sans-serif; fill: {WHITE} }}
-.tick {{ font: 16px Inter, Arial, sans-serif; fill: {AXIS} }}
-.axis-label {{ font: 17px Inter, Arial, sans-serif; fill: {WHITE} }}
-.foot {{ font: italic 15px Inter, Arial, sans-serif; fill: {WHITE} }}
-.note {{ font: 14px Inter, Arial, sans-serif; fill: {SOFT} }}
-.tiny {{ font: 12px Inter, Arial, sans-serif; fill: {SOFT} }}
-.line {{ stroke-linejoin: round; stroke-linecap: round; fill: none; stroke-width: 3.5 }}
-</style>''')
-    add('<rect width="1200" height="870" fill="#080A0D"/><rect x="18" y="17" '
-        'width="1164" height="837" rx="28" stroke="#393D45" '
-        'stroke-width="1.45" fill="none"/>')
-    add(text(66, 78, title, "title"))
-    add(text(66, 121, "MT7621 · UDP · 10 клиентов · реальные DNS-ответы и ipset", "sub"))
-    add(text(1130, 78, "mt-c / bench", "note", 'text-anchor="end"'))
-    add(f'<path d="M 66 164 H 108" stroke="{BLUE}" stroke-width="3" stroke-linecap="round"/>')
-    add(f'<path d="M 87 156 L 95 164 L 87 172 L 79 164 Z" fill="{BLUE}" '
-        'stroke="#080A0D" stroke-width="1"/>')
-    add(text(122, 170, "mt-c · C", "legend"))
-    add(f'<path d="M 432 164 H 474" stroke="{GOLD}" stroke-width="3" stroke-linecap="round"/>')
-    add(f'<circle cx="453" cy="164" r="7" fill="{GOLD}" stroke="#080A0D" stroke-width="1"/>')
-    add(text(488, 170, "MagiTrickle · Go 0.8.2", "legend"))
-    add(f'<path d="M {fmt(LEFT)} {fmt(TOP)} V {fmt(BOTTOM)} H {fmt(RIGHT)}" '
-        f'stroke="{AXIS}" stroke-width="1.5" fill="none"/>')
-    for value in ticks:
-        yy = y(value)
-        add(f'<path d="M {fmt(LEFT-9)} {fmt(yy)} H {fmt(LEFT)}" '
-            f'stroke="{AXIS}" stroke-width="1.4"/>')
-        add(text(LEFT-20, yy+5, str(value), "tick", 'text-anchor="end"'))
-    for value, label in ((100, "100"), (1000, "1k"), (10000, "10k"), (100000, "100k")):
-        xx = x(value)
-        add(f'<path d="M {fmt(xx)} {fmt(BOTTOM)} V {fmt(BOTTOM+9)}" '
-            f'stroke="{AXIS}" stroke-width="1.4"/>')
-        add(text(xx, BOTTOM+38, label, "tick", 'text-anchor="middle"'))
-    add(text((LEFT+RIGHT)/2, BOTTOM+86,
-             "Число включённых namespace-правил · log", "axis-label",
-             'text-anchor="middle"'))
-    add(text(79, (TOP+BOTTOM)/2, f"{ylabel} · log", "axis-label",
-             f'text-anchor="middle" transform="rotate(-90 79 {fmt((TOP+BOTTOM)/2)})"'))
+    def y_pos(value):
+        return BOTTOM - math.log(value / min_y) / math.log(max_y / min_y) * (BOTTOM - TOP)
+
+    svg = []
+    put = svg.append
+    put('<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="680" '
+        'viewBox="0 0 1200 680" role="img" aria-labelledby="title desc">')
+    put(f'  <title id="title">{escape(title)} — mt-c и MagiTrickle</title>')
+    put('  <desc id="desc">Медиана, min–max трёх двадцатисекундных прогонов. '
+        'Нагрузка реального роутера MT7621; UDP, 10 клиентов; логарифмические оси. '
+        'Точки на 50000 и 100000 правилах остановлены защитой памяти и не измерены.</desc>')
+    put('''  <style>
+    :root {
+      color-scheme: light dark;
+      --ink: #424750;
+      --muted: #6b7280;
+      --axis: #59606b;
+      --grid: #e7e7e7;
+      --blue: #4f73c6;
+      --pale-blue: #8ea9d9;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --ink: #c9cdd3;
+        --muted: #a6abb3;
+        --axis: #b5bac2;
+        --grid: #383838;
+        --blue: #4f73c6;
+        --pale-blue: #c8d9fa;
+      }
+    }
+    text { font-family: Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: var(--ink); }
+    .subtitle { font-size: 17px; fill: var(--muted); }
+    .axis-label { font-size: 17px; font-weight: 600; }
+    .tick { font-size: 15px; fill: var(--muted); }
+    .legend { font-size: 18px; font-weight: 600; }
+    .value { font-size: 14px; font-weight: 700; }
+    .note { font-size: 13px; fill: var(--muted); }
+    .unmeasured { font-size: 13px; fill: var(--muted); }
+    .axis { stroke: var(--axis); }
+    .grid { stroke: var(--grid); }
+    .c-line { stroke: var(--blue); fill: none; }
+    .go-line { stroke: var(--pale-blue); fill: none; }
+    .c-point { fill: var(--blue); }
+    .go-point { fill: var(--pale-blue); }
+    .c-whisker { stroke: var(--blue); }
+    .go-whisker { stroke: var(--pale-blue); }
+  </style>''')
+    # No background rectangle and no rounded outer border (like the originals).
+    put(text(76, 68, "Реальный роутер MT7621 · UDP · 10 клиентов · медиана трёх прогонов", "subtitle"))
+    put('<circle cx="80" cy="116" r="7" class="c-point"/>')
+    put(text(97, 122, "mt-c", "legend"))
+    put('<circle cx="208" cy="116" r="7" class="go-point"/>')
+    put(text(225, 122, "Go MagiTrickle 0.8.2", "legend"))
+
+    put(f'<line class="axis" x1="{LEFT}" y1="{TOP}" x2="{LEFT}" y2="{BOTTOM}" stroke-width="2"/>')
+    put(f'<line class="axis" x1="{LEFT}" y1="{BOTTOM}" x2="{RIGHT}" y2="{BOTTOM}" stroke-width="2"/>')
+    put('<g class="grid" stroke-width="1">')
+    for value in y_ticks:
+        yy = y_pos(value)
+        put(f'  <line x1="{LEFT}" y1="{num(yy)}" x2="{RIGHT}" y2="{num(yy)}"/>')
+    put('</g>')
+    put('<g class="tick" text-anchor="end">')
+    for tick in y_ticks:
+        put('  ' + text(132, y_pos(tick) + 5, f"{tick:g}"))
+    put('</g>')
+    put('<g class="tick" text-anchor="middle">')
+    for tick, label in ((100, "100"), (1000, "1 000"),
+                        (10000, "10 000"), (100000, "100 000")):
+        put('  ' + text(x_pos(tick), 583, label))
+    put('</g>')
+    put(text(635, 620, "Количество правил · логарифмическая шкала", "axis-label", 'text-anchor="middle"'))
+    put(text(56, 384, ylabel + " · log", "axis-label",
+             'text-anchor="middle" transform="rotate(-90 56 384)"'))
 
     for backend in ("original", "mt-c"):
-        color = GOLD if backend == "original" else BLUE
+        line_class = "go-line" if backend == "original" else "c-line"
+        point_class = "go-point" if backend == "original" else "c-point"
+        whisker_class = "go-whisker" if backend == "original" else "c-whisker"
+        sizes = sorted({r["rules"] for r in loads if r["backend"] == backend})
         points = []
-        sizes = sorted({r["rules"] for r in rows if r["backend"] == backend})
         for size in sizes:
-            trials = [r for r in rows if r["backend"] == backend and r["rules"] == size]
+            trials = [r for r in loads if r["backend"] == backend and r["rules"] == size]
             if len(trials) != 3:
                 raise ValueError(f"expected three repeats for {backend}, {size}")
-            values = sorted(metric(r, kind) for r in trials)
-            points.append((size, values[0], values[1], values[2]))
-
+            values = sorted(measured(r, kind) for r in trials)
+            points.append((size, values[0], statistics.median(values), values[-1]))
+        put(f'<g class="{whisker_class}" stroke-width="1.7" opacity="0.65" fill="none">')
         for size, minimum, _, maximum in points:
-            xx, yy1, yy2 = fmt(x(size)), fmt(y(minimum)), fmt(y(maximum))
-            xx0, xx1 = fmt(x(size)-4), fmt(x(size)+4)
-            add(f'<g stroke="{color}" stroke-width="1.5" opacity="0.69">'
-                f'<path d="M {xx} {yy1} V {yy2}"/>'
-                f'<path d="M {xx0} {yy1} H {xx1} M {xx0} {yy2} H {xx1}"/></g>')
-        path = " ".join(("M" if i == 0 else "L") + f" {fmt(x(size))} {fmt(y(mid))}"
-                        for i, (size, _, mid, _) in enumerate(points))
-        add(f'<path d="{path}" stroke="{color}" class="line"/>')
+            xx, high, low = x_pos(size), y_pos(maximum), y_pos(minimum)
+            put(f'<path d="M{num(xx)} {num(high)} V{num(low)} '
+                f'M{num(xx-4)} {num(high)} H{num(xx+4)} '
+                f'M{num(xx-4)} {num(low)} H{num(xx+4)}"/>')
+        put('</g>')
+        d = ' '.join(("M" if i == 0 else "L") + f'{num(x_pos(size))} {num(y_pos(mid))}'
+                     for i, (size, _, mid, _) in enumerate(points))
+        put(f'<path d="{d}" class="{line_class}" fill="none" '
+            'stroke-width="4.5" stroke-linecap="round" stroke-linejoin="round"/>')
+        put(f'<g class="{point_class}">')
         for size, _, median, _ in points:
-            xx, yy = x(size), y(median)
-            if backend == "mt-c":
-                add(f'<path d="M {fmt(xx)} {fmt(yy-6)} L {fmt(xx+6)} {fmt(yy)} '
-                    f'L {fmt(xx)} {fmt(yy+6)} L {fmt(xx-6)} {fmt(yy)} Z" '
-                    f'fill="{color}" stroke="#080A0D" stroke-width="1.25"/>')
+            put(f'<circle cx="{num(x_pos(size))}" cy="{num(y_pos(median))}" r="7"/>')
+        put('</g>')
+        # Like the original charts, annotate medians, but use key points only
+        # so 8-point measured series remain readable without label collisions.
+        put('<g class="value" text-anchor="middle">')
+        for size, _, median, _ in points:
+            if size not in LABELED_RULES:
+                continue
+            # Values outside the denser side of each chart reduce overlap.
+            if kind == "rps":
+                below = backend == "original"
             else:
-                add(f'<circle cx="{fmt(xx)}" cy="{fmt(yy)}" r="5" '
-                    f'fill="{color}" stroke="#080A0D" stroke-width="1.25"/>')
+                below = backend == "mt-c"
+            offset = 28 if below else -19
+            put('  ' + text(x_pos(size), y_pos(median) + offset,
+                             readable_value(kind, median)))
+        put('</g>')
 
-    failed_sizes = sorted({r["rules"] for r in failures})
-    for size in failed_sizes:
-        xx, yy = x(size), BOTTOM-23
-        add(f'<path d="M {fmt(xx-5)} {fmt(yy-5)} l 10 10 m -10 0 l 10 -10" '
-            f'stroke="{DIM}" stroke-width="2.0" fill="none"/>')
-        add(text(xx, yy-16, "RAM", "tiny", 'text-anchor="middle"'))
-    add(text(66, 776, "Медиана и min–max · 3 × 20 с · генератор на роутере · 14.10.2026", "foot"))
-    if failed_sizes:
-        add(text(66, 816, "× 50k / 100k: оба запуска остановлены резервом памяти; "
-                 "значение метрики не измерено", "note"))
-    add("</svg>")
-    return "\n".join(output) + "\n"
+    # Position RAM markers *outside* the plot, to avoid implying a zero rate,
+    # CPU time or RSS at rules where both processes were stopped.
+    failure_sizes = sorted({r["rules"] for r in failures})
+    for size in failure_sizes:
+        xx = x_pos(size)
+        put(text(xx, 179, "RAM", "unmeasured", 'text-anchor="middle"'))
+        put(f'<path d="M{num(xx-5)} 186 l10 10 m-10 0 l10 -10" '
+            'stroke="var(--muted)" stroke-width="2" fill="none"/>')
+
+    put(text(76, 645, "Медиана и min–max · 3 × 20 с · 14.10.2026", "note"))
+    put(text(1120, 645, "Источник: docs/c-rewrite/router-raw/2026-10-14", "note", 'text-anchor="end"'))
+    if failure_sizes:
+        put(text(76, 665,
+                 "× RAM: 50 000 и 100 000 правил — остановлено резервом памяти; значения не измерены",
+                 "note"))
+    put('</svg>')
+    return '\n'.join(svg) + '\n'
 
 
 def plot(sources, output):
-    rows = [json.loads(line) for path in sources
-            for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
-    failures = [r for r in rows if r["metric"] == "failure"
+    measurements = [json.loads(line) for path in sources
+                    for line in path.read_text(encoding="utf-8").splitlines()
+                    if line.strip()]
+    failures = [r for r in measurements if r["metric"] == "failure"
                 and r["scenario"] == "capacity" and r["proto"] == "udp"]
-    loads = [r for r in rows if r["metric"] == "load"
-             and r["scenario"] == "capacity" and r["proto"] == "udp"]
-    sizes = sorted({r["rules"] for r in loads + failures})
+    rows = [r for r in measurements if r["metric"] == "load"
+            and r["scenario"] == "capacity" and r["proto"] == "udp"]
+    sizes = sorted({r["rules"] for r in rows + failures})
     for backend in ("original", "mt-c"):
         for size in sizes:
-            count = sum(r["backend"] == backend and r["rules"] == size for r in loads)
-            stopped = any(r["backend"] == backend and r["rules"] == size for r in failures)
-            if count != 3 and not (count == 0 and stopped):
-                raise ValueError(f"missing/incomplete samples for {backend}, {size}: {count}")
+            count = sum(r["backend"] == backend and r["rules"] == size for r in rows)
+            failed = any(r["backend"] == backend and r["rules"] == size for r in failures)
+            if count != 3 and not (count == 0 and failed):
+                raise ValueError(f"missing/incomplete samples: {backend}, {size} (got {count})")
     output.mkdir(parents=True, exist_ok=True)
-    for kind, title, ylabel, filename, minimum, maximum, ticks in CHARTS:
+    for kind, title, ylabel, filename, min_y, max_y, ticks in CHARTS:
         (output / filename).write_text(
-            render_chart(loads, failures, kind, title, ylabel, minimum, maximum, ticks),
-            encoding="utf-8",
-        )
+            draw_chart(rows, failures, kind, title, ylabel, min_y, max_y, ticks),
+            encoding="utf-8")
 
 
 if __name__ == "__main__":

@@ -1,86 +1,131 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="870" viewBox="0 0 1200 870" role="img" aria-labelledby="chart-title chart-desc">
-<title id="chart-title">Потребление памяти (RSS) — mt-c против MagiTrickle</title>
-<desc id="chart-desc">Производительность на MT7621, UDP, 10 клиентов. Логарифмические шкалы. Медиана и min–max трёх запусков по 20 секунд. Провалы по памяти при 50 и 100 тысячах правил не являются нулевыми значениями.</desc>
-<style>
-.title { font: 700 34px Inter, Arial, sans-serif; fill: #F7F8FA }
-.sub { font: 16px Inter, Arial, sans-serif; fill: #AEB4BF }
-.legend { font: 18px Inter, Arial, sans-serif; fill: #F7F8FA }
-.tick { font: 16px Inter, Arial, sans-serif; fill: #D8DCE3 }
-.axis-label { font: 17px Inter, Arial, sans-serif; fill: #F7F8FA }
-.foot { font: italic 15px Inter, Arial, sans-serif; fill: #F7F8FA }
-.note { font: 14px Inter, Arial, sans-serif; fill: #AEB4BF }
-.tiny { font: 12px Inter, Arial, sans-serif; fill: #AEB4BF }
-.line { stroke-linejoin: round; stroke-linecap: round; fill: none; stroke-width: 3.5 }
-</style>
-<rect width="1200" height="870" fill="#080A0D"/><rect x="18" y="17" width="1164" height="837" rx="28" stroke="#393D45" stroke-width="1.45" fill="none"/>
-<text x="66" y="78" class="title" >Потребление памяти (RSS)</text>
-<text x="66" y="121" class="sub" >MT7621 · UDP · 10 клиентов · реальные DNS-ответы и ipset</text>
-<text x="1130" y="78" class="note" text-anchor="end">mt-c / bench</text>
-<path d="M 66 164 H 108" stroke="#4A90FF" stroke-width="3" stroke-linecap="round"/>
-<path d="M 87 156 L 95 164 L 87 172 L 79 164 Z" fill="#4A90FF" stroke="#080A0D" stroke-width="1"/>
-<text x="122" y="170" class="legend" >mt-c · C</text>
-<path d="M 432 164 H 474" stroke="#FFE18A" stroke-width="3" stroke-linecap="round"/>
-<circle cx="453" cy="164" r="7" fill="#FFE18A" stroke="#080A0D" stroke-width="1"/>
-<text x="488" y="170" class="legend" >MagiTrickle · Go 0.8.2</text>
-<path d="M 171.6 215.76 V 633.36 H 1125.6" stroke="#D8DCE3" stroke-width="1.5" fill="none"/>
-<path d="M 162.6 597.385 H 171.6" stroke="#D8DCE3" stroke-width="1.4"/>
-<text x="151.6" y="602.385" class="tick" text-anchor="end">3</text>
-<path d="M 162.6 515.03 H 171.6" stroke="#D8DCE3" stroke-width="1.4"/>
-<text x="151.6" y="520.03" class="tick" text-anchor="end">5</text>
-<path d="M 162.6 403.282 H 171.6" stroke="#D8DCE3" stroke-width="1.4"/>
-<text x="151.6" y="408.282" class="tick" text-anchor="end">10</text>
-<path d="M 162.6 291.533 H 171.6" stroke="#D8DCE3" stroke-width="1.4"/>
-<text x="151.6" y="296.533" class="tick" text-anchor="end">20</text>
-<path d="M 162.6 226.165 H 171.6" stroke="#D8DCE3" stroke-width="1.4"/>
-<text x="151.6" y="231.165" class="tick" text-anchor="end">30</text>
-<path d="M 192.744 633.36 V 642.36" stroke="#D8DCE3" stroke-width="1.4"/>
-<text x="192.744" y="671.36" class="tick" text-anchor="middle">100</text>
-<path d="M 492.318 633.36 V 642.36" stroke="#D8DCE3" stroke-width="1.4"/>
-<text x="492.318" y="671.36" class="tick" text-anchor="middle">1k</text>
-<path d="M 791.892 633.36 V 642.36" stroke="#D8DCE3" stroke-width="1.4"/>
-<text x="791.892" y="671.36" class="tick" text-anchor="middle">10k</text>
-<path d="M 1091.466 633.36 V 642.36" stroke="#D8DCE3" stroke-width="1.4"/>
-<text x="1091.466" y="671.36" class="tick" text-anchor="middle">100k</text>
-<text x="648.6" y="719.36" class="axis-label" text-anchor="middle">Число включённых namespace-правил · log</text>
-<text x="79" y="424.56" class="axis-label" text-anchor="middle" transform="rotate(-90 79 424.56)">RSS демона, MiB · log</text>
-<g stroke="#FFE18A" stroke-width="1.5" opacity="0.69"><path d="M 192.744 352.446 V 348.542"/><path d="M 188.744 352.446 H 196.744 M 188.744 348.542 H 196.744"/></g>
-<g stroke="#FFE18A" stroke-width="1.5" opacity="0.69"><path d="M 282.925 353.183 V 350.482"/><path d="M 278.925 353.183 H 286.925 M 278.925 350.482 H 286.925"/></g>
-<g stroke="#FFE18A" stroke-width="1.5" opacity="0.69"><path d="M 402.137 352.768 V 347.603"/><path d="M 398.137 352.768 H 406.137 M 398.137 347.603 H 406.137"/></g>
-<g stroke="#FFE18A" stroke-width="1.5" opacity="0.69"><path d="M 492.318 357.438 V 347.025"/><path d="M 488.318 357.438 H 496.318 M 488.318 347.025 H 496.318"/></g>
-<g stroke="#FFE18A" stroke-width="1.5" opacity="0.69"><path d="M 582.499 349.442 V 341.565"/><path d="M 578.499 349.442 H 586.499 M 578.499 341.565 H 586.499"/></g>
-<g stroke="#FFE18A" stroke-width="1.5" opacity="0.69"><path d="M 701.711 345.83 V 341.608"/><path d="M 697.711 345.83 H 705.711 M 697.711 341.608 H 705.711"/></g>
-<g stroke="#FFE18A" stroke-width="1.5" opacity="0.69"><path d="M 791.892 328.535 V 319.598"/><path d="M 787.892 328.535 H 795.892 M 787.892 319.598 H 795.892"/></g>
-<g stroke="#FFE18A" stroke-width="1.5" opacity="0.69"><path d="M 882.072 289.904 V 278.736"/><path d="M 878.072 289.904 H 886.072 M 878.072 278.736 H 886.072"/></g>
-<path d="M 192.744 349.261 L 282.925 352.906 L 402.137 347.737 L 492.318 353.969 L 582.499 347.916 L 701.711 343.162 L 791.892 325.203 L 882.072 279.114" stroke="#FFE18A" class="line"/>
-<circle cx="192.744" cy="349.261" r="5" fill="#FFE18A" stroke="#080A0D" stroke-width="1.25"/>
-<circle cx="282.925" cy="352.906" r="5" fill="#FFE18A" stroke="#080A0D" stroke-width="1.25"/>
-<circle cx="402.137" cy="347.737" r="5" fill="#FFE18A" stroke="#080A0D" stroke-width="1.25"/>
-<circle cx="492.318" cy="353.969" r="5" fill="#FFE18A" stroke="#080A0D" stroke-width="1.25"/>
-<circle cx="582.499" cy="347.916" r="5" fill="#FFE18A" stroke="#080A0D" stroke-width="1.25"/>
-<circle cx="701.711" cy="343.162" r="5" fill="#FFE18A" stroke="#080A0D" stroke-width="1.25"/>
-<circle cx="791.892" cy="325.203" r="5" fill="#FFE18A" stroke="#080A0D" stroke-width="1.25"/>
-<circle cx="882.072" cy="279.114" r="5" fill="#FFE18A" stroke="#080A0D" stroke-width="1.25"/>
-<g stroke="#4A90FF" stroke-width="1.5" opacity="0.69"><path d="M 192.744 572.174 V 569.15"/><path d="M 188.744 572.174 H 196.744 M 188.744 569.15 H 196.744"/></g>
-<g stroke="#4A90FF" stroke-width="1.5" opacity="0.69"><path d="M 282.925 567.921 V 564.804"/><path d="M 278.925 567.921 H 286.925 M 278.925 564.804 H 286.925"/></g>
-<g stroke="#4A90FF" stroke-width="1.5" opacity="0.69"><path d="M 402.137 560.072 V 555.475"/><path d="M 398.137 560.072 H 406.137 M 398.137 555.475 H 406.137"/></g>
-<g stroke="#4A90FF" stroke-width="1.5" opacity="0.69"><path d="M 492.318 539.903 V 536.414"/><path d="M 488.318 539.903 H 496.318 M 488.318 536.414 H 496.318"/></g>
-<g stroke="#4A90FF" stroke-width="1.5" opacity="0.69"><path d="M 582.499 514.402 V 511.295"/><path d="M 578.499 514.402 H 586.499 M 578.499 511.295 H 586.499"/></g>
-<g stroke="#4A90FF" stroke-width="1.5" opacity="0.69"><path d="M 701.711 450.926 V 448.324"/><path d="M 697.711 450.926 H 705.711 M 697.711 448.324 H 705.711"/></g>
-<g stroke="#4A90FF" stroke-width="1.5" opacity="0.69"><path d="M 791.892 381.133 V 380.75"/><path d="M 787.892 381.133 H 795.892 M 787.892 380.75 H 795.892"/></g>
-<g stroke="#4A90FF" stroke-width="1.5" opacity="0.69"><path d="M 882.072 295.035 V 294.296"/><path d="M 878.072 295.035 H 886.072 M 878.072 294.296 H 886.072"/></g>
-<path d="M 192.744 570.744 L 282.925 567.921 L 402.137 558.25 L 492.318 539.61 L 582.499 513.776 L 701.711 450.842 L 791.892 381.024 L 882.072 294.329" stroke="#4A90FF" class="line"/>
-<path d="M 192.744 564.744 L 198.744 570.744 L 192.744 576.744 L 186.744 570.744 Z" fill="#4A90FF" stroke="#080A0D" stroke-width="1.25"/>
-<path d="M 282.925 561.921 L 288.925 567.921 L 282.925 573.921 L 276.925 567.921 Z" fill="#4A90FF" stroke="#080A0D" stroke-width="1.25"/>
-<path d="M 402.137 552.25 L 408.137 558.25 L 402.137 564.25 L 396.137 558.25 Z" fill="#4A90FF" stroke="#080A0D" stroke-width="1.25"/>
-<path d="M 492.318 533.61 L 498.318 539.61 L 492.318 545.61 L 486.318 539.61 Z" fill="#4A90FF" stroke="#080A0D" stroke-width="1.25"/>
-<path d="M 582.499 507.776 L 588.499 513.776 L 582.499 519.776 L 576.499 513.776 Z" fill="#4A90FF" stroke="#080A0D" stroke-width="1.25"/>
-<path d="M 701.711 444.842 L 707.711 450.842 L 701.711 456.842 L 695.711 450.842 Z" fill="#4A90FF" stroke="#080A0D" stroke-width="1.25"/>
-<path d="M 791.892 375.024 L 797.892 381.024 L 791.892 387.024 L 785.892 381.024 Z" fill="#4A90FF" stroke="#080A0D" stroke-width="1.25"/>
-<path d="M 882.072 288.329 L 888.072 294.329 L 882.072 300.329 L 876.072 294.329 Z" fill="#4A90FF" stroke="#080A0D" stroke-width="1.25"/>
-<path d="M 996.285 605.36 l 10 10 m -10 0 l 10 -10" stroke="#777E89" stroke-width="2.0" fill="none"/>
-<text x="1001.285" y="594.36" class="tiny" text-anchor="middle">RAM</text>
-<path d="M 1086.466 605.36 l 10 10 m -10 0 l 10 -10" stroke="#777E89" stroke-width="2.0" fill="none"/>
-<text x="1091.466" y="594.36" class="tiny" text-anchor="middle">RAM</text>
-<text x="66" y="776" class="foot" >Медиана и min–max · 3 × 20 с · генератор на роутере · 14.10.2026</text>
-<text x="66" y="816" class="note" >× 50k / 100k: оба запуска остановлены резервом памяти; значение метрики не измерено</text>
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="680" viewBox="0 0 1200 680" role="img" aria-labelledby="title desc">
+  <title id="title">Потребление памяти (RSS) — mt-c и MagiTrickle</title>
+  <desc id="desc">Медиана, min–max трёх двадцатисекундных прогонов. Нагрузка реального роутера MT7621; UDP, 10 клиентов; логарифмические оси. Точки на 50000 и 100000 правилах остановлены защитой памяти и не измерены.</desc>
+  <style>
+    :root {
+      color-scheme: light dark;
+      --ink: #424750;
+      --muted: #6b7280;
+      --axis: #59606b;
+      --grid: #e7e7e7;
+      --blue: #4f73c6;
+      --pale-blue: #8ea9d9;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --ink: #c9cdd3;
+        --muted: #a6abb3;
+        --axis: #b5bac2;
+        --grid: #383838;
+        --blue: #4f73c6;
+        --pale-blue: #c8d9fa;
+      }
+    }
+    text { font-family: Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: var(--ink); }
+    .subtitle { font-size: 17px; fill: var(--muted); }
+    .axis-label { font-size: 17px; font-weight: 600; }
+    .tick { font-size: 15px; fill: var(--muted); }
+    .legend { font-size: 18px; font-weight: 600; }
+    .value { font-size: 14px; font-weight: 700; }
+    .note { font-size: 13px; fill: var(--muted); }
+    .unmeasured { font-size: 13px; fill: var(--muted); }
+    .axis { stroke: var(--axis); }
+    .grid { stroke: var(--grid); }
+    .c-line { stroke: var(--blue); fill: none; }
+    .go-line { stroke: var(--pale-blue); fill: none; }
+    .c-point { fill: var(--blue); }
+    .go-point { fill: var(--pale-blue); }
+    .c-whisker { stroke: var(--blue); }
+    .go-whisker { stroke: var(--pale-blue); }
+  </style>
+<text x="76" y="68" class="subtitle" >Реальный роутер MT7621 · UDP · 10 клиентов · медиана трёх прогонов</text>
+<circle cx="80" cy="116" r="7" class="c-point"/>
+<text x="97" y="122" class="legend" >mt-c</text>
+<circle cx="208" cy="116" r="7" class="go-point"/>
+<text x="225" y="122" class="legend" >Go MagiTrickle 0.8.2</text>
+<line class="axis" x1="150" y1="218" x2="150" y2="550" stroke-width="2"/>
+<line class="axis" x1="150" y1="550" x2="1120" y2="550" stroke-width="2"/>
+<g class="grid" stroke-width="1">
+  <line x1="150" y1="505.065" x2="1120" y2="505.065"/>
+  <line x1="150" y1="448.453" x2="1120" y2="448.453"/>
+  <line x1="150" y1="371.635" x2="1120" y2="371.635"/>
+  <line x1="150" y1="294.818" x2="1120" y2="294.818"/>
+  <line x1="150" y1="249.882" x2="1120" y2="249.882"/>
+</g>
+<g class="tick" text-anchor="end">
+  <text x="132" y="510.065" class="" >3</text>
+  <text x="132" y="453.453" class="" >5</text>
+  <text x="132" y="376.635" class="" >10</text>
+  <text x="132" y="299.818" class="" >20</text>
+  <text x="132" y="254.882" class="" >30</text>
+</g>
+<g class="tick" text-anchor="middle">
+  <text x="171.499" y="583" class="" >100</text>
+  <text x="476.097" y="583" class="" >1 000</text>
+  <text x="780.695" y="583" class="" >10 000</text>
+  <text x="1085.293" y="583" class="" >100 000</text>
+</g>
+<text x="635" y="620" class="axis-label" text-anchor="middle">Количество правил · логарифмическая шкала</text>
+<text x="56" y="384" class="axis-label" text-anchor="middle" transform="rotate(-90 56 384)">RSS демона, MiB · log</text>
+<g class="go-whisker" stroke-width="1.7" opacity="0.65" fill="none">
+<path d="M171.499 334.006 V336.69 M167.499 334.006 H175.499 M167.499 336.69 H175.499"/>
+<path d="M263.192 335.34 V337.196 M259.192 335.34 H267.192 M259.192 337.196 H267.192"/>
+<path d="M384.404 333.361 V336.911 M380.404 333.361 H388.404 M380.404 336.911 H388.404"/>
+<path d="M476.097 332.963 V340.122 M472.097 332.963 H480.097 M472.097 340.122 H480.097"/>
+<path d="M567.79 329.21 V334.624 M563.79 329.21 H571.79 M563.79 334.624 H571.79"/>
+<path d="M689.002 329.239 V332.142 M685.002 329.239 H693.002 M685.002 332.142 H693.002"/>
+<path d="M780.695 314.109 V320.253 M776.695 314.109 H784.695 M776.695 320.253 H784.695"/>
+<path d="M872.388 286.02 V293.698 M868.388 286.02 H876.388 M868.388 293.698 H876.388"/>
+</g>
+<path d="M171.499 334.501 L263.192 337.006 L384.404 333.453 L476.097 337.737 L567.79 333.575 L689.002 330.308 L780.695 317.962 L872.388 286.28" class="go-line" fill="none" stroke-width="4.5" stroke-linecap="round" stroke-linejoin="round"/>
+<g class="go-point">
+<circle cx="171.499" cy="334.501" r="7"/>
+<circle cx="263.192" cy="337.006" r="7"/>
+<circle cx="384.404" cy="333.453" r="7"/>
+<circle cx="476.097" cy="337.737" r="7"/>
+<circle cx="567.79" cy="333.575" r="7"/>
+<circle cx="689.002" cy="330.308" r="7"/>
+<circle cx="780.695" cy="317.962" r="7"/>
+<circle cx="872.388" cy="286.28" r="7"/>
+</g>
+<g class="value" text-anchor="middle">
+  <text x="171.499" y="315.501" class="" >14.0</text>
+  <text x="476.097" y="318.737" class="" >13.6</text>
+  <text x="780.695" y="298.962" class="" >16.2</text>
+  <text x="872.388" y="267.28" class="" >21.6</text>
+</g>
+<g class="c-whisker" stroke-width="1.7" opacity="0.65" fill="none">
+<path d="M171.499 485.655 V487.734 M167.499 485.655 H175.499 M167.499 487.734 H175.499"/>
+<path d="M263.192 482.668 V484.811 M259.192 482.668 H267.192 M259.192 484.811 H267.192"/>
+<path d="M384.404 476.255 V479.415 M380.404 476.255 H388.404 M380.404 479.415 H388.404"/>
+<path d="M476.097 463.152 V465.551 M472.097 463.152 H480.097 M472.097 465.551 H480.097"/>
+<path d="M567.79 445.885 V448.021 M563.79 445.885 H571.79 M563.79 448.021 H571.79"/>
+<path d="M689.002 402.598 V404.387 M685.002 402.598 H693.002 M685.002 404.387 H693.002"/>
+<path d="M780.695 356.146 V356.41 M776.695 356.146 H784.695 M776.695 356.41 H784.695"/>
+<path d="M872.388 296.717 V297.225 M868.388 296.717 H876.388 M868.388 297.225 H876.388"/>
+</g>
+<path d="M171.499 486.751 L263.192 484.811 L384.404 478.163 L476.097 465.349 L567.79 447.59 L689.002 404.328 L780.695 356.334 L872.388 296.739" class="c-line" fill="none" stroke-width="4.5" stroke-linecap="round" stroke-linejoin="round"/>
+<g class="c-point">
+<circle cx="171.499" cy="486.751" r="7"/>
+<circle cx="263.192" cy="484.811" r="7"/>
+<circle cx="384.404" cy="478.163" r="7"/>
+<circle cx="476.097" cy="465.349" r="7"/>
+<circle cx="567.79" cy="447.59" r="7"/>
+<circle cx="689.002" cy="404.328" r="7"/>
+<circle cx="780.695" cy="356.334" r="7"/>
+<circle cx="872.388" cy="296.739" r="7"/>
+</g>
+<g class="value" text-anchor="middle">
+  <text x="171.499" y="514.751" class="" >3.5</text>
+  <text x="476.097" y="493.349" class="" >4.3</text>
+  <text x="780.695" y="384.334" class="" >11.5</text>
+  <text x="872.388" y="324.739" class="" >19.7</text>
+</g>
+<text x="993.6" y="179" class="unmeasured" text-anchor="middle">RAM</text>
+<path d="M988.6 186 l10 10 m-10 0 l10 -10" stroke="var(--muted)" stroke-width="2" fill="none"/>
+<text x="1085.293" y="179" class="unmeasured" text-anchor="middle">RAM</text>
+<path d="M1080.293 186 l10 10 m-10 0 l10 -10" stroke="var(--muted)" stroke-width="2" fill="none"/>
+<text x="76" y="645" class="note" >Медиана и min–max · 3 × 20 с · 14.10.2026</text>
+<text x="1120" y="645" class="note" text-anchor="end">Источник: docs/c-rewrite/router-raw/2026-10-14</text>
+<text x="76" y="665" class="note" >× RAM: 50 000 и 100 000 правил — остановлено резервом памяти; значения не измерены</text>
 </svg>
