@@ -85,8 +85,8 @@ def draw_chart(loads, failures, kind, title, ylabel, min_y, max_y, y_ticks):
 
     svg = []
     put = svg.append
-    put('<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="553" '
-        'viewBox="0 0 1200 553" role="img" aria-labelledby="title desc">')
+    put('<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="490" '
+        'viewBox="0 0 1200 490" role="img" aria-labelledby="title desc">')
     put(f'  <title id="title">{escape(title)} — mt-c и MagiTrickle</title>')
     put('  <desc id="desc">Медиана, min–max трёх двадцатисекундных прогонов. '
         'Нагрузка реального роутера MT7621; UDP, 10 клиентов; логарифмические оси. '
@@ -134,7 +134,7 @@ def draw_chart(loads, failures, kind, title, ylabel, min_y, max_y, y_ticks):
     # Preserve a transparent background and the original unframed style.
     # Two independent translations reduce the large empty header and the
     # gap between legend and plot without rescaling any measured value.
-    put('<g transform="translate(0 -75)">')
+    put('<g transform="translate(0 -95)">')
     put('<circle cx="80" cy="116" r="7" class="c-point"/>')
     put(text(97, 122, "mt-c", "legend"))
     put('<circle cx="208" cy="116" r="7" class="go-point"/>')
@@ -142,7 +142,7 @@ def draw_chart(loads, failures, kind, title, ylabel, min_y, max_y, y_ticks):
     put(text(590, 122, "×", "legend"))
     put(text(615, 122, "Остановлено по памяти", "legend"))
     put('</g>')
-    put('<g transform="translate(0 -95)">')
+    put('<g transform="translate(0 -155)">')
 
     # Logarithmic paper: every 10x decade is a strong line, and each decade
     # has 2..9 subdivisions. Slightly stronger 2x/5x lines aid interpolation.
