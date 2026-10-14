@@ -1,4 +1,4 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="680" viewBox="0 0 1200 680" role="img" aria-labelledby="title desc">
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="650" viewBox="0 0 1200 650" role="img" aria-labelledby="title desc">
   <title id="title">CPU на один успешный DNS-запрос — mt-c и MagiTrickle</title>
   <desc id="desc">Медиана, min–max трёх двадцатисекундных прогонов. Нагрузка реального роутера MT7621; UDP, 10 клиентов; логарифмические оси. Точки на 50000 и 100000 правилах остановлены защитой памяти и не измерены.</desc>
   <style>
@@ -7,7 +7,9 @@
       --ink: #424750;
       --muted: #6b7280;
       --axis: #59606b;
-      --grid: #e7e7e7;
+      --grid-major: #bac5d1;
+      --grid-mid: #d7dee7;
+      --grid-minor: #eef1f4;
       --blue: #4f73c6;
       --pale-blue: #8ea9d9;
     }
@@ -16,21 +18,22 @@
         --ink: #c9cdd3;
         --muted: #a6abb3;
         --axis: #b5bac2;
-        --grid: #383838;
+        --grid-major: #505965;
+        --grid-mid: #404854;
+        --grid-minor: #303740;
         --blue: #4f73c6;
         --pale-blue: #c8d9fa;
       }
     }
     text { font-family: Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: var(--ink); }
-    .subtitle { font-size: 17px; fill: var(--muted); }
     .axis-label { font-size: 17px; font-weight: 600; }
-    .tick { font-size: 15px; fill: var(--muted); }
+    .tick { font-size: 16px; fill: var(--ink); }
     .legend { font-size: 18px; font-weight: 600; }
-    .value { font-size: 14px; font-weight: 700; }
-    .note { font-size: 13px; fill: var(--muted); }
-    .unmeasured { font-size: 13px; fill: var(--muted); }
+    .value { font-size: 15px; font-weight: 700; }
     .axis { stroke: var(--axis); }
-    .grid { stroke: var(--grid); }
+    .grid-major { stroke: var(--grid-major); stroke-width: 1.35; }
+    .grid-mid { stroke: var(--grid-mid); stroke-width: 1.05; }
+    .grid-minor { stroke: var(--grid-minor); stroke-width: 0.85; }
     .c-line { stroke: var(--blue); fill: none; }
     .go-line { stroke: var(--pale-blue); fill: none; }
     .c-point { fill: var(--blue); }
@@ -38,21 +41,121 @@
     .c-whisker { stroke: var(--blue); }
     .go-whisker { stroke: var(--pale-blue); }
   </style>
-<text x="76" y="68" class="subtitle" >Реальный роутер MT7621 · UDP · 10 клиентов · медиана трёх прогонов</text>
 <circle cx="80" cy="116" r="7" class="c-point"/>
 <text x="97" y="122" class="legend" >mt-c</text>
 <circle cx="208" cy="116" r="7" class="go-point"/>
 <text x="225" y="122" class="legend" >Go MagiTrickle 0.8.2</text>
+<text x="590" y="122" class="legend" >×</text>
+<text x="615" y="122" class="legend" >Остановлено по памяти</text>
+<g aria-hidden="true">
+  <line class="grid-minor" x1="157.561" y1="218" x2="157.561" y2="550"/>
+  <line class="grid-major" x1="171.499" y1="218" x2="171.499" y2="550"/>
+  <line class="grid-mid" x1="263.192" y1="218" x2="263.192" y2="550"/>
+  <line class="grid-minor" x1="316.829" y1="218" x2="316.829" y2="550"/>
+  <line class="grid-minor" x1="354.885" y1="218" x2="354.885" y2="550"/>
+  <line class="grid-mid" x1="384.404" y1="218" x2="384.404" y2="550"/>
+  <line class="grid-minor" x1="408.522" y1="218" x2="408.522" y2="550"/>
+  <line class="grid-minor" x1="428.914" y1="218" x2="428.914" y2="550"/>
+  <line class="grid-minor" x1="446.578" y1="218" x2="446.578" y2="550"/>
+  <line class="grid-minor" x1="462.159" y1="218" x2="462.159" y2="550"/>
+  <line class="grid-major" x1="476.097" y1="218" x2="476.097" y2="550"/>
+  <line class="grid-mid" x1="567.79" y1="218" x2="567.79" y2="550"/>
+  <line class="grid-minor" x1="621.427" y1="218" x2="621.427" y2="550"/>
+  <line class="grid-minor" x1="659.483" y1="218" x2="659.483" y2="550"/>
+  <line class="grid-mid" x1="689.002" y1="218" x2="689.002" y2="550"/>
+  <line class="grid-minor" x1="713.12" y1="218" x2="713.12" y2="550"/>
+  <line class="grid-minor" x1="733.512" y1="218" x2="733.512" y2="550"/>
+  <line class="grid-minor" x1="751.176" y1="218" x2="751.176" y2="550"/>
+  <line class="grid-minor" x1="766.757" y1="218" x2="766.757" y2="550"/>
+  <line class="grid-major" x1="780.695" y1="218" x2="780.695" y2="550"/>
+  <line class="grid-mid" x1="872.388" y1="218" x2="872.388" y2="550"/>
+  <line class="grid-minor" x1="926.025" y1="218" x2="926.025" y2="550"/>
+  <line class="grid-minor" x1="964.081" y1="218" x2="964.081" y2="550"/>
+  <line class="grid-mid" x1="993.6" y1="218" x2="993.6" y2="550"/>
+  <line class="grid-minor" x1="1017.718" y1="218" x2="1017.718" y2="550"/>
+  <line class="grid-minor" x1="1038.11" y1="218" x2="1038.11" y2="550"/>
+  <line class="grid-minor" x1="1055.774" y1="218" x2="1055.774" y2="550"/>
+  <line class="grid-minor" x1="1071.355" y1="218" x2="1071.355" y2="550"/>
+  <line class="grid-major" x1="1085.293" y1="218" x2="1085.293" y2="550"/>
+  <line class="grid-minor" x1="150" y1="544.908" x2="1120" y2="544.908"/>
+  <line class="grid-minor" x1="150" y1="535.887" x2="1120" y2="535.887"/>
+  <line class="grid-minor" x1="150" y1="528.072" x2="1120" y2="528.072"/>
+  <line class="grid-minor" x1="150" y1="521.179" x2="1120" y2="521.179"/>
+  <line class="grid-major" x1="150" y1="515.013" x2="1120" y2="515.013"/>
+  <line class="grid-mid" x1="150" y1="474.448" x2="1120" y2="474.448"/>
+  <line class="grid-minor" x1="150" y1="450.719" x2="1120" y2="450.719"/>
+  <line class="grid-minor" x1="150" y1="433.883" x2="1120" y2="433.883"/>
+  <line class="grid-mid" x1="150" y1="420.824" x2="1120" y2="420.824"/>
+  <line class="grid-minor" x1="150" y1="410.154" x2="1120" y2="410.154"/>
+  <line class="grid-minor" x1="150" y1="401.133" x2="1120" y2="401.133"/>
+  <line class="grid-minor" x1="150" y1="393.318" x2="1120" y2="393.318"/>
+  <line class="grid-minor" x1="150" y1="386.425" x2="1120" y2="386.425"/>
+  <line class="grid-major" x1="150" y1="380.259" x2="1120" y2="380.259"/>
+  <line class="grid-mid" x1="150" y1="339.695" x2="1120" y2="339.695"/>
+  <line class="grid-minor" x1="150" y1="315.966" x2="1120" y2="315.966"/>
+  <line class="grid-minor" x1="150" y1="299.13" x2="1120" y2="299.13"/>
+  <line class="grid-mid" x1="150" y1="286.071" x2="1120" y2="286.071"/>
+  <line class="grid-minor" x1="150" y1="275.401" x2="1120" y2="275.401"/>
+  <line class="grid-minor" x1="150" y1="266.379" x2="1120" y2="266.379"/>
+  <line class="grid-minor" x1="150" y1="258.565" x2="1120" y2="258.565"/>
+  <line class="grid-minor" x1="150" y1="251.672" x2="1120" y2="251.672"/>
+  <line class="grid-major" x1="150" y1="245.506" x2="1120" y2="245.506"/>
+</g>
 <line class="axis" x1="150" y1="218" x2="150" y2="550" stroke-width="2"/>
 <line class="axis" x1="150" y1="550" x2="1120" y2="550" stroke-width="2"/>
-<g class="grid" stroke-width="1">
-  <line x1="150" y1="515.013" x2="1120" y2="515.013"/>
-  <line x1="150" y1="474.448" x2="1120" y2="474.448"/>
-  <line x1="150" y1="420.824" x2="1120" y2="420.824"/>
-  <line x1="150" y1="380.259" x2="1120" y2="380.259"/>
-  <line x1="150" y1="339.695" x2="1120" y2="339.695"/>
-  <line x1="150" y1="286.071" x2="1120" y2="286.071"/>
-  <line x1="150" y1="245.506" x2="1120" y2="245.506"/>
+<g class="axis" stroke-width="1.1" aria-hidden="true">
+  <line x1="157.561" y1="550" x2="157.561" y2="553"/>
+  <line x1="171.499" y1="550" x2="171.499" y2="559"/>
+  <line x1="263.192" y1="550" x2="263.192" y2="556"/>
+  <line x1="316.829" y1="550" x2="316.829" y2="553"/>
+  <line x1="354.885" y1="550" x2="354.885" y2="553"/>
+  <line x1="384.404" y1="550" x2="384.404" y2="556"/>
+  <line x1="408.522" y1="550" x2="408.522" y2="553"/>
+  <line x1="428.914" y1="550" x2="428.914" y2="553"/>
+  <line x1="446.578" y1="550" x2="446.578" y2="553"/>
+  <line x1="462.159" y1="550" x2="462.159" y2="553"/>
+  <line x1="476.097" y1="550" x2="476.097" y2="559"/>
+  <line x1="567.79" y1="550" x2="567.79" y2="556"/>
+  <line x1="621.427" y1="550" x2="621.427" y2="553"/>
+  <line x1="659.483" y1="550" x2="659.483" y2="553"/>
+  <line x1="689.002" y1="550" x2="689.002" y2="556"/>
+  <line x1="713.12" y1="550" x2="713.12" y2="553"/>
+  <line x1="733.512" y1="550" x2="733.512" y2="553"/>
+  <line x1="751.176" y1="550" x2="751.176" y2="553"/>
+  <line x1="766.757" y1="550" x2="766.757" y2="553"/>
+  <line x1="780.695" y1="550" x2="780.695" y2="559"/>
+  <line x1="872.388" y1="550" x2="872.388" y2="556"/>
+  <line x1="926.025" y1="550" x2="926.025" y2="553"/>
+  <line x1="964.081" y1="550" x2="964.081" y2="553"/>
+  <line x1="993.6" y1="550" x2="993.6" y2="556"/>
+  <line x1="1017.718" y1="550" x2="1017.718" y2="553"/>
+  <line x1="1038.11" y1="550" x2="1038.11" y2="553"/>
+  <line x1="1055.774" y1="550" x2="1055.774" y2="553"/>
+  <line x1="1071.355" y1="550" x2="1071.355" y2="553"/>
+  <line x1="1085.293" y1="550" x2="1085.293" y2="559"/>
+  <line x1="147" y1="544.908" x2="150" y2="544.908"/>
+  <line x1="147" y1="535.887" x2="150" y2="535.887"/>
+  <line x1="147" y1="528.072" x2="150" y2="528.072"/>
+  <line x1="147" y1="521.179" x2="150" y2="521.179"/>
+  <line x1="141" y1="515.013" x2="150" y2="515.013"/>
+  <line x1="144" y1="474.448" x2="150" y2="474.448"/>
+  <line x1="147" y1="450.719" x2="150" y2="450.719"/>
+  <line x1="147" y1="433.883" x2="150" y2="433.883"/>
+  <line x1="144" y1="420.824" x2="150" y2="420.824"/>
+  <line x1="147" y1="410.154" x2="150" y2="410.154"/>
+  <line x1="147" y1="401.133" x2="150" y2="401.133"/>
+  <line x1="147" y1="393.318" x2="150" y2="393.318"/>
+  <line x1="147" y1="386.425" x2="150" y2="386.425"/>
+  <line x1="141" y1="380.259" x2="150" y2="380.259"/>
+  <line x1="144" y1="339.695" x2="150" y2="339.695"/>
+  <line x1="147" y1="315.966" x2="150" y2="315.966"/>
+  <line x1="147" y1="299.13" x2="150" y2="299.13"/>
+  <line x1="144" y1="286.071" x2="150" y2="286.071"/>
+  <line x1="147" y1="275.401" x2="150" y2="275.401"/>
+  <line x1="147" y1="266.379" x2="150" y2="266.379"/>
+  <line x1="147" y1="258.565" x2="150" y2="258.565"/>
+  <line x1="147" y1="251.672" x2="150" y2="251.672"/>
+  <line x1="141" y1="245.506" x2="150" y2="245.506"/>
 </g>
 <g class="tick" text-anchor="end">
   <text x="132" y="520.013" class="" >1</text>
@@ -69,8 +172,8 @@
   <text x="780.695" y="583" class="" >10 000</text>
   <text x="1085.293" y="583" class="" >100 000</text>
 </g>
-<text x="635" y="620" class="axis-label" text-anchor="middle">Количество правил · логарифмическая шкала</text>
-<text x="56" y="384" class="axis-label" text-anchor="middle" transform="rotate(-90 56 384)">CPU демона, мс / запрос · log</text>
+<text x="635" y="620" class="axis-label" text-anchor="middle">Количество правил</text>
+<text x="56" y="384" class="axis-label" text-anchor="middle" transform="rotate(-90 56 384)">CPU демона, мс / запрос</text>
 <g class="go-whisker" stroke-width="1.7" opacity="0.65" fill="none">
 <path d="M171.499 338.117 V339.84 M167.499 338.117 H175.499 M167.499 339.84 H175.499"/>
 <path d="M263.192 335.922 V337.789 M259.192 335.922 H267.192 M259.192 337.789 H267.192"/>
@@ -125,11 +228,6 @@
   <text x="780.695" y="534.813" class="" >1.15</text>
   <text x="872.388" y="533.583" class="" >1.17</text>
 </g>
-<text x="993.6" y="179" class="unmeasured" text-anchor="middle">RAM</text>
-<path d="M988.6 186 l10 10 m-10 0 l10 -10" stroke="var(--muted)" stroke-width="2" fill="none"/>
-<text x="1085.293" y="179" class="unmeasured" text-anchor="middle">RAM</text>
-<path d="M1080.293 186 l10 10 m-10 0 l10 -10" stroke="var(--muted)" stroke-width="2" fill="none"/>
-<text x="76" y="645" class="note" >Медиана и min–max · 3 × 20 с · 14.10.2026</text>
-<text x="1120" y="645" class="note" text-anchor="end">Источник: docs/c-rewrite/router-raw/2026-10-14</text>
-<text x="76" y="665" class="note" >× RAM: 50 000 и 100 000 правил — остановлено резервом памяти; значения не измерены</text>
+<path d="M988.6 186 l10 10 m-10 0 l10 -10" stroke="var(--axis)" stroke-width="2" fill="none"/>
+<path d="M1080.293 186 l10 10 m-10 0 l10 -10" stroke="var(--axis)" stroke-width="2" fill="none"/>
 </svg>
