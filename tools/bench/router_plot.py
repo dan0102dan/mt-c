@@ -85,8 +85,8 @@ def draw_chart(loads, failures, kind, title, ylabel, min_y, max_y, y_ticks):
 
     svg = []
     put = svg.append
-    put('<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="650" '
-        'viewBox="0 0 1200 650" role="img" aria-labelledby="title desc">')
+    put('<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="553" '
+        'viewBox="0 0 1200 553" role="img" aria-labelledby="title desc">')
     put(f'  <title id="title">{escape(title)} — mt-c и MagiTrickle</title>')
     put('  <desc id="desc">Медиана, min–max трёх двадцатисекундных прогонов. '
         'Нагрузка реального роутера MT7621; UDP, 10 клиентов; логарифмические оси. '
@@ -131,13 +131,18 @@ def draw_chart(loads, failures, kind, title, ylabel, min_y, max_y, y_ticks):
     .c-whisker { stroke: var(--blue); }
     .go-whisker { stroke: var(--pale-blue); }
   </style>''')
-    # No background rectangle and no rounded outer border (like the originals).
+    # Preserve a transparent background and the original unframed style.
+    # Two independent translations reduce the large empty header and the
+    # gap between legend and plot without rescaling any measured value.
+    put('<g transform="translate(0 -75)">')
     put('<circle cx="80" cy="116" r="7" class="c-point"/>')
     put(text(97, 122, "mt-c", "legend"))
     put('<circle cx="208" cy="116" r="7" class="go-point"/>')
     put(text(225, 122, "Go MagiTrickle 0.8.2", "legend"))
     put(text(590, 122, "×", "legend"))
     put(text(615, 122, "Остановлено по памяти", "legend"))
+    put('</g>')
+    put('<g transform="translate(0 -95)">')
 
     # Logarithmic paper: every 10x decade is a strong line, and each decade
     # has 2..9 subdivisions. Slightly stronger 2x/5x lines aid interpolation.
@@ -231,6 +236,7 @@ def draw_chart(loads, failures, kind, title, ylabel, min_y, max_y, y_ticks):
         put(f'<path d="M{num(xx-5)} 186 l10 10 m-10 0 l10 -10" '
             'stroke="var(--axis)" stroke-width="2" fill="none"/>')
 
+    put('</g>')
     put('</svg>')
     return '\n'.join(svg) + '\n'
 
