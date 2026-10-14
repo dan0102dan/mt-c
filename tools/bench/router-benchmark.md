@@ -125,7 +125,7 @@ Governor, affinity и фоновые службы не меняются. Ген�
 обновление ipset, но нет измерения полного пути маршрутизации через iptables,
 холодной рекурсии DNS, смешанных/regex-правил, пиков памяти при обновлении подписок или длительного soak.
 
-Графики README воспроизводятся отдельно (достаточно Python 3, сторонние библиотеки не нужны):
+Промежуточные графики по исходным трём точкам можно построить с Python 3, без сторонних библиотек. Для воспроизведения всех опубликованных SVG используйте команду с полным набором данных ниже:
 
 ```sh
 python3 tools/bench/router_plot.py /tmp/router-results/results.jsonl --output img
@@ -174,7 +174,16 @@ python3 tools/bench/router_dns.py --clk-tck 100 \
   --control-path /tmp/mt-bench-ssh.sock --udp-only --skip-upstream --memory-guard \
   --rules 200 500 2000 5000 20000 50000 100000 --output /tmp/curve-extra
 python3 tools/bench/router_summary.py /tmp/router-results/results.jsonl /tmp/curve-extra/results.jsonl
-python3 tools/bench/router_plot.py /tmp/router-results/results.jsonl /tmp/curve-extra/results.jsonl --output img
+```
+
+Для точного воспроизведения опубликованных SVG, включая отметки остановленных запусков RAM (50 000 и 100 000 правил), необходимы три сохранённых файла:
+
+```sh
+python3 tools/bench/router_plot.py \
+  docs/c-rewrite/router-raw/2026-10-14/results.jsonl \
+  docs/c-rewrite/router-raw/2026-10-14/curve-extra/results.jsonl \
+  docs/c-rewrite/router-raw/2026-10-14/curve-large/results.jsonl \
+  --output img
 ```
 
 Графики используют логарифмические шкалы обеих осей и соединяют реальные
