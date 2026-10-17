@@ -246,6 +246,7 @@ static mt_err_t ruleset_enable_locked(mt_ruleset_t *rs) {
     }
 #ifdef MT_ENTWARE_KN
     mt_ipset_to_link_set_policy(link, rs->deps.policy);
+    mt_ipset_to_link_set_interface_states(link, rs->deps.interface_states);
 #endif
     mt_ipset_to_link_set_priority(link, mt_group_routing_order(rs->group));
 
@@ -583,3 +584,12 @@ bool mt_ruleset_uses_interface(const mt_ruleset_t *rs, const char *name)
     }
     return rs->group->iface && strcmp(rs->group->iface, name) == 0;
 }
+
+#ifdef MT_ENTWARE_KN
+void mt_ruleset_set_interface_states(mt_ruleset_t *rs, const mt_kn_ifstate_t *state)
+{
+    if (!rs) { return; }
+    rs->deps.interface_states = state;
+    mt_ipset_to_link_set_interface_states(rs->ipset_to_link, state);
+}
+#endif

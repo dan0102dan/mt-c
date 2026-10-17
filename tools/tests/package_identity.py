@@ -15,8 +15,15 @@ import shutil
 import subprocess
 import tarfile
 import tempfile
+import socket
+import threading
+import time
 
 REPO = Path(__file__).resolve().parents[2]
+NDM_HOOKS = ("iflayerchanged.d", "ifstatechanged.d", "ifcreated.d", "ifdestroyed.d")
+NDM_FILES = {f"etc/ndm/{hook}/100-magitrickle" for hook in NDM_HOOKS} | {
+    "lib/magitrickle/ndm-interface-hook",
+}
 
 
 def run(args: list[str], cwd: Path, env: dict[str, str] | None = None) -> str:
@@ -64,6 +71,14 @@ def ipk_contract(work: Path, platform: str, target: str) -> None:
             assert html and html.read().decode() == marker
             assert not any(name.endswith(".mt-c-build-properties") for name in files)
             assert f"{binary_dir}/mt-c-updater" not in files
+            is_kn = platform == "entware" and target.endswith("_kn")
+            for relative in NDM_FILES:
+                installed = f"./opt/{relative}"
+                assert (installed in files) == is_kn, (key, installed)
+                if is_kn:
+                    assert payload.getmember(installed).mode & 0o111
+            if not is_kn:
+                assert not any("/ndm/" in name or name.endswith("ndm-interface-hook") for name in files)
             for name in ("magitrickled",):
                 binary = f"{binary_dir}/{name}"
                 assert binary in files
@@ -97,6 +112,7 @@ def apk_contract(work: Path) -> None:
     for name in ("magitrickled",):
         assert f"/usr/bin/{name}" in inventory
         assert (root / "usr/bin" / name).stat().st_mode & 0o111
+    assert not any("/ndm/" in name or name.endswith("ndm-interface-hook") for name in inventory)
     assert "/usr/bin/mt-c-updater" not in inventory
     assert not (root / "usr/bin/mt-c-updater").exists()
     assert not list((root / "lib/apk/packages").glob("magitrickle.*"))
@@ -120,6 +136,127 @@ def sdk_contract(work: Path, platform: str) -> None:
     print(f"PASS evaluated {platform} SDK package identity/conflicts/source name")
 
 
+def sdk_ndm_install_contract(work: Path) -> None:
+    # Exercise the actual SDK install definition with ordinary install/cp, not
+    # only the root Makefile. CI release builds use this separate recipe.
+    for target in ("aarch64-3.10_kn", "aarch64-3.10"):
+        sdk = work / f"sdk-payload-{target}"
+        sdk.mkdir()
+        (sdk / "rules.mk").write_text(
+            "INCLUDE_DIR:=$(CURDIR)\nBUILD_DIR:=$(CURDIR)/build\n"
+            "INSTALL_DIR:=mkdir -p\nINSTALL_BIN:=install -m 0755\n"
+            "INSTALL_CONF:=install -m 0644\nCP:=cp -r\n"
+        )
+        (sdk / "package.mk").write_text("")
+        (sdk / "version.mk").write_text(
+            f"MAGITRICKLE_VERSION:=1.2.3\nMAGITRICKLE_RELEASE:=1\nMAGITRICKLE_TARGET:={target}\n"
+        )
+        source = sdk / "build/mt-c-1.2.3"
+        shutil.copytree(REPO / "files", source / "files")
+        binary = source / f"src/backend-c/build/entware-{target}/magitrickled-c"
+        binary.parent.mkdir(parents=True)
+        binary.write_text("synthetic noninstallable payload\n")
+        frontend = source / "src/frontend/dist"
+        frontend.mkdir(parents=True)
+        (frontend / "index.html").write_text("synthetic fixture\n")
+        recipe = (REPO / "tools/ci/entware-package/Makefile").read_text()
+        # The SDK evaluates the install body, including its conditionals.
+        recipe += "\ndefine newline\n\n\nendef\n"
+        recipe += "$(eval fixture-install:$(newline)$(call Package/mt-c/install,$(CURDIR)/root))\n"
+        (sdk / "Makefile").write_text(recipe)
+        run(["make", "-s", "fixture-install", f"TOPDIR={sdk}"], sdk)
+        root = sdk / "root/opt"
+        for relative in NDM_FILES:
+            installed = root / relative
+            assert installed.exists() == target.endswith("_kn"), (target, relative)
+            if installed.exists():
+                assert installed.read_bytes() == (REPO / "files/entware_kn" / relative).read_bytes()
+                assert installed.stat().st_mode & 0o111
+        print(f"PASS evaluated SDK NDM install payload: {target}")
+
+
+def ndm_hook_contract(work: Path) -> None:
+    helper = REPO / "files/entware_kn/lib/magitrickle/ndm-interface-hook"
+    text = helper.read_text()
+    run(["sh", "-n", str(helper)], REPO)
+    for hook, kind in zip(NDM_HOOKS, ("layer", "state", "created", "destroyed")):
+        wrapper = REPO / f"files/entware_kn/etc/ndm/{hook}/100-magitrickle"
+        run(["sh", "-n", str(wrapper)], REPO)
+        assert f'ndm-interface-hook {kind} "$@"' in wrapper.read_text()
+        assert wrapper.stat().st_mode & 0o111
+    root = work / "hook-test"
+    root.mkdir()
+    socket_path, lost = root / "socket", root / "lost"
+    recorder = root / "socat"
+    recorder.write_text(
+        "#!/usr/bin/env python3\nimport json, os, sys\nfrom pathlib import Path\n"
+        "Path(os.environ['HOOK_REQUEST']).write_bytes(sys.stdin.buffer.read())\n"
+        "Path(os.environ['HOOK_ARGS']).write_text(json.dumps(sys.argv[1:]))\n"
+        "print(os.environ.get('HOOK_REPLY', 'HTTP/1.1 202 Accepted'))\n"
+    )
+    recorder.chmod(0o755)
+    copied = root / "hook"
+    # Change fixed paths only in the test copy. Production exposes no arbitrary
+    # URL, command, socket or output-file setting through environment variables.
+    text = text.replace("PATH=/opt/sbin:", f"PATH={root}:/opt/sbin:")
+    text = text.replace("socket=/opt/var/run/magitrickle.sock", f"socket={socket_path}")
+    text = text.replace("lost=/opt/var/run/magitrickle-ndm-lost", f"lost={lost}")
+    copied.write_text(text)
+    request, arguments = root / "request", root / "args"
+    env = dict(os.environ, id="Wireguard0", system_name="nwg0", layer="ctrl", level="disabled",
+               up="up", link="up", connected="no", HOOK_REQUEST=str(request), HOOK_ARGS=str(arguments))
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as listener:
+        listener.bind(str(socket_path))
+        for kind in ("layer", "state", "created", "destroyed"):
+            run(["sh", str(copied), kind, "hook"], work, env)
+            head, body = request.read_bytes().split(b"\r\n\r\n", 1)
+            assert f"Content-Length: {len(body)}".encode() in head
+            data = json.loads(body)
+            assert data["kind"] == kind and data["id"] == "Wireguard0" and data["system_name"] == "nwg0"
+            assert data["resync"] is False
+            argv = json.loads(arguments.read_text())
+            assert argv[:3] == ["-T", "1", "-"] and "connect-timeout=1" in argv[3]
+            assert not lost.exists()
+        request.unlink()
+        run(["sh", str(copied)], work, env)
+        run(["sh", str(copied), "layer", "other"], work, env)
+        assert not request.exists()
+        for values in ({"id": 'bad"id'}, {"system_name": "x;touch BAD"}, {"level": "x\ncmd"}, {"id": "x" * 64}):
+            run(["sh", str(copied), "layer", "hook"], work, dict(env, **values))
+            assert not request.exists() and lost.is_dir()
+            lost.rmdir()
+        run(["sh", str(copied), "layer", "hook"], work, dict(env, HOOK_REPLY="HTTP/1.1 503 Unavailable"))
+        assert lost.is_dir()
+        run(["sh", str(copied), "layer", "hook"], work, env)
+        assert json.loads(request.read_bytes().split(b"\r\n\r\n", 1)[1])["resync"] is True
+        assert lost.exists()  # only the daemon may consume the loss marker
+        lost.rmdir()
+        # Optional real socat check: a silent receiver must not hold the hook
+        # queue open. No root/network namespace changes or router required.
+        real_socat = shutil.which("socat")
+        if real_socat:
+            recorder.unlink()
+            copied.write_text(text.replace("socat -T 1", f"{real_socat} -T 1"))
+            listener.listen(1)
+            def silent_peer() -> None:
+                connection, _ = listener.accept()
+                with connection:
+                    connection.settimeout(3)
+                    try:
+                        while connection.recv(4096):
+                            pass
+                    except TimeoutError:
+                        pass
+            worker = threading.Thread(target=silent_peer)
+            worker.start()
+            started = time.monotonic()
+            run(["sh", str(copied), "layer", "hook"], work, env)
+            elapsed = time.monotonic() - started
+            worker.join(4)
+            assert not worker.is_alive() and elapsed < 2.5 and lost.is_dir()
+    print("PASS NDM hooks: protocol, argument validation, delivery loss, bounded socat options")
+
+
 def main() -> None:
     with tempfile.TemporaryDirectory(prefix="mt-package-test-") as directory:
         work = Path(directory)
@@ -134,6 +271,8 @@ def main() -> None:
         apk_contract(work)
         sdk_contract(work, "entware")
         sdk_contract(work, "openwrt")
+        sdk_ndm_install_contract(work)
+        ndm_hook_contract(work)
 
 
 if __name__ == "__main__":

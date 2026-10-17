@@ -19,6 +19,7 @@
 #include "magitrickle/iptables.h"
 #ifdef MT_ENTWARE_KN
 #include "magitrickle/keenetic_policy.h"
+#include "magitrickle/keenetic_ifstate.h"
 #endif
 #include "magitrickle/rtnl.h"
 
@@ -70,6 +71,7 @@ mt_err_t mt_ipset_to_link_on_link_up(mt_ipset_to_link_t *l);
 mt_err_t mt_ipset_to_link_on_addr_change(mt_ipset_to_link_t *l);
 
 #ifdef MT_ENTWARE_KN
+void mt_ipset_to_link_set_interface_states(mt_ipset_to_link_t *self, const mt_kn_ifstate_t *state);
 void mt_ipset_to_link_set_policy(mt_ipset_to_link_t *self, const mt_kn_policy_scope_t *scope);
 #endif
 #endif /* MAGITRICKLE_IPSET_TO_LINK_H */
