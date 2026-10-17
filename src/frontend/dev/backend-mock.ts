@@ -14,6 +14,7 @@ import {
   withPriorityDefault,
 } from "../src/utils/priority.ts";
 import { registerMockPolicyRoutes } from "./keenetic-policy-mock.ts";
+import type { ServerConfig } from "../src/modules/config-transfer/adapter.ts";
 import { registerMockUpdateRoutes } from "./update-mock.ts";
 
 const API_BASE = "/api/v1";
@@ -316,6 +317,55 @@ app.delete(`${API_BASE}/subscriptions/:id`, async (c) => {
 // The on-device updater has no side effects in local development.
 registerMockUpdateRoutes(app);
 registerMockPolicyRoutes(app);
+
+
+/* Mirror the live-config endpoints during frontend development and E2E tests.
+ * Existing group/subscription handlers above remain authoritative. */
+let appSettings: ServerConfig["app"] = {
+  httpWeb: { enabled: true, auth: { enabled: false }, host: { address: "0.0.0.0", port: 6969 }, skin: "" },
+  dnsProxy: { host: { address: "0.0.0.0", port: 53 }, upstream: { address: "8.8.8.8", port: 53 },
+    disableRemap53: false, disableFakePTR: false, disableDropAAAA: false,
+    maxIdleConns: 128, maxConcurrent: 128, timeout: "10s" },
+  netfilter: { iptables: { chainPrefix: "MT_" }, ipset: { tablePrefix: "mt_", additionalTTL: "30s" },
+    disableIPv4: false, disableIPv6: false, startMarkTableIndex: 150 },
+  keeneticPolicy: { enabled: false, policyId: "", mode: "include" },
+  link: [], showAllInterfaces: false, logLevel: "info",
+};
+function mockConfig(): ServerConfig {
+  return {
+    configVersion: "0.8.5",
+    app: structuredClone(appSettings),
+    groups: structuredClone(DATA.groups),
+    profiles: structuredClone(PROFILES),
+    subscriptions: SUBSCRIPTIONS.map((sub) => ({
+      ...structuredClone(sub),
+      last_update: sub.lastUpdate ?? 0,
+    })),
+  };
+}
+function mockRevision() { return JSON.stringify(mockConfig()); }
+app.get(`${API_BASE}/system/config/snapshot`, (c) =>
+  c.json({ revision: mockRevision(), config: mockConfig() }));
+app.post(`${API_BASE}/system/config/apply`, async (c) => {
+  const body = await c.req.json();
+  if (body.revision !== mockRevision()) return c.json({ error: "stale config preview" }, 409);
+  const candidate: ServerConfig = body.config;
+  if (!Array.isArray(candidate?.groups) || !Array.isArray(candidate?.profiles) ||
+      !Array.isArray(candidate?.subscriptions) || !candidate.app) {
+    return c.json({ error: "invalid config" }, 400);
+  }
+  const ids = new Set(candidate.profiles.map((p) => p.id));
+  if ([...candidate.groups, ...candidate.subscriptions].some(
+    (route) => route.profile && !ids.has(route.profile)
+  )) return c.json({ error: "missing profile" }, 400);
+  PROFILES = structuredClone(candidate.profiles);
+  DATA.groups = structuredClone(candidate.groups);
+  SUBSCRIPTIONS.splice(0, SUBSCRIPTIONS.length, ...candidate.subscriptions.map((sub) => ({
+    ...sub, lastUpdate: sub.last_update ?? 0,
+  })));
+  appSettings = structuredClone(candidate.app);
+  return c.json({ ok: true });
+});
 
 app.get(`${API_BASE}/system/interfaces`, (c) => c.json(INTERFACES));
 app.get(`${API_BASE}/logs`, async (c) => {
