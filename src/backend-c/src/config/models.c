@@ -129,6 +129,12 @@ void mt_subscription_free(mt_subscription_t *s)
         mt_sub_rule_free(s->rules[i]);
     }
     free(s->rules);
+    for (size_t i = 0; i < s->n_overrides; i++) {
+        free(s->overrides[i]->rule);
+        free(s->overrides[i]->type);
+        free(s->overrides[i]);
+    }
+    free(s->overrides);
     free(s->name);
     free(s->iface);
     free(s->profile);
@@ -143,6 +149,60 @@ mt_err_t mt_subscription_add_rule(mt_subscription_t *s, mt_sub_rule_t *r)
         return err;
     }
     s->rules[s->n_rules++] = r;
+    return MT_OK;
+}
+
+mt_err_t mt_subscription_override_set(mt_subscription_t *s, const char *rule,
+                                      const char *type, int enable)
+{
+    if (!s || !rule || !*rule || strlen(rule) > 4096 || enable < -1 || enable > 1 ||
+        (!type && enable == -1)) { return MT_ERR_INVAL; }
+    mt_sub_override_t *entry = NULL;
+    for (size_t i = 0; i < s->n_overrides; i++) {
+        if (strcmp(s->overrides[i]->rule, rule) == 0) {
+            entry = s->overrides[i]; break;
+        }
+    }
+    if (!entry) {
+        if (s->n_overrides >= 100000) return MT_ERR_LIMIT;
+        entry = calloc(1, sizeof(*entry));
+        if (!entry) return MT_ERR_NOMEM;
+        if (mt_strset(&entry->rule, rule) != MT_OK) { free(entry); return MT_ERR_NOMEM; }
+        mt_err_t err = grow_array((void ***)&s->overrides, s->n_overrides);
+        if (err != MT_OK) { free(entry->rule); free(entry); return err; }
+        s->overrides[s->n_overrides++] = entry;
+    }
+    mt_err_t err = mt_strset(&entry->type, type);
+    if (err == MT_OK) entry->enable = enable;
+    return err;
+}
+
+mt_err_t mt_subscription_overrides_copy(mt_subscription_t *dst, const mt_subscription_t *src)
+{
+    for (size_t i = 0; i < src->n_overrides; i++) {
+        mt_sub_override_t *o = src->overrides[i];
+        mt_err_t err = mt_subscription_override_set(dst, o->rule, o->type, o->enable);
+        if (err != MT_OK) return err;
+    }
+    return MT_OK;
+}
+
+mt_err_t mt_subscription_apply_overrides(const mt_subscription_t *sub,
+                                        mt_sub_rule_t **rules, size_t count)
+{
+    for (size_t i = 0; i < count; i++) {
+        mt_sub_rule_t *rule = rules[i];
+        for (size_t j = 0; j < sub->n_overrides; j++) {
+            mt_sub_override_t *override = sub->overrides[j];
+            if (strcmp(rule->rule, override->rule) != 0) continue;
+            if (override->type) {
+                mt_err_t err = mt_strset(&rule->type, override->type);
+                if (err != MT_OK) return err;
+            }
+            if (override->enable >= 0) rule->enable = override->enable != 0;
+            break;
+        }
+    }
     return MT_OK;
 }
 
