@@ -91,7 +91,7 @@ Deno.test("preserves cached rules for untouched subscriptions only", () => {
   const original = server();
   const state = snapshotFromServer(original);
   const existing = configForApply(original, state);
-  assert.equal(existing.subscriptions[0].rules.length, 1);
+  assert.equal(existing.subscriptions[0].rules, undefined);
   assert.equal(existing.subscriptions[0].last_update, 145);
   state.subscriptions[0].url = "https://other.example.org/list";
   const changed = configForApply(original, state);
@@ -104,7 +104,8 @@ Deno.test("portable override changes retained cache but not source", () => {
   const state = snapshotFromServer(original);
   state.subscriptions[0].overrides = [{ rule: "example.org", enable: false }];
   const result = configForApply(original, state);
-  assert.equal(result.subscriptions[0].rules[0].enable, false);
+  assert.equal(result.subscriptions[0].rules, undefined);
+  assert.deepEqual(result.subscriptions[0].overrides, [{ rule: "example.org", enable: false }]);
   assert.equal(original.subscriptions[0].rules[0].enable, true);
 });
 

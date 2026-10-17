@@ -163,6 +163,45 @@ static bool settings_fields_supported(const cJSON *existing, const cJSON *reques
     return true;
 }
 
+/* Missing rules means preserve the existing download cache for the same ID
+ * and URL. An explicit empty array means reset. The web client therefore
+ * sends a small metadata-only request even with very large subscriptions. */
+static bool inherit_cached_subscriptions(cJSON *candidate, const cJSON *current) {
+    cJSON *next = cJSON_GetObjectItemCaseSensitive(candidate, "subscriptions");
+    const cJSON *before = cJSON_GetObjectItemCaseSensitive(current, "subscriptions");
+    if (!cJSON_IsArray(next) || !cJSON_IsArray(before)) return false;
+    cJSON *entry = NULL;
+    cJSON_ArrayForEach(entry, next) {
+        if (!cJSON_IsObject(entry)) return false;
+        if (cJSON_GetObjectItemCaseSensitive(entry, "rules")) continue;
+        const cJSON *id = cJSON_GetObjectItemCaseSensitive(entry, "id");
+        const cJSON *url = cJSON_GetObjectItemCaseSensitive(entry, "url");
+        const cJSON *match = NULL;
+        const cJSON *old = NULL;
+        cJSON_ArrayForEach(old, before) {
+            const cJSON *old_id = cJSON_GetObjectItemCaseSensitive(old, "id");
+            const cJSON *old_url = cJSON_GetObjectItemCaseSensitive(old, "url");
+            if (cJSON_IsString(id) && cJSON_IsString(url) && cJSON_IsString(old_id) &&
+                cJSON_IsString(old_url) && strcmp(id->valuestring, old_id->valuestring) == 0 &&
+                strcmp(url->valuestring, old_url->valuestring) == 0) {
+                match = old; break;
+            }
+        }
+        const cJSON *previous_rules = cJSON_GetObjectItemCaseSensitive(match, "rules");
+        cJSON *rules = cJSON_IsArray(previous_rules)
+                       ? cJSON_Duplicate(previous_rules, 1) : cJSON_CreateArray();
+        if (!rules) return false;
+        if (!cJSON_AddItemToObject(entry, "rules", rules)) {
+            cJSON_Delete(rules); return false;
+        }
+        const cJSON *last = cJSON_GetObjectItemCaseSensitive(match, "last_update");
+        cJSON_DeleteItemFromObjectCaseSensitive(entry, "last_update");
+        if (!cJSON_AddNumberToObject(entry, "last_update",
+                cJSON_IsNumber(last) ? last->valuedouble : 0)) return false;
+    }
+    return true;
+}
+
 static int write_stage(const char *content, size_t length, char path[32]) {
     strcpy(path, "/tmp/mt-c-import-XXXXXX");
     int fd = mkstemp(path);
@@ -211,7 +250,7 @@ static void handle_config_apply(mt_http_req_t *req, mt_http_res_t *res, void *ud
     }
     size_t body_len;
     const uint8_t *body = mt_http_req_body(req, &body_len);
-    if (!body || body_len == 0 || body_len > 16u*1024u*1024u ||
+    if (!body || body_len == 0 || body_len > 24u*1024u*1024u ||
         memchr(body, '\0', body_len)) {
         mt_http_res_write_error(res, 400, "invalid import request");
         return;
@@ -258,14 +297,22 @@ static void handle_config_apply(mt_http_req_t *req, mt_http_res_t *res, void *ud
         mt_http_res_write_error(res, 409, "unsupported application configuration fields");
         return;
     }
-    cJSON_Delete(previous);
     if (strcmp(base->valuestring, revision) != 0) {
-        cJSON_Delete(request); free(old_yaml);
+        cJSON_Delete(previous); cJSON_Delete(request); free(old_yaml);
         mt_http_res_write_error(res, 409, "configuration changed; refresh import preview");
         return;
     }
     cJSON *document = cJSON_Duplicate(config, 1);
-    if (!document) { cJSON_Delete(request); free(old_yaml); mt_http_res_write_error(res, 500, "out of memory"); return; }
+    if (!document) {
+        cJSON_Delete(previous); cJSON_Delete(request); free(old_yaml);
+        mt_http_res_write_error(res, 500, "out of memory"); return;
+    }
+    if (!inherit_cached_subscriptions(document, previous)) {
+        cJSON_Delete(document); cJSON_Delete(previous); cJSON_Delete(request); free(old_yaml);
+        mt_http_res_write_error(res, 500, "failed to preserve subscription caches");
+        return;
+    }
+    cJSON_Delete(previous);
     cJSON_DeleteItemFromObjectCaseSensitive(document, "configVersion");
     cJSON_AddStringToObject(document, "configVersion",
         transfer_version(ctx));

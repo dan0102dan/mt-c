@@ -3,7 +3,6 @@ import { parse } from "valibot";
 import { GroupSchema, ProfileSchema, type Group, type Profile, type Subscription } from "../../types";
 import { profileError } from "../settings/profiles-data";
 import {
-  applyRuleOverrides,
   copy,
   type Json,
   type PortableConfig,
@@ -24,7 +23,7 @@ export type SavedSubscription = {
   priority: number;
   interval: number;
   last_update: number;
-  rules: { id: string; rule: string; type: string; enable: boolean }[];
+  rules?: { id: string; rule: string; type: string; enable: boolean }[];
   overrides?: RuleOverride[];
 };
 export type ServerConfig = {
@@ -234,13 +233,14 @@ export function configForApply(server: ServerConfig, target: Snapshot): ServerCo
       const old = previous.get(s.id);
       const retained = old?.url === s.url ? old : undefined;
       const overrides = s.overrides ?? [];
-      const rules = applyRuleOverrides(retained?.rules ?? [], overrides).rules;
       return {
         id: s.id, name: s.name, url: s.url, interface: s.interface,
         ...(s.profile ? { profile: s.profile } : {}),
         enable: s.enable, priority: s.priority, interval: s.interval ?? 86400,
         last_update: retained?.last_update ?? 0,
-        rules: copy(rules),
+        // Existing download caches remain on the server if ID and URL match.
+        // An explicit [] resets the cache for a new or changed source.
+        ...(!retained ? { rules: [] } : {}),
         ...(overrides.length ? { overrides: copy(overrides) } : {}),
       };
     }),
