@@ -1,0 +1,213 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="490" viewBox="0 0 1200 490" role="img" aria-labelledby="title desc">
+  <title id="title">Потребление памяти (RSS) — mt-c и MagiTrickle</title>
+  <desc id="desc">Медиана, min–max трёх двадцатисекундных прогонов. Нагрузка реального роутера MT7621; UDP, 10 клиентов; логарифмические оси. Точки на 50000 и 100000 правилах остановлены защитой памяти и не измерены.</desc>
+  <style>
+    :root {
+      color-scheme: light dark;
+      --ink: #424750;
+      --muted: #6b7280;
+      --axis: #59606b;
+      --grid-major: #bac5d1;
+      --grid-mid: #d7dee7;
+      --grid-minor: #eef1f4;
+      --blue: #4f73c6;
+      --pale-blue: #8ea9d9;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --ink: #c9cdd3;
+        --muted: #a6abb3;
+        --axis: #b5bac2;
+        --grid-major: #505965;
+        --grid-mid: #404854;
+        --grid-minor: #303740;
+        --blue: #4f73c6;
+        --pale-blue: #c8d9fa;
+      }
+    }
+    text { font-family: Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: var(--ink); }
+    .axis-label { font-size: 17px; font-weight: 600; }
+    .tick { font-size: 16px; fill: var(--ink); }
+    .legend { font-size: 18px; font-weight: 600; }
+    .value { font-size: 15px; font-weight: 700; }
+    .axis { stroke: var(--axis); }
+    .grid-major { stroke: var(--grid-major); stroke-width: 1.35; }
+    .grid-mid { stroke: var(--grid-mid); stroke-width: 1.05; }
+    .grid-minor { stroke: var(--grid-minor); stroke-width: 0.85; }
+    .c-line { stroke: var(--blue); fill: none; }
+    .go-line { stroke: var(--pale-blue); fill: none; }
+    .c-point { fill: var(--blue); }
+    .go-point { fill: var(--pale-blue); }
+    .c-whisker { stroke: var(--blue); }
+    .go-whisker { stroke: var(--pale-blue); }
+  </style>
+<g transform="translate(0 -95)">
+<circle cx="80" cy="116" r="7" class="c-point"/>
+<text x="97" y="122" class="legend" >mt-c</text>
+<circle cx="208" cy="116" r="7" class="go-point"/>
+<text x="225" y="122" class="legend" >Go MagiTrickle 0.8.2</text>
+<text x="590" y="122" class="legend" >×</text>
+<text x="615" y="122" class="legend" >Остановлено по памяти</text>
+</g>
+<g transform="translate(0 -155)">
+<g aria-hidden="true">
+  <line class="grid-minor" x1="157.561" y1="218" x2="157.561" y2="550"/>
+  <line class="grid-major" x1="171.499" y1="218" x2="171.499" y2="550"/>
+  <line class="grid-mid" x1="263.192" y1="218" x2="263.192" y2="550"/>
+  <line class="grid-minor" x1="316.829" y1="218" x2="316.829" y2="550"/>
+  <line class="grid-minor" x1="354.885" y1="218" x2="354.885" y2="550"/>
+  <line class="grid-mid" x1="384.404" y1="218" x2="384.404" y2="550"/>
+  <line class="grid-minor" x1="408.522" y1="218" x2="408.522" y2="550"/>
+  <line class="grid-minor" x1="428.914" y1="218" x2="428.914" y2="550"/>
+  <line class="grid-minor" x1="446.578" y1="218" x2="446.578" y2="550"/>
+  <line class="grid-minor" x1="462.159" y1="218" x2="462.159" y2="550"/>
+  <line class="grid-major" x1="476.097" y1="218" x2="476.097" y2="550"/>
+  <line class="grid-mid" x1="567.79" y1="218" x2="567.79" y2="550"/>
+  <line class="grid-minor" x1="621.427" y1="218" x2="621.427" y2="550"/>
+  <line class="grid-minor" x1="659.483" y1="218" x2="659.483" y2="550"/>
+  <line class="grid-mid" x1="689.002" y1="218" x2="689.002" y2="550"/>
+  <line class="grid-minor" x1="713.12" y1="218" x2="713.12" y2="550"/>
+  <line class="grid-minor" x1="733.512" y1="218" x2="733.512" y2="550"/>
+  <line class="grid-minor" x1="751.176" y1="218" x2="751.176" y2="550"/>
+  <line class="grid-minor" x1="766.757" y1="218" x2="766.757" y2="550"/>
+  <line class="grid-major" x1="780.695" y1="218" x2="780.695" y2="550"/>
+  <line class="grid-mid" x1="872.388" y1="218" x2="872.388" y2="550"/>
+  <line class="grid-minor" x1="926.025" y1="218" x2="926.025" y2="550"/>
+  <line class="grid-minor" x1="964.081" y1="218" x2="964.081" y2="550"/>
+  <line class="grid-mid" x1="993.6" y1="218" x2="993.6" y2="550"/>
+  <line class="grid-minor" x1="1017.718" y1="218" x2="1017.718" y2="550"/>
+  <line class="grid-minor" x1="1038.11" y1="218" x2="1038.11" y2="550"/>
+  <line class="grid-minor" x1="1055.774" y1="218" x2="1055.774" y2="550"/>
+  <line class="grid-minor" x1="1071.355" y1="218" x2="1071.355" y2="550"/>
+  <line class="grid-major" x1="1085.293" y1="218" x2="1085.293" y2="550"/>
+  <line class="grid-mid" x1="150" y1="550" x2="1120" y2="550"/>
+  <line class="grid-minor" x1="150" y1="505.065" x2="1120" y2="505.065"/>
+  <line class="grid-minor" x1="150" y1="473.182" x2="1120" y2="473.182"/>
+  <line class="grid-mid" x1="150" y1="448.453" x2="1120" y2="448.453"/>
+  <line class="grid-minor" x1="150" y1="428.247" x2="1120" y2="428.247"/>
+  <line class="grid-minor" x1="150" y1="411.163" x2="1120" y2="411.163"/>
+  <line class="grid-minor" x1="150" y1="396.365" x2="1120" y2="396.365"/>
+  <line class="grid-minor" x1="150" y1="383.312" x2="1120" y2="383.312"/>
+  <line class="grid-major" x1="150" y1="371.635" x2="1120" y2="371.635"/>
+  <line class="grid-mid" x1="150" y1="294.818" x2="1120" y2="294.818"/>
+  <line class="grid-minor" x1="150" y1="249.882" x2="1120" y2="249.882"/>
+  <line class="grid-minor" x1="150" y1="218" x2="1120" y2="218"/>
+</g>
+<line class="axis" x1="150" y1="218" x2="150" y2="550" stroke-width="2"/>
+<line class="axis" x1="150" y1="550" x2="1120" y2="550" stroke-width="2"/>
+<g class="axis" stroke-width="1.1" aria-hidden="true">
+  <line x1="157.561" y1="550" x2="157.561" y2="553"/>
+  <line x1="171.499" y1="550" x2="171.499" y2="559"/>
+  <line x1="263.192" y1="550" x2="263.192" y2="556"/>
+  <line x1="316.829" y1="550" x2="316.829" y2="553"/>
+  <line x1="354.885" y1="550" x2="354.885" y2="553"/>
+  <line x1="384.404" y1="550" x2="384.404" y2="556"/>
+  <line x1="408.522" y1="550" x2="408.522" y2="553"/>
+  <line x1="428.914" y1="550" x2="428.914" y2="553"/>
+  <line x1="446.578" y1="550" x2="446.578" y2="553"/>
+  <line x1="462.159" y1="550" x2="462.159" y2="553"/>
+  <line x1="476.097" y1="550" x2="476.097" y2="559"/>
+  <line x1="567.79" y1="550" x2="567.79" y2="556"/>
+  <line x1="621.427" y1="550" x2="621.427" y2="553"/>
+  <line x1="659.483" y1="550" x2="659.483" y2="553"/>
+  <line x1="689.002" y1="550" x2="689.002" y2="556"/>
+  <line x1="713.12" y1="550" x2="713.12" y2="553"/>
+  <line x1="733.512" y1="550" x2="733.512" y2="553"/>
+  <line x1="751.176" y1="550" x2="751.176" y2="553"/>
+  <line x1="766.757" y1="550" x2="766.757" y2="553"/>
+  <line x1="780.695" y1="550" x2="780.695" y2="559"/>
+  <line x1="872.388" y1="550" x2="872.388" y2="556"/>
+  <line x1="926.025" y1="550" x2="926.025" y2="553"/>
+  <line x1="964.081" y1="550" x2="964.081" y2="553"/>
+  <line x1="993.6" y1="550" x2="993.6" y2="556"/>
+  <line x1="1017.718" y1="550" x2="1017.718" y2="553"/>
+  <line x1="1038.11" y1="550" x2="1038.11" y2="553"/>
+  <line x1="1055.774" y1="550" x2="1055.774" y2="553"/>
+  <line x1="1071.355" y1="550" x2="1071.355" y2="553"/>
+  <line x1="1085.293" y1="550" x2="1085.293" y2="559"/>
+  <line x1="144" y1="550" x2="150" y2="550"/>
+  <line x1="147" y1="505.065" x2="150" y2="505.065"/>
+  <line x1="147" y1="473.182" x2="150" y2="473.182"/>
+  <line x1="144" y1="448.453" x2="150" y2="448.453"/>
+  <line x1="147" y1="428.247" x2="150" y2="428.247"/>
+  <line x1="147" y1="411.163" x2="150" y2="411.163"/>
+  <line x1="147" y1="396.365" x2="150" y2="396.365"/>
+  <line x1="147" y1="383.312" x2="150" y2="383.312"/>
+  <line x1="141" y1="371.635" x2="150" y2="371.635"/>
+  <line x1="144" y1="294.818" x2="150" y2="294.818"/>
+  <line x1="147" y1="249.882" x2="150" y2="249.882"/>
+  <line x1="147" y1="218" x2="150" y2="218"/>
+</g>
+<g class="tick" text-anchor="end">
+  <text x="132" y="510.065" class="" >3</text>
+  <text x="132" y="453.453" class="" >5</text>
+  <text x="132" y="376.635" class="" >10</text>
+  <text x="132" y="299.818" class="" >20</text>
+  <text x="132" y="254.882" class="" >30</text>
+</g>
+<g class="tick" text-anchor="middle">
+  <text x="171.499" y="583" class="" >100</text>
+  <text x="476.097" y="583" class="" >1 000</text>
+  <text x="780.695" y="583" class="" >10 000</text>
+  <text x="1085.293" y="583" class="" >100 000</text>
+</g>
+<text x="635" y="620" class="axis-label" text-anchor="middle">Количество правил</text>
+<text x="56" y="384" class="axis-label" text-anchor="middle" transform="rotate(-90 56 384)">RSS демона, MiB</text>
+<g class="go-whisker" stroke-width="1.7" opacity="0.65" fill="none">
+<path d="M171.499 334.006 V336.69 M167.499 334.006 H175.499 M167.499 336.69 H175.499"/>
+<path d="M263.192 335.34 V337.196 M259.192 335.34 H267.192 M259.192 337.196 H267.192"/>
+<path d="M384.404 333.361 V336.911 M380.404 333.361 H388.404 M380.404 336.911 H388.404"/>
+<path d="M476.097 332.963 V340.122 M472.097 332.963 H480.097 M472.097 340.122 H480.097"/>
+<path d="M567.79 329.21 V334.624 M563.79 329.21 H571.79 M563.79 334.624 H571.79"/>
+<path d="M689.002 329.239 V332.142 M685.002 329.239 H693.002 M685.002 332.142 H693.002"/>
+<path d="M780.695 314.109 V320.253 M776.695 314.109 H784.695 M776.695 320.253 H784.695"/>
+<path d="M872.388 286.02 V293.698 M868.388 286.02 H876.388 M868.388 293.698 H876.388"/>
+</g>
+<path d="M171.499 334.501 L263.192 337.006 L384.404 333.453 L476.097 337.737 L567.79 333.575 L689.002 330.308 L780.695 317.962 L872.388 286.28" class="go-line" fill="none" stroke-width="4.5" stroke-linecap="round" stroke-linejoin="round"/>
+<g class="go-point">
+<circle cx="171.499" cy="334.501" r="7"/>
+<circle cx="263.192" cy="337.006" r="7"/>
+<circle cx="384.404" cy="333.453" r="7"/>
+<circle cx="476.097" cy="337.737" r="7"/>
+<circle cx="567.79" cy="333.575" r="7"/>
+<circle cx="689.002" cy="330.308" r="7"/>
+<circle cx="780.695" cy="317.962" r="7"/>
+<circle cx="872.388" cy="286.28" r="7"/>
+</g>
+<g class="value" text-anchor="middle">
+  <text x="171.499" y="315.501" class="" >14.0</text>
+  <text x="476.097" y="318.737" class="" >13.6</text>
+  <text x="780.695" y="298.962" class="" >16.2</text>
+  <text x="872.388" y="267.28" class="" >21.6</text>
+</g>
+<g class="c-whisker" stroke-width="1.7" opacity="0.65" fill="none">
+<path d="M171.499 485.655 V487.734 M167.499 485.655 H175.499 M167.499 487.734 H175.499"/>
+<path d="M263.192 482.668 V484.811 M259.192 482.668 H267.192 M259.192 484.811 H267.192"/>
+<path d="M384.404 476.255 V479.415 M380.404 476.255 H388.404 M380.404 479.415 H388.404"/>
+<path d="M476.097 463.152 V465.551 M472.097 463.152 H480.097 M472.097 465.551 H480.097"/>
+<path d="M567.79 445.885 V448.021 M563.79 445.885 H571.79 M563.79 448.021 H571.79"/>
+<path d="M689.002 402.598 V404.387 M685.002 402.598 H693.002 M685.002 404.387 H693.002"/>
+<path d="M780.695 356.146 V356.41 M776.695 356.146 H784.695 M776.695 356.41 H784.695"/>
+<path d="M872.388 296.717 V297.225 M868.388 296.717 H876.388 M868.388 297.225 H876.388"/>
+</g>
+<path d="M171.499 486.751 L263.192 484.811 L384.404 478.163 L476.097 465.349 L567.79 447.59 L689.002 404.328 L780.695 356.334 L872.388 296.739" class="c-line" fill="none" stroke-width="4.5" stroke-linecap="round" stroke-linejoin="round"/>
+<g class="c-point">
+<circle cx="171.499" cy="486.751" r="7"/>
+<circle cx="263.192" cy="484.811" r="7"/>
+<circle cx="384.404" cy="478.163" r="7"/>
+<circle cx="476.097" cy="465.349" r="7"/>
+<circle cx="567.79" cy="447.59" r="7"/>
+<circle cx="689.002" cy="404.328" r="7"/>
+<circle cx="780.695" cy="356.334" r="7"/>
+<circle cx="872.388" cy="296.739" r="7"/>
+</g>
+<g class="value" text-anchor="middle">
+  <text x="171.499" y="514.751" class="" >3.5</text>
+  <text x="476.097" y="493.349" class="" >4.3</text>
+  <text x="780.695" y="384.334" class="" >11.5</text>
+  <text x="872.388" y="324.739" class="" >19.7</text>
+</g>
+<path d="M988.6 186 l10 10 m-10 0 l10 -10" stroke="var(--axis)" stroke-width="2" fill="none"/>
+<path d="M1080.293 186 l10 10 m-10 0 l10 -10" stroke="var(--axis)" stroke-width="2" fill="none"/>
+</g>
+</svg>

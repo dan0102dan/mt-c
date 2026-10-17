@@ -1,12 +1,12 @@
 # NDM interface readiness for routing profiles
 
 Decision: approved profile-only Keenetic addition, 2026-10-14, recorded as
-**D-80** in the [C rewrite decision log](c-rewrite/decisions.md).
+**D-81** in the [C rewrite decision log](c-rewrite/decisions.md).
 NDM may veto an otherwise kernel-ready profile candidate: this is an intentional
 routing divergence. It complements D-79's device scope but does not depend on
 that include/exclude filter. Group/subscription matching, rule priorities, DNS
 and direct-interface selection are unchanged. Historical rewrite decisions
-remain applicable outside D-80's explicit profile-selection exception.
+remain applicable outside D-81's explicit profile-selection exception.
 
 ## Behavior
 
