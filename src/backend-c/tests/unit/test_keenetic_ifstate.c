@@ -136,16 +136,30 @@ TEST stale_snapshots_do_not_overwrite_newer_fields_or_lifecycle(void)
 }
 TEST old_snapshot_cannot_steal_reused_system_name(void)
 {
-    mt_kn_ifstate_t *s = mt_kn_ifstate_new(NULL, NULL); ASSERT(s);
-    ASSERT_EQ(MT_OK, snapshot(s, ready_json, 0));
-    uint64_t token = mt_kn_ifstate_revision(s);
-    bool sync;
-    ASSERT_EQ(MT_OK, event(s, "{\"kind\":\"layer\",\"id\":\"Replacement\",\"system_name\":\"nwg0\",\"layer\":\"ctrl\",\"level\":\"disabled\"}", &sync));
-    ASSERT_EQ(MT_OK, snapshot(s, ready_json, token));
-    ASSERT(mt_kn_ifstate_blocks(s, "nwg0", AF_INET));
-    ASSERT_EQ(MT_OK, event(s, "{\"kind\":\"layer\",\"id\":\"Replacement\",\"system_name\":\"nwg0\",\"layer\":\"ctrl\",\"level\":\"running\"}", &sync));
-    ASSERT_FALSE(mt_kn_ifstate_blocks(s, "nwg0", AF_INET));
-    mt_kn_ifstate_free(s); PASS();
+    /* Neither alphabetical order nor NDM hierarchy depth decides which
+     * unrelated object owns a genuinely reassigned kernel name. */
+    const char *ids[] = {"Replacement", "ZReplacement", "ZReplacement/Sub"};
+    for (size_t i = 0; i < sizeof(ids) / sizeof(*ids); i++) {
+        mt_kn_ifstate_t *s = mt_kn_ifstate_new(NULL, NULL); ASSERT(s);
+        ASSERT_EQ(MT_OK, snapshot(s, ready_json, 0));
+        uint64_t token = mt_kn_ifstate_revision(s);
+        mt_kn_ifevent_t e = {.kind = MT_KN_IF_LAYER, .info = {.name = "nwg0"}};
+        strcpy(e.info.id, ids[i]);
+        e.info.fields[MT_KN_IF_CTRL] = MT_KN_IF_BLOCKED;
+        bool sync;
+        ASSERT_EQ(MT_OK, mt_kn_ifstate_event(s, &e, &sync));
+        ASSERT(mt_kn_ifstate_blocks(s, "nwg0", AF_INET));
+        ASSERT(mt_kn_ifstate_blocks(s, "nwg0", AF_INET6));
+        ASSERT_EQ(MT_OK, snapshot(s, ready_json, token));
+        ASSERT(mt_kn_ifstate_blocks(s, "nwg0", AF_INET));
+        ASSERT(mt_kn_ifstate_blocks(s, "nwg0", AF_INET6));
+        e.info.fields[MT_KN_IF_CTRL] = MT_KN_IF_RUNNING;
+        ASSERT_EQ(MT_OK, mt_kn_ifstate_event(s, &e, &sync));
+        ASSERT_FALSE(mt_kn_ifstate_blocks(s, "nwg0", AF_INET));
+        ASSERT_FALSE(mt_kn_ifstate_blocks(s, "nwg0", AF_INET6));
+        mt_kn_ifstate_free(s);
+    }
+    PASS();
 }
 TEST old_firmware_mapping_comes_from_hook_not_description(void)
 {
@@ -204,7 +218,7 @@ TEST malformed_messages_do_not_turn_into_empty_successes(void)
 {
     mt_kn_ifinfo_t *items = NULL; size_t count = 0;
     const char *bad[] = {"{", "[]", "{}junk", "{\"X\":{},\"X\":{}}", "{\"X\":42}",
-        "{\"X\":{\"id\":\"Y\"}}", "{\"X\":{\"system-name\":\"bad name\"}}", "{\"X\":{\"summary\":[]}}"};
+        "{\"X\":{\"id\":42}}", "{\"X\":{\"id\":\"bad id\"}}", "{\"X\":{\"id\":\"\"}}", "{\"X\":{\"system-name\":\"bad name\"}}", "{\"X\":{\"summary\":[]}}"};
     for (size_t i = 0; i < sizeof(bad) / sizeof(*bad); i++) {
         ASSERT(mt_kn_ifinfo_parse(bad[i], strlen(bad[i]), &items, &count) != MT_OK);
         ASSERT(items == NULL); ASSERT_EQ(0u, count);
@@ -225,14 +239,28 @@ TEST numeric_port_keys_use_canonical_ids_and_detect_duplicates(void)
 {
     mt_kn_ifinfo_t *items = NULL; size_t count = 0;
     const char *json = "{\"0\":{\"id\":\"GigabitEthernet1/0\",\"system-name\":\"eth3\"},"
-                       "\"GigabitEthernet1\":{\"system-name\":\"eth3\",\"connected\":\"no\"}}";
+                       "\"GigabitEthernet1\":{\"system-name\":\"eth3\",\"connected\":\"no\"},"
+                       "\"alias\":{\"id\":\"Wireguard0\",\"system-name\":\"nwg0\",\"connected\":\"no\"}}";
     ASSERT_EQ(MT_OK, mt_kn_ifinfo_parse(json, strlen(json), &items, &count));
-    ASSERT_EQ(2u, count);
+    ASSERT_EQ(3u, count);
     ASSERT_STR_EQ("GigabitEthernet1/0", items[0].id);
+    ASSERT_STR_EQ("GigabitEthernet1", items[1].id);
+    ASSERT_STR_EQ("Wireguard0", items[2].id);
+    mt_kn_ifstate_t *s = mt_kn_ifstate_new(NULL, NULL); ASSERT(s);
+    ASSERT_EQ(MT_OK, mt_kn_ifstate_snapshot(s, items, count, 0));
+    ASSERT(mt_kn_ifstate_blocks(s, "nwg0", AF_INET));
+    ASSERT(mt_kn_ifstate_blocks(s, "nwg0", AF_INET6));
+    mt_kn_ifstate_free(s);
     free(items);
-    const char *dup = "{\"0\":{\"id\":\"GigabitEthernet1/0\"},"
-                      "\"1\":{\"id\":\"GigabitEthernet1/0\"}}";
-    ASSERT(mt_kn_ifinfo_parse(dup, strlen(dup), &items, &count) != MT_OK);
+    const char *duplicates[] = {
+        "{\"0\":{\"id\":\"GigabitEthernet1/0\"},\"1\":{\"id\":\"GigabitEthernet1/0\"}}",
+        "{\"0\":{\"id\":\"GigabitEthernet1/0\"},\"GigabitEthernet1/0\":{}}",
+        "{\"GigabitEthernet1/0\":{},\"0\":{\"id\":\"GigabitEthernet1/0\"}}",
+    };
+    for (size_t i = 0; i < sizeof(duplicates) / sizeof(*duplicates); i++) {
+        ASSERT_EQ(MT_ERR_PROTO, mt_kn_ifinfo_parse(duplicates[i], strlen(duplicates[i]), &items, &count));
+        ASSERT(items == NULL); ASSERT_EQ(0u, count);
+    }
     PASS();
 }
 TEST shared_kernel_name_uses_parent_not_last_child(void)
@@ -266,10 +294,71 @@ TEST stale_snapshot_cannot_restore_discarded_layer_baseline(void)
     ASSERT_FALSE(mt_kn_ifstate_blocks(s, "nwg0", AF_INET));
     mt_kn_ifstate_free(s); PASS();
 }
+TEST shared_kernel_name_is_snapshot_order_independent(void)
+{
+    const unsigned orders[][3] = {{0,1,2}, {0,2,1}, {1,0,2}, {1,2,0}, {2,0,1}, {2,1,0}};
+    const char *ids[] = {"GigabitEthernet1", "GigabitEthernet1/0", "GigabitEthernet1/1"};
+    for (unsigned down = 0; down < 2; down++) {
+        for (size_t order = 0; order < sizeof(orders) / sizeof(*orders); order++) {
+            mt_kn_ifstate_t *s = mt_kn_ifstate_new(NULL, NULL); ASSERT(s);
+            mt_kn_ifinfo_t inventory[3] = {0};
+            for (size_t i = 0; i < 3; i++) {
+                unsigned member = orders[order][i];
+                strcpy(inventory[i].id, ids[member]);
+                strcpy(inventory[i].name, "eth3");
+                /* Inverse child state: neither an idle port nor a connected
+                 * port overrides the parent's routing availability. */
+                bool unavailable = member == 0 ? down != 0 : down == 0;
+                inventory[i].fields[MT_KN_IF_CONNECTED] = unavailable ? MT_KN_IF_BLOCKED : MT_KN_IF_RUNNING;
+            }
+            ASSERT_EQ(MT_OK, mt_kn_ifstate_snapshot(s, inventory, 3, 0));
+            ASSERT_EQ(down != 0, mt_kn_ifstate_blocks(s, "eth3", AF_INET));
+            ASSERT_EQ(down != 0, mt_kn_ifstate_blocks(s, "eth3", AF_INET6));
+            for (size_t i = 0; i < 3; i++) {
+                mt_kn_ifevent_t e = {.kind = MT_KN_IF_LEGACY, .info = inventory[i]};
+                bool sync;
+                ASSERT_EQ(MT_OK, mt_kn_ifstate_event(s, &e, &sync));
+                ASSERT_FALSE(sync);
+                ASSERT_EQ(down != 0, mt_kn_ifstate_blocks(s, "eth3", AF_INET));
+                ASSERT_EQ(down != 0, mt_kn_ifstate_blocks(s, "eth3", AF_INET6));
+            }
+            mt_kn_ifstate_free(s);
+        }
+    }
+    PASS();
+}
+TEST first_modern_event_freezes_legacy_snapshot_until_family_recovery(void)
+{
+    mt_kn_ifstate_t *s = mt_kn_ifstate_new(NULL, NULL); ASSERT(s);
+    const char *old = "{\"Wireguard0\":{\"system-name\":\"nwg0\",\"state\":\"up\",\"link\":\"up\",\"connected\":\"no\"}}";
+    ASSERT_EQ(MT_OK, snapshot(s, old, 0));
+    uint64_t token = mt_kn_ifstate_revision(s);
+    bool sync;
+    ASSERT_EQ(MT_OK, layer(s, "link", "running", &sync));
+    ASSERT(sync);
+    /* Neither a companion legacy event nor an old snapshot may release the
+     * negative fallback before the relevant modern layers are complete. */
+    ASSERT_EQ(MT_OK, legacy(s, "up", "up", "yes", &sync));
+    ASSERT(mt_kn_ifstate_blocks(s, "nwg0", AF_INET));
+    ASSERT(mt_kn_ifstate_blocks(s, "nwg0", AF_INET6));
+    ASSERT_EQ(MT_OK, snapshot(s, ready_json, token));
+    ASSERT(mt_kn_ifstate_blocks(s, "nwg0", AF_INET));
+    ASSERT(mt_kn_ifstate_blocks(s, "nwg0", AF_INET6));
+    ASSERT_EQ(MT_OK, layer(s, "conf", "running", &sync));
+    ASSERT_EQ(MT_OK, layer(s, "ipv4", "running", &sync));
+    ASSERT_EQ(MT_OK, layer(s, "ctrl", "running", &sync));
+    ASSERT_FALSE(mt_kn_ifstate_blocks(s, "nwg0", AF_INET));
+    ASSERT(mt_kn_ifstate_blocks(s, "nwg0", AF_INET6));
+    ASSERT_EQ(MT_OK, layer(s, "ipv6", "running", &sync));
+    ASSERT_FALSE(mt_kn_ifstate_blocks(s, "nwg0", AF_INET6));
+    mt_kn_ifstate_free(s); PASS();
+}
 GREATEST_MAIN_DEFS();
 int main(int argc, char **argv)
 {
     GREATEST_MAIN_BEGIN();
+    RUN_TEST(shared_kernel_name_is_snapshot_order_independent);
+    RUN_TEST(first_modern_event_freezes_legacy_snapshot_until_family_recovery);
     RUN_TEST(numeric_port_keys_use_canonical_ids_and_detect_duplicates);
     RUN_TEST(shared_kernel_name_uses_parent_not_last_child);
     RUN_TEST(stale_snapshot_cannot_restore_discarded_layer_baseline);

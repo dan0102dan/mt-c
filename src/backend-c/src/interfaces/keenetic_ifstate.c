@@ -270,13 +270,31 @@ static entry_t *get(mt_kn_ifstate_t *state, const char *id)
     strcpy(entry->info.id, id);
     return entry;
 }
-/* A recreated/renamed interface may reuse a kernel name. Retire the previous
- * association; never let an old object's negative status veto its replacement. */
+static bool same_ndm_tree(const char *a, const char *b)
+{
+    size_t root_len = strcspn(a, "/");
+    return root_len == strcspn(b, "/") && !strncmp(a, b, root_len);
+}
+/* Related NDM records (a switch and its ports, a Wi-Fi master and AP) may
+ * share a kernel name. An unrelated replacement must still retire the old
+ * association, and a snapshot older than that reassignment must not steal it. */
 static void map_name(mt_kn_ifstate_t *state, entry_t *entry, const char *name, uint64_t revision)
 {
     if (!*name) { return; }
-    /* NDM parent/child records can legitimately share a Linux device.
-     * Do not evict siblings on an ordinary event or snapshot. */
+    for (size_t i = 0; i < state->count; i++) {
+        const entry_t *other = &state->items[i];
+        if (other == entry || strcmp(other->info.name, name) ||
+            same_ndm_tree(other->info.id, entry->info.id)) { continue; }
+        if (other->identity_revision > revision) { return; }
+    }
+    for (size_t i = 0; i < state->count; i++) {
+        entry_t *other = &state->items[i];
+        if (other == entry || strcmp(other->info.name, name) ||
+            same_ndm_tree(other->info.id, entry->info.id)) { continue; }
+        changed(state, name);
+        other->info.name[0] = '\0';
+        other->identity_revision = revision;
+    }
     strcpy(entry->info.name, name); entry->identity_revision = revision;
 }
 mt_err_t mt_kn_ifstate_event(mt_kn_ifstate_t *state, const mt_kn_ifevent_t *event, bool *resync)
@@ -302,12 +320,13 @@ mt_err_t mt_kn_ifstate_event(mt_kn_ifstate_t *state, const mt_kn_ifevent_t *even
         /* On modern firmware the companion legacy callback is stale for a
          * portion of the layer transition. It must not override modern data. */
         if (event->kind == MT_KN_IF_LAYER) {
-            if (!entry->layer_events && entry->legacy_events) {
-                /* A layer snapshot does not prove that the firmware emits
-                 * modern hooks. On the first actual modern event, discard
-                 * potentially stale layer values from the legacy-only era. */
-                for (size_t f = 0; f < 5; f++) {
-                    entry->info.fields[f] = MT_KN_IF_UNSET;
+            if (!entry->layer_events && (entry->legacy_events || !entry->info.layered)) {
+                /* Discard stale layer values on the switch from legacy data.
+                 * Freeze the legacy fallback at this generation as well:
+                 * an older in-flight snapshot must not replace connected=no
+                 * with yes while the modern baseline is still incomplete. */
+                for (size_t f = 0; f < MT_KN_IF_FIELDS; f++) {
+                    if (f < MT_KN_IF_UP) { entry->info.fields[f] = MT_KN_IF_UNSET; }
                     entry->field_revision[f] = revision;
                 }
                 entry->layer_baseline = false;
@@ -318,6 +337,9 @@ mt_err_t mt_kn_ifstate_event(mt_kn_ifstate_t *state, const mt_kn_ifevent_t *even
             entry->info.layered = entry->layer_events = true;
         } else { entry->legacy_events = true; }
         for (size_t i = 0; i < MT_KN_IF_FIELDS; i++) {
+            /* Companion legacy hooks cannot release the frozen fallback;
+             * only a fresh snapshot or complete modern recovery can do so. */
+            if (event->kind == MT_KN_IF_LEGACY && entry->layer_events) { continue; }
             if (event->info.fields[i] == MT_KN_IF_UNSET) { continue; }
             entry->field_revision[i] = revision;
             if (event->info.fields[i] != MT_KN_IF_UNKNOWN) { entry->info.fields[i] = event->info.fields[i]; }
