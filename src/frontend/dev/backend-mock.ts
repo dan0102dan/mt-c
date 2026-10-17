@@ -15,6 +15,7 @@ import {
 } from "../src/utils/priority.ts";
 import { registerMockPolicyRoutes } from "./keenetic-policy-mock.ts";
 import type { ServerConfig } from "../src/modules/config-transfer/adapter.ts";
+import { applyRuleOverrides } from "../src/modules/config-transfer/model.ts";
 import { registerMockUpdateRoutes } from "./update-mock.ts";
 
 const API_BASE = "/api/v1";
@@ -361,9 +362,14 @@ app.post(`${API_BASE}/system/config/apply`, async (c) => {
   )) return c.json({ error: "missing profile" }, 400);
   PROFILES = structuredClone(candidate.profiles);
   DATA.groups = structuredClone(candidate.groups);
-  SUBSCRIPTIONS.splice(0, SUBSCRIPTIONS.length, ...candidate.subscriptions.map((sub) => ({
-    ...sub, lastUpdate: sub.last_update ?? 0,
-  })));
+  const before = new Map(SUBSCRIPTIONS.map((sub) => [sub.id, sub]));
+  SUBSCRIPTIONS.splice(0, SUBSCRIPTIONS.length, ...candidate.subscriptions.map((sub) => {
+    const cached = before.get(sub.id);
+    const retained = cached?.url === sub.url ? cached : undefined;
+    const originalRules = sub.rules ?? retained?.rules ?? [];
+    const rules = applyRuleOverrides(originalRules, sub.overrides ?? []).rules;
+    return { ...sub, rules, lastUpdate: retained?.lastUpdate ?? sub.last_update ?? 0 };
+  }));
   appSettings = structuredClone(candidate.app);
   return c.json({ ok: true });
 });
