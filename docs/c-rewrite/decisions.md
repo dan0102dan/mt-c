@@ -3684,3 +3684,58 @@ Backend defaults and the disabled-by-default behavior are unchanged.
 The policy editor highlights Save whenever its draft changes, independently of
 validation. An unavailable policy still disables submission and shows a concise
 inline explanation; switching the filter off remains saveable without RCI.
+
+## D-80 — NDM readiness may veto Keenetic profile candidates (2026-10-14)
+
+Status: **accepted at the user's request; intentional routing divergence**
+(PR #17; recorded in this log on 2026-10-17).
+
+**Context.** The frozen Go→C routing baseline is kernel-driven. Before this
+addition, interface-priority profiles selected the first candidate passing the
+existing kernel link/address/gateway checks, without an NDM-state veto. On
+Keenetic, an NDM-disabled or otherwise unavailable connection can still have a
+kernel-ready interface. The approved addition therefore changes observable
+profile selection; it is not a behavior-preserving rewrite optimization.
+
+**Decision.** Only `_kn` builds (`MT_ENTWARE_KN`) consult NDM readiness when
+choosing members of an MT interface-priority profile. Known negative `conf`,
+`link`, `ctrl`, or the selected family's IP-layer state may veto a candidate
+that would otherwise pass the kernel checks. IPv4 and IPv6 are evaluated
+separately, and all existing kernel checks remain necessary: NDM cannot make
+a kernel-unready candidate usable. Select the first usable member in the
+configured order, fail over to a lower-priority usable member when necessary,
+and fail back when a higher-priority member recovers. If no member is usable,
+retain the existing terminal blackhole; do not fall through to ordinary WAN.
+
+Unknown, missing, or nonapplicable NDM data does not by itself create a veto.
+Without NDM metadata, retain the existing kernel-check fallback. Unknown values
+and failed RCI reads must not erase a previously known negative state; stale
+snapshots must not overwrite newer events. The event/snapshot precedence and
+recovery contract is specified in
+[NDM interface readiness for routing profiles](../keenetic-interface-readiness.md).
+
+**Scope and consequences.** This is an explicit exception to frozen routing
+parity, not a general relaxation of the Go→C compatibility contract. A group
+or subscription using a profile can intentionally select a different egress,
+or remain blackholed, while its kernel interface state is unchanged. Direct
+interface selection, group/subscription matching and rule priorities, DNS
+behavior, and existing device Include/Exclude filtering are unchanged. D-79's
+optional Keenetic-policy device scope remains independent; it is not required
+for the NDM profile veto. Generic Entware/OpenWrt builds retain their previous
+selection behavior and contain no new NDM payload or dependencies. No new
+connectivity probes, global conntrack flush, ordinary-WAN fallback, or seamless
+migration guarantee for established flows is introduced.
+
+**Compatibility audits and regression coverage.** Treat NDM-driven profile
+failover/failback and blackholing within the above scope as this accepted
+behavioral divergence, not an undocumented regression. Preserve frozen Go
+fixtures for unaffected behavior; do not silently redefine the baseline to
+hide the exception. Existing `src/backend-c/tests/unit/test_profile_routes.c`
+exercises NDM veto/failback with kernel links kept up, per-family readiness,
+direct-interface exemption, blackhole fallback, and avoidance of duplicate
+route writes in an isolated network namespace. The state and recovery cases
+are covered by `test_keenetic_ifstate.c`, `test_keenetic_ifstate_rci.c`,
+`test_keenetic_ifstate_service.c`, and `test_route_recovery.c` in the same test
+directory. Host tests do not establish which failure notifications every
+firmware emits; on-device acceptance and delivery-loss limitations remain as
+documented in the linked feature contract.
