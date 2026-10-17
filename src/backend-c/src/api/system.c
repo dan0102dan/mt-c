@@ -178,6 +178,9 @@ static void handle_config_snapshot(mt_http_req_t *req, mt_http_res_t *res, void 
     config_revision(yaml, length, revision);
     cJSON *config = snapshot_json(yaml, length);
     free(yaml);
+    if (cJSON_IsObject(config) && !cJSON_GetObjectItemCaseSensitive(config, "profiles")) {
+        cJSON_AddItemToObject(config, "profiles", cJSON_CreateArray());
+    }
     if (!config) { mt_http_res_write_error(res, 500, "failed to encode configuration"); return; }
     cJSON *out = cJSON_CreateObject();
     if (!out) { cJSON_Delete(config); mt_http_res_write_error(res, 500, "out of memory"); return; }

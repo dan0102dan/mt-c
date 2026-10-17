@@ -190,8 +190,8 @@
     {/if}
 
     {#if inputPolicy?.enabled && policySupported}
-      <section class="mapping" aria-label="Политика Keenetic">
-        <h3>Политика Keenetic</h3>
+      <section class="mapping" aria-label="Сопоставление политики">
+        <h3>Политика маршрутизации</h3>
         <p>Исходная политика: <code>{inputPolicy.policyId || "не указана"}</code></p>
         <Select
           compact
