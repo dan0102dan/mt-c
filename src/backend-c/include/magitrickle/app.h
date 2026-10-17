@@ -308,6 +308,8 @@ bool mt_iface_is_ignored_for_test(const char *name);
 mt_err_t mt_app_reload_config(mt_app_t *app, const char *path);
 
 mt_err_t mt_app_save_config(mt_app_t *app, const char *path, const char *version);
+/* Read the live in-memory configuration without persisting it. */
+mt_err_t mt_app_config_snapshot(mt_app_t *app, const char *version, char **out, size_t *out_len);
 
 /* Called from the netfilterd webhook to bring the netfilter tables back
  * in line with the live groups.

@@ -252,6 +252,64 @@ TEST save_config_writes_file(void) {
     PASS();
 }
 
+
+TEST config_snapshot_is_read_only_and_includes_live_settings(void) {
+    harness_t *h = harness_start(true);
+    ASSERT(h != NULL);
+    cJSON *snapshot = NULL;
+    ASSERT_EQ(200, do_request("GET", "/api/v1/system/config/snapshot", NULL, &snapshot));
+    ASSERT(cJSON_IsObject(snapshot));
+    ASSERT(cJSON_IsString(cJSON_GetObjectItemCaseSensitive(snapshot, "revision")));
+    cJSON *config = cJSON_GetObjectItemCaseSensitive(snapshot, "config");
+    ASSERT(cJSON_IsObject(config));
+    ASSERT(cJSON_IsObject(cJSON_GetObjectItemCaseSensitive(config, "app")));
+    ASSERT(cJSON_IsArray(cJSON_GetObjectItemCaseSensitive(config, "groups")));
+    ASSERT(cJSON_IsArray(cJSON_GetObjectItemCaseSensitive(config, "subscriptions")));
+    ASSERT(cJSON_IsString(cJSON_GetObjectItemCaseSensitive(config, "configVersion")));
+    FILE *written = fopen(h->config_path, "rb");
+    ASSERT(written != NULL);
+    ASSERT_EQ(EOF, fgetc(written)); /* An empty mkstemp file was not saved by GET. */
+    fclose(written);
+    cJSON_Delete(snapshot);
+    harness_stop(h);
+    PASS();
+}
+
+TEST config_apply_rejects_stale_preview_and_commits_valid_settings(void) {
+    harness_t *h = harness_start(true);
+    ASSERT(h != NULL);
+    cJSON *snapshot = NULL;
+    ASSERT_EQ(200, do_request("GET", "/api/v1/system/config/snapshot", NULL, &snapshot));
+    const cJSON *revision = cJSON_GetObjectItemCaseSensitive(snapshot, "revision");
+    ASSERT(cJSON_IsString(revision));
+    cJSON *candidate = cJSON_Duplicate(cJSON_GetObjectItemCaseSensitive(snapshot, "config"), 1);
+    ASSERT(candidate != NULL);
+    cJSON *app = cJSON_GetObjectItemCaseSensitive(candidate, "app");
+    cJSON_ReplaceItemInObjectCaseSensitive(app, "logLevel", cJSON_CreateString("debug"));
+    cJSON *request = cJSON_CreateObject();
+    cJSON_AddStringToObject(request, "revision", "0000000000000000");
+    cJSON_AddItemToObject(request, "config", candidate);
+    char *payload = cJSON_PrintUnformatted(request);
+    ASSERT(payload != NULL);
+    ASSERT_EQ(409, do_request("POST", "/api/v1/system/config/apply", payload, NULL));
+    free(payload);
+    cJSON_ReplaceItemInObjectCaseSensitive(request, "revision", cJSON_CreateString(revision->valuestring));
+    payload = cJSON_PrintUnformatted(request);
+    ASSERT(payload != NULL);
+    ASSERT_EQ(200, do_request("POST", "/api/v1/system/config/apply", payload, NULL));
+    free(payload);
+    ASSERT_STR_EQ("debug", h->cfg.app.log_level);
+    mt_config_t reloaded = {0};
+    ASSERT_EQ(MT_OK, mt_config_init_defaults(&reloaded));
+    ASSERT_EQ(MT_OK, mt_config_load_file(&reloaded, h->config_path));
+    ASSERT_STR_EQ("debug", reloaded.app.log_level);
+    mt_config_clear(&reloaded);
+    cJSON_Delete(request);
+    cJSON_Delete(snapshot);
+    harness_stop(h);
+    PASS();
+}
+
 TEST save_config_noop_without_path(void) {
     harness_t *h = harness_start(false);
     ASSERT(h != NULL);
@@ -301,6 +359,8 @@ int main(int argc, char **argv) {
     RUN_TEST(interface_alias_failure_keeps_kernel_ids);
 #endif
     RUN_TEST(save_config_writes_file);
+    RUN_TEST(config_snapshot_is_read_only_and_includes_live_settings);
+    RUN_TEST(config_apply_rejects_stale_preview_and_commits_valid_settings);
     RUN_TEST(save_config_noop_without_path);
     RUN_TEST(netfilterd_hook_ok_and_bad_json);
     RUN_TEST(ignored_interfaces_list);

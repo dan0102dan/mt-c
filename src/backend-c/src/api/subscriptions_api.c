@@ -101,6 +101,7 @@ static mt_err_t apply_rule_changes(const cJSON *changes, mt_subscription_t *sub,
         err = mt_lookup_put(&seen, id.b, 4, index, NULL);
         if (err == MT_OK) { err = mt_strset(&rule->type, type->valuestring); }
         if (err == MT_OK) { rule->enable = cJSON_IsTrue(enable); }
+        if (err == MT_OK) { err = mt_subscription_override_set(sub, rule->rule, rule->type, rule->enable ? 1 : 0); }
     }
     mt_lookup_clear(&by_id); mt_lookup_clear(&seen);
     return err;
@@ -206,6 +207,10 @@ static mt_err_t subscription_from_req(mt_app_t *app, const cJSON *req, const mt_
             }
         }
     }
+    if (existing) {
+        err = mt_subscription_overrides_copy(sub, existing);
+        if (err != MT_OK) { mt_subscription_free(sub); return err; }
+    }
     cJSON *changes = cJSON_GetObjectItemCaseSensitive(req, "ruleChanges");
     if (changes) {
         if (!existing) {
@@ -288,6 +293,17 @@ static cJSON *subscription_to_json(const mt_subscription_t *s) {
     cJSON_AddNumberToObject(obj, "interval", s->interval);
     cJSON_AddNumberToObject(obj, "lastUpdate", s->last_update);
     cJSON_AddItemToObject(obj, "rules", sub_rules_to_json_array(s->rules, s->n_rules));
+    if (s->n_overrides) {
+        cJSON *arr = cJSON_AddArrayToObject(obj, "overrides");
+        for (size_t i = 0; i < s->n_overrides; i++) {
+            const mt_sub_override_t *override = s->overrides[i];
+            cJSON *item = cJSON_CreateObject();
+            cJSON_AddStringToObject(item, "rule", override->rule);
+            if (override->type) cJSON_AddStringToObject(item, "type", override->type);
+            if (override->enable >= 0) cJSON_AddBoolToObject(item, "enable", override->enable != 0);
+            cJSON_AddItemToArray(arr, item);
+        }
+    }
     return obj;
 }
 

@@ -416,6 +416,20 @@ export class SubscriptionsStore {
         buildSubscriptionUpdate(sub, this.#savedRules.get(sub.id)),
       );
       await fetcher.put("/subscriptions", { subscriptions });
+      // The C backend persists user-authored exceptions by stable rule
+      // pattern, not by short-lived downloaded rule IDs. Keep local editor
+      // baselines in sync, including before a page reload.
+      for (let i = 0; i < rawData.length; i++) {
+        const byRule = new Map((rawData[i].overrides ?? []).map((o) => [o.rule, { ...o }]));
+        for (const change of subscriptions[i].ruleChanges) {
+          byRule.set(change.rule, {
+            rule: change.rule,
+            type: change.type,
+            enable: change.enable,
+          });
+        }
+        if (byRule.size) rawData[i].overrides = [...byRule.values()];
+      }
       this.#savedRules = new Map(rawData.map((sub) => [sub.id, snapshotRules(sub.rules)]));
       this.tracker.reset(rawData);
       this.persistencePending = false;

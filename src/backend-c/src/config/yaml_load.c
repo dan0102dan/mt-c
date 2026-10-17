@@ -661,6 +661,39 @@ static mt_err_t load_subscription(yaml_document_t *doc, node_t *n,
             }
         }
     }
+    node_t *overrides = map_get(doc, n, "overrides");
+    if (overrides && !node_is_null(overrides)) {
+        if (overrides->type != YAML_SEQUENCE_NODE) return MT_ERR_INVAL;
+        for (yaml_node_item_t *it = overrides->data.sequence.items.start;
+             it < overrides->data.sequence.items.top; it++) {
+            node_t *item = node_of(doc, *it);
+            if (!item || item->type != YAML_MAPPING_NODE) return MT_ERR_INVAL;
+            char *pattern = NULL, *type = NULL;
+            int enable = -1;
+            getter_res_t rv = get_string(map_get(doc, item, "rule"), &pattern, &err);
+            if (rv != GET_OK || err != MT_OK) { free(pattern); return MT_ERR_INVAL; }
+            node_t *type_node = map_get(doc, item, "type");
+            if (type_node && !node_is_null(type_node)) {
+                rv = get_string(type_node, &type, &err);
+                if (rv != GET_OK || err != MT_OK) { free(pattern); free(type); return MT_ERR_INVAL; }
+            }
+            node_t *enable_node = map_get(doc, item, "enable");
+            if (enable_node && !node_is_null(enable_node)) {
+                bool flag;
+                rv = get_bool(enable_node, &flag, &err);
+                if (rv != GET_OK || err != MT_OK) { free(pattern); free(type); return MT_ERR_INVAL; }
+                enable = flag ? 1 : 0;
+            }
+            for (size_t i = 0; i < s->n_overrides; i++) {
+                if (strcmp(s->overrides[i]->rule, pattern) == 0) err = MT_ERR_EXIST;
+            }
+            if (err == MT_OK) err = mt_subscription_override_set(s, pattern, type, enable);
+            free(pattern); free(type);
+            if (err != MT_OK) return err;
+        }
+        err = mt_subscription_apply_overrides(s, s->rules, s->n_rules);
+        if (err != MT_OK) return err;
+    }
     return MT_OK;
 }
 
