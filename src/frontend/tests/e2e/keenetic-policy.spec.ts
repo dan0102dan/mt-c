@@ -91,6 +91,12 @@ async function openSettings(page: Page) {
 const panel = (page: Page) => page.locator(".policy-settings");
 const save = (page: Page) => page.locator("#save-settings");
 
+// Settings may also contain non-editor sections such as the DNS journal.
+async function expectInactiveTitlesHidden(page: Page) {
+  const inactive = page.locator(".title-layer:not(.current)");
+  for (const title of await inactive.all()) await expect(title).toHaveCSS("opacity", "0");
+}
+
 test("generic UI has no policy feature or policy requests", async ({ page }) => {
   test.skip(keenetic, "generic build only");
   const state = await backend(page);
@@ -325,7 +331,7 @@ test.describe("Shared settings toolbar", () => {
       const stoppedAt = await page.evaluate(() => window.scrollY);
       await expect(page.locator(".context-add")).toHaveCSS("opacity", "0");
       await expect(page.locator(".title-layer.current")).toHaveCSS("opacity", "1");
-      await expect(page.locator(".title-layer:not(.current)")).toHaveCSS("opacity", "0");
+      await expectInactiveTitlesHidden(page);
       await expect(page.locator(".title-layer.current")).toHaveText("Keenetic policy");
       expect(await page.evaluate(() => window.scrollY)).toBe(stoppedAt);
       await expect(add).toHaveCount(0);
@@ -343,7 +349,7 @@ test.describe("Shared settings toolbar", () => {
         ).toBe(true);
       }
       await expect(page.locator(".title-layer.current")).toHaveCSS("opacity", "1");
-      await expect(page.locator(".title-layer:not(.current)")).toHaveCSS("opacity", "0");
+      await expectInactiveTitlesHidden(page);
       await expect(page.locator(".title-layer.current")).toHaveText("Interface priority profiles");
       await expect(heading).toHaveAccessibleName("Interface priority profiles");
       await expect(add).toBeVisible();
@@ -362,7 +368,9 @@ test.describe("Shared settings toolbar", () => {
         await button!.evaluate((node) => node === document.querySelector("#save-settings")),
       ).toBe(true);
       await page.setViewportSize({ width, height: 900 });
-      await page.evaluate(() => window.scrollTo(0, document.documentElement.scrollHeight));
+      // A later DNS section changes the page's bottom independently of this
+      // boundary. Restore the actual section boundary, not an assumed footer.
+      await placeHeading(36);
       await expect(heading).toHaveAccessibleName("Interface priority profiles");
       await expect(name).toHaveValue("Unsaved profile name");
       await panel(page).getByRole("switch", { name: "Processing mode", exact: true }).click();

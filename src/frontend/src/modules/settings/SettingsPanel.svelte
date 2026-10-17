@@ -5,6 +5,7 @@
   import PageControls from "../../components/layout/PageControls.svelte";
   import { t } from "../../data/locale.svelte";
   import ProfilesPanel from "./ProfilesPanel.svelte";
+  import DnsQueryLog from "./DnsQueryLog.svelte";
 
   import { toast } from "../../utils/events";
 
@@ -13,6 +14,8 @@
     type RegisterSection,
     type SettingsSection,
   } from "./section-controls";
+
+  let { active = true }: { active?: boolean } = $props();
 
   let page: HTMLDivElement;
   let toolbar: HTMLDivElement;
@@ -142,6 +145,7 @@
   <div class="settings-sections">
     <ProfilesPanel />
     <PlatformSettings />
+    <DnsQueryLog {active} />
   </div>
 </div>
 
