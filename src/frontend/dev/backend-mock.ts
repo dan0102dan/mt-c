@@ -109,6 +109,7 @@ const dnsQueries: Array<{
   { id: 2, time_ms: Date.now() - 12000, client: "192.168.1.101", domain: "github.com", qtype: 65, protocol: "tcp" },
   { id: 1, time_ms: Date.now() - 17000, client: "192.168.1.103", domain: "example.net", qtype: 1, protocol: "udp" },
 ];
+const dnsThrough = dnsQueries[0]?.id ?? 0;
 const dnsSubscribers = new Set<(event: string, data: unknown) => void>();
 app.get(`${API_BASE}/system/dns/queries`, (c) => c.json({ queries: dnsQueries, capacity: 1000 }));
 app.get(`${API_BASE}/system/dns/stream`, (c) => {
@@ -118,7 +119,10 @@ app.get(`${API_BASE}/system/dns/stream`, (c) => {
   return streamSSE(c, async (stream) => {
     let finish!: () => void;
     const done = new Promise<void>((resolve) => (finish = resolve));
+    let ready = false;
+    let restart = false;
     const emit = (event: string, data: unknown) => {
+      if (!ready) { restart = true; return; }
       void stream.writeSSE({ event, data: JSON.stringify(data) }).catch(finish);
     };
     dnsSubscribers.add(emit);
@@ -128,7 +132,16 @@ app.get(`${API_BASE}/system/dns/stream`, (c) => {
       void stream.write(": heartbeat\n\n").catch(finish);
     }, 15000);
     try {
-      await stream.writeSSE({ event: "snapshot", data: JSON.stringify({ queries: dnsQueries, capacity: 1000 }) });
+      do {
+        restart = false;
+        const queries = [...dnsQueries].reverse();
+        await stream.writeSSE({ event: "snapshot_begin", data: JSON.stringify({ capacity: 1000, count: queries.length, through: dnsThrough }) });
+        for (let offset = 0; !restart && offset < queries.length; offset += 32) {
+          await stream.writeSSE({ event: "snapshot_chunk", data: JSON.stringify({ offset, queries: queries.slice(offset, offset + 32) }) });
+        }
+        if (!restart) await stream.writeSSE({ event: "snapshot_end", data: JSON.stringify({ through: dnsThrough }) });
+      } while (restart);
+      ready = true;
       await done;
     } finally {
       clearInterval(heartbeat);
