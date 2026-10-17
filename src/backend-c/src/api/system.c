@@ -76,6 +76,11 @@ static void handle_save_config(mt_http_req_t *req, mt_http_res_t *res, void *ud)
  * possibly stale config file. A revision token binds preview and apply.
  * The serialized candidate is staged and validated before the running app
  * is swapped; on persistence failure the previous live state is reloaded. */
+static const char *transfer_version(const mt_system_ctx_t *ctx) {
+    const char *version = ctx->config_version;
+    return version && strncmp(version, "0.", 2) == 0 ? version : "0.0.0";
+}
+
 static void config_revision(const char *data, size_t size, char out[17]) {
     uint64_t hash = UINT64_C(14695981039346656037);
     for (size_t i = 0; i < size; i++) {
@@ -155,7 +160,9 @@ static int write_stage(const char *content, size_t length, char path[32]) {
         if (n <= 0) { close(fd); unlink(path); return -1; }
         done += (size_t)n;
     }
-    if (fsync(fd) || close(fd)) { unlink(path); return -1; }
+    int sync_status = fsync(fd);
+    int close_status = close(fd);
+    if (sync_status != 0 || close_status != 0) { unlink(path); return -1; }
     return 0;
 }
 
@@ -165,7 +172,7 @@ static void handle_config_snapshot(mt_http_req_t *req, mt_http_res_t *res, void 
     char *yaml = NULL;
     size_t length = 0;
     mt_err_t err = mt_app_config_snapshot(ctx->app,
-        ctx->config_version ? ctx->config_version : "0.0.0", &yaml, &length);
+        transfer_version(ctx), &yaml, &length);
     if (err != MT_OK) { mt_http_res_write_error(res, 500, mt_err_str(err)); return; }
     char revision[17];
     config_revision(yaml, length, revision);
@@ -206,8 +213,9 @@ static void handle_config_apply(mt_http_req_t *req, mt_http_res_t *res, void *ud
         return;
     }
 #ifndef MT_ENTWARE_KN
-    if (cJSON_GetObjectItemCaseSensitive(
-        cJSON_GetObjectItemCaseSensitive(config,"app"), "keeneticPolicy")) {
+    /* Generic app YAML has exactly six recognized top-level settings.
+     * Reject extra platform-only settings instead of silently dropping them. */
+    if (cJSON_GetArraySize(cJSON_GetObjectItemCaseSensitive(config, "app")) > 6) {
         cJSON_Delete(request);
         mt_http_res_write_error(res, 409, "Keenetic policy is unsupported on this platform");
         return;
@@ -216,7 +224,7 @@ static void handle_config_apply(mt_http_req_t *req, mt_http_res_t *res, void *ud
     char *old_yaml = NULL;
     size_t old_len = 0;
     mt_err_t err = mt_app_config_snapshot(ctx->app,
-        ctx->config_version ? ctx->config_version : "0.0.0", &old_yaml, &old_len);
+        transfer_version(ctx), &old_yaml, &old_len);
     if (err != MT_OK) {
         cJSON_Delete(request);
         mt_http_res_write_error(res, 500, "failed to snapshot current state");
@@ -230,9 +238,10 @@ static void handle_config_apply(mt_http_req_t *req, mt_http_res_t *res, void *ud
         return;
     }
     cJSON *document = cJSON_Duplicate(config, 1);
+    if (!document) { cJSON_Delete(request); free(old_yaml); mt_http_res_write_error(res, 500, "out of memory"); return; }
     cJSON_DeleteItemFromObjectCaseSensitive(document, "configVersion");
     cJSON_AddStringToObject(document, "configVersion",
-        ctx->config_version ? ctx->config_version : "0.0.0");
+        transfer_version(ctx));
     char *serialized = cJSON_PrintUnformatted(document);
     cJSON_Delete(document);
     cJSON_Delete(request);
@@ -261,7 +270,7 @@ static void handle_config_apply(mt_http_req_t *req, mt_http_res_t *res, void *ud
     unlink(new_path);
     if (err == MT_OK) {
         err = mt_app_save_config(ctx->app, ctx->config_path,
-            ctx->config_version ? ctx->config_version : "0.0.0");
+            transfer_version(ctx));
         if (err != MT_OK) {
             mt_err_t restored = mt_app_reload_config(ctx->app, rollback_path);
             if (restored != MT_OK) {
