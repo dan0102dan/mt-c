@@ -220,10 +220,59 @@ TEST malformed_messages_do_not_turn_into_empty_successes(void)
     ASSERT(items == NULL); ASSERT_EQ(0u, count);
     PASS();
 }
+
+TEST numeric_port_keys_use_canonical_ids_and_detect_duplicates(void)
+{
+    mt_kn_ifinfo_t *items = NULL; size_t count = 0;
+    const char *json = "{\"0\":{\"id\":\"GigabitEthernet1/0\",\"system-name\":\"eth3\"},"
+                       "\"GigabitEthernet1\":{\"system-name\":\"eth3\",\"connected\":\"no\"}}";
+    ASSERT_EQ(MT_OK, mt_kn_ifinfo_parse(json, strlen(json), &items, &count));
+    ASSERT_EQ(2u, count);
+    ASSERT_STR_EQ("GigabitEthernet1/0", items[0].id);
+    free(items);
+    const char *dup = "{\"0\":{\"id\":\"GigabitEthernet1/0\"},"
+                      "\"1\":{\"id\":\"GigabitEthernet1/0\"}}";
+    ASSERT(mt_kn_ifinfo_parse(dup, strlen(dup), &items, &count) != MT_OK);
+    PASS();
+}
+TEST shared_kernel_name_uses_parent_not_last_child(void)
+{
+    mt_kn_ifstate_t *s = mt_kn_ifstate_new(NULL, NULL); ASSERT(s);
+    bool sync;
+    const char *parent = "{\"kind\":\"state\",\"id\":\"GigabitEthernet1\","
+                         "\"system_name\":\"eth3\",\"up\":\"up\",\"link\":\"up\",\"connected\":\"no\"}";
+    const char *child = "{\"kind\":\"state\",\"id\":\"GigabitEthernet1/0\","
+                        "\"system_name\":\"eth3\",\"up\":\"up\",\"link\":\"up\",\"connected\":\"yes\"}";
+    ASSERT_EQ(MT_OK, event(s, parent, &sync));
+    ASSERT_EQ(MT_OK, event(s, child, &sync));
+    ASSERT(mt_kn_ifstate_blocks(s, "eth3", AF_INET));
+    ASSERT_EQ(MT_OK, event(s, parent, &sync));
+    ASSERT_EQ(MT_OK, event(s, child, &sync));
+    ASSERT(mt_kn_ifstate_blocks(s, "eth3", AF_INET));
+    mt_kn_ifstate_free(s); PASS();
+}
+TEST stale_snapshot_cannot_restore_discarded_layer_baseline(void)
+{
+    mt_kn_ifstate_t *s = mt_kn_ifstate_new(NULL, NULL); ASSERT(s);
+    ASSERT_EQ(MT_OK, snapshot(s, ready_json, 0));
+    bool sync;
+    ASSERT_EQ(MT_OK, legacy(s, "up", "up", "no", &sync));
+    uint64_t token = mt_kn_ifstate_revision(s);
+    ASSERT_EQ(MT_OK, layer(s, "link", "running", &sync));
+    ASSERT(mt_kn_ifstate_blocks(s, "nwg0", AF_INET));
+    ASSERT_EQ(MT_OK, snapshot(s, ready_json, token));
+    ASSERT(mt_kn_ifstate_blocks(s, "nwg0", AF_INET));
+    ASSERT_EQ(MT_OK, snapshot(s, ready_json, mt_kn_ifstate_revision(s)));
+    ASSERT_FALSE(mt_kn_ifstate_blocks(s, "nwg0", AF_INET));
+    mt_kn_ifstate_free(s); PASS();
+}
 GREATEST_MAIN_DEFS();
 int main(int argc, char **argv)
 {
     GREATEST_MAIN_BEGIN();
+    RUN_TEST(numeric_port_keys_use_canonical_ids_and_detect_duplicates);
+    RUN_TEST(shared_kernel_name_uses_parent_not_last_child);
+    RUN_TEST(stale_snapshot_cannot_restore_discarded_layer_baseline);
     RUN_TEST(user_wireguard_trace_is_not_ready_until_final_ctrl_event);
     RUN_TEST(families_and_nonapplicable_layers_are_independent);
     RUN_TEST(legacy_connected_and_unknown_values_preserve_negative_knowledge);
