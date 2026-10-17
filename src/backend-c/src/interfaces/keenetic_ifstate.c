@@ -6,7 +6,7 @@
 
 typedef struct {
     mt_kn_ifinfo_t info;
-    uint64_t field_revision[MT_KN_IF_FIELDS], identity_revision, lifetime_revision;
+    uint64_t field_revision[MT_KN_IF_FIELDS], identity_revision, lifetime_revision, baseline_revision;
     bool removed, snapshot, layer_baseline, layer_events, legacy_events;
 } entry_t;
 struct mt_kn_ifstate {
@@ -147,9 +147,14 @@ mt_err_t mt_kn_ifinfo_parse(const char *body, size_t len, mt_kn_ifinfo_t **out, 
         if (!unique_keys(item) || !token_string(item->string, sizeof(items[i].id), true)) {
             err = MT_ERR_PROTO; break;
         }
-        strcpy(items[i].id, item->string);
         const cJSON *id = cJSON_GetObjectItemCaseSensitive(item, "id");
-        if (id && (!cJSON_IsString(id) || strcmp(id->valuestring, item->string))) { err = MT_ERR_PROTO; break; }
+        const char *canonical = id ? (cJSON_IsString(id) ? id->valuestring : NULL) : item->string;
+        if (!token_string(canonical, sizeof(items[i].id), true)) { err = MT_ERR_PROTO; break; }
+        for (size_t prev = 0; prev < i; prev++) {
+            if (!strcmp(items[prev].id, canonical)) { err = MT_ERR_PROTO; break; }
+        }
+        if (err != MT_OK) { break; }
+        strcpy(items[i].id, canonical);
         if (!copy_string(item, "system-name", items[i].name, sizeof(items[i].name), false, false)) {
             err = MT_ERR_PROTO; break;
         }
@@ -213,10 +218,21 @@ static bool blocked(const entry_t *entry, int family)
 bool mt_kn_ifstate_blocks(const mt_kn_ifstate_t *state, const char *name, int family)
 {
     if (!state || !name || (family != AF_INET && family != AF_INET6)) { return false; }
+    /* Several NDM records (a switch and its ports, Wi-Fi master and AP)
+     * may legitimately share one kernel name. Prefer the parent NDM record
+     * rather than whichever child emitted the last notification. */
+    const entry_t *selected = NULL;
     for (size_t i = 0; i < state->count; i++) {
-        if (!strcmp(state->items[i].info.name, name)) { return blocked(&state->items[i], family); }
+        const entry_t *candidate = &state->items[i];
+        if (strcmp(candidate->info.name, name)) { continue; }
+        if (!selected) { selected = candidate; continue; }
+        const char *a = candidate->info.id, *b = selected->info.id;
+        size_t da = 0, db = 0;
+        for (const char *p = a; *p; p++) { da += *p == '/'; }
+        for (const char *p = b; *p; p++) { db += *p == '/'; }
+        if (da < db || (da == db && strcmp(a, b) < 0)) { selected = candidate; }
     }
-    return false;
+    return selected ? blocked(selected, family) : false;
 }
 static void changed(mt_kn_ifstate_t *state, const char *name)
 {
@@ -259,18 +275,8 @@ static entry_t *get(mt_kn_ifstate_t *state, const char *id)
 static void map_name(mt_kn_ifstate_t *state, entry_t *entry, const char *name, uint64_t revision)
 {
     if (!*name) { return; }
-    /* A snapshot started before a reassignment must not steal its name. */
-    for (size_t i = 0; i < state->count; i++) {
-        const entry_t *other = &state->items[i];
-        if (other != entry && !strcmp(other->info.name, name) && other->identity_revision > revision) { return; }
-    }
-    for (size_t i = 0; i < state->count; i++) {
-        entry_t *other = &state->items[i];
-        if (other != entry && !strcmp(other->info.name, name)) {
-            changed(state, name);
-            other->info.name[0] = '\0'; other->identity_revision = revision;
-        }
-    }
+    /* NDM parent/child records can legitimately share a Linux device.
+     * Do not evict siblings on an ordinary event or snapshot. */
     strcpy(entry->info.name, name); entry->identity_revision = revision;
 }
 mt_err_t mt_kn_ifstate_event(mt_kn_ifstate_t *state, const mt_kn_ifevent_t *event, bool *resync)
@@ -286,6 +292,7 @@ mt_err_t mt_kn_ifstate_event(mt_kn_ifstate_t *state, const mt_kn_ifevent_t *even
         if (event->kind == MT_KN_IF_CREATED) {
             memset(entry->info.fields, 0, sizeof(entry->info.fields));
             entry->info.layered = false; entry->snapshot = false; entry->layer_baseline = false;
+            entry->baseline_revision = revision;
             entry->layer_events = entry->legacy_events = false;
             *resync = true;
         }
@@ -304,6 +311,7 @@ mt_err_t mt_kn_ifstate_event(mt_kn_ifstate_t *state, const mt_kn_ifevent_t *even
                     entry->field_revision[f] = revision;
                 }
                 entry->layer_baseline = false;
+                entry->baseline_revision = revision;
                 *resync = true;
             }
             if (!entry->info.layered) { *resync = true; }
@@ -345,7 +353,9 @@ mt_err_t mt_kn_ifstate_snapshot(mt_kn_ifstate_t *state, const mt_kn_ifinfo_t *it
         if (entry->identity_revision <= token) { map_name(state, entry, items[i].name, token); }
         entry->removed = false;
         entry->snapshot = true;
-        if (items[i].layered) { entry->info.layered = true; entry->layer_baseline = true; }
+        if (items[i].layered && entry->baseline_revision <= token) {
+            entry->info.layered = true; entry->layer_baseline = true;
+        }
         for (size_t f = 0; f < MT_KN_IF_FIELDS; f++) {
             if (entry->field_revision[f] > token || items[i].fields[f] == MT_KN_IF_UNKNOWN) { continue; }
             /* Missing data is not evidence that a previously down layer is up. */
