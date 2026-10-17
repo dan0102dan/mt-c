@@ -9,7 +9,20 @@ struct mt_dns_query_log {
     size_t next;
     size_t count;
     uint64_t sequence;
+    uint64_t revision;
+    struct {
+        mt_dns_query_log_notify_fn notify;
+        void *ud;
+    } subscribers[MT_DNS_QUERY_LOG_MAX_SUBSCRIBERS];
 };
+
+static void notify_subscribers(mt_dns_query_log_t *log) {
+    for (size_t i = 0; i < MT_DNS_QUERY_LOG_MAX_SUBSCRIBERS; i++) {
+        if (log->subscribers[i].notify) {
+            log->subscribers[i].notify(log->subscribers[i].ud);
+        }
+    }
+}
 
 mt_dns_query_log_t *mt_dns_query_log_create(void)
 {
@@ -39,6 +52,7 @@ void mt_dns_query_log_append(mt_dns_query_log_t *log, const char *client,
     snprintf(entry->domain, sizeof(entry->domain), "%s", domain);
     log->next = (log->next + 1) % MT_DNS_QUERY_LOG_CAPACITY;
     if (log->count < MT_DNS_QUERY_LOG_CAPACITY) { log->count++; }
+    notify_subscribers(log);
 }
 
 size_t mt_dns_query_log_size(const mt_dns_query_log_t *log)
@@ -64,4 +78,33 @@ void mt_dns_query_log_clear(mt_dns_query_log_t *log)
     log->next = 0;
     log->count = 0;
     /* Keep sequence monotonic across clears so an old id is never reused. */
+    log->revision++;
+    notify_subscribers(log);
+}
+
+int mt_dns_query_log_subscribe(mt_dns_query_log_t *log,
+    mt_dns_query_log_notify_fn notify, void *ud) {
+    if (!log || !notify) { return 0; }
+    for (int i = 0; i < MT_DNS_QUERY_LOG_MAX_SUBSCRIBERS; i++) {
+        if (!log->subscribers[i].notify) {
+            log->subscribers[i].notify = notify;
+            log->subscribers[i].ud = ud;
+            return i + 1;
+        }
+    }
+    return 0;
+}
+
+void mt_dns_query_log_unsubscribe(mt_dns_query_log_t *log, int subscription) {
+    if (!log || subscription < 1 || subscription > MT_DNS_QUERY_LOG_MAX_SUBSCRIBERS) { return; }
+    log->subscribers[subscription - 1].notify = NULL;
+    log->subscribers[subscription - 1].ud = NULL;
+}
+
+uint64_t mt_dns_query_log_sequence(const mt_dns_query_log_t *log) {
+    return log ? log->sequence : 0;
+}
+
+uint64_t mt_dns_query_log_revision(const mt_dns_query_log_t *log) {
+    return log ? log->revision : 0;
 }

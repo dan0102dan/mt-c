@@ -3,7 +3,9 @@
 #include "magitrickle/system.h"
 #include "magitrickle/profiles_api.h"
 #include "magitrickle/update.h"
+#include "magitrickle/http_stream.h"
 
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -90,36 +92,52 @@ static void handle_netfilterd_hook(mt_http_req_t *req, mt_http_res_t *res, void 
     mt_http_res_write(res, 200, NULL, NULL, 0);
 }
 
-/* DNS journal is volatile and only read/written by this epoll loop.
- * This is request metadata (not the visited URL or resolved IP), and the
- * same API authentication as every other /api/v1/system route applies. */
-static void handle_dns_queries(mt_http_req_t *req, mt_http_res_t *res, void *ud)
-{
-    (void)req;
-    mt_system_ctx_t *ctx = ud;
-    cJSON *result = cJSON_CreateObject();
-    if (!result) { mt_http_res_write_error(res, 500, "out of memory"); return; }
-    cJSON *rows = cJSON_AddArrayToObject(result, "queries");
-    if (!rows) {
-        cJSON_Delete(result);
-        mt_http_res_write_error(res, 500, "out of memory");
-        return;
+static cJSON *dns_query_json(const mt_dns_query_entry_t *entry) {
+    cJSON *row = cJSON_CreateObject();
+    if (!row) { return NULL; }
+    if (!cJSON_AddNumberToObject(row, "id", (double)entry->id) ||
+        !cJSON_AddNumberToObject(row, "time_ms", (double)entry->time_ms) ||
+        !cJSON_AddStringToObject(row, "client", entry->client) ||
+        !cJSON_AddStringToObject(row, "domain", entry->domain) ||
+        !cJSON_AddNumberToObject(row, "qtype", entry->qtype) ||
+        !cJSON_AddStringToObject(row, "protocol", entry->tcp ? "tcp" : "udp")) {
+        cJSON_Delete(row);
+        return NULL;
     }
-    size_t count = mt_dns_query_log_size(ctx->query_log);
+    return row;
+}
+
+static cJSON *dns_snapshot(mt_dns_query_log_t *log) {
+    cJSON *result = cJSON_CreateObject();
+    if (!result) { return NULL; }
+    cJSON *rows = cJSON_AddArrayToObject(result, "queries");
+    if (!rows || !cJSON_AddNumberToObject(result, "capacity", MT_DNS_QUERY_LOG_CAPACITY)) {
+        cJSON_Delete(result);
+        return NULL;
+    }
+    size_t count = mt_dns_query_log_size(log);
     for (size_t i = 0; i < count; i++) {
         mt_dns_query_entry_t entry;
-        if (!mt_dns_query_log_get(ctx->query_log, i, &entry)) { break; }
-        cJSON *row = cJSON_CreateObject();
-        if (!row) { cJSON_Delete(result); mt_http_res_write_error(res, 500, "out of memory"); return; }
-        cJSON_AddNumberToObject(row, "id", (double)entry.id);
-        cJSON_AddNumberToObject(row, "time_ms", (double)entry.time_ms);
-        cJSON_AddStringToObject(row, "client", entry.client);
-        cJSON_AddStringToObject(row, "domain", entry.domain);
-        cJSON_AddNumberToObject(row, "qtype", entry.qtype);
-        cJSON_AddStringToObject(row, "protocol", entry.tcp ? "tcp" : "udp");
-        cJSON_AddItemToArray(rows, row);
+        if (!mt_dns_query_log_get(log, i, &entry)) { break; }
+        cJSON *row = dns_query_json(&entry);
+        if (!row || !cJSON_AddItemToArray(rows, row)) {
+            cJSON_Delete(row);
+            cJSON_Delete(result);
+            return NULL;
+        }
     }
-    cJSON_AddNumberToObject(result, "capacity", MT_DNS_QUERY_LOG_CAPACITY);
+    return result;
+}
+
+/* Both snapshot and stream run on the same event loop as append/clear.
+ * There is no snapshot/subscribe race or per-subscriber event queue. */
+#include "dns_stream.inc"
+
+static void handle_dns_queries(mt_http_req_t *req, mt_http_res_t *res, void *ud) {
+    (void)req;
+    mt_system_ctx_t *ctx = ud;
+    cJSON *result = dns_snapshot(ctx->query_log);
+    if (!result) { mt_http_res_write_error(res, 500, "out of memory"); return; }
     mt_http_res_set_header(res, "Cache-Control", "no-store");
     mt_http_res_write_json(res, 200, result);
 }
@@ -141,6 +159,7 @@ void mt_system_register_routes(mt_httpd_t *h, mt_system_ctx_t *ctx) {
     mt_update_register_routes(h, ctx);
     must_route(h, "GET", "/api/v1/system/interfaces", handle_list_interfaces, ctx);
     must_route(h, "GET", "/api/v1/system/dns/queries", handle_dns_queries, ctx);
+    must_route(h, "GET", "/api/v1/system/dns/stream", handle_dns_stream, ctx);
     must_route(h, "DELETE", "/api/v1/system/dns/queries", handle_dns_clear, ctx);
     must_route(h, "POST", "/api/v1/system/config/save", handle_save_config, ctx);
     must_route(h, "POST", "/api/v1/system/hooks/netfilterd", handle_netfilterd_hook, ctx);

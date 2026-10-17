@@ -13,6 +13,7 @@
 /* mt_dns_name_to_string may expand escaped bytes to four chars each. */
 #define MT_DNS_QUERY_LOG_DOMAIN_LEN 1024
 #define MT_DNS_QUERY_LOG_CLIENT_LEN 48
+#define MT_DNS_QUERY_LOG_MAX_SUBSCRIBERS 8
 
 typedef struct mt_dns_query_log mt_dns_query_log_t;
 typedef struct mt_dns_query_entry {
@@ -35,4 +36,12 @@ bool mt_dns_query_log_get(const mt_dns_query_log_t *log, size_t newest_index,
                           mt_dns_query_entry_t *out);
 void mt_dns_query_log_clear(mt_dns_query_log_t *log);
 
+/* Loop-local notifications: callbacks may unsubscribe themselves, but must
+ * not mutate the journal. Stop all subscribers before destroying the log. */
+typedef void (*mt_dns_query_log_notify_fn)(void *ud);
+int mt_dns_query_log_subscribe(mt_dns_query_log_t *log,
+    mt_dns_query_log_notify_fn notify, void *ud);
+void mt_dns_query_log_unsubscribe(mt_dns_query_log_t *log, int subscription);
+uint64_t mt_dns_query_log_sequence(const mt_dns_query_log_t *log);
+uint64_t mt_dns_query_log_revision(const mt_dns_query_log_t *log);
 #endif /* MAGITRICKLE_DNS_QUERY_LOG_H */

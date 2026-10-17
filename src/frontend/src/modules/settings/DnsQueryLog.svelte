@@ -1,8 +1,9 @@
 <script lang="ts">
-  import { untrack } from "svelte";
+  import { onMount, untrack } from "svelte";
 
-  import { t } from "../../data/locale.svelte";
-  import { fetcher } from "../../utils/fetcher";
+  import { token } from "../../data/auth.svelte";
+  import { locales, t } from "../../data/locale.svelte";
+  import { API_BASE, fetcher } from "../../utils/fetcher";
   import { settingsSection } from "./section-controls";
   import {
     dnsQueryType,
@@ -11,7 +12,10 @@
     type DnsQuery,
     type DnsQueryResponse,
   } from "./dns-query-data";
+  import { applyDnsEvent, subscribeDnsQueries, type StreamState } from "./dns-query-stream";
+  import streamTranslations from "./dns-query-stream.ru.json";
 
+  Object.assign(locales.ru, streamTranslations);
   let { active = true }: { active?: boolean } = $props();
 
   const section = settingsSection();
@@ -21,7 +25,11 @@
   let loading = $state(false);
   let clearing = $state(false);
   let failed = $state(false);
+  let clearFailed = $state(false);
   let paused = $state(false);
+  let visible = $state(false);
+  let streamRevision = $state(0);
+  let streamState = $state<StreamState>("connecting");
   let grouped = $state(false);
   let search = $state("");
   let device = $state("");
@@ -37,14 +45,64 @@
   const groupedPage = $derived(groupedRows.slice((safePage - 1) * pageSize, safePage * pageSize));
   const queryPage = $derived(filtered.slice((safePage - 1) * pageSize, safePage * pageSize));
   const filtersKey = $derived(`${search}\u0000${device}\u0000${grouped}`);
+  const statusLabel = $derived(paused ? t("Paused") : streamState === "live" ? t("Live") :
+    streamState === "reconnecting" ? t("Reconnecting...") : t("Connecting..."));
 
   $effect(() => {
     filtersKey;
     page = 1;
   });
 
+  onMount(() => {
+    const updateVisibility = () => (visible = !document.hidden);
+    updateVisibility();
+    document.addEventListener("visibilitychange", updateVisibility);
+    return () => {
+      requestGeneration++;
+      document.removeEventListener("visibilitychange", updateVisibility);
+    };
+  });
+
+  // No periodic GET: one subscription while visible; abort on pause,
+  // navigation, logout, clear or unmount. Snapshots on reconnect replace state.
+  $effect(() => {
+    streamRevision;
+    const accessToken = token.current;
+    if (!active || !visible || paused || clearing) return;
+    const generation = ++requestGeneration;
+    const stop = untrack(() => subscribeDnsQueries({
+      url: `${API_BASE}/system/dns/stream`,
+      token: accessToken || "",
+      onEvent: (event) => {
+        if (generation !== requestGeneration) return;
+        const next = applyDnsEvent({ queries, capacity }, event);
+        queries = next.queries;
+        capacity = next.capacity;
+        failed = false;
+        loading = false;
+      },
+      onState: (state) => {
+        if (generation !== requestGeneration) return;
+        streamState = state;
+        loading = state === "connecting";
+        failed = state === "reconnecting";
+      },
+      onUnauthorized: () => token.reset(),
+    }));
+    return () => {
+      requestGeneration++;
+      stop();
+      loading = false;
+    };
+  });
+
   async function refresh() {
     if (loading || clearing) return;
+    if (!paused) {
+      streamRevision++;
+      return;
+    }
+    // An explicit manual refresh while paused is still a single snapshot GET.
     const generation = ++requestGeneration;
     loading = true;
     try {
@@ -53,8 +111,11 @@
         timeoutMs: 8000,
       });
       if (generation !== requestGeneration) return;
-      queries = response.queries ?? [];
-      capacity = response.capacity || 1000;
+      const next = applyDnsEvent({ queries, capacity }, {
+        event: "snapshot", data: JSON.stringify(response),
+      });
+      queries = next.queries;
+      capacity = next.capacity;
       failed = false;
     } catch {
       if (generation === requestGeneration) failed = true;
@@ -65,10 +126,12 @@
 
   async function clearHistory() {
     if (clearing || !confirm(t("Clear DNS query history?"))) return;
-    // Invalidate any slow GET response before the DELETE starts.
+    // Close the old stream before DELETE, preventing in-flight older data
+    // from overwriting the empty state. Other viewers receive a clear event.
     ++requestGeneration;
     loading = false;
     clearing = true;
+    clearFailed = false;
     try {
       await fetcher<{ cleared: boolean }>("/system/dns/queries", {
         method: "DELETE",
@@ -79,27 +142,11 @@
       page = 1;
       failed = false;
     } catch {
-      failed = true;
+      clearFailed = true;
     } finally {
       clearing = false;
     }
   }
-
-  // Tab panels remain mounted when hidden; do not poll other tabs or a
-  // background browser window. Pausing only freezes the UI polling.
-  $effect(() => {
-    if (!active || paused) return;
-    const update = () => {
-      if (!document.hidden) untrack(() => void refresh());
-    };
-    update();
-    const timer = setInterval(update, 3000);
-    document.addEventListener("visibilitychange", update);
-    return () => {
-      clearInterval(timer);
-      document.removeEventListener("visibilitychange", update);
-    };
-  });
 
   const displayTime = (timestamp: number) => new Date(timestamp).toLocaleString();
 </script>
@@ -121,8 +168,9 @@
       <h2 id="dns-query-title">{t("DNS queries")}</h2>
       <p class="subtitle">{t("Requests captured by the DNS proxy. Cached or encrypted DNS traffic is not visible.")}</p>
     </div>
-    <span class="count" aria-live="polite">{queries.length} / {capacity}</span>
+    <span class="count">{queries.length} / {capacity}</span>
   </div>
+  <p class="stream-status" class:live={!paused && streamState === "live"} role="status">{statusLabel}</p>
 
   <div class="filters">
     <label class="search-field">
@@ -169,12 +217,16 @@
       <button type="button" onclick={() => void refresh()} disabled={loading || clearing}>{t("Retry")}</button>
     </div>
   {/if}
+  {#if clearFailed}
+    <div class="error-message" role="alert">{t("Failed to clear DNS queries")}</div>
+  {/if}
 
   {#if !queries.length && loading}
     <p class="empty-message">{t("Loading DNS queries...")}</p>
   {:else if !total}
     <p class="empty-message">{queries.length ? t("No matching DNS queries") : t("No DNS queries captured yet")}</p>
   {:else}
+    <!-- svelte-ignore a11y_no_noninteractive_tabindex (Scrollable results need keyboard access.) -->
     <div class="table-scroll" tabindex="0" role="region" aria-label={t("DNS query results")}>
       <table>
         <thead>
@@ -224,6 +276,8 @@
 
 <style>
   .dns-query-log { min-width: 0; }
+  .stream-status { margin: 0 0 0.7rem; color: var(--text-2); font-size: 0.85rem; }
+  .stream-status.live { color: var(--green); }
   .section-heading { display: flex; flex-wrap: wrap; align-items: flex-start; justify-content: space-between; gap: 0.6rem 1rem; margin-bottom: 1rem; }
   h2 { margin: 0 0 0.35rem; color: var(--text-2); font: 600 1.3rem / 1.4 var(--font); }
   .subtitle { margin: 0; color: var(--text-2); font-size: 0.87rem; line-height: 1.5; }

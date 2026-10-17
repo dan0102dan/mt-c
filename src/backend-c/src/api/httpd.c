@@ -1,5 +1,6 @@
 /* See httpd.h. */
 #include "magitrickle/httpd.h"
+#include "magitrickle/http_stream.h"
 
 #include <arpa/inet.h>
 #include <ctype.h>
@@ -54,6 +55,7 @@ struct mt_http_res {
     uint8_t *body;
     size_t body_len;
     bool responded;
+    bool streaming;
 };
 
 typedef struct route {
@@ -79,12 +81,14 @@ struct mt_httpd {
     mt_http_handler_fn not_found;
     void *not_found_ud;
     size_t n_conns;
+    size_t n_streams;
     size_t reserved_body_bytes;
     mt_http_conn_t *conns;
 };
 
 struct mt_http_conn {
     mt_http_deferred_t *pending;
+    mt_http_stream_t *stream;
     mt_httpd_t *server;
     mt_http_conn_t *next;
     int fd;
@@ -303,7 +307,10 @@ static route_t *match_route(mt_httpd_t *h, const char *method, const char *path,
 
 /* Release an already-unlinked connection. Keep registry mutation separate
  * so bulk teardown never relies on an alias through c->server. */
+static void stream_cleanup(mt_http_conn_t *c);
+
 static void conn_destroy(mt_http_conn_t *c) {
+    stream_cleanup(c);
     if (c->pending) { c->pending->conn = NULL; c->pending = NULL; }
     if (c->idle_timer_id) { mt_loop_del_timer(c->server->loop, c->idle_timer_id); }
     mt_loop_del_fd(c->server->loop, c->fd);
@@ -483,6 +490,9 @@ void mt_http_deferred_error(mt_http_deferred_t *p, int status, const char *msg) 
     mt_http_deferred_json(p, status, mt_json_error(msg));
 }
 
+/* SSE shares the connection lifecycle, but never the finite-response writer. */
+#include "http_stream.inc"
+
 /* Collapses "." and ".." segments the way Go's path.Clean does for a
  * rooted path (the input here always starts with '/'): a ".." at or
  * above the root is simply dropped rather than escaping upward. This is
@@ -648,6 +658,11 @@ static void handle_complete_request(mt_http_conn_t *c) {
         } else {
             mt_http_res_write_error(&res, 404, "not found");
         }
+    }
+    if (res.streaming) {
+        free(res.body);
+        stream_start(c);
+        return;
     }
     if (res.deferred) {
         /* Disable reads until the response completes; keep HUP/ERR and
