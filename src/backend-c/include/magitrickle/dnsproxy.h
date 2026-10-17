@@ -25,6 +25,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+#include "magitrickle/dns_query_log.h"
 #include "magitrickle/dnswire.h"
 #include "magitrickle/err.h"
 #include "magitrickle/loop.h"
@@ -54,6 +55,10 @@ mt_err_t mt_dnsproxy_create(const mt_dnsproxy_config_t *cfg, mt_loop_t *loop,
                             mt_dnsproxy_msg_cb cb, void *cb_ud,
                             mt_dnsproxy_t **out);
 void mt_dnsproxy_destroy(mt_dnsproxy_t *p);
+
+/* Borrowed pointer. Both proxy and journal are owned by the daemon and
+ * accessed on the same event-loop thread. */
+void mt_dnsproxy_set_query_log(mt_dnsproxy_t *p, mt_dns_query_log_t *log);
 
 /* Bind + register listeners on the loop. */
 mt_err_t mt_dnsproxy_start(mt_dnsproxy_t *p);

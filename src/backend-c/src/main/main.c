@@ -32,6 +32,7 @@
 #endif
 #include "magitrickle/auth.h"
 #include "magitrickle/dns_cache.h"
+#include "magitrickle/dns_query_log.h"
 #include "magitrickle/dnspipeline.h"
 #include "magitrickle/dnsproxy.h"
 #include "magitrickle/groups.h"
@@ -70,6 +71,7 @@ struct daemon {
 #endif
     mt_loop_t *loop;
     mt_dnsproxy_t *proxy;
+    mt_dns_query_log_t *query_log;
     mt_cache_t *cache;
     mt_dns_pipeline_t *pipeline;
     mt_ipt_t *ipt4;
@@ -140,6 +142,8 @@ static void daemon_teardown(struct daemon *d)
     d->watcher = NULL;
     mt_dnsproxy_destroy(d->proxy);
     d->proxy = NULL;
+    mt_dns_query_log_destroy(d->query_log);
+    d->query_log = NULL;
     mt_dns_pipeline_destroy(d->pipeline);
     d->pipeline = NULL;
     mt_cache_destroy(d->cache);
@@ -629,6 +633,13 @@ int main(int argc, char **argv)
         pcfg.timeout_ms = 5000;
     }
 
+    d.query_log = mt_dns_query_log_create();
+    if (!d.query_log) {
+        MT_ERROR("failed to allocate DNS query history");
+        daemon_teardown(&d);
+        mt_config_clear(&cfg);
+        return 1;
+    }
     if (mt_dnsproxy_create(&pcfg, d.loop, on_response, &d, &d.proxy) !=
         MT_OK) {
         MT_ERROR("failed to create DNS proxy");
@@ -636,6 +647,7 @@ int main(int argc, char **argv)
         mt_config_clear(&cfg);
         return 1;
     }
+    mt_dnsproxy_set_query_log(d.proxy, d.query_log);
     err = mt_dnsproxy_start(d.proxy);
     if (err != MT_OK) {
         MT_ERROR("failed to start DNS proxy: %s", mt_err_str(err));
@@ -788,6 +800,7 @@ int main(int argc, char **argv)
     };
     mt_system_ctx_t system_ctx = {
         .app = d.app,
+        .query_log = d.query_log,
         .config_path = config_path,
         .config_version = MT_VERSION,
     };

@@ -84,6 +84,7 @@ CORE_SRCS := \
     src/logging/log.c \
     src/platform/loop.c \
     src/dns/wire.c \
+    src/dns/query_log.c \
     src/dns/proxy.c \
     src/dns_cache/cache.c \
     src/iptables/rule.c \
