@@ -181,7 +181,22 @@ export function snapshotFromServer(
   return {
     groups: copy(drafts.groups ?? server.groups),
     subscriptions: drafts.subscriptions
-      ? drafts.subscriptions.map(fromEditor)
+      ? drafts.subscriptions.map((sub) => {
+          const definition = fromEditor(sub);
+          const existing = server.subscriptions.find((item) => item.id === sub.id);
+          const merged = new Map((definition.overrides ?? existing?.overrides ?? []).map((o) => [o.rule, { ...o }]));
+          const oldRules = new Map((existing?.rules ?? []).map((rule) => [rule.rule, rule]));
+          for (const rule of sub.rules) {
+            const old = oldRules.get(rule.rule);
+            if (!old || (old.type === rule.type && old.enable === rule.enable)) continue;
+            merged.set(rule.rule, {
+              rule: rule.rule,
+              ...(old.type !== rule.type ? { type: rule.type } : {}),
+              ...(old.enable !== rule.enable ? { enable: rule.enable } : {}),
+            });
+          }
+          return { ...definition, ...(merged.size ? { overrides: [...merged.values()] } : {}) };
+        })
       : server.subscriptions.map(fromSaved),
     profiles: copy(drafts.profiles ?? server.profiles ?? []).map(({ id, name, interfaces, on_unavailable }) => ({
       id, name, interfaces: [...interfaces], on_unavailable,
