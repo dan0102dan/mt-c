@@ -339,6 +339,7 @@ function mockConfig(): ServerConfig {
     profiles: structuredClone(PROFILES),
     subscriptions: SUBSCRIPTIONS.map((sub) => ({
       ...structuredClone(sub),
+      interval: sub.interval ?? 86400,
       last_update: sub.lastUpdate ?? 0,
     })),
   };
