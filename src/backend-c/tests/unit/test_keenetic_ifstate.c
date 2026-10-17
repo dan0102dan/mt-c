@@ -353,10 +353,36 @@ TEST first_modern_event_freezes_legacy_snapshot_until_family_recovery(void)
     ASSERT_FALSE(mt_kn_ifstate_blocks(s, "nwg0", AF_INET6));
     mt_kn_ifstate_free(s); PASS();
 }
+TEST incomplete_event_identity_does_not_mutate_cache(void)
+{
+    mt_kn_ifstate_t *s = mt_kn_ifstate_new(changed, NULL); ASSERT(s);
+    ASSERT_EQ(MT_OK, snapshot(s, ready_json, 0));
+    uint64_t revision = mt_kn_ifstate_revision(s);
+    changes = 0;
+    mt_kn_ifevent_t e = {.kind = MT_KN_IF_LAYER, .resync = true};
+    e.info.fields[MT_KN_IF_CTRL] = MT_KN_IF_BLOCKED;
+    bool sync = true;
+    strcpy(e.info.id, "Wireguard0");
+    ASSERT_EQ(MT_ERR_INVAL, mt_kn_ifstate_event(s, &e, &sync));
+    ASSERT_FALSE(sync);
+    e.info.id[0] = '\0'; strcpy(e.info.name, "nwg0");
+    ASSERT_EQ(MT_ERR_INVAL, mt_kn_ifstate_event(s, &e, &sync));
+    ASSERT_FALSE(sync);
+    ASSERT_EQ(revision, mt_kn_ifstate_revision(s));
+    ASSERT_EQ(0u, changes);
+    ASSERT_FALSE(mt_kn_ifstate_blocks(s, "nwg0", AF_INET));
+    ASSERT_FALSE(mt_kn_ifstate_blocks(s, "nwg0", AF_INET6));
+    strcpy(e.info.id, "Wireguard0");
+    ASSERT_EQ(MT_OK, mt_kn_ifstate_event(s, &e, &sync));
+    ASSERT(mt_kn_ifstate_blocks(s, "nwg0", AF_INET));
+    ASSERT_EQ(1u, changes);
+    mt_kn_ifstate_free(s); PASS();
+}
 GREATEST_MAIN_DEFS();
 int main(int argc, char **argv)
 {
     GREATEST_MAIN_BEGIN();
+    RUN_TEST(incomplete_event_identity_does_not_mutate_cache);
     RUN_TEST(shared_kernel_name_is_snapshot_order_independent);
     RUN_TEST(first_modern_event_freezes_legacy_snapshot_until_family_recovery);
     RUN_TEST(numeric_port_keys_use_canonical_ids_and_detect_duplicates);

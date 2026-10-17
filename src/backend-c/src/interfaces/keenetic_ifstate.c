@@ -149,7 +149,7 @@ mt_err_t mt_kn_ifinfo_parse(const char *body, size_t len, mt_kn_ifinfo_t **out, 
         }
         const cJSON *id = cJSON_GetObjectItemCaseSensitive(item, "id");
         const char *canonical = id ? (cJSON_IsString(id) ? id->valuestring : NULL) : item->string;
-        if (!token_string(canonical, sizeof(items[i].id), true)) { err = MT_ERR_PROTO; break; }
+        if (!canonical || !token_string(canonical, sizeof(items[i].id), true)) { err = MT_ERR_PROTO; break; }
         for (size_t prev = 0; prev < i; prev++) {
             if (!strcmp(items[prev].id, canonical)) { err = MT_ERR_PROTO; break; }
         }
@@ -300,6 +300,10 @@ static void map_name(mt_kn_ifstate_t *state, entry_t *entry, const char *name, u
 mt_err_t mt_kn_ifstate_event(mt_kn_ifstate_t *state, const mt_kn_ifevent_t *event, bool *resync)
 {
     if (!state || !event || !resync) { return MT_ERR_INVAL; }
+    *resync = false;
+    /* Reject incomplete identities before allocating a cache entry. Hooks
+     * provide both names; only snapshots may omit the kernel mapping. */
+    if (!event->info.id[0] || !event->info.name[0]) { return MT_ERR_INVAL; }
     *resync = event->resync;
     entry_t *entry = get(state, event->info.id);
     if (!entry) { return state->count == MT_KN_IFSTATE_LIMIT ? MT_ERR_LIMIT : MT_ERR_NOMEM; }
