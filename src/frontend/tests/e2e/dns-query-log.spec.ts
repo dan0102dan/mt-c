@@ -66,6 +66,8 @@ async function setup(page: Page, opts: { failFirst?: boolean } = {}) {
     await route.fulfill({ json: {} });
   });
   await page.goto("/");
+  const menu = page.getByRole("button", { name: "Open menu" });
+  if (await menu.isVisible()) await menu.click();
   await page.getByRole("tab", { name: "Settings" }).click();
   const region = page.locator(".dns-query-log");
   await expect(region).toBeVisible();
