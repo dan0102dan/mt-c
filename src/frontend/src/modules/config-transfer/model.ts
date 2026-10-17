@@ -326,9 +326,9 @@ export function planImport(
     // Missing fields, including fields introduced after an older export, survive.
     next.settings = overlaySettings(current.settings, incoming.settings ?? {});
     if (options.policyId !== undefined) {
-      const policy = next.settings.keenetic_policy;
+      const policy = next.settings.keeneticPolicy;
       if (policy && typeof policy === "object" && !Array.isArray(policy)) {
-        policy.policy_id = options.policyId;
+        policy.policyId = options.policyId;
       }
     }
   }

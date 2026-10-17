@@ -1,10 +1,11 @@
 <script lang="ts">
   import PlatformSettings from "#platform/settings";
-  import { onMount, setContext } from "svelte";
+  import { getContext, onMount, setContext } from "svelte";
 
   import PageControls from "../../components/layout/PageControls.svelte";
   import { t } from "../../data/locale.svelte";
   import ProfilesPanel from "./ProfilesPanel.svelte";
+  import { CONFIG_TRANSFER_CONTEXT, type ConfigTransferControls } from "../config-transfer/context";
 
   import { toast } from "../../utils/events";
 
@@ -14,6 +15,7 @@
     type SettingsSection,
   } from "./section-controls";
 
+  const transfer = getContext<ConfigTransferControls>(CONFIG_TRANSFER_CONTEXT);
   let page: HTMLDivElement;
   let toolbar: HTMLDivElement;
   let sections = $state.raw<SettingsSection[]>([]);
@@ -121,6 +123,10 @@
       onSave={() => void saveAll()}
       saveButtonId="save-settings"
       {saveLabel}
+      exportLabel="Экспорт конфига"
+      importLabel={t("Import Config")}
+      onExport={() => void transfer.exportConfig()}
+      onImport={(event) => void transfer.importConfig(event)}
       addLabel={visibleControls?.addLabel}
       canAdd={visibleControls?.canAdd ?? false}
       onAdd={visibleControls?.onAdd}
