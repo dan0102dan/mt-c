@@ -368,7 +368,9 @@ test.describe("Shared settings toolbar", () => {
         await button!.evaluate((node) => node === document.querySelector("#save-settings")),
       ).toBe(true);
       await page.setViewportSize({ width, height: 900 });
-      await page.evaluate(() => window.scrollTo(0, document.documentElement.scrollHeight));
+      // A later DNS section changes the page's bottom independently of this
+      // boundary. Restore the actual section boundary, not an assumed footer.
+      await placeHeading(36);
       await expect(heading).toHaveAccessibleName("Interface priority profiles");
       await expect(name).toHaveValue("Unsaved profile name");
       await panel(page).getByRole("switch", { name: "Processing mode", exact: true }).click();
