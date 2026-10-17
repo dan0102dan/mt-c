@@ -1376,6 +1376,10 @@ mt_err_t mt_app_save_config(mt_app_t *app, const char *path, const char *version
     return mt_config_save_file(app->cfg, version, path);
 }
 
+mt_err_t mt_app_config_snapshot(mt_app_t *app, const char *version, char **out, size_t *out_len) {
+    return mt_config_save_buffer(app->cfg, version, out, out_len);
+}
+
 void mt_app_set_port_remap(mt_app_t *app, mt_port_remap_t *remap) {
     app->port_remap = remap;
 #ifdef MT_ENTWARE_KN

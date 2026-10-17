@@ -667,7 +667,7 @@ static size_t request_body_limit(const mt_http_req_t *req) {
     if (strcmp(req->method, "PUT") != 0 && strcmp(req->method, "POST") != 0) {
         return MT_HTTPD_MAX_BODY_BYTES;
     }
-    const char *prefixes[] = {"/api/v1/groups", "/api/v1/subscriptions"};
+    const char *prefixes[] = {"/api/v1/groups", "/api/v1/subscriptions", "/api/v1/system/config/apply"};
     for (size_t i = 0; i < 2; i++) {
         size_t len = strlen(prefixes[i]);
         if (strncmp(req->path, prefixes[i], len) == 0 &&
