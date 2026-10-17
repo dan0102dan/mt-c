@@ -51,7 +51,7 @@ const snapshot = (): Snapshot => ({
     { id: "unused", name: "Spare", interfaces: ["tun0"], on_unavailable: "blackhole" },
   ],
   settings: {
-    keenetic_policy: { enabled: true, policy_id: "Policy0", mode: "include" },
+    keeneticPolicy: { enabled: true, policyId: "Policy0", mode: "include" },
     dns: { port: 5353, upstream: "127.0.0.1" },
   },
 });
@@ -248,14 +248,14 @@ Deno.test("nested settings survive and policy mapping is explicit", () => {
   const input = {
     settings: {
       dns: { port: 5354 },
-      keenetic_policy: { enabled: true, policy_id: "Foreign0", mode: "exclude" },
+      keeneticPolicy: { enabled: true, policyId: "Foreign0", mode: "exclude" },
     },
   };
   const result = planImport(state, input, opts({ policyId: "Local0" }));
   assert.deepEqual(result.next.settings.dns, { port: 5354, upstream: "127.0.0.1" });
-  assert.deepEqual(result.next.settings.keenetic_policy, {
+  assert.deepEqual(result.next.settings.keeneticPolicy, {
     enabled: true,
-    policy_id: "Local0",
+    policyId: "Local0",
     mode: "exclude",
   });
 });

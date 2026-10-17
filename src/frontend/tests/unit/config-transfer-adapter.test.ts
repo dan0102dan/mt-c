@@ -1,6 +1,10 @@
 import { strict as assert } from "node:assert";
 
-import { configForApply, decodePortable, snapshotFromServer, type ServerConfig } from "../../src/modules/config-transfer/adapter";
+import type { ServerConfig } from "../../src/modules/config-transfer/adapter";
+import { installSvelteRunesMocks } from "../mocks/setup-svelte-runes";
+
+installSvelteRunesMocks();
+const { configForApply, decodePortable, snapshotFromServer } = await import("../../src/modules/config-transfer/adapter");
 import { exportSnapshot } from "../../src/modules/config-transfer/model";
 import type { Subscription } from "../../src/types";
 
