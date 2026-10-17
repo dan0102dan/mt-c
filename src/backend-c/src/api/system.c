@@ -111,7 +111,7 @@ static cJSON *dns_snapshot(mt_dns_query_log_t *log) {
     cJSON *result = cJSON_CreateObject();
     if (!result) { return NULL; }
     cJSON *rows = cJSON_AddArrayToObject(result, "queries");
-    if (!rows || !cJSON_AddNumberToObject(result, "capacity", MT_DNS_QUERY_LOG_CAPACITY)) {
+    if (!rows || !cJSON_AddNumberToObject(result, "capacity", (double)mt_dns_query_log_capacity(log))) {
         cJSON_Delete(result);
         return NULL;
     }
