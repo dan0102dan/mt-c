@@ -17,8 +17,8 @@ Each dictionary has fixed-capacity handles/hash buckets and a lazily growing byt
 | 1000 | 200 | 20 IPv4 | 31 text characters | 73,868 | 72.1 |
 | 1000 | 1000 | 20 IPv4 | 31 text characters | 109,406 | 106.8 |
 | 1000 | 1000 | 1000 IPv6 | 255 wire bytes | 348,892 | 340.7 |
-| 10000 | 2000 | 20 IPv4 | 31 text characters | 791,403 | 772.9 |
-| 10000 | 10000 | 20 IPv4 | 31 text characters | 1,196,203 | 1168.2 |
+| 10000 | 2000 | 20 IPv4 | 31 text characters | 791,643 | 773.1 |
+| 10000 | 10000 | 20 IPv4 | 31 text characters | 1,196,441 | 1168.4 |
 
 The old 1000-row array alone required 1,096,000 bytes on x86-64. Actual traffic mix and ABI affect totals; the table is not a router RSS benchmark. No compression library or additional runtime dependency is needed.
 
