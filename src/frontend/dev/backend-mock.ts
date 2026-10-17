@@ -109,9 +109,36 @@ const dnsQueries: Array<{
   { id: 2, time_ms: Date.now() - 12000, client: "192.168.1.101", domain: "github.com", qtype: 65, protocol: "tcp" },
   { id: 1, time_ms: Date.now() - 17000, client: "192.168.1.103", domain: "example.net", qtype: 1, protocol: "udp" },
 ];
+const dnsSubscribers = new Set<(event: string, data: unknown) => void>();
 app.get(`${API_BASE}/system/dns/queries`, (c) => c.json({ queries: dnsQueries, capacity: 1000 }));
+app.get(`${API_BASE}/system/dns/stream`, (c) => {
+  if (dnsSubscribers.size >= 8) return c.json({ error: "DNS stream subscriber limit reached" }, 503);
+  c.header("Cache-Control", "no-store, no-cache, no-transform");
+  c.header("X-Accel-Buffering", "no");
+  return streamSSE(c, async (stream) => {
+    let finish!: () => void;
+    const done = new Promise<void>((resolve) => (finish = resolve));
+    const emit = (event: string, data: unknown) => {
+      void stream.writeSSE({ event, data: JSON.stringify(data) }).catch(finish);
+    };
+    dnsSubscribers.add(emit);
+    stream.onAbort(finish);
+    // Keep-alive comments only; data is pushed by events, not sampled on a timer.
+    const heartbeat = setInterval(() => {
+      void stream.write(": heartbeat\n\n").catch(finish);
+    }, 15000);
+    try {
+      await stream.writeSSE({ event: "snapshot", data: JSON.stringify({ queries: dnsQueries, capacity: 1000 }) });
+      await done;
+    } finally {
+      clearInterval(heartbeat);
+      dnsSubscribers.delete(emit);
+    }
+  });
+});
 app.delete(`${API_BASE}/system/dns/queries`, (c) => {
   dnsQueries.length = 0;
+  for (const emit of dnsSubscribers) emit("clear", {});
   return c.json({ cleared: true });
 });
 
