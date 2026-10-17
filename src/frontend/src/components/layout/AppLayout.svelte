@@ -126,7 +126,7 @@
       <Tabs.Content value="subscriptions" class="app-tab-content">
         <SubscriptionsView onRenderComplete={() => (isRenderCompleteSubscriptions = true)} />
       </Tabs.Content>
-      <Tabs.Content value="settings" class="app-tab-content"><SettingsPanel /></Tabs.Content>
+      <Tabs.Content value="settings" class="app-tab-content"><SettingsPanel active={active_tab === "settings"} /></Tabs.Content>
     </article>
   </Tabs.Root>
 </main>

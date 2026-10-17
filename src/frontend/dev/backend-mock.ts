@@ -96,6 +96,25 @@ app.use(`${API_BASE}/*`, async (c, next) => {
   await next();
 });
 
+const dnsQueries: Array<{
+  id: number;
+  time_ms: number;
+  client: string;
+  domain: string;
+  qtype: number;
+  protocol: "udp" | "tcp";
+}> = [
+  { id: 4, time_ms: Date.now() - 2000, client: "192.168.1.101", domain: "github.com", qtype: 1, protocol: "udp" },
+  { id: 3, time_ms: Date.now() - 7000, client: "192.168.1.104", domain: "example.org", qtype: 28, protocol: "udp" },
+  { id: 2, time_ms: Date.now() - 12000, client: "192.168.1.101", domain: "github.com", qtype: 65, protocol: "tcp" },
+  { id: 1, time_ms: Date.now() - 17000, client: "192.168.1.103", domain: "example.net", qtype: 1, protocol: "udp" },
+];
+app.get(`${API_BASE}/system/dns/queries`, (c) => c.json({ queries: dnsQueries, capacity: 1000 }));
+app.delete(`${API_BASE}/system/dns/queries`, (c) => {
+  dnsQueries.length = 0;
+  return c.json({ cleared: true });
+});
+
 app.get(`${API_BASE}/auth`, async (c) => {
   return c.json({ enabled: AUTH_ENABLED }, 200);
 });
