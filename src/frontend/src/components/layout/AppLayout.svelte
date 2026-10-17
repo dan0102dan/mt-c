@@ -9,7 +9,7 @@
   import ConfigTransferDialog from "../../modules/config-transfer/ConfigTransferDialog.svelte";
   import { CONFIG_TRANSFER_CONTEXT, type ConfigTransferControls, type PolicyDraftSource } from "../../modules/config-transfer/context";
   import { assertPlanCurrent, exportSnapshot, type ImportPlan, type PortableConfig, type Snapshot } from "../../modules/config-transfer/model";
-  import { configForApply, decodePortable, snapshotFromServer, type ServerSnapshot, type TransferPolicy } from "../../modules/config-transfer/adapter";
+  import { configForApply, decodePortable, snapshotFromServer, unsupportedSettings, type ServerSnapshot, type TransferPolicy } from "../../modules/config-transfer/adapter";
   import type { GroupsStore } from "../../modules/groups/groups.svelte";
   import type { SubscriptionsStore } from "../../modules/subscriptions/subscriptions.svelte";
   import GroupsView from "../../modules/groups/GroupsView.svelte";
@@ -109,6 +109,11 @@
       if (file.size > 20 * 1024 * 1024) throw new Error("Файл слишком большой");
       const parsed = decodePortable(await file.text());
       const server = await fetchSnapshot();
+      if (parsed.settings) {
+        const unsupported = unsupportedSettings(parsed.settings, server.config.app);
+        if (unsupported.length)
+          throw new Error("Неподдерживаемые настройки этого устройства: " + unsupported.join(", "));
+      }
       const [interfaceResponse, policyResponse] = await Promise.all([
         fetcher.get<{ interfaces: { id: string; name?: string }[] }>("/system/interfaces"),
         parsed.settings?.keeneticPolicy && server.config.app.keeneticPolicy

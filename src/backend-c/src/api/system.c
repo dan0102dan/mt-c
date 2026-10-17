@@ -149,6 +149,20 @@ static cJSON *snapshot_json(const char *text, size_t length) {
     return result;
 }
 
+/* Ignore neither unsupported keys nor newly introduced fields: applying a
+ * versioned import must never report success after silently dropping settings.
+ * The currently running app itself provides the schema for its platform. */
+static bool settings_fields_supported(const cJSON *existing, const cJSON *requested) {
+    if (!cJSON_IsObject(existing) || !cJSON_IsObject(requested)) return false;
+    const cJSON *field = NULL;
+    cJSON_ArrayForEach(field, requested) {
+        const cJSON *known = cJSON_GetObjectItemCaseSensitive(existing, field->string);
+        if (!known) return false;
+        if (cJSON_IsObject(field) && !settings_fields_supported(known, field)) return false;
+    }
+    return true;
+}
+
 static int write_stage(const char *content, size_t length, char path[32]) {
     strcpy(path, "/tmp/mt-c-import-XXXXXX");
     int fd = mkstemp(path);
@@ -235,6 +249,16 @@ static void handle_config_apply(mt_http_req_t *req, mt_http_res_t *res, void *ud
     }
     char revision[17];
     config_revision(old_yaml, old_len, revision);
+    cJSON *previous = snapshot_json(old_yaml, old_len);
+    const cJSON *previous_app = cJSON_GetObjectItemCaseSensitive(previous, "app");
+    if (!settings_fields_supported(previous_app,
+            cJSON_GetObjectItemCaseSensitive(config, "app"))) {
+        cJSON_Delete(previous);
+        cJSON_Delete(request); free(old_yaml);
+        mt_http_res_write_error(res, 409, "unsupported application configuration fields");
+        return;
+    }
+    cJSON_Delete(previous);
     if (strcmp(base->valuestring, revision) != 0) {
         cJSON_Delete(request); free(old_yaml);
         mt_http_res_write_error(res, 409, "configuration changed; refresh import preview");

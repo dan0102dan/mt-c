@@ -105,6 +105,22 @@ function subscription(value: unknown): SubscriptionDefinition {
   };
 }
 
+/** List settings that a given target build cannot import without data loss. */
+export function unsupportedSettings(settings: Settings, reference: Settings, prefix = ""): string[] {
+  const missing: string[] = [];
+  for (const [key, value] of Object.entries(settings)) {
+    const name = prefix ? prefix + "." + key : key;
+    if (!Object.hasOwn(reference, key)) {
+      missing.push(name);
+      continue;
+    }
+    const known = reference[key];
+    if (object(value) && object(known))
+      missing.push(...unsupportedSettings(value, known, name));
+  }
+  return missing;
+}
+
 export function decodePortable(text: string): PortableConfig {
   if (text.length > 20 * 1024 * 1024) throw new Error("Configuration file exceeds 20 MB");
   const value: unknown = JSON.parse(text);
