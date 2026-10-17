@@ -207,7 +207,7 @@ export function configForApply(server: ServerConfig, target: Snapshot): ServerCo
       return {
         id: s.id, name: s.name, url: s.url, interface: s.interface,
         ...(s.profile ? { profile: s.profile } : {}),
-        enable: s.enable, priority: s.priority, interval: s.interval,
+        enable: s.enable, priority: s.priority, interval: s.interval ?? 86400,
         last_update: retained?.last_update ?? 0,
         rules: copy(rules),
         ...(overrides.length ? { overrides: copy(overrides) } : {}),
