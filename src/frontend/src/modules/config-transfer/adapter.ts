@@ -179,7 +179,7 @@ export function snapshotFromServer(
     };
   }
   return {
-    groups: copy(drafts.groups ?? server.groups),
+    groups: copy([...(drafts.groups ?? server.groups)]),
     subscriptions: drafts.subscriptions
       ? drafts.subscriptions.map((sub) => {
           const definition = fromEditor(sub);
