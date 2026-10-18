@@ -245,9 +245,9 @@ static void emit_subscription(emitter_ctx_t *ctx, const mt_config_t *cfg, const 
     emit_u64(ctx, s->interval);
     emit_plain(ctx, "last_update");
     emit_u64(ctx, s->last_update);
-    if (s->n_overrides > 0) {
+    if (s->overrides_present || s->n_overrides > 0) {
         emit_plain(ctx, "overrides");
-        seq_start(ctx, false);
+        seq_start(ctx, s->n_overrides == 0);
         for (size_t i = 0; i < s->n_overrides; i++) {
             const mt_sub_override_t *o = s->overrides[i];
             map_start(ctx);

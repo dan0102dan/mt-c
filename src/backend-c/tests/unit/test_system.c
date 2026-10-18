@@ -310,6 +310,56 @@ TEST config_apply_rejects_stale_preview_and_commits_valid_settings(void) {
     PASS();
 }
 
+TEST config_apply_save_failure_restores_subscription_exceptions(void) {
+    harness_t *h = harness_start(true);
+    ASSERT(h != NULL);
+    const char *fixture =
+        "configVersion: 0.8.5\nsubscriptions:\n- id: aabbccdd\n"
+        "  url: https://example.org/list\n"
+        "  overrides: [{rule: example.org, type: domain, enable: false}]\n"
+        "  rules: [{id: aaaa0001, rule: example.org, type: domain, enable: false}]\n";
+    ASSERT_EQ(MT_OK, mt_config_load_buffer(&h->cfg, fixture, strlen(fixture)));
+    ASSERT_EQ(200, do_request("POST", "/api/v1/system/config/save", NULL, NULL));
+
+    cJSON *snapshot = NULL;
+    ASSERT_EQ(200, do_request("GET", "/api/v1/system/config/snapshot", NULL, &snapshot));
+    cJSON *config = cJSON_GetObjectItemCaseSensitive(snapshot, "config");
+    cJSON *sub = cJSON_GetArrayItem(cJSON_GetObjectItemCaseSensitive(config, "subscriptions"), 0);
+    ASSERT(sub != NULL);
+    cJSON_DeleteItemFromObjectCaseSensitive(sub, "rules");
+    ASSERT(cJSON_ReplaceItemInObjectCaseSensitive(sub, "overrides", cJSON_CreateArray()));
+    char *payload = cJSON_PrintUnformatted(snapshot);
+    ASSERT(payload != NULL);
+
+    /* The existing file cannot serve as a directory. Reload succeeds first,
+     * then persistence fails with ENOTDIR and must restore the old model. */
+    char failed_path[96];
+    snprintf(failed_path, sizeof(failed_path), "%s/absent", h->config_path);
+    h->ctx.config_path = failed_path;
+    ASSERT_EQ(500, do_request("POST", "/api/v1/system/config/apply", payload, NULL));
+    free(payload);
+    cJSON_Delete(snapshot);
+    ASSERT_EQ((size_t)1, h->cfg.n_subscriptions);
+    mt_subscription_t *restored = h->cfg.subscriptions[0];
+    ASSERT_EQ((size_t)1, restored->n_overrides);
+    const mt_sub_override_t *override = mt_subscription_override_find(restored, "example.org");
+    ASSERT(override != NULL);
+    ASSERT_STR_EQ("domain", override->type);
+    ASSERT_EQ(0, override->enable);
+    ASSERT(!restored->rules[0]->enable);
+    ASSERT_STR_EQ("domain", restored->rules[0]->type);
+
+    mt_config_t on_disk = {0};
+    ASSERT_EQ(MT_OK, mt_config_init_defaults(&on_disk));
+    ASSERT_EQ(MT_OK, mt_config_load_file(&on_disk, h->config_path));
+    ASSERT_EQ((size_t)1, on_disk.subscriptions[0]->n_overrides);
+    ASSERT(!on_disk.subscriptions[0]->rules[0]->enable);
+    ASSERT_STR_EQ("domain", on_disk.subscriptions[0]->rules[0]->type);
+    mt_config_clear(&on_disk);
+    harness_stop(h);
+    PASS();
+}
+
 TEST save_config_noop_without_path(void) {
     harness_t *h = harness_start(false);
     ASSERT(h != NULL);
@@ -361,6 +411,7 @@ int main(int argc, char **argv) {
     RUN_TEST(save_config_writes_file);
     RUN_TEST(config_snapshot_is_read_only_and_includes_live_settings);
     RUN_TEST(config_apply_rejects_stale_preview_and_commits_valid_settings);
+    RUN_TEST(config_apply_save_failure_restores_subscription_exceptions);
     RUN_TEST(save_config_noop_without_path);
     RUN_TEST(netfilterd_hook_ok_and_bad_json);
     RUN_TEST(ignored_interfaces_list);

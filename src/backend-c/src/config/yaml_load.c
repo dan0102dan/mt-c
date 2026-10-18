@@ -664,6 +664,7 @@ static mt_err_t load_subscription(yaml_document_t *doc, node_t *n,
     node_t *overrides = map_get(doc, n, "overrides");
     if (overrides && !node_is_null(overrides)) {
         if (overrides->type != YAML_SEQUENCE_NODE) return MT_ERR_INVAL;
+        s->overrides_present = true;
         for (yaml_node_item_t *it = overrides->data.sequence.items.start;
              it < overrides->data.sequence.items.top; it++) {
             node_t *item = node_of(doc, *it);
@@ -684,14 +685,15 @@ static mt_err_t load_subscription(yaml_document_t *doc, node_t *n,
                 if (rv != GET_OK || err != MT_OK) { free(pattern); free(type); return MT_ERR_INVAL; }
                 enable = flag ? 1 : 0;
             }
-            for (size_t i = 0; i < s->n_overrides; i++) {
-                if (strcmp(s->overrides[i]->rule, pattern) == 0) err = MT_ERR_EXIST;
-            }
+            if (mt_subscription_override_find(s, pattern)) err = MT_ERR_EXIST;
             if (err == MT_OK) err = mt_subscription_override_set(s, pattern, type, enable);
             free(pattern); free(type);
             if (err != MT_OK) return err;
         }
-        err = mt_subscription_apply_overrides(s, s->rules, s->n_rules);
+        err = mt_subscription_restore_cached_rules(s);
+        if (err != MT_OK) return err;
+    } else {
+        err = mt_subscription_migrate_overrides(s);
         if (err != MT_OK) return err;
     }
     return MT_OK;

@@ -3716,3 +3716,49 @@ its own CPU. Three alternating paired repeats and a fixed offered-load
 scenario supplement capacity measurements. Old raw snapshots and backend
 goldens are not rewritten. See `tools/bench/router-benchmark.md` and
 `docs/c-rewrite/router-raw/2026-10-14/` for protocol and package identities.
+
+## D-81 — Portable subscription exceptions and legacy cache migration (2026-10-18)
+
+Status: **implemented at the user's request after reviewing PR #19**.
+Portable configuration excludes downloaded subscription rules. User changes to
+individual rules must therefore survive in a separate, pattern-keyed
+`overrides` array. Cached rule IDs and `last_update` remain device-local cache
+data and are not included in the portable file.
+
+An absent/null `overrides` field in legacy `config.yaml` means the cache still
+contains the only record of manual edits. Loading migrates only differences
+from the source parser's deterministic defaults: enabled rules and
+`mt_sub_detect_type(pattern)`. A disabled flag and a changed type are captured
+independently; unchanged downloaded rules are not copied into exceptions.
+The first occurrence of a legacy duplicate pattern remains authoritative,
+matching subscription reconciliation. Empty legacy cache records have no
+stable source pattern and are not turned into exceptions.
+
+A present array is authoritative, including `overrides: []`. Before applying
+it to a persisted or inherited cache, the loader reconstructs source defaults
+and overlays only the specified fields. Removing an exception, or removing
+only its `type`/`enable` field, thus restores source behavior immediately.
+Authoritative empty arrays are saved explicitly so a later load cannot infer
+deleted edits again. The additive YAML field retains the `0.*` version gate;
+older binaries ignore it and can use the effective cached rules, but cannot
+preserve unmatched exceptions across a downgrade/resave. The affected config
+fixture goldens intentionally gain this field; unrelated byte contracts and
+historical benchmark results remain unchanged.
+
+Complete `/system/config/apply` requests treat omitted exceptions as an empty
+target list for compatibility with the first PR #19 WebUI. They preserve the
+download cache only for the same subscription ID and URL. Fresh synchronization
+retains rule IDs, then applies explicit exceptions over the new source rules;
+it no longer copies prior effective type/enable values back into fresh rules.
+The standalone legacy `mt_sub_refresh_rules` helper keeps its old behavior.
+
+Sparse API edits merge only fields actually changed by the client. Full-rule
+requests from older API clients also capture only changes, while exceptions
+for temporarily absent patterns are retained. Model insertion, copying,
+duplicate checks and application use `mt_lookup_t` indexes, avoiding the
+quadratic scans introduced in PR #19. Tests cover legacy upgrade, empty and
+partial replacement, save/reload, actual HTTP import followed by asynchronous
+source synchronization, sparse consecutive edits and 50,000-rule exceptions.
+The opt-in `tools/bench/subscription-overrides.c` microbenchmark and
+`override-benchmark-raw/2026-10-18/host.txt` record the same host CPU workload
+before and after this change; they do not claim router or HTTP latency.

@@ -19,6 +19,7 @@
 #include "magitrickle/loop.h"
 #include "magitrickle/sub_fetch.h"
 #include "magitrickle/subscriptions_api.h"
+#include "magitrickle/system.h"
 #include "magitrickle/yamlio.h"
 
 typedef struct harness {
@@ -35,6 +36,7 @@ typedef struct harness {
     mt_cache_t *cache;
     mt_app_t *app;
     mt_subs_ctx_t ctx;
+    mt_system_ctx_t system_ctx;
     char *large_list;
     char save_dir[128];
     char save_path[256];
@@ -102,6 +104,9 @@ static harness_t *harness_start_mode(int persistence) {
     if (mt_sub_fetcher_create(h->loop, &h->ctx.fetcher) != MT_OK) { return NULL; }
     if (mt_httpd_create(h->loop, &h->tcp) != MT_OK) { return NULL; }
     mt_subs_register_routes(h->tcp, &h->ctx);
+    h->system_ctx = (mt_system_ctx_t){.app = h->app, .config_path = h->ctx.config_path,
+                                     .config_version = h->ctx.config_version};
+    mt_system_register_routes(h->tcp, &h->system_ctx);
     if (mt_httpd_listen_tcp(h->tcp, "127.0.0.1", TEST_PORT) != MT_OK) { return NULL; }
     pthread_create(&h->thread, NULL, loop_thread, h->loop);
 
@@ -701,6 +706,101 @@ TEST invalid_subscription_priorities_do_not_change_live_or_persisted_state(void)
     mt_config_clear(&loaded); harness_stop(h); PASS();
 }
 
+TEST import_replaces_overrides_and_source_sync_keeps_target_state(void) {
+    /* Exercise the same metadata-only request used by WebUI imports against
+     * a populated cache, then the production async synchronization path. */
+    const char *exceptions[] = {"[]", "[{\"rule\":\"one.example\",\"enable\":false}]",
+        "[{\"rule\":\"one.example\",\"type\":\"domain\"}]", NULL};
+    for (size_t i = 0; i < sizeof(exceptions) / sizeof(*exceptions); i++) {
+        harness_t *h = harness_start_mode(1); ASSERT(h);
+        char body[512];
+        snprintf(body, sizeof(body), "{\"id\":\"aabbccdd\",\"name\":\"source\","
+            "\"interface\":\"blackhole\",\"interval\":86400,\"url\":\"%s\"}", stub_url("/list"));
+        ASSERT_EQ(200, do_request("POST", "/api/v1/subscriptions?fetch=true", body, NULL));
+        cJSON *out = NULL;
+        ASSERT_EQ(200, do_request("GET", "/api/v1/subscriptions", NULL, &out));
+        cJSON *sub = cJSON_GetArrayItem(cJSON_GetObjectItemCaseSensitive(out, "subscriptions"), 0);
+        cJSON *rule = cJSON_GetArrayItem(cJSON_GetObjectItemCaseSensitive(sub, "rules"), 0);
+        char original_id[MT_ID_STR_LEN]; snprintf(original_id, sizeof(original_id), "%s", jstr(rule, "id"));
+        cJSON_ReplaceItemInObjectCaseSensitive(rule, "type", cJSON_CreateString("domain"));
+        cJSON_ReplaceItemInObjectCaseSensitive(rule, "enable", cJSON_CreateBool(false));
+        char *payload = cJSON_PrintUnformatted(out); ASSERT(payload);
+        ASSERT_EQ(200, do_request("PUT", "/api/v1/subscriptions", payload, NULL));
+        free(payload); cJSON_Delete(out);
+
+        ASSERT_EQ(200, do_request("GET", "/api/v1/system/config/snapshot", NULL, &out));
+        cJSON *config = cJSON_GetObjectItemCaseSensitive(out, "config");
+        sub = cJSON_GetArrayItem(cJSON_GetObjectItemCaseSensitive(config, "subscriptions"), 0);
+        ASSERT_EQ(1, cJSON_GetArraySize(cJSON_GetObjectItemCaseSensitive(sub, "overrides")));
+        cJSON_DeleteItemFromObjectCaseSensitive(sub, "rules");
+        cJSON_DeleteItemFromObjectCaseSensitive(sub, "overrides");
+        if (exceptions[i]) { cJSON_AddItemToObject(sub, "overrides", cJSON_Parse(exceptions[i])); }
+        payload = cJSON_PrintUnformatted(out); ASSERT(payload);
+        ASSERT_EQ(200, do_request("POST", "/api/v1/system/config/apply", payload, NULL));
+        free(payload); cJSON_Delete(out);
+
+        for (size_t step = 0; step < 2; step++) {
+            if (step) {
+                ASSERT_EQ(200, do_request("POST", "/api/v1/subscriptions/aabbccdd/sync", NULL, NULL));
+            }
+            ASSERT_EQ(200, do_request("GET", "/api/v1/subscriptions", NULL, &out));
+            sub = cJSON_GetArrayItem(cJSON_GetObjectItemCaseSensitive(out, "subscriptions"), 0);
+            cJSON *rules = cJSON_GetObjectItemCaseSensitive(sub, "rules");
+            ASSERT_EQ(2, cJSON_GetArraySize(rules));
+            rule = cJSON_GetArrayItem(rules, 0);
+            ASSERT_STR_EQ(original_id, jstr(rule, "id"));
+            ASSERT_STR_EQ(i == 2 ? "domain" : "namespace", jstr(rule, "type"));
+            ASSERT_EQ(i != 1, cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(rule, "enable")) != 0);
+            ASSERT_EQ(i == 1 || i == 2 ? 1 : 0,
+                cJSON_GetArraySize(cJSON_GetObjectItemCaseSensitive(sub, "overrides")));
+            cJSON_Delete(out);
+        }
+        mt_config_t loaded = {0}; ASSERT_EQ(MT_OK, mt_config_init_defaults(&loaded));
+        ASSERT_EQ(MT_OK, mt_config_load_file(&loaded, h->save_path));
+        ASSERT(loaded.subscriptions[0]->overrides_present);
+        ASSERT_EQ(i != 1, loaded.subscriptions[0]->rules[0]->enable);
+        ASSERT_STR_EQ(i == 2 ? "domain" : "namespace", loaded.subscriptions[0]->rules[0]->type);
+        mt_config_clear(&loaded); harness_stop(h);
+    }
+    PASS();
+}
+
+TEST sparse_rule_edits_merge_only_changed_fields(void) {
+    harness_t *h = harness_start_mode(1); ASSERT(h);
+    char body[2048];
+    snprintf(body, sizeof(body), "{\"id\":\"aabbccdd\",\"url\":\"%s\"}", stub_url("/list"));
+    ASSERT_EQ(200, do_request("POST", "/api/v1/subscriptions?fetch=true", body, NULL));
+    cJSON *out = NULL;
+    ASSERT_EQ(200, do_request("GET", "/api/v1/subscriptions", NULL, &out));
+    cJSON *sub = cJSON_GetArrayItem(cJSON_GetObjectItemCaseSensitive(out, "subscriptions"), 0);
+    cJSON *rule = cJSON_GetArrayItem(cJSON_GetObjectItemCaseSensitive(sub, "rules"), 0);
+    char rule_id[MT_ID_STR_LEN]; snprintf(rule_id, sizeof(rule_id), "%s", jstr(rule, "id"));
+    cJSON_Delete(out);
+    for (size_t step = 0; step < 2; step++) {
+        snprintf(body, sizeof(body), "{\"subscriptions\":[{\"id\":\"aabbccdd\",\"url\":\"%s\","
+            "\"ruleChanges\":[{\"id\":\"%s\",\"rule\":\"one.example\",\"previousType\":\"%s\","
+            "\"previousEnable\":true,\"type\":\"domain\",\"enable\":%s}]}]}",
+            stub_url("/list"), rule_id, step ? "domain" : "namespace", step ? "false" : "true");
+        ASSERT_EQ(200, do_request("PUT", "/api/v1/subscriptions", body, NULL));
+        ASSERT_EQ(200, do_request("GET", "/api/v1/subscriptions", NULL, &out));
+        sub = cJSON_GetArrayItem(cJSON_GetObjectItemCaseSensitive(out, "subscriptions"), 0);
+        cJSON *overrides = cJSON_GetObjectItemCaseSensitive(sub, "overrides");
+        ASSERT_EQ(1, cJSON_GetArraySize(overrides));
+        cJSON *exception = cJSON_GetArrayItem(overrides, 0);
+        ASSERT_STR_EQ("domain", jstr(exception, "type"));
+        const cJSON *enable = cJSON_GetObjectItemCaseSensitive(exception, "enable");
+        if (step) { ASSERT(cJSON_IsFalse(enable)); } else { ASSERT(enable == NULL); }
+        cJSON_Delete(out);
+    }
+    ASSERT_EQ(200, do_request("POST", "/api/v1/subscriptions/aabbccdd/sync", NULL, NULL));
+    mt_config_t loaded = {0}; ASSERT_EQ(MT_OK, mt_config_init_defaults(&loaded));
+    ASSERT_EQ(MT_OK, mt_config_load_file(&loaded, h->save_path));
+    ASSERT_EQ((size_t)1, loaded.subscriptions[0]->n_overrides);
+    ASSERT(!loaded.subscriptions[0]->rules[0]->enable);
+    ASSERT_STR_EQ("domain", loaded.subscriptions[0]->rules[0]->type);
+    mt_config_clear(&loaded); harness_stop(h); PASS();
+}
+
 GREATEST_MAIN_DEFS();
 
 int main(int argc, char **argv) {
@@ -709,6 +809,8 @@ int main(int argc, char **argv) {
     RUN_TEST(persistence_failure_returns_applied_baseline_for_retry);
     RUN_TEST(subscription_priority_survives_fetch_sync_compact_save_and_reload);
     RUN_TEST(invalid_subscription_priorities_do_not_change_live_or_persisted_state);
+    RUN_TEST(import_replaces_overrides_and_source_sync_keeps_target_state);
+    RUN_TEST(sparse_rule_edits_merge_only_changed_fields);
     RUN_TEST(large_summary_creation_sparse_save_and_reload);
     RUN_TEST(url_creation_failure_does_not_leave_an_empty_subscription);
     RUN_TEST(disk_failure_is_http_error_and_url_creation_rolls_back);

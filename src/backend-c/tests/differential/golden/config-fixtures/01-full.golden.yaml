@@ -82,6 +82,7 @@ subscriptions:
   url: https://example.com/list.txt
   interval: 86400
   last_update: 1700000000
+  overrides: []
   rules:
   - id: deadbeef
     rule: sub.example.com

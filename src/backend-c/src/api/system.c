@@ -173,6 +173,15 @@ static bool inherit_cached_subscriptions(cJSON *candidate, const cJSON *current)
     cJSON *entry = NULL;
     cJSON_ArrayForEach(entry, next) {
         if (!cJSON_IsObject(entry)) return false;
+        /* Unlike legacy config.yaml, a complete portable request describes the
+         * target exceptions. Omission from older WebUIs means an empty list;
+         * it must never infer old edits from an inherited effective cache. */
+        if (!cJSON_GetObjectItemCaseSensitive(entry, "overrides")) {
+            cJSON *overrides = cJSON_CreateArray();
+            if (!overrides || !cJSON_AddItemToObject(entry, "overrides", overrides)) {
+                cJSON_Delete(overrides); return false;
+            }
+        }
         if (cJSON_GetObjectItemCaseSensitive(entry, "rules")) continue;
         const cJSON *id = cJSON_GetObjectItemCaseSensitive(entry, "id");
         const cJSON *url = cJSON_GetObjectItemCaseSensitive(entry, "url");

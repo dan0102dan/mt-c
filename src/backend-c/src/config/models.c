@@ -1,5 +1,6 @@
 #include "magitrickle/models.h"
 #include "magitrickle/lookup.h"
+#include "magitrickle/subparse.h"
 
 #include <stdlib.h>
 #include <string.h>
@@ -135,6 +136,7 @@ void mt_subscription_free(mt_subscription_t *s)
         free(s->overrides[i]);
     }
     free(s->overrides);
+    mt_lookup_clear(&s->override_index);
     free(s->name);
     free(s->iface);
     free(s->profile);
@@ -152,58 +154,160 @@ mt_err_t mt_subscription_add_rule(mt_subscription_t *s, mt_sub_rule_t *r)
     return MT_OK;
 }
 
+static mt_err_t build_override_index(const mt_subscription_t *s, mt_lookup_t *index)
+{
+    for (size_t i = 0; i < s->n_overrides; i++) {
+        const mt_sub_override_t *entry = s->overrides[i];
+        if (!entry || !entry->rule || !*entry->rule) { return MT_ERR_INVAL; }
+        bool inserted = false;
+        mt_err_t err = mt_lookup_put(index, entry->rule, strlen(entry->rule), i, &inserted);
+        if (err != MT_OK) { return err; }
+        if (!inserted) { return MT_ERR_EXIST; }
+    }
+    return MT_OK;
+}
+
+const mt_sub_override_t *mt_subscription_override_find(const mt_subscription_t *s,
+                                                      const char *rule)
+{
+    size_t index;
+    if (!s || !rule || !mt_lookup_get(&s->override_index, rule, strlen(rule), &index) ||
+        index >= s->n_overrides) { return NULL; }
+    return s->overrides[index];
+}
+
 mt_err_t mt_subscription_override_set(mt_subscription_t *s, const char *rule,
                                       const char *type, int enable)
 {
-    if (!s || !rule || !*rule || strlen(rule) > 4096 || enable < -1 || enable > 1 ||
-        (!type && enable == -1)) { return MT_ERR_INVAL; }
-    mt_sub_override_t *entry = NULL;
-    for (size_t i = 0; i < s->n_overrides; i++) {
-        if (strcmp(s->overrides[i]->rule, rule) == 0) {
-            entry = s->overrides[i]; break;
-        }
+    if (!s || !rule || !*rule || strlen(rule) > MT_SUB_MAX_LINE_BYTES ||
+        enable < -1 || enable > 1 || (!type && enable == -1)) { return MT_ERR_INVAL; }
+    /* Rebuild once for models constructed directly by embeddings/tests. Normal
+     * setters keep the array and index synchronized, including failed inserts. */
+    if (s->override_index.len != s->n_overrides) {
+        mt_lookup_t index = {0};
+        mt_err_t err = build_override_index(s, &index);
+        if (err != MT_OK) { mt_lookup_clear(&index); return err; }
+        mt_lookup_clear(&s->override_index);
+        s->override_index = index;
     }
-    if (!entry) {
-        if (s->n_overrides >= 100000) return MT_ERR_LIMIT;
-        entry = calloc(1, sizeof(*entry));
-        if (!entry) return MT_ERR_NOMEM;
-        if (mt_strset(&entry->rule, rule) != MT_OK) { free(entry); return MT_ERR_NOMEM; }
-        mt_err_t err = grow_array((void ***)&s->overrides, s->n_overrides);
-        if (err != MT_OK) { free(entry->rule); free(entry); return err; }
-        s->overrides[s->n_overrides++] = entry;
+    size_t index;
+    if (mt_lookup_get(&s->override_index, rule, strlen(rule), &index)) {
+        mt_sub_override_t *entry = s->overrides[index];
+        mt_err_t err = mt_strset(&entry->type, type);
+        if (err == MT_OK) { entry->enable = enable; s->overrides_present = true; }
+        return err;
     }
-    mt_err_t err = mt_strset(&entry->type, type);
-    if (err == MT_OK) entry->enable = enable;
+    if (s->n_overrides >= MT_SUB_MAX_RULES) { return MT_ERR_LIMIT; }
+    mt_sub_override_t *entry = calloc(1, sizeof(*entry));
+    if (!entry) { return MT_ERR_NOMEM; }
+    mt_err_t err = mt_strset(&entry->rule, rule);
+    if (err == MT_OK) { err = mt_strset(&entry->type, type); }
+    if (err == MT_OK) { err = grow_array((void ***)&s->overrides, s->n_overrides); }
+    if (err == MT_OK) {
+        err = mt_lookup_put(&s->override_index, rule, strlen(rule), s->n_overrides, NULL);
+    }
+    if (err != MT_OK) { free(entry->rule); free(entry->type); free(entry); return err; }
+    entry->enable = enable;
+    s->overrides[s->n_overrides++] = entry;
+    s->overrides_present = true;
+    return MT_OK;
+}
+
+static mt_err_t capture_legacy_overrides(mt_subscription_t *dst, const mt_subscription_t *src)
+{
+    mt_lookup_t seen = {0};
+    mt_err_t err = MT_OK;
+    for (size_t i = 0; err == MT_OK && i < src->n_rules; i++) {
+        const mt_sub_rule_t *rule = src->rules[i];
+        /* Empty legacy cache records have no stable source identity. */
+        if (!rule || !rule->rule || !*rule->rule) { continue; }
+        bool first = false;
+        err = mt_lookup_put(&seen, rule->rule, strlen(rule->rule), i, &first);
+        if (err != MT_OK || !first) { continue; }
+        /* Legacy reconciliation used the first cached occurrence of a pattern. */
+        const char *type = rule->type ? rule->type : "";
+        const char *changed_type = strcmp(type, mt_sub_detect_type(rule->rule)) == 0 ? NULL : type;
+        int changed_enable = rule->enable ? -1 : 0;
+        if (!changed_type && changed_enable == -1) { continue; }
+        err = mt_subscription_override_set(dst, rule->rule, changed_type, changed_enable);
+    }
+    mt_lookup_clear(&seen);
+    if (err == MT_OK) { dst->overrides_present = true; }
+    return err;
+}
+
+mt_err_t mt_subscription_migrate_overrides(mt_subscription_t *s)
+{
+    if (!s) { return MT_ERR_INVAL; }
+    if (s->overrides_present || s->n_overrides) { s->overrides_present = true; return MT_OK; }
+    /* An allocation failure must not mark a partially migrated live model as
+     * authoritative; publish the detached result only once capture succeeds. */
+    mt_subscription_t *captured = mt_subscription_new();
+    if (!captured) { return MT_ERR_NOMEM; }
+    mt_err_t err = capture_legacy_overrides(captured, s);
+    if (err == MT_OK) {
+        free(s->overrides);
+        mt_lookup_clear(&s->override_index);
+        s->overrides = captured->overrides; s->n_overrides = captured->n_overrides;
+        s->override_index = captured->override_index;
+        s->overrides_present = true;
+        captured->overrides = NULL; captured->n_overrides = 0;
+        memset(&captured->override_index, 0, sizeof(captured->override_index));
+    }
+    mt_subscription_free(captured);
     return err;
 }
 
 mt_err_t mt_subscription_overrides_copy(mt_subscription_t *dst, const mt_subscription_t *src)
 {
+    if (!dst || !src) { return MT_ERR_INVAL; }
+    if (!src->overrides_present && !src->n_overrides) { return capture_legacy_overrides(dst, src); }
     for (size_t i = 0; i < src->n_overrides; i++) {
-        mt_sub_override_t *o = src->overrides[i];
+        const mt_sub_override_t *o = src->overrides[i];
         mt_err_t err = mt_subscription_override_set(dst, o->rule, o->type, o->enable);
-        if (err != MT_OK) return err;
+        if (err != MT_OK) { return err; }
     }
+    dst->overrides_present = true;
     return MT_OK;
 }
 
 mt_err_t mt_subscription_apply_overrides(const mt_subscription_t *sub,
                                         mt_sub_rule_t **rules, size_t count)
 {
-    for (size_t i = 0; i < count; i++) {
-        mt_sub_rule_t *rule = rules[i];
-        for (size_t j = 0; j < sub->n_overrides; j++) {
-            mt_sub_override_t *override = sub->overrides[j];
-            if (strcmp(rule->rule, override->rule) != 0) continue;
-            if (override->type) {
-                mt_err_t err = mt_strset(&rule->type, override->type);
-                if (err != MT_OK) return err;
-            }
-            if (override->enable >= 0) rule->enable = override->enable != 0;
-            break;
-        }
+    if (!sub || (count && !rules)) { return MT_ERR_INVAL; }
+    mt_lookup_t temporary = {0};
+    const mt_lookup_t *index = &sub->override_index;
+    mt_err_t err = MT_OK;
+    if (index->len != sub->n_overrides) {
+        err = build_override_index(sub, &temporary);
+        index = &temporary;
     }
-    return MT_OK;
+    for (size_t i = 0; err == MT_OK && i < count; i++) {
+        mt_sub_rule_t *rule = rules[i];
+        size_t j;
+        if (!rule || !rule->rule || !mt_lookup_get(index, rule->rule, strlen(rule->rule), &j)) { continue; }
+        const mt_sub_override_t *override = sub->overrides[j];
+        if (override->type) { err = mt_strset(&rule->type, override->type); }
+        if (err == MT_OK && override->enable >= 0) { rule->enable = override->enable != 0; }
+    }
+    mt_lookup_clear(&temporary);
+    return err;
+}
+
+mt_err_t mt_subscription_restore_cached_rules(mt_subscription_t *sub)
+{
+    if (!sub) { return MT_ERR_INVAL; }
+    for (size_t i = 0; i < sub->n_rules; i++) {
+        mt_sub_rule_t *rule = sub->rules[i];
+        if (!rule || !rule->rule || !*rule->rule) { continue; }
+        const char *type = mt_sub_detect_type(rule->rule);
+        if (!rule->type || strcmp(rule->type, type) != 0) {
+            mt_err_t err = mt_strset(&rule->type, type);
+            if (err != MT_OK) { return err; }
+        }
+        rule->enable = true;
+    }
+    return mt_subscription_apply_overrides(sub, sub->rules, sub->n_rules);
 }
 
 /* ---- app config ---- */
