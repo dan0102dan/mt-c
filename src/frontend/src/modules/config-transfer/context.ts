@@ -5,6 +5,8 @@ export const CONFIG_TRANSFER_CONTEXT = Symbol("config-transfer");
 
 export type PolicyDraftSource = {
   get: () => { enabled: boolean; policy_id: string; mode: "include" | "exclude" } | undefined;
+  dirty: () => boolean;
+  saving: () => boolean;
   refresh: () => Promise<void>;
 };
 

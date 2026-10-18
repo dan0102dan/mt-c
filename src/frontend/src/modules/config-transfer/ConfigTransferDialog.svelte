@@ -169,10 +169,28 @@
   let choices = $state<ChoiceMap>({});
   let policyId = $state("");
   const generatedIds = new Map<string, string>();
+  const reservedIds = untrack(() => {
+    const ids = new Set<string>();
+    for (const source of [current, imported]) {
+      for (const section of ["groups", "subscriptions", "profiles"] as const) {
+        for (const item of source[section] ?? []) ids.add(item.id);
+      }
+      for (const group of source.groups ?? []) {
+        for (const rule of group.rules) ids.add(rule.id);
+      }
+    }
+    return ids;
+  });
   function newId(section: "groups" | "subscriptions" | "profiles", old: string) {
     const key = conflictKey(section, old);
-    if (!generatedIds.has(key))
-      generatedIds.set(key, section === "profiles" ? newProfileId() : randomId());
+    if (!generatedIds.has(key)) {
+      let id: string;
+      do {
+        id = section === "profiles" ? newProfileId() : randomId();
+      } while (reservedIds.has(id));
+      generatedIds.set(key, id);
+      reservedIds.add(id);
+    }
     return generatedIds.get(key)!;
   }
 
@@ -219,6 +237,13 @@
     const separator = problem.indexOf(": ");
     const reason = problem.slice(0, separator);
     const value = problem.slice(separator + 2);
+    if (reason === "Invalid routing profile") {
+      const split = value.indexOf(": ");
+      const id = value.slice(0, split);
+      const error = value.slice(split + 2);
+      const profile = plan.next.profiles.find((item) => item.id === id);
+      return `${t("Profile")} ${profile?.name.trim() || id}: ${t(error)}`;
+    }
     if (reason === "Missing routing profile") {
       const objects = [...plan.next.groups, ...plan.next.subscriptions]
         .filter((route) => route.profile === value)

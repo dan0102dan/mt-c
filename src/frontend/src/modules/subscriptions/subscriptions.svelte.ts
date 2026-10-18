@@ -266,17 +266,20 @@ export class SubscriptionsStore {
     }
   }
 
-  mount = async () => {
-    this.finishedSubscriptionsCount = 0;
+  mount = async (options: { preserveDrafts?: boolean } = {}) => {
+    // Existing keyed panels stay mounted during an import refresh and will
+    // not report their initial render a second time.
+    if (!options.preserveDrafts) this.finishedSubscriptionsCount = 0;
     this.fetchError = false;
     try {
       const fetched = (
         (await fetcher.get<{ subscriptions: Subscription[] }>("/subscriptions"))?.subscriptions ??
         []
       ).map((subscription) => withPriorityDefault(subscription, DEFAULT_SUBSCRIPTION_PRIORITY));
+      if (options.preserveDrafts) this.tracker.rebase(fetched);
+      else this.tracker = new ChangeTracker(fetched);
       this.#savedRules = new Map(fetched.map((sub) => [sub.id, snapshotRules(sub.rules)]));
-      this.tracker = new ChangeTracker(fetched);
-      this.dataRevision = 0;
+      this.markDataRevision();
       if (typeof window !== "undefined") {
         setTimeout(() => this.checkRulesValidityState(), 10);
       }
@@ -423,9 +426,10 @@ export class SubscriptionsStore {
         const byRule = new Map((rawData[i].overrides ?? []).map((o) => [o.rule, { ...o }]));
         for (const change of subscriptions[i].ruleChanges) {
           byRule.set(change.rule, {
+            ...byRule.get(change.rule),
             rule: change.rule,
-            type: change.type,
-            enable: change.enable,
+            ...(change.type !== change.previousType ? { type: change.type } : {}),
+            ...(change.enable !== change.previousEnable ? { enable: change.enable } : {}),
           });
         }
         if (byRule.size) rawData[i].overrides = [...byRule.values()];

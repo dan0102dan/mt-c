@@ -3,7 +3,12 @@
   import { setContext, untrack } from "svelte";
 
   import { t } from "../../data/locale.svelte";
-  import { fetchProfiles, profiles, profilesDirty } from "../../data/profiles.svelte";
+  import {
+    fetchProfiles,
+    profileDraftIds,
+    profiles,
+    profilesDirty,
+  } from "../../data/profiles.svelte";
   import ConfigTransferDialog from "../../modules/config-transfer/ConfigTransferDialog.svelte";
   import type { GroupsStore } from "../../modules/groups/groups.svelte";
   import GroupsView from "../../modules/groups/GroupsView.svelte";
@@ -131,10 +136,9 @@
       const policyResponse =
         parsed.settings?.keeneticPolicy && server.config.app.keeneticPolicy
           ? await fetcher
-              .get<{ policies: { id: string; name: string; available: boolean }[] }>(
-                "/keenetic/policies",
-                { silent: true, timeoutMs: 5000 },
-              )
+              .get<{
+                policies: { id: string; name: string; available: boolean }[];
+              }>("/keenetic/policies", { silent: true, timeoutMs: 5000 })
               .catch(() => ({ policies: [] }))
           : { policies: [] };
       targetPolicies = policyResponse.policies;
@@ -156,6 +160,53 @@
     transferBusy = true;
     try {
       assertPlanCurrent(plan, snapshotFromServer(previewServer.config));
+      if (
+        groupsStore?.saving ||
+        subscriptionsStore?.saving ||
+        profiles.saving ||
+        policySource?.saving()
+      ) {
+        throw new Error(t("Wait for the current save to finish before importing."));
+      }
+      const dirtyIds = {
+        groups: groupsStore?.tracker.dirtyRootIds ?? new Set<string>(),
+        subscriptions: subscriptionsStore?.tracker.dirtyRootIds ?? new Set<string>(),
+        profiles: profileDraftIds(),
+      };
+      const conflicts = plan.changes.filter(
+        (change) =>
+          change.kind !== "unchanged" &&
+          (change.section === "settings"
+            ? change.id.startsWith("keeneticPolicy") && policySource?.dirty()
+            : dirtyIds[change.section].has(change.id)),
+      );
+      const conflictNames = new Set(conflicts.map((change) => change.name || change.id));
+      // The server preview cannot see a rule added only in a local draft. Do
+      // not let an imported copy reuse its ID in another retained dirty group.
+      const localRuleOwners = new Map<string, { id: string; name: string }>();
+      for (const group of groupsStore?.data ?? []) {
+        if (!dirtyIds.groups.has(group.id)) continue;
+        const owner = { id: group.id, name: group.name || group.id };
+        localRuleOwners.set(group.id, owner);
+        for (const rule of group.rules) localRuleOwners.set(rule.id, owner);
+      }
+      const changedGroupIds = new Set(
+        plan.changes
+          .filter((change) => change.section === "groups" && change.kind !== "unchanged")
+          .map((change) => change.id),
+      );
+      for (const group of plan.next.groups) {
+        if (!changedGroupIds.has(group.id)) continue;
+        for (const item of [group, ...group.rules]) {
+          const owner = localRuleOwners.get(item.id);
+          if (owner && owner.id !== group.id) conflictNames.add(owner.name);
+        }
+      }
+      if (conflictNames.size) {
+        throw new Error(
+          `${t("Save or discard local changes before importing:")} ${[...conflictNames].join(", ")}`,
+        );
+      }
       const nextConfig = configForApply(previewServer.config, plan.next);
       await fetcher.post<{ ok: boolean }>("/system/config/apply", {
         revision: previewServer.revision,
@@ -164,22 +215,19 @@
       imported = undefined;
       previewServer = undefined;
       previewCurrent = undefined;
-      // Keep drafts in untouched sections; refresh only confirmed changes,
-      // including consumers affected by an imported routing profile.
+      // Rebase untouched object drafts onto the confirmed server baseline.
+      // They remain unsaved and never enter the import payload.
       const changed = new Set(
         plan.changes
           .filter((change) => change.kind !== "unchanged")
           .map((change) => change.section),
       );
-      if (changed.has("profiles")) {
-        profiles.loaded = false;
-        profiles.draft = [];
-        profiles.baseline = "[]";
-      }
       await Promise.all([
-        changed.has("groups") ? groupsStore?.mount() : undefined,
-        changed.has("subscriptions") ? subscriptionsStore?.mount() : undefined,
-        changed.has("profiles") ? fetchProfiles({ fresh: true }) : undefined,
+        changed.has("groups") ? groupsStore?.mount({ preserveDrafts: true }) : undefined,
+        changed.has("subscriptions")
+          ? subscriptionsStore?.mount({ preserveDrafts: true })
+          : undefined,
+        changed.has("profiles") ? fetchProfiles({ fresh: true, rebaseDrafts: true }) : undefined,
         changed.has("settings") ? policySource?.refresh() : undefined,
       ]);
       toast.success("Конфигурация импортирована");

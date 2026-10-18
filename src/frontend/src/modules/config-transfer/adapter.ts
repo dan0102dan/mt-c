@@ -7,7 +7,6 @@ import {
   type Profile,
   type Subscription,
 } from "../../types";
-import { profileError } from "../settings/profiles-data";
 import {
   copy,
   type Json,
@@ -174,8 +173,14 @@ export function decodePortable(text: string): PortableConfig {
   if (value.profiles !== undefined) {
     if (!Array.isArray(value.profiles)) throw new Error("Invalid profiles list");
     result.profiles = value.profiles.map((p) => parse(ProfileSchema, p));
-    const error = profileError(result.profiles);
-    if (error) throw new Error(error);
+    // Preserve unfinished editor values so an unrelated valid section can be
+    // selected. Shapes and identities must still be safe before opening the dialog.
+    const ids = new Set<string>();
+    for (const profile of result.profiles) {
+      if (!/^[a-zA-Z0-9_-]{1,64}$/.test(profile.id) || ids.has(profile.id))
+        throw new Error("Invalid profile ID");
+      ids.add(profile.id);
+    }
   }
   if (value.settings !== undefined) {
     if (!object(value.settings)) throw new Error("Invalid settings");
@@ -245,6 +250,7 @@ export function snapshotFromServer(
             const old = oldRules.get(rule.rule);
             if (!old || (old.type === rule.type && old.enable === rule.enable)) continue;
             merged.set(rule.rule, {
+              ...merged.get(rule.rule),
               rule: rule.rule,
               ...(old.type !== rule.type ? { type: rule.type } : {}),
               ...(old.enable !== rule.enable ? { enable: rule.enable } : {}),
@@ -291,7 +297,9 @@ export function configForApply(server: ServerConfig, target: Snapshot): ServerCo
         // Existing download caches remain on the server if ID and URL match.
         // An explicit [] resets the cache for a new or changed source.
         ...(!retained ? { rules: [] } : {}),
-        ...(overrides.length ? { overrides: copy(overrides) } : {}),
+        // An explicit empty list removes overrides. Absence is reserved for
+        // legacy YAML whose cached edits still need migration by the backend.
+        overrides: copy(overrides),
       };
     }),
   };

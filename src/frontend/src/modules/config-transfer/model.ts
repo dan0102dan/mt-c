@@ -1,4 +1,5 @@
 import type { Group, Profile, Subscription } from "../../types";
+import { profileError } from "../settings/profiles-data";
 import { webSettings } from "./web-settings";
 
 export type Json = null | boolean | number | string | Json[] | { [key: string]: Json };
@@ -139,7 +140,8 @@ export type ImportOptions = {
   choices?: ReadonlyMap<string, Choice>;
   interfaceMap?: ReadonlyMap<string, string>;
   policyId?: string;
-  /** IDs are allocated by the import session, not on every reactive preview. */
+  /** IDs are allocated by the import session, not on every reactive preview.
+   * Rule identities use `rule:<group ID>:<rule ID>:<occurrence>` in groups. */
   newId: (section: keyof Collections, originalId: string) => string;
 };
 export type ImportPlan = {
@@ -151,6 +153,55 @@ export type ImportPlan = {
   includedDependencies: string[];
 };
 export const conflictKey = (section: keyof Collections, id: string) => `${section}:${id}`;
+
+function avoidImportedRuleIdCollisions(
+  current: Group[],
+  next: Group[],
+  acceptedIds: ReadonlySet<string>,
+  newId: ImportOptions["newId"],
+  problems: string[],
+): void {
+  if (!acceptedIds.size) return;
+  // The group editor indexes both groups and rules in one ID map. Preserve
+  // existing objects; only accepted incoming rules may need a new identity.
+  const currentRoots = new Set(current.map((group) => group.id));
+  const roots = new Set([...currentRoots, ...next.map((group) => group.id)]);
+  const owners = new Map<string, string | null>([...roots].map((id) => [id, null]));
+  for (const group of current) {
+    for (const rule of group.rules) {
+      if (!owners.has(rule.id)) owners.set(rule.id, group.id);
+      else if (owners.get(rule.id) !== group.id) owners.set(rule.id, null);
+    }
+  }
+  const reserved = new Set(owners.keys());
+  for (const group of next) {
+    for (const rule of group.rules) {
+      reserved.add(rule.id);
+      if (!acceptedIds.has(group.id) && roots.has(rule.id) && !currentRoots.has(rule.id)) {
+        problems.push(`Group/rule ID collision: ${rule.id}`);
+      }
+    }
+  }
+  for (const group of next) {
+    if (!acceptedIds.has(group.id)) continue;
+    const occurrences = new Map<string, number>();
+    for (const rule of group.rules) {
+      const originalId = rule.id;
+      const occurrence = occurrences.get(originalId) ?? 0;
+      occurrences.set(originalId, occurrence + 1);
+      if (occurrence > 0 || (owners.has(originalId) && owners.get(originalId) !== group.id)) {
+        const allocated = newId("groups", `rule:${group.id}:${originalId}:${occurrence}`);
+        if (reserved.has(allocated)) {
+          problems.push(`Allocated rule ID already exists: ${allocated}`);
+          continue;
+        }
+        rule.id = allocated;
+        reserved.add(allocated);
+      }
+      owners.set(rule.id, group.id);
+    }
+  }
+}
 
 function changedFields(before: object, after: object): FieldChange[] {
   const a = before as Record<string, unknown>;
@@ -212,8 +263,10 @@ export function diffSnapshots(before: Snapshot, after: Snapshot): Change[] {
 }
 
 /** A plan has no I/O and never modifies either input. Absence is not emptiness.
- * Inputs must already be decoded and validated by the adapter. The planner does
- * not establish platform support, available interfaces or an authoritative server revision. */
+ * Inputs must already be structurally decoded by the adapter. Validate accepted
+ * profile definitions here so unfinished, unselected drafts do not block import.
+ * The planner does not establish platform support, available interfaces or an
+ * authoritative server revision. */
 export function planImport(
   current: Snapshot,
   incoming: PortableConfig,
@@ -224,6 +277,7 @@ export function planImport(
   const conflicts: Conflict[] = [];
   const includedDependencies: string[] = [];
   const profileIds = new Map<string, string>();
+  const acceptedGroupIds = new Set<string>();
   const definitionIds = new Set<string>();
   const remap = (name: string) => options.interfaceMap?.get(name) ?? name;
   const selected = <K extends Section>(section: K) =>
@@ -256,10 +310,14 @@ export function planImport(
       const index = result.findIndex((entry) => entry.id === item.id);
       if (index < 0) {
         result.push(item);
+        if (section === "groups") acceptedGroupIds.add(item.id);
       } else if (fingerprint(result[index]) !== fingerprint(item)) {
         conflicts.push({ section, id: item.id, name: item.name });
         const choice = options.choices?.get(conflictKey(section, item.id)) ?? "keep";
-        if (choice === "replace") result[index] = item;
+        if (choice === "replace") {
+          result[index] = item;
+          if (section === "groups") acceptedGroupIds.add(item.id);
+        }
         if (choice === "copy") {
           const oldId = item.id;
           item.id = options.newId(section, oldId);
@@ -270,6 +328,7 @@ export function planImport(
           }
           if (section === "profiles") profileIds.set(oldId, item.id);
           result.push(item);
+          if (section === "groups") acceptedGroupIds.add(item.id);
         }
       }
     }
@@ -294,6 +353,12 @@ export function planImport(
     chosenProfiles,
     selected("profiles") && options.mode === "replace",
   );
+  const oldProfilesById = new Map(current.profiles.map((p) => [p.id, p]));
+  for (const profile of next.profiles) {
+    if (fingerprint(oldProfilesById.get(profile.id)) === fingerprint(profile)) continue;
+    const error = profileError([profile]);
+    if (error) problems.push(`Invalid routing profile: ${profile.id}: ${error}`);
+  }
   const profilesById = new Map(next.profiles.map((p) => [p.id, p]));
   for (const section of ["groups", "subscriptions"] as const) {
     if (!selected(section)) continue;
@@ -324,6 +389,13 @@ export function planImport(
       );
     }
   }
+  avoidImportedRuleIdCollisions(
+    current.groups,
+    next.groups,
+    acceptedGroupIds,
+    options.newId,
+    problems,
+  );
   if (selected("settings")) {
     // Missing fields, including fields introduced after an older export, survive.
     next.settings = overlaySettings(current.settings, incoming.settings ?? {});
@@ -336,12 +408,14 @@ export function planImport(
   }
 
   // Do not normalize unrelated drafts. Only a changed definition updates retained consumers.
-  const oldProfilesById = new Map(current.profiles.map((p) => [p.id, p]));
   for (const route of [...next.groups, ...next.subscriptions]) {
     if (!route.profile) continue;
     const profile = profilesById.get(route.profile);
-    if (!profile?.interfaces.length) problems.push(`Missing routing profile: ${route.profile}`);
-    else if (oldProfilesById.get(profile.id)?.interfaces[0] !== profile.interfaces[0]) {
+    if (!profile) problems.push(`Missing routing profile: ${route.profile}`);
+    else if (
+      profile.interfaces.length &&
+      oldProfilesById.get(profile.id)?.interfaces[0] !== profile.interfaces[0]
+    ) {
       route.interface = profile.interfaces[0];
     }
   }

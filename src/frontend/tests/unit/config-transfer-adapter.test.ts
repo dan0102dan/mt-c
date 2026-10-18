@@ -1,7 +1,11 @@
 import { strict as assert } from "node:assert";
 
 import type { ServerConfig } from "../../src/modules/config-transfer/adapter";
-import { exportSnapshot } from "../../src/modules/config-transfer/model";
+import {
+  applyRuleOverrides,
+  exportSnapshot,
+  type RuleOverride,
+} from "../../src/modules/config-transfer/model";
 import type { Subscription } from "../../src/types";
 import { installSvelteRunesMocks } from "../mocks/setup-svelte-runes";
 
@@ -80,6 +84,46 @@ Deno.test("malformed and future files are rejected safely", () => {
   assert.equal(({} as { polluted?: boolean }).polluted, undefined);
 });
 
+Deno.test("an exported unfinished profile does not prevent reading valid groups", () => {
+  const state = snapshotFromServer(server());
+  state.groups = [
+    {
+      id: "12345678",
+      name: "Video",
+      interface: "wg0",
+      enable: true,
+      priority: 300,
+      color: "#ffffff",
+      rules: [],
+    },
+  ];
+  state.profiles.push({
+    id: "unfinished",
+    name: "",
+    interfaces: [],
+    on_unavailable: "blackhole",
+  });
+  const input = decodePortable(JSON.stringify(exportSnapshot(state, { application: "mt-c" })));
+  assert.deepEqual(input.groups, state.groups);
+  assert.deepEqual(input.profiles?.at(-1), state.profiles.at(-1));
+});
+
+Deno.test("profile shape and identity errors still reject the file before selection", () => {
+  const valid = { id: "vpn", name: "VPN", interfaces: ["wg0"] };
+  for (const profiles of [
+    [null],
+    [{ ...valid, id: 1 }],
+    [{ ...valid, id: "../invalid" }],
+    [{ ...valid, name: 1 }],
+    [{ ...valid, interfaces: "wg0" }],
+    [{ ...valid, interfaces: [1] }],
+    [{ ...valid, on_unavailable: false }],
+    [valid, valid],
+  ]) {
+    assert.throws(() => decodePortable(JSON.stringify({ groups: [], profiles })));
+  }
+});
+
 Deno.test("snapshot captures unsaved group/profile/keenetic drafts", () => {
   const original = server();
   const state = snapshotFromServer(original, {
@@ -135,11 +179,39 @@ Deno.test("unsaved changes to subscription rule are exported as sparse override"
   assert(!("rules" in portable.subscriptions![0]));
 });
 
+Deno.test("unsaved edits preserve the other field of an existing subscription override", () => {
+  const source = { id: "12345678", rule: "example.org", type: "namespace", enable: true };
+  const savedOverrides: RuleOverride[] = [
+    { rule: source.rule, type: "domain" },
+    { rule: source.rule, enable: false },
+  ];
+  for (const override of savedOverrides) {
+    const original = server();
+    const saved = { ...source, ...override };
+    original.subscriptions[0].rules = [saved];
+    original.subscriptions[0].overrides = [override];
+    const draft: Subscription = {
+      ...original.subscriptions[0],
+      lastUpdate: 145,
+      rules: [{ ...saved, type: "domain", enable: false }],
+    };
+    const portable = exportSnapshot(snapshotFromServer(original, { subscriptions: [draft] }), {
+      application: "mt-c",
+    });
+    const imported = decodePortable(JSON.stringify(portable));
+    const restored = applyRuleOverrides([source], imported.subscriptions![0].overrides ?? []);
+    assert.deepEqual(restored.rules, draft.rules);
+    assert.deepEqual(original.subscriptions[0].overrides, [override]);
+    assert.deepEqual(original.subscriptions[0].rules, [saved]);
+  }
+});
+
 Deno.test("preserves cached rules for untouched subscriptions only", () => {
   const original = server();
   const state = snapshotFromServer(original);
   const existing = configForApply(original, state);
   assert.equal(existing.subscriptions[0].rules, undefined);
+  assert.deepEqual(existing.subscriptions[0].overrides, []);
   assert.equal(existing.subscriptions[0].last_update, 145);
   state.subscriptions[0].url = "https://other.example.org/list";
   const changed = configForApply(original, state);

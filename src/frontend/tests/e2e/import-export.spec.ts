@@ -1,12 +1,54 @@
 import fs from "fs";
 import path from "path";
-import { expect, test } from "@playwright/test";
+import { expect, test, type Locator, type Page } from "@playwright/test";
 
 import { GroupsPage } from "./pages/GroupsPage";
+
+const makeGroup = (id: string, name: string) => ({
+  id,
+  name,
+  rules: [],
+  color: "#123456",
+  enable: true,
+  interface: "wg0",
+  priority: 100,
+});
+const makeSubscription = (id: string, name: string) => ({
+  id,
+  name,
+  url: `https://example.org/${id}`,
+  interface: "wg0",
+  enable: true,
+  priority: 100,
+  interval: 86400,
+  lastUpdate: 1,
+  overrides: [],
+  rules: [],
+});
+async function openTransfer(page: Page, payload: unknown) {
+  const chooser = page.waitForEvent("filechooser");
+  await page.getByRole("button", { name: "Import Config", exact: true }).click();
+  await (
+    await chooser
+  ).setFiles({
+    name: "config.mtrickle",
+    mimeType: "application/json",
+    buffer: Buffer.from(JSON.stringify(payload)),
+  });
+  const dialog = page.getByRole("dialog");
+  await expect(dialog).toBeVisible();
+  return dialog;
+}
+async function expectInputValues(inputs: Locator, values: string[]) {
+  await expect(inputs).toHaveCount(values.length);
+  for (const [index, value] of values.entries()) await expect(inputs.nth(index)).toHaveValue(value);
+}
 
 test.describe("Import/Export", () => {
   let groupsPage: GroupsPage;
   let serverGroups: any[];
+  let serverSubs: any[];
+  let serverProfiles: any[];
   let applied = 0;
 
   test.beforeEach(async ({ page }) => {
@@ -41,8 +83,8 @@ test.describe("Import/Export", () => {
       showAllInterfaces: false,
       logLevel: "info",
     };
-    let serverSubs: any[] = [];
-    let serverProfiles: any[] = [];
+    serverSubs = [];
+    serverProfiles = [];
     await page.route("**/auth", async (route) => route.fulfill({ json: { enabled: false } }));
     await page.route("**/groups?with_rules=true", async (route) =>
       route.fulfill({ json: { groups: serverGroups } }),
@@ -50,9 +92,11 @@ test.describe("Import/Export", () => {
     await page.route("**/subscriptions", async (route) =>
       route.fulfill({ json: { subscriptions: serverSubs } }),
     );
-    await page.route("**/profiles", async (route) =>
-      route.fulfill({ json: { profiles: serverProfiles } }),
-    );
+    await page.route("**/profiles", async (route) => {
+      if (route.request().method() === "PUT")
+        serverProfiles = route.request().postDataJSON().profiles;
+      await route.fulfill({ json: { profiles: serverProfiles } });
+    });
     await page.route("**/system/interfaces", async (route) =>
       route.fulfill({ json: { interfaces: [{ id: "wg0" }, { id: "blackhole" }] } }),
     );
@@ -81,6 +125,8 @@ test.describe("Import/Export", () => {
       serverSubs = body.config.subscriptions.map((s: any) => ({
         ...s,
         lastUpdate: s.last_update ?? 0,
+        rules:
+          s.rules ?? serverSubs.find((old) => old.id === s.id && old.url === s.url)?.rules ?? [],
       }));
       Object.assign(app, body.config.app);
       applied++;
@@ -105,6 +151,302 @@ test.describe("Import/Export", () => {
     expect(payload.profiles).toEqual([]);
     expect(applied).toBe(0);
     await expect(page.getByRole("dialog")).toHaveCount(0);
+  });
+
+  test("append preserves group and nested rule drafts and saves against the new baseline", async ({
+    page,
+  }) => {
+    serverGroups = [
+      {
+        ...makeGroup("11223344", "Existing"),
+        rules: [
+          {
+            id: "22334455",
+            name: "Saved rule",
+            rule: "example.org",
+            type: "namespace",
+            enable: true,
+          },
+        ],
+      },
+    ];
+    await page.reload();
+    await groupsPage.setGroupName(0, "Unsaved name");
+    await page.locator(".group-header [data-collapsible-trigger]").click();
+    await groupsPage.setRuleName(0, 0, "Unsaved rule");
+    const dialog = await openTransfer(page, { groups: [makeGroup("55667788", "Imported")] });
+    await dialog.getByRole("button", { name: "Import", exact: true }).click();
+    await expect(dialog).toHaveCount(0);
+    await expect(page.locator(".group-list")).toBeVisible();
+    await expectInputValues(page.locator("input.group-name"), ["Unsaved name", "Imported"]);
+    await expect(page.locator(".rule .name input")).toHaveValue("Unsaved rule");
+    expect(serverGroups[0].name).toBe("Existing");
+    expect(serverGroups[0].rules[0].name).toBe("Saved rule");
+    await expect(groupsPage.saveButton).toBeEnabled();
+
+    let saved: any;
+    await page.route("**/groups?save=true", async (route) => {
+      saved = route.request().postDataJSON();
+      serverGroups = [
+        {
+          ...serverGroups[0],
+          name: "Unsaved name",
+          rules: [{ ...serverGroups[0].rules[0], name: "Unsaved rule" }],
+        },
+        serverGroups[1],
+      ];
+      await route.fulfill({ json: { groups: serverGroups } });
+    });
+    await groupsPage.save();
+    await expect(groupsPage.saveButton).toBeDisabled();
+    expect(saved.groups.map((group: any) => group.name)).toEqual(["Unsaved name", "Imported"]);
+    expect(saved.groups[0].ruleChanges).toEqual([
+      expect.objectContaining({
+        id: "22334455",
+        name: "Unsaved rule",
+        previous: expect.objectContaining({ name: "Saved rule" }),
+      }),
+    ]);
+    expect(saved.groups[1].ruleChanges).toEqual([]);
+    expect(saved.groups[0]).not.toHaveProperty("rules");
+    await page.reload();
+    await expectInputValues(page.locator("input.group-name"), ["Unsaved name", "Imported"]);
+  });
+
+  test("overlapping import leaves the dirty group and server untouched", async ({ page }) => {
+    serverGroups = [makeGroup("11223344", "Existing")];
+    await page.reload();
+    await groupsPage.setGroupName(0, "Unsaved name");
+    const dialog = await openTransfer(page, {
+      groups: [makeGroup("11223344", "Imported replacement")],
+    });
+    await dialog.getByRole("switch", { name: "Replace", exact: true }).click();
+    await dialog.getByRole("button", { name: "Import", exact: true }).click();
+    await expect(
+      page.getByText("Save or discard local changes before importing: Imported replacement", {
+        exact: true,
+      }),
+    ).toBeVisible();
+    expect(applied).toBe(0);
+    expect(serverGroups[0].name).toBe("Existing");
+    await expect(dialog).toBeVisible();
+    await dialog.getByRole("button", { name: "Cancel", exact: true }).click();
+    await expect(page.locator("input.group-name")).toHaveValue("Unsaved name");
+    await expect(groupsPage.saveButton).toBeEnabled();
+  });
+
+  test("copied groups keep independent rule drafts and dirty indicators", async ({ page }) => {
+    serverGroups = [
+      {
+        ...makeGroup("11223344", "Existing"),
+        rules: [
+          {
+            id: "22334455",
+            name: "Saved rule",
+            rule: "example.org",
+            type: "namespace",
+            enable: true,
+          },
+        ],
+      },
+    ];
+    await page.reload();
+    const dialog = await openTransfer(page, {
+      groups: [{ ...serverGroups[0], name: "Imported copy" }],
+    });
+    await dialog
+      .getByRole("button", { name: "Resolve conflict for Imported copy", exact: true })
+      .click();
+    await page.getByRole("option", { name: "Create a copy", exact: true }).click();
+    await dialog.getByRole("button", { name: "Import", exact: true }).click();
+    await expect(dialog).toHaveCount(0);
+    await expect(page.locator(".group-list")).toBeVisible();
+    expect(serverGroups).toHaveLength(2);
+    expect(serverGroups[0].rules[0].id).not.toBe(serverGroups[1].rules[0].id);
+    await page.locator(".group-header [data-collapsible-trigger]").nth(0).click();
+    await page.locator(".group-header [data-collapsible-trigger]").nth(1).click();
+    await groupsPage.setRuleName(0, 0, "Original draft");
+    await groupsPage.setRuleName(1, 0, "Copied draft");
+    await groupsPage.setRuleName(1, 0, "Saved rule");
+    await expect(groupsPage.saveButton).toBeEnabled();
+    await expect((await groupsPage.getRule(0, 0)).locator(".name input")).toHaveValue(
+      "Original draft",
+    );
+  });
+
+  test("an imported copy cannot alias an unsaved new rule in another group", async ({ page }) => {
+    serverGroups = [makeGroup("11223344", "Existing")];
+    await page.reload();
+    await groupsPage.addRuleToGroup(0);
+    await groupsPage.setRuleName(0, 0, "Local rule");
+    await groupsPage.setRulePattern(0, 0, "local.example");
+    const downloadPromise = page.waitForEvent("download");
+    await page.locator(".group-controls-actions button[aria-label='Экспорт конфига']").click();
+    const download = await downloadPromise;
+    const exported = JSON.parse(fs.readFileSync(await download.path(), "utf8"));
+    const dialog = await openTransfer(page, exported);
+    await dialog
+      .getByRole("button", { name: "Resolve conflict for Existing", exact: true })
+      .click();
+    await page.getByRole("option", { name: "Create a copy", exact: true }).click();
+    await dialog.getByRole("button", { name: "Import", exact: true }).click();
+    await expect(
+      page.getByText("Save or discard local changes before importing: Existing", { exact: true }),
+    ).toBeVisible();
+    expect(applied).toBe(0);
+    expect(serverGroups).toHaveLength(1);
+    expect(serverGroups[0].rules).toEqual([]);
+    await dialog.getByRole("button", { name: "Cancel", exact: true }).click();
+    await expect((await groupsPage.getRule(0, 0)).locator(".name input")).toHaveValue("Local rule");
+    await expect(groupsPage.saveButton).toBeEnabled();
+  });
+
+  test("append preserves subscription rule drafts without saving them in the import request", async ({
+    page,
+  }) => {
+    serverSubs = [
+      {
+        ...makeSubscription("11223344", "Existing subscription"),
+        rules: [{ id: "22334455", rule: "example.org", type: "namespace", enable: true }],
+      },
+    ];
+    await page.reload();
+    await page.getByRole("tab", { name: "Subscriptions", exact: true }).click();
+    await page.locator(".subscription-name").fill("Unsaved subscription");
+    await page.locator(".subscription-panel [data-collapsible-trigger]").click();
+    await page.locator(".subscription-rule").getByRole("switch").click();
+    const dialog = await openTransfer(page, {
+      subscriptions: [makeSubscription("55667788", "Imported subscription")],
+    });
+    await dialog.getByRole("button", { name: "Import", exact: true }).click();
+    await expect(dialog).toHaveCount(0);
+    await expect(page.locator(".subscription-list")).toBeVisible();
+    await expectInputValues(page.locator(".subscription-name"), [
+      "Unsaved subscription",
+      "Imported subscription",
+    ]);
+    await expect(page.locator(".subscription-rule").getByRole("switch")).not.toBeChecked();
+    expect(serverSubs[0].name).toBe("Existing subscription");
+    expect(serverSubs[0].rules[0].enable).toBe(true);
+    const saved = page.waitForRequest(
+      (request) => request.method() === "PUT" && request.url().endsWith("/subscriptions"),
+    );
+    await page.locator("#save-subscriptions").click();
+    const payload = (await saved).postDataJSON();
+    expect(payload.subscriptions.map((sub: any) => sub.name)).toEqual([
+      "Unsaved subscription",
+      "Imported subscription",
+    ]);
+    expect(payload.subscriptions[0].ruleChanges).toEqual([
+      {
+        id: "22334455",
+        rule: "example.org",
+        previousType: "namespace",
+        previousEnable: true,
+        type: "namespace",
+        enable: false,
+      },
+    ]);
+    expect(payload.subscriptions[0]).not.toHaveProperty("rules");
+    expect(payload.subscriptions[1].ruleChanges).toEqual([]);
+    await expect(page.locator("#save-subscriptions")).toBeDisabled();
+    const downloadPromise = page.waitForEvent("download");
+    await page
+      .locator(".subscription-controls-actions button[aria-label='Экспорт конфига']")
+      .click();
+    const download = await downloadPromise;
+    const exported = JSON.parse(fs.readFileSync(await download.path(), "utf8"));
+    expect(exported.subscriptions[0].overrides).toEqual([{ rule: "example.org", enable: false }]);
+  });
+
+  test("append preserves an unrelated profile draft and its save baseline", async ({ page }) => {
+    serverProfiles = [
+      {
+        id: "existing",
+        name: "Existing profile",
+        interfaces: ["wg0"],
+        on_unavailable: "blackhole",
+      },
+    ];
+    await page.reload();
+    await page.getByRole("tab", { name: "Settings", exact: true }).click();
+    await page.getByLabel("Profile name", { exact: true }).fill("Unsaved profile");
+    const dialog = await openTransfer(page, {
+      profiles: [
+        {
+          id: "imported",
+          name: "Imported profile",
+          interfaces: ["wg0"],
+          on_unavailable: "blackhole",
+        },
+      ],
+    });
+    await dialog.getByRole("button", { name: "Import", exact: true }).click();
+    await expect(dialog).toHaveCount(0);
+    await expectInputValues(page.getByLabel("Profile name", { exact: true }), [
+      "Unsaved profile",
+      "Imported profile",
+    ]);
+    expect(serverProfiles.map((profile) => profile.name)).toEqual([
+      "Existing profile",
+      "Imported profile",
+    ]);
+    await expect(page.locator("#save-settings")).toBeEnabled();
+    await page.locator("#save-settings").click();
+    await expect(page.locator("#save-settings")).toBeDisabled();
+    expect(serverProfiles.map((profile) => profile.name)).toEqual([
+      "Unsaved profile",
+      "Imported profile",
+    ]);
+  });
+
+  test("export with an unfinished profile opens and lets the user import its valid groups", async ({
+    page,
+  }) => {
+    serverGroups = [makeGroup("11223344", "Portable group")];
+    await page.reload();
+    await page.getByRole("tab", { name: "Settings", exact: true }).click();
+    await page.getByRole("button", { name: "Add profile", exact: true }).click();
+    const downloadPromise = page.waitForEvent("download");
+    await page.locator(".settings-toolbar button[aria-label='Экспорт конфига']").click();
+    const download = await downloadPromise;
+    const payload = JSON.parse(fs.readFileSync(await download.path(), "utf8"));
+    expect(payload.profiles).toEqual([expect.objectContaining({ name: "", interfaces: [] })]);
+
+    serverGroups = [];
+    await page.reload();
+    await page.getByRole("tab", { name: "Groups", exact: true }).click();
+    const dialog = await openTransfer(page, payload);
+    await expect(dialog.getByRole("button", { name: "Import", exact: true })).toBeEnabled();
+    await dialog.getByRole("tab", { name: "Settings", exact: true }).click();
+    const unfinished = dialog.getByRole("checkbox", { name: "Profiles 1", exact: true });
+    await expect(unfinished).not.toBeChecked();
+    await unfinished.check();
+    await expect(dialog.getByRole("button", { name: "Import", exact: true })).toBeDisabled();
+    await expect(
+      dialog.getByRole("button", { name: "Import", exact: true }),
+    ).toHaveAccessibleDescription(/Enter a profile name/);
+    await unfinished.uncheck();
+    await dialog.getByRole("button", { name: "Import", exact: true }).click();
+    await expect(dialog).toHaveCount(0);
+    expect(serverGroups[0].name).toBe("Portable group");
+    expect(serverProfiles).toEqual([]);
+  });
+
+  test("an unfinished profile required by a selected group blocks apply", async ({ page }) => {
+    const dialog = await openTransfer(page, {
+      groups: [{ ...makeGroup("11223344", "Dependent group"), profile: "unfinished" }],
+      profiles: [{ id: "unfinished", name: "", interfaces: [], on_unavailable: "blackhole" }],
+    });
+    await expect(dialog.getByRole("button", { name: "Import", exact: true })).toBeDisabled();
+    await expect(
+      dialog.getByRole("button", { name: "Import", exact: true }),
+    ).toHaveAccessibleDescription(/Profile unfinished: Enter a profile name/);
+    await dialog.getByRole("tab", { name: "Settings", exact: true }).click();
+    await expect(
+      dialog.getByRole("checkbox", { name: "Profiles 1", exact: true }),
+    ).not.toBeChecked();
+    expect(applied).toBe(0);
   });
 
   test("previews and applies legacy group-only import without erasing other sections", async ({

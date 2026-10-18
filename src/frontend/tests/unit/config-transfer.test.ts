@@ -55,12 +55,20 @@ const snapshot = (): Snapshot => ({
     dns: { port: 5353, upstream: "127.0.0.1" },
   },
 });
-const opts = (extra: Partial<ImportOptions> = {}): ImportOptions => ({
-  mode: "merge",
-  selected: new Set(["groups", "subscriptions", "profiles", "settings"]),
-  newId: (section, id) => (section === "profiles" ? `copy_${id}` : "abcdef01"),
-  ...extra,
-});
+const opts = (extra: Partial<ImportOptions> = {}): ImportOptions => {
+  const ruleIds = new Map<string, string>();
+  return {
+    mode: "merge",
+    selected: new Set(["groups", "subscriptions", "profiles", "settings"]),
+    newId: (section, id) => {
+      if (section === "profiles") return `copy_${id}`;
+      if (!id.startsWith("rule:")) return "abcdef01";
+      if (!ruleIds.has(id)) ruleIds.set(id, (0x10000000 + ruleIds.size).toString(16));
+      return ruleIds.get(id)!;
+    },
+    ...extra,
+  };
+};
 
 Deno.test("export preserves unfinished drafts and all sections", () => {
   const state = snapshot();
@@ -157,6 +165,110 @@ Deno.test("conflicts keep current values unless replacement is selected", () => 
   assert.equal(replaced.next.groups[0].name, "Different");
   assert.equal(replaced.changes[0].fields[0].field, "name");
 });
+Deno.test("copying a group gives its rules distinct stable editor identities", () => {
+  const state = snapshot();
+  const input = { groups: [{ ...copy(state.groups[0]), name: "Copy" }] };
+  const before = fingerprint(input);
+  const options = opts({ choices: new Map([["groups:11223344", "copy"]]) });
+  const result = planImport(state, input, options);
+  assert.deepEqual(result.problems, []);
+  assert.deepEqual(result.next.groups[0], state.groups[0]);
+  const added = result.next.groups[1];
+  assert.equal(added.id, "abcdef01");
+  assert.notEqual(added.rules[0].id, state.groups[0].rules[0].id);
+  assert.notEqual(added.rules[0].id, added.id);
+  assert.deepEqual(
+    { ...added.rules[0], id: state.groups[0].rules[0].id },
+    state.groups[0].rules[0],
+  );
+  assert.deepEqual(planImport(state, input, options).next, result.next);
+  assert.equal(fingerprint(input), before);
+});
+Deno.test("new groups remap colliding rules without changing unique or saved identities", () => {
+  const state = snapshot();
+  const rule = state.groups[0].rules[0];
+  const input = {
+    groups: [
+      {
+        ...copy(state.groups[0]),
+        id: "deadbeef",
+        rules: [
+          { ...rule },
+          { ...rule, id: state.groups[0].id, rule: "root.org" },
+          { ...rule, id: "facefeed", rule: "unique.org" },
+        ],
+      },
+      {
+        ...copy(state.groups[0]),
+        id: "deadc0de",
+        rules: [
+          { ...rule, id: "facefeed", rule: "other.org" },
+          { ...rule, id: "facefeed", rule: "duplicate-id.org" },
+          { ...rule, id: "deadc0de", rule: "own-root.org" },
+        ],
+      },
+    ],
+  };
+  const before = fingerprint(input);
+  const options = opts();
+  const result = planImport(state, input, options);
+  assert.deepEqual(result.problems, []);
+  assert.deepEqual(result.next.groups[0], state.groups[0]);
+  assert.equal(result.next.groups[1].rules[2].id, "facefeed");
+  const ids = result.next.groups.flatMap((group) => [group.id, ...group.rules.map((r) => r.id)]);
+  assert.equal(new Set(ids).size, ids.length);
+  assert.deepEqual(planImport(state, input, options).next, result.next);
+  assert.equal(fingerprint(input), before);
+});
+Deno.test("replacement preserves its own rules and remaps collisions with another group", () => {
+  const state = snapshot();
+  state.groups.push({
+    ...copy(state.groups[0]),
+    id: "deadbeef",
+    rules: [{ ...state.groups[0].rules[0], id: "facefeed" }],
+  });
+  const input = { groups: [copy(state.groups[0])] };
+  input.groups[0].rules[0].enable = false;
+  input.groups[0].rules.push({ ...state.groups[1].rules[0], rule: "new.org" });
+  const result = planImport(
+    state,
+    input,
+    opts({ choices: new Map([["groups:11223344", "replace"]]) }),
+  );
+  assert.deepEqual(result.problems, []);
+  assert.equal(result.next.groups[0].rules[0].id, state.groups[0].rules[0].id);
+  assert.equal(result.next.groups[0].rules[0].enable, false);
+  assert.notEqual(result.next.groups[0].rules[1].id, "facefeed");
+  assert.deepEqual(result.next.groups[1], state.groups[1]);
+});
+Deno.test("allocated rule IDs cannot collide with existing or later imported objects", () => {
+  const state = snapshot();
+  const input = {
+    groups: [
+      {
+        ...copy(state.groups[0]),
+        id: "deadbeef",
+        rules: [
+          { ...state.groups[0].rules[0] },
+          { ...state.groups[0].rules[0], id: "facefeed", rule: "later.org" },
+        ],
+      },
+    ],
+  };
+  for (const id of ["11223344", "aabbccdd", "deadbeef", "facefeed"]) {
+    const result = planImport(state, input, opts({ newId: () => id }));
+    assert(result.problems.includes(`Allocated rule ID already exists: ${id}`));
+    assert.throws(() => assertPlanCurrent(result, state), /Allocated rule ID already exists/);
+  }
+});
+Deno.test("an imported root cannot reuse a retained rule ID or rewrite its saved owner", () => {
+  const state = snapshot();
+  const input = { groups: [{ ...copy(state.groups[0]), id: "aabbccdd", rules: [] }] };
+  const result = planImport(state, input, opts());
+  assert(result.problems.includes("Group/rule ID collision: aabbccdd"));
+  assert.throws(() => assertPlanCurrent(result, state), /Group\/rule ID collision/);
+  assert.deepEqual(result.next.groups[0], state.groups[0]);
+});
 Deno.test("copying a profile remaps groups and subscriptions together", () => {
   const state = snapshot();
   const input = {
@@ -184,6 +296,71 @@ Deno.test("selected groups bring their profile definitions as dependencies", () 
   assert.equal(result.next.profiles.length, 3);
   assert.deepEqual(result.problems, []);
 });
+Deno.test("an unselected unfinished profile does not block importing valid groups", () => {
+  const state = snapshot();
+  const added = { ...state.groups[0], id: "deadbeef", profile: undefined };
+  const input = {
+    groups: [added],
+    profiles: [{ id: "unfinished", name: "", interfaces: [] }],
+  };
+  const result = planImport(state, input, opts({ selected: new Set(["groups"]) }));
+  assertPlanCurrent(result, state);
+  assert.equal(result.next.groups.at(-1)?.id, added.id);
+  assert.deepEqual(result.next.profiles, state.profiles);
+});
+Deno.test("invalid accepted profile definitions block application with their identity", () => {
+  const state = snapshot();
+  for (const profile of [
+    { id: "unfinished", name: "", interfaces: ["wg0"] },
+    { id: "unfinished", name: "Unfinished", interfaces: [] },
+    { id: "unfinished", name: "Unfinished", interfaces: ["not an interface"] },
+    { id: "unfinished", name: "Unfinished", interfaces: ["wg0", "wg0"] },
+    { id: "unfinished", name: "Unfinished", interfaces: ["wg0"], on_unavailable: "accept" },
+  ]) {
+    const result = planImport(
+      state,
+      { profiles: [profile] },
+      opts({ selected: new Set(["profiles"]) }),
+    );
+    assert(
+      result.problems.some((problem) => problem.startsWith("Invalid routing profile: unfinished:")),
+    );
+    assert.throws(() => assertPlanCurrent(result, state), /Invalid routing profile: unfinished:/);
+  }
+});
+Deno.test("unfinished required profile blocks its selected consumers", () => {
+  const state = snapshot();
+  const input = {
+    groups: [{ ...state.groups[0], id: "deadbeef", profile: "unfinished" }],
+    profiles: [{ id: "unfinished", name: "Unfinished", interfaces: [] }],
+  };
+  const result = planImport(state, input, opts({ selected: new Set(["groups"]) }));
+  assert.deepEqual(result.includedDependencies, ["unfinished"]);
+  assert.deepEqual(result.problems, [
+    "Invalid routing profile: unfinished: Add at least one interface",
+  ]);
+  assert.throws(() => assertPlanCurrent(result, state), /Add at least one interface/);
+});
+Deno.test(
+  "keeping a valid current profile does not import its unfinished conflicting draft",
+  () => {
+    const state = snapshot();
+    const input = {
+      groups: [{ ...state.groups[0], id: "deadbeef" }],
+      profiles: [{ ...state.profiles[0], name: "", interfaces: [] }],
+    };
+    const kept = planImport(state, input, opts());
+    assertPlanCurrent(kept, state);
+    assert.deepEqual(kept.next.profiles, state.profiles);
+    assert.equal(kept.next.groups.at(-1)?.interface, "wg0");
+    const replaced = planImport(
+      state,
+      input,
+      opts({ choices: new Map([["profiles:vpn", "replace"]]) }),
+    );
+    assert.throws(() => assertPlanCurrent(replaced, state), /Invalid routing profile: vpn:/);
+  },
+);
 Deno.test("profile changes expose effects on retained consumers", () => {
   const state = snapshot();
   const input = {

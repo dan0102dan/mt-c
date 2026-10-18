@@ -293,16 +293,19 @@ export class GroupsStore {
     }
   }
 
-  mount = async () => {
-    this.finishedGroupsCount = 0;
+  mount = async (options: { preserveDrafts?: boolean } = {}) => {
+    // Existing keyed panels stay mounted during an import refresh and will
+    // not report their initial render a second time.
+    if (!options.preserveDrafts) this.finishedGroupsCount = 0;
     this.fetchError = false;
     try {
       const fetched = (
         (await fetcher.get<{ groups: Group[] }>("/groups?with_rules=true"))?.groups ?? []
       ).map((group) => withPriorityDefault(group, DEFAULT_GROUP_PRIORITY));
+      if (options.preserveDrafts) this.tracker.rebase(fetched);
+      else this.tracker = new ChangeTracker(fetched);
       this.#savedRules = snapshotGroupRules(fetched);
-      this.tracker = new ChangeTracker(fetched);
-      this.dataRevision = 0;
+      this.markDataRevision();
       if (typeof window !== "undefined") {
         setTimeout(() => this.checkRulesValidityState(), 10);
       }
