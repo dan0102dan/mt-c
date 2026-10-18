@@ -274,12 +274,12 @@ tests. C-verify: UT port + DIFF (parse corpus) + CT (sync endpoints).
   stale).
 - Persisted fields: `last_update` only. Auto-update saves config after a
   changed sync.
-- D-81 adds sparse pattern-keyed `overrides` for portable configuration.
+- D-82 adds sparse pattern-keyed `overrides` for portable configuration.
   Legacy caches without that field migrate only manual differences from
   source defaults. A present array (including `[]`) is authoritative and
   resets omitted exception fields to source defaults. Normal synchronization
   preserves IDs, then applies explicit exceptions; cached effective type and
-  enable values cannot resurrect removed exceptions. See D-81 for additive
+  enable values cannot resurrect removed exceptions. See D-82 for additive
   YAML serialization and downgrade limits.
 - Subscription rule sets: runtime key `sub_<hex-id>`, ipset/chain names
   derive from it; rebuild = disable-all + recreate (visible netfilter churn

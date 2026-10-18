@@ -39,8 +39,8 @@ static bool isolated(void) {
         stat("/proc/1/ns/net", &init) == 0 && self.st_ino != init.st_ino;
 }
 
-static bool route_is(int family, const char *dev) {
-    const char *cmd = family == AF_INET ? "ip -j -4 route show table 1000" : "ip -j -6 route show table 1000";
+static bool route_is_table(int family, unsigned table, const char *dev) {
+    char cmd[96]; snprintf(cmd, sizeof(cmd), "ip -j -%d route show table %u", family == AF_INET ? 4 : 6, table);
     FILE *f = popen(cmd, "r"); if (!f) { return false; }
     char text[4096]; size_t n = fread(text, 1, sizeof(text)-1, f); text[n] = '\0';
     if (pclose(f) != 0) { return false; }
@@ -64,6 +64,8 @@ static bool route_is(int family, const char *dev) {
     cJSON_Delete(json);
     return blackholes == 1 && (dev ? unicast == 1 && found : unicast == 0);
 }
+
+static bool route_is(int family, const char *dev) { return route_is_table(family, 1000, dev); }
 
 static int create_link(unsigned i) {
     char cmd[1024];
@@ -97,6 +99,58 @@ TEST real_profile_failover_and_failback(void) {
     ASSERT_EQ(MT_OK, mt_ipset_to_link_set_interfaces(link, chain, 3));
     ASSERT_EQ(MT_OK, mt_ipset_to_link_enable(link));
     ASSERT(route_is(AF_INET,"fp0")); ASSERT(route_is(AF_INET6,"fp0"));
+
+#ifdef MT_ENTWARE_KN
+    /* All kernel links remain up: NDM alone drives failover/failback. */
+    mt_kn_ifstate_t *states = mt_kn_ifstate_new(NULL, NULL); ASSERT(states);
+    mt_kn_ifinfo_t inventory[3] = {0};
+    for (unsigned i = 0; i < 3; i++) {
+        snprintf(inventory[i].id, sizeof(inventory[i].id), "Wireguard%u", i);
+        snprintf(inventory[i].name, sizeof(inventory[i].name), "fp%u", i);
+        inventory[i].layered = true;
+        for (unsigned f = 0; f < 5; f++) { inventory[i].fields[f] = MT_KN_IF_RUNNING; }
+    }
+    ASSERT_EQ(MT_OK, mt_kn_ifstate_snapshot(states, inventory, 3, 0));
+    mt_ipset_to_link_set_interface_states(link, states);
+    for (unsigned i = 0; i < 3; i++) {
+        mt_kn_ifevent_t event = {.kind = MT_KN_IF_LAYER};
+        snprintf(event.info.id, sizeof(event.info.id), "Wireguard%u", i);
+        snprintf(event.info.name, sizeof(event.info.name), "fp%u", i);
+        event.info.fields[MT_KN_IF_CTRL] = MT_KN_IF_BLOCKED;
+        bool resync = false;
+        ASSERT_EQ(MT_OK, mt_kn_ifstate_event(states, &event, &resync));
+        ASSERT_FALSE(resync);
+        ASSERT_EQ(MT_OK, mt_ipset_to_link_on_link_up(link));
+        const char *expected = i == 0 ? "fp1" : i == 1 ? "fp2" : NULL;
+        ASSERT(route_is(AF_INET, expected)); ASSERT(route_is(AF_INET6, expected));
+        unsigned writes = route_writes;
+        ASSERT_EQ(MT_OK, mt_kn_ifstate_event(states, &event, &resync));
+        ASSERT_EQ(MT_OK, mt_ipset_to_link_on_link_up(link));
+        ASSERT_EQ(writes, route_writes);
+    }
+    /* A direct interface is not subject to the new profile-only veto. */
+    mt_ipset_to_link_t *direct = mt_ipset_to_link_new("MT_direct", "fp0", set, ipt4, ipt6, rtnl, 1100); ASSERT(direct);
+    mt_ipset_to_link_set_interface_states(direct, states);
+    ASSERT_EQ(MT_OK, mt_ipset_to_link_enable(direct));
+    ASSERT(route_is_table(AF_INET, 1100, "fp0")); ASSERT(route_is_table(AF_INET6, 1100, "fp0"));
+    ASSERT_EQ(MT_OK, mt_ipset_to_link_disable(direct)); mt_ipset_to_link_free(direct);
+    ASSERT(route_is(AF_INET, NULL)); ASSERT(route_is(AF_INET6, NULL));
+    ASSERT_EQ(MT_OK, mt_kn_ifstate_snapshot(states, inventory, 3, mt_kn_ifstate_revision(states)));
+    ASSERT_EQ(MT_OK, mt_ipset_to_link_on_link_up(link));
+    ASSERT(route_is(AF_INET, "fp0")); ASSERT(route_is(AF_INET6, "fp0"));
+    mt_kn_ifevent_t v6_down = {.kind = MT_KN_IF_LAYER, .info = {.id = "Wireguard0", .name = "fp0"}};
+    v6_down.info.fields[MT_KN_IF_IPV6] = MT_KN_IF_BLOCKED;
+    bool resync = false;
+    ASSERT_EQ(MT_OK, mt_kn_ifstate_event(states, &v6_down, &resync));
+    ASSERT_EQ(MT_OK, mt_ipset_to_link_on_link_up(link));
+    ASSERT(route_is(AF_INET, "fp0")); ASSERT(route_is(AF_INET6, "fp1"));
+    v6_down.info.fields[MT_KN_IF_IPV6] = MT_KN_IF_RUNNING;
+    ASSERT_EQ(MT_OK, mt_kn_ifstate_event(states, &v6_down, &resync));
+    ASSERT_EQ(MT_OK, mt_ipset_to_link_on_link_up(link));
+    ASSERT(route_is(AF_INET, "fp0")); ASSERT(route_is(AF_INET6, "fp0"));
+    /* Leave positive NDM state attached below: it cannot bypass a missing
+     * kernel address/gateway or down link in the pre-existing scenarios. */
+#endif
 
     /* A terminal-route failure in one family must not stop the OTHER
      * family's failover. Preserve/report the conflict rather than quietly
@@ -174,7 +228,11 @@ TEST real_profile_failover_and_failback(void) {
         ASSERT_EQ(stable_writes, route_writes);
     }
     ASSERT_EQ(MT_OK, mt_ipset_to_link_disable(link));
-    mt_ipset_to_link_free(link); ASSERT_EQ(MT_OK, mt_ipset_disable(set)); mt_ipset_free(set);
+    mt_ipset_to_link_free(link);
+#ifdef MT_ENTWARE_KN
+    mt_kn_ifstate_free(states);
+#endif
+    ASSERT_EQ(MT_OK, mt_ipset_disable(set)); mt_ipset_free(set);
     mt_ipt_free(ipt4); mt_ipt_free(ipt6); mt_rtnl_close(rtnl);
     for (unsigned i=0;i<3;i++) { char cmd[64]; snprintf(cmd,sizeof(cmd),"ip link del fp%u",i); ASSERT_EQ(0,system(cmd)); }
     PASS();

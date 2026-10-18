@@ -46,6 +46,7 @@ typedef struct mt_ruleset mt_ruleset_t;
 typedef struct mt_ruleset_deps {
 #ifdef MT_ENTWARE_KN
     const mt_kn_policy_scope_t *policy;
+    const mt_kn_ifstate_t *interface_states;
 #endif
     const mt_config_t *config; /* live profile registry, borrowed; optional without profile refs */
     mt_ipt_t *ipt4;
@@ -62,6 +63,9 @@ typedef struct mt_ruleset_deps {
  * remain borrowed). */
 mt_ruleset_t *mt_ruleset_new(const mt_group_t *group, const mt_ruleset_deps_t *deps);
 void mt_ruleset_free(mt_ruleset_t *rs);
+#ifdef MT_ENTWARE_KN
+void mt_ruleset_set_interface_states(mt_ruleset_t *rs, const mt_kn_ifstate_t *state);
+#endif
 
 const mt_group_t *mt_ruleset_group(const mt_ruleset_t *rs);
 /* Mutable accessor to the same borrowed group pointer mt_ruleset_group

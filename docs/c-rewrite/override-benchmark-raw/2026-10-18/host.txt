@@ -4,7 +4,7 @@ Host architecture: x86_64
 Compiler: gcc (Ubuntu 13.3.0-6ubuntu2~24.04) 13.3.0
 Build: C11, -O2, no sanitizers
 Baseline: e8d651943c181a4a16d0f3a27d03a00226d84ee1
-After: working tree implementing decisions.md D-81
+After: working tree implementing decisions.md D-82
 
 Reproducible source: tools/bench/subscription-overrides.c
 Build from src/backend-c: make bench_subscription_overrides
