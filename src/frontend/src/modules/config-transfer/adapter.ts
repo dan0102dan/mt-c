@@ -1,6 +1,12 @@
 import { parse } from "valibot";
 
-import { GroupSchema, ProfileSchema, type Group, type Profile, type Subscription } from "../../types";
+import {
+  GroupSchema,
+  ProfileSchema,
+  type Group,
+  type Profile,
+  type Subscription,
+} from "../../types";
 import { profileError } from "../settings/profiles-data";
 import {
   copy,
@@ -12,6 +18,7 @@ import {
   type Snapshot,
   type SubscriptionDefinition,
 } from "./model";
+import { applyWebSettings, webSettings } from "./web-settings";
 
 export type SavedSubscription = {
   id: string;
@@ -73,17 +80,24 @@ function subscription(value: unknown): SubscriptionDefinition {
     !Number.isInteger(value.interval) ||
     (value.interval as number) < 0 ||
     (value.interval as number) > 4294967295
-  ) throw new Error("Invalid subscription metadata");
-  if (value.overrides !== undefined && !Array.isArray(value.overrides)) throw new Error("Invalid overrides");
+  )
+    throw new Error("Invalid subscription metadata");
+  if (value.overrides !== undefined && !Array.isArray(value.overrides))
+    throw new Error("Invalid overrides");
   const overrides: RuleOverride[] = [];
   const seen = new Set<string>();
   for (const entry of (value.overrides ?? []) as unknown[]) {
-    if (!object(entry) || typeof entry.rule !== "string" || !entry.rule ||
+    if (
+      !object(entry) ||
+      typeof entry.rule !== "string" ||
+      !entry.rule ||
       entry.rule.length > 4096 ||
       (entry.type !== undefined && typeof entry.type !== "string") ||
       (entry.enable !== undefined && typeof entry.enable !== "boolean") ||
       (entry.type === undefined && entry.enable === undefined) ||
-      seen.has(entry.rule)) throw new Error("Invalid or duplicate rule override");
+      seen.has(entry.rule)
+    )
+      throw new Error("Invalid or duplicate rule override");
     seen.add(entry.rule);
     overrides.push({
       rule: entry.rule,
@@ -105,7 +119,11 @@ function subscription(value: unknown): SubscriptionDefinition {
 }
 
 /** List settings that a given target build cannot import without data loss. */
-export function unsupportedSettings(settings: Settings, reference: Settings, prefix = ""): string[] {
+export function unsupportedSettings(
+  settings: Settings,
+  reference: Settings,
+  prefix = "",
+): string[] {
   const missing: string[] = [];
   for (const [key, value] of Object.entries(settings)) {
     const name = prefix ? prefix + "." + key : key;
@@ -114,8 +132,7 @@ export function unsupportedSettings(settings: Settings, reference: Settings, pre
       continue;
     }
     const known = reference[key];
-    if (object(value) && object(known))
-      missing.push(...unsupportedSettings(value, known, name));
+    if (object(value) && object(known)) missing.push(...unsupportedSettings(value, known, name));
   }
   return missing;
 }
@@ -129,10 +146,21 @@ export function decodePortable(text: string): PortableConfig {
   if (value.schemaVersion !== undefined && value.schemaVersion !== 1)
     throw new Error("Unsupported configuration version");
   for (const key of Object.keys(value)) {
-    if (!["format", "schemaVersion", "exportedAt", "source", "groups", "subscriptions", "profiles", "settings"].includes(key))
+    if (
+      ![
+        "format",
+        "schemaVersion",
+        "exportedAt",
+        "source",
+        "groups",
+        "subscriptions",
+        "profiles",
+        "settings",
+      ].includes(key)
+    )
       throw new Error("Unsupported configuration field: " + key);
   }
-  if (!["groups", "subscriptions", "profiles", "settings"].some(key => key in value))
+  if (!["groups", "subscriptions", "profiles", "settings"].some((key) => key in value))
     throw new Error("Configuration has no sections");
   const result: PortableConfig = {};
   if (value.groups !== undefined) {
@@ -152,16 +180,21 @@ export function decodePortable(text: string): PortableConfig {
   if (value.settings !== undefined) {
     if (!object(value.settings)) throw new Error("Invalid settings");
     checkJson(value.settings);
-    result.settings = copy(value.settings as Settings);
+    result.settings = copy(webSettings(value.settings as Settings));
   }
   return result;
 }
 
 export function fromSaved(s: SavedSubscription): SubscriptionDefinition {
   return {
-    id: s.id, name: s.name, url: s.url, interface: s.interface,
+    id: s.id,
+    name: s.name,
+    url: s.url,
+    interface: s.interface,
     ...(s.profile ? { profile: s.profile } : {}),
-    enable: s.enable, priority: s.priority, interval: s.interval,
+    enable: s.enable,
+    priority: s.priority,
+    interval: s.interval,
     ...(s.overrides?.length ? { overrides: copy(s.overrides) } : {}),
   };
 }
@@ -169,9 +202,14 @@ export function fromSaved(s: SavedSubscription): SubscriptionDefinition {
 export function fromEditor(s: Subscription): SubscriptionDefinition {
   const data = s as Subscription & { overrides?: RuleOverride[] };
   return {
-    id: s.id, name: s.name, url: s.url, interface: s.interface,
+    id: s.id,
+    name: s.name,
+    url: s.url,
+    interface: s.interface,
     ...(s.profile ? { profile: s.profile } : {}),
-    enable: s.enable, priority: s.priority ?? 100, interval: s.interval ?? 86400,
+    enable: s.enable,
+    priority: s.priority ?? 100,
+    interval: s.interval ?? 86400,
     ...(data.overrides?.length ? { overrides: copy(data.overrides) } : {}),
   };
 }
@@ -199,7 +237,9 @@ export function snapshotFromServer(
       ? drafts.subscriptions.map((sub) => {
           const definition = fromEditor(sub);
           const existing = server.subscriptions.find((item) => item.id === sub.id);
-          const merged = new Map((definition.overrides ?? existing?.overrides ?? []).map((o) => [o.rule, { ...o }]));
+          const merged = new Map(
+            (definition.overrides ?? existing?.overrides ?? []).map((o) => [o.rule, { ...o }]),
+          );
           const oldRules = new Map((existing?.rules ?? []).map((rule) => [rule.rule, rule]));
           for (const rule of sub.rules) {
             const old = oldRules.get(rule.rule);
@@ -213,9 +253,14 @@ export function snapshotFromServer(
           return { ...definition, ...(merged.size ? { overrides: [...merged.values()] } : {}) };
         })
       : server.subscriptions.map(fromSaved),
-    profiles: copy(drafts.profiles ?? server.profiles ?? []).map(({ id, name, interfaces, on_unavailable }) => ({
-      id, name, interfaces: [...interfaces], on_unavailable,
-    })),
+    profiles: copy(drafts.profiles ?? server.profiles ?? []).map(
+      ({ id, name, interfaces, on_unavailable }) => ({
+        id,
+        name,
+        interfaces: [...interfaces],
+        on_unavailable,
+      }),
+    ),
     settings: app,
   };
 }
@@ -226,7 +271,7 @@ export function configForApply(server: ServerConfig, target: Snapshot): ServerCo
   const previous = new Map(server.subscriptions.map((s) => [s.id, s]));
   return {
     configVersion: server.configVersion,
-    app: copy(target.settings),
+    app: copy(applyWebSettings(server.app, target.settings)),
     groups: copy(target.groups),
     profiles: copy(target.profiles),
     subscriptions: target.subscriptions.map((s) => {
@@ -234,9 +279,14 @@ export function configForApply(server: ServerConfig, target: Snapshot): ServerCo
       const retained = old?.url === s.url ? old : undefined;
       const overrides = s.overrides ?? [];
       return {
-        id: s.id, name: s.name, url: s.url, interface: s.interface,
+        id: s.id,
+        name: s.name,
+        url: s.url,
+        interface: s.interface,
         ...(s.profile ? { profile: s.profile } : {}),
-        enable: s.enable, priority: s.priority, interval: s.interval ?? 86400,
+        enable: s.enable,
+        priority: s.priority,
+        interval: s.interval ?? 86400,
         last_update: retained?.last_update ?? 0,
         // Existing download caches remain on the server if ID and URL match.
         // An explicit [] resets the cache for a new or changed source.

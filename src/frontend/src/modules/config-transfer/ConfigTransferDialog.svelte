@@ -1,10 +1,20 @@
 <script lang="ts">
-  import GenericDialog from "../../components/ui/GenericDialog.svelte";
+  import { Tabs } from "bits-ui";
+  import { untrack } from "svelte";
+
   import Button from "../../components/ui/Button.svelte";
   import Checkbox from "../../components/ui/Checkbox.svelte";
+  import GenericDialog from "../../components/ui/GenericDialog.svelte";
+  import Placeholder from "../../components/ui/Placeholder.svelte";
   import Select from "../../components/ui/Select.svelte";
+  import Switch from "../../components/ui/Switch.svelte";
+  import Tooltip from "../../components/ui/Tooltip.svelte";
+  import { t } from "../../data/locale.svelte";
+
+  import { Check, Scan } from "../../components/ui/icons";
   import { randomId } from "../../utils/defaults";
   import { newProfileId } from "../settings/profiles-data";
+  import { unsupportedSettings } from "./adapter";
   import {
     conflictKey,
     planImport,
@@ -16,13 +26,15 @@
     type Snapshot,
   } from "./model";
 
+  type ImportTab = "groups" | "subscriptions" | "settings";
+  const tabs: ImportTab[] = ["groups", "subscriptions", "settings"];
+  const tabFor = (section: Section): ImportTab => (section === "profiles" ? "settings" : section);
   type ChoiceMap = Record<string, Choice>;
   type Props = {
     open: boolean;
-    fileName: string;
+    initialSection: ImportTab;
     imported: PortableConfig;
     current: Snapshot;
-    interfaces: { id: string; name?: string }[];
     policies: { id: string; name: string; available: boolean }[];
     policySupported: boolean;
     busy?: boolean;
@@ -30,24 +42,131 @@
     onapply: (plan: ImportPlan) => Promise<void>;
   };
   let {
-    open, fileName, imported, current, interfaces, policies,
-    policySupported, busy = false, onclose, onapply,
+    open,
+    initialSection,
+    imported,
+    current,
+    policies,
+    policySupported,
+    busy = false,
+    onclose,
+    onapply,
   }: Props = $props();
 
-  const names: Record<Section, string> = {
-    groups: "Группы", subscriptions: "Подписки", profiles: "Профили", settings: "Настройки",
-  };
-  const choiceOptions = [
-    { value: "keep", label: "Оставить текущий" },
-    { value: "replace", label: "Использовать импортируемый" },
-    { value: "copy", label: "Создать копию" },
-  ];
-  let mode = $state<"merge" | "replace">("merge");
-  let enabled = $state<Record<Section, boolean>>({
-    groups: true, subscriptions: true, profiles: true, settings: true,
+  const names: Record<Section, string> = $derived({
+    groups: t("Groups"),
+    subscriptions: t("Subscriptions"),
+    profiles: t("Profiles"),
+    settings: t("Settings"),
+  });
+  const settingNames: Record<string, string> = $derived({
+    keeneticPolicy: t("Routing policy"),
+  });
+  const choiceOptions = $derived([
+    { value: "keep", label: t("Keep current") },
+    { value: "replace", label: t("Use imported") },
+    { value: "copy", label: t("Create a copy") },
+  ]);
+  let replaceMode = $state(false);
+  const mode = $derived(replaceMode ? "replace" : "merge");
+  let activeTab = $state<ImportTab>(untrack(() => initialSection));
+  function showTab(value: string) {
+    if (tabs.includes(value as ImportTab)) activeTab = value as ImportTab;
+  }
+  const entries = $derived(
+    sections.flatMap<{ key: string; section: Section; index: number; name: string; meta: string }>(
+      (section) => {
+        if (imported[section] === undefined) return [];
+        if (section === "settings")
+          return Object.keys(imported.settings ?? {}).map((field) => ({
+            key: `settings:${field}`,
+            section,
+            index: -1,
+            name: settingNames[field] ?? field,
+            meta: "",
+          }));
+        const items = imported[section] ?? [];
+        return items.map((item, index) => ({
+          key: `${section}:${index}`,
+          section,
+          index,
+          name: item.name || `${names[section]} ${index + 1}`,
+          meta:
+            section === "groups"
+              ? `#${imported.groups![index].rules.length}`
+              : section === "profiles"
+                ? imported.profiles![index].interfaces.join(" → ")
+                : visibleValue(imported.subscriptions![index].url, "url"),
+        }));
+      },
+    ),
+  );
+  let excluded = $state(
+    new Set<string>(
+      untrack(() =>
+        entries
+          .filter((entry) => tabFor(entry.section) !== initialSection)
+          .map((entry) => entry.key),
+      ),
+    ),
+  );
+  const visibleEntries = $derived(entries.filter((entry) => tabFor(entry.section) === activeTab));
+  const selectedCounts = $derived.by(() => {
+    const counts: Record<ImportTab, number> = { groups: 0, subscriptions: 0, settings: 0 };
+    for (const entry of entries) {
+      if (!excluded.has(entry.key)) counts[tabFor(entry.section)]++;
+    }
+    return counts;
+  });
+  const tabEntriesSelected = $derived(selectedCounts[activeTab]);
+  const selectedCount = $derived(tabs.reduce((count, tab) => count + selectedCounts[tab], 0));
+  function toggleEntry(key: string, checked: boolean) {
+    const next = new Set(excluded);
+    if (checked) next.delete(key);
+    else next.add(key);
+    excluded = next;
+  }
+  function selectAll(value: boolean) {
+    const next = new Set(excluded);
+    for (const entry of visibleEntries) {
+      if (value) next.delete(entry.key);
+      else next.add(entry.key);
+    }
+    excluded = next;
+  }
+  const selected = $derived(
+    new Set(entries.filter((entry) => !excluded.has(entry.key)).map((entry) => entry.section)),
+  );
+  const input = $derived.by(() => {
+    const groups = imported.groups?.filter(
+      (_, index) => selected.has("groups") && !excluded.has(`groups:${index}`),
+    );
+    const subscriptions = imported.subscriptions?.filter(
+      (_, index) => selected.has("subscriptions") && !excluded.has(`subscriptions:${index}`),
+    );
+    const referenced = new Set(
+      [...(groups ?? []), ...(subscriptions ?? [])].map((item) => item.profile),
+    );
+    return {
+      ...imported,
+      settings:
+        imported.settings === undefined
+          ? undefined
+          : Object.fromEntries(
+              Object.entries(imported.settings).filter(
+                ([field]) => !excluded.has(`settings:${field}`),
+              ),
+            ),
+      groups,
+      subscriptions,
+      profiles: imported.profiles?.filter(
+        (item, index) =>
+          (selected.has("profiles") && !excluded.has(`profiles:${index}`)) ||
+          referenced.has(item.id),
+      ),
+    };
   });
   let choices = $state<ChoiceMap>({});
-  let mappings = $state<Record<string, string>>({});
   let policyId = $state("");
   const generatedIds = new Map<string, string>();
   function newId(section: "groups" | "subscriptions" | "profiles", old: string) {
@@ -57,38 +176,19 @@
     return generatedIds.get(key)!;
   }
 
-  const selected = $derived(
-    new Set(sections.filter((section) => enabled[section] && imported[section] !== undefined)),
-  );
   const plan = $derived.by(() =>
-    planImport(current, imported, {
+    planImport(current, input, {
       mode,
       selected,
       choices: new Map(Object.entries(choices)),
-      interfaceMap: new Map(Object.entries(mappings).filter(([, value]) => Boolean(value))),
       policyId: policyId || undefined,
       newId,
     }),
   );
 
-  const routeNames = $derived.by(() => {
-    const names = new Set<string>();
-    if (selected.has("profiles") || selected.has("groups") || selected.has("subscriptions")) {
-      for (const p of imported.profiles ?? [])
-        for (const iface of p.interfaces) if (iface !== "blackhole") names.add(iface);
-      for (const section of ["groups", "subscriptions"] as const) {
-        if (!selected.has(section)) continue;
-        for (const route of imported[section] ?? [])
-          if (!route.profile && route.interface && route.interface !== "blackhole")
-            names.add(route.interface);
-      }
-    }
-    return [...names].filter((iface) => !interfaces.some((current) => current.id === iface));
-  });
-  const missingInterfaces = $derived(routeNames.filter((name) => !mappings[name]));
   const inputPolicy = $derived.by(() => {
     if (!selected.has("settings")) return undefined;
-    const source = imported.settings?.keeneticPolicy;
+    const source = input.settings?.keeneticPolicy;
     if (!source || typeof source !== "object" || Array.isArray(source)) return undefined;
     return source as { enabled?: boolean; policyId?: string; mode?: string };
   });
@@ -100,21 +200,34 @@
     return !policies.some((p) => p.id === id && p.available);
   });
   const errors = $derived([
-    ...plan.problems,
-    ...missingInterfaces.map((value) => `Интерфейс «${value}» не найден на устройстве`),
+    ...plan.problems.map(problemMessage),
+    ...(selected.has("settings")
+      ? unsupportedSettings(input.settings ?? {}, current.settings).map(
+          (key) => `${t("Unsupported setting")}: ${key}`,
+        )
+      : []),
     ...(missingPolicy
-      ? [policySupported ? "Укажите доступную политику Keenetic" : "Эта сборка не поддерживает политику Keenetic"]
+      ? [
+          policySupported
+            ? t("Select an available Keenetic policy")
+            : t("This build does not support Keenetic policies"),
+        ]
       : []),
   ]);
   const hasWork = $derived(plan.changes.some((change) => change.kind !== "unchanged"));
-  function summary(section: Section) {
-    const changes = plan.changes.filter((change) => change.section === section);
-    const added = changes.filter((change) => change.kind === "add").length;
-    const updated = changes.filter((change) => change.kind === "update").length;
-    const removed = changes.filter((change) => change.kind === "remove").length;
-    const unchanged = changes.filter((change) => change.kind === "unchanged").length;
-    return [added && `+${added}`, updated && `~${updated}`, removed && `−${removed}`,
-      unchanged && `=${unchanged}`].filter(Boolean).join(" · ") || "Без изменений";
+  function problemMessage(problem: string) {
+    const separator = problem.indexOf(": ");
+    const reason = problem.slice(0, separator);
+    const value = problem.slice(separator + 2);
+    if (reason === "Missing routing profile") {
+      const objects = [...plan.next.groups, ...plan.next.subscriptions]
+        .filter((route) => route.profile === value)
+        .map((route) => route.name || names["groups"]);
+      return `${t("Routing profiles are missing for")}: ${objects.join(", ")}. ${t("Deselect these objects or include their profiles in the file.")}`;
+    }
+    if (reason === "Profile contains duplicate interfaces after mapping")
+      return `${t(reason)}: ${value}`;
+    return `${t("Duplicate object ID")}: ${value}`;
   }
   function visibleValue(value: unknown, field: string) {
     if (value === undefined) return "—";
@@ -128,183 +241,335 @@
   }
 </script>
 
-<GenericDialog {open} title="Импорт конфига" maxWidth={800} on:close={onclose}>
-  <div slot="body" class="transfer-body" aria-busy={busy}>
-    <p class="file-name">Файл: <strong>{fileName}</strong></p>
-    <p class="intro">Проверьте изменения перед применением. До подтверждения текущая конфигурация не изменится.</p>
-    <label class="mode">
-      Режим импорта
-      <Select
-        compact
-        selected={mode}
-        options={[
-          { value: "merge", label: "Объединить с текущей конфигурацией" },
-          { value: "replace", label: "Заменить выбранные разделы" },
-        ]}
-        onValueChange={(value) => (mode = value === "replace" ? "replace" : "merge")}
-        ariaLabel="Режим импорта"
-        disabled={busy}
-      />
-    </label>
-
-    <div class="section-list">
-      {#each sections as section}
-        {#if imported[section] !== undefined}
-          <div class="section-line">
-            <label>
-              <Checkbox
-                checked={enabled[section]}
-                disabled={busy}
-                on:change={(event) => (enabled = { ...enabled, [section]: event.detail.checked })}
-              />
-              <span>{names[section]}</span>
-            </label>
-            <span class="summary">{selected.has(section) ? summary(section) : "Пропустить"}</span>
-          </div>
-        {/if}
+<GenericDialog {open} title={t("Import Config")} maxWidth={420} on:close={onclose}>
+  <div slot="body" class="import-config" aria-busy={busy}>
+    <Tabs.Root value={activeTab} onValueChange={showTab}>
+      <div class="import-tabs">
+        <Tabs.List aria-label={t("Import sections")}>
+          {#each tabs as tab}
+            <Tabs.Trigger value={tab} disabled={busy} aria-label={names[tab]}>
+              {names[tab]}
+              <span class="selected-count" aria-hidden="true">{selectedCounts[tab]}</span>
+            </Tabs.Trigger>
+          {/each}
+        </Tabs.List>
+      </div>
+      {#each tabs as tab}
+        {#if activeTab === tab}<Tabs.Content value={tab}>
+            <div class="controls-row">
+              <div class="controls">
+                <Button
+                  type="button"
+                  disabled={busy || !visibleEntries.length}
+                  onclick={() => selectAll(true)}
+                >
+                  <Check size={16} /><span class="with-icon">{t("All")}</span>
+                </Button>
+                <Button
+                  type="button"
+                  disabled={busy || !visibleEntries.length}
+                  onclick={() => selectAll(false)}
+                >
+                  <Scan size={16} /><span class="with-icon">{t("Reset")}</span>
+                </Button>
+              </div>
+              <div class="selected-count">{tabEntriesSelected} / {visibleEntries.length}</div>
+            </div>
+            <div class="import-list">
+              {#each sections.filter((section) => tabFor(section) === tab) as section}
+                {#if visibleEntries.some((entry) => entry.section === section)}
+                  <section aria-label={names[section]}>
+                    {#if section === "profiles"}<h3>{names[section]}</h3>{/if}
+                    {#each visibleEntries.filter((entry) => entry.section === section) as entry (entry.key)}
+                      <label class="group-option">
+                        <Checkbox
+                          ariaLabel={entry.name}
+                          checked={!excluded.has(entry.key)}
+                          disabled={busy}
+                          on:change={(event) => toggleEntry(entry.key, event.detail.checked)}
+                        />
+                        <div class="group-info">
+                          <span class="group-name">{entry.name}</span>
+                          {#if entry.meta}<span class="group-meta">{entry.meta}</span>{/if}
+                        </div>
+                      </label>
+                    {/each}
+                  </section>
+                {/if}
+              {/each}
+              {#if !visibleEntries.length}<Placeholder
+                  variant="empty"
+                  compact
+                  iconSize={22}
+                  minHeight="120px">{t("This file has no data for this section")}</Placeholder
+                >{/if}
+            </div>
+          </Tabs.Content>{/if}
       {/each}
-    </div>
-
-    {#if routeNames.length}
-      <section class="mapping" aria-label="Сопоставление интерфейсов">
-        <h3>Интерфейсы устройства</h3>
-        {#each routeNames as iface (iface)}
-          <label class="mapping-line">
-            <code>{iface}</code>
-            <Select
-              compact
-              selected={mappings[iface] || ""}
-              options={[
-                { value: "", label: "Выберите интерфейс" },
-                ...interfaces.map((item) => ({
-                  value: item.id, label: item.name ? `${item.name} (${item.id})` : item.id,
-                })),
-              ]}
-              onValueChange={(value) => (mappings = { ...mappings, [iface]: value })}
-              ariaLabel={`Новый интерфейс для ${iface}`}
-              disabled={busy}
-            />
-          </label>
-        {/each}
-      </section>
-    {/if}
-
+    </Tabs.Root>
     {#if inputPolicy?.enabled && policySupported}
-      <section class="mapping" aria-label="Сопоставление политики">
-        <h3>Политика маршрутизации</h3>
-        <p>Исходная политика: <code>{inputPolicy.policyId || "не указана"}</code></p>
+      <section class="mapping" aria-label={t("Policy mapping")}>
+        <h3>{t("Routing policy")}</h3>
+        <p>{t("Original policy")}: <code>{inputPolicy.policyId || t("Not specified")}</code></p>
         <Select
-          compact
+          class="form-select"
           selected={policyId || inputPolicy.policyId || ""}
           options={[
-            { value: "", label: "Выберите политику" },
-            ...policies.filter((item) => item.available).map((item) => ({
-              value: item.id, label: item.name || item.id,
-            })),
+            { value: "", label: t("Select policy") },
+            ...policies
+              .filter((item) => item.available)
+              .map((item) => ({
+                value: item.id,
+                label: item.name || item.id,
+              })),
           ]}
           onValueChange={(value) => (policyId = value)}
-          ariaLabel="Сопоставление политики Keenetic"
+          ariaLabel={t("Keenetic policy mapping")}
           disabled={busy}
         />
       </section>
     {/if}
 
     {#if plan.conflicts.length && mode === "merge"}
-      <section class="mapping" aria-label="Конфликты">
-        <h3>Конфликты объектов</h3>
+      <section class="mapping" aria-label={t("Conflicts")}>
+        <h3>{t("Objects already exist")}</h3>
         {#each plan.conflicts as conflict (conflictKey(conflict.section, conflict.id))}
           <label class="mapping-line">
             <span>{conflict.name} <small>({names[conflict.section]})</small></span>
             <Select
-              compact
+              class="form-select"
               selected={choices[conflictKey(conflict.section, conflict.id)] || "keep"}
               options={choiceOptions}
-              onValueChange={(value) => setChoice(conflictKey(conflict.section, conflict.id), value)}
-              ariaLabel={`Как обработать конфликт ${conflict.name}`}
+              onValueChange={(value) =>
+                setChoice(conflictKey(conflict.section, conflict.id), value)}
+              ariaLabel={`${t("Resolve conflict for")} ${conflict.name}`}
               disabled={busy}
             />
           </label>
         {/each}
       </section>
     {/if}
-
-    {#if plan.includedDependencies.length}
-      <p class="hint">Для выбранных объектов будут также добавлены связанные профили:
-        {plan.includedDependencies.join(", ")}</p>
-    {/if}
-
-    <details class="changes" open={errors.length > 0 || plan.changes.some((c) => c.kind === "remove")}>
-      <summary>Предпросмотр изменений</summary>
-      <div class="change-list">
-        {#each plan.changes.filter((change) => change.kind !== "unchanged") as change, index (index)}
-          <article class="change">
-            <div class="change-head">
-              <span>{names[change.section]} · {change.name}</span>
-              <small>{change.kind === "add" ? "Добавится" : change.kind === "remove" ? "Удалится" : "Изменится"}</small>
-            </div>
-            {#each change.fields as field (field.field)}
-              <div class="field-line">
-                <code>{field.field}</code>
-                <span>{visibleValue(field.before, field.field)} → {visibleValue(field.after, field.field)}</span>
-              </div>
-            {/each}
-          </article>
-        {/each}
-        {#if !hasWork}<p>Изменений нет.</p>{/if}
-      </div>
-    </details>
-
-    {#if errors.length}
-      <div class="validation" role="alert">
-        {#each errors as message (message)}<p>{message}</p>{/each}
-      </div>
-    {/if}
-    {#if plan.changes.some((change) => change.section === "settings" && change.kind !== "unchanged")}
-      <p class="hint">Для некоторых системных настроек может потребоваться перезапуск службы.</p>
-    {/if}
   </div>
-  <div slot="actions" class="actions">
-    <Button type="button" onclick={onclose} disabled={busy}>Отмена</Button>
-    <Button type="button" disabled={busy || !!errors.length || !hasWork}
-      onclick={() => void onapply(plan)}>{busy ? "Применение…" : "Применить изменения"}</Button>
+  <div slot="actions" class="dialog-actions">
+    <div class="mode-toggle">
+      <span class:active={!replaceMode}>{t("Append")}</span>
+      <Switch bind:checked={replaceMode} disabled={busy} aria-label={t("Replace")} />
+      <span class:active={replaceMode}>{t("Replace")}</span>
+    </div>
+    <div class="buttons">
+      <Button type="button" onclick={onclose} disabled={busy}>{t("Cancel")}</Button>
+      <Tooltip value={errors.join("\n") || t("Import")}
+        ><Button
+          type="button"
+          aria-description={errors.length ? errors.join("\n") : undefined}
+          disabled={busy || !selectedCount || !!errors.length || !hasWork}
+          onclick={() => {
+            if (!busy && selectedCount && !errors.length && hasWork) void onapply(plan);
+          }}
+        >
+          {busy ? t("Applying…") : t("Import")}
+        </Button></Tooltip
+      >
+    </div>
   </div>
 </GenericDialog>
 
 <style>
-  .transfer-body { display: flex; flex-direction: column; gap: .85rem; min-width: 0;
-    max-height: min(66vh, 640px); overflow-y: auto; padding: .15rem .25rem 1rem; }
-  .file-name, .intro, .hint { margin: 0; color: var(--text-2); line-height: 1.45; font-size: .9rem; }
-  .file-name strong { color: var(--text); overflow-wrap: anywhere; }
-  .mode { display: flex; flex-wrap: wrap; align-items: center; gap: 1rem; justify-content: space-between; }
-  .mode :global(.select-wrap) { min-width: min(290px, 100%); }
-  .section-list { border: 1px solid var(--bg-light-extra); border-radius: .6rem; overflow: hidden; }
-  .section-line { display: flex; justify-content: space-between; align-items: center;
-    gap: .75rem; padding: .65rem .75rem; border-bottom: 1px solid var(--bg-light-extra); }
-  .section-line:last-child { border-bottom: 0; }
-  .section-line label { display: flex; align-items: center; gap: .75rem; font-weight: 600; }
-  .summary, small { color: var(--text-2); font-size: .82rem; }
-  .mapping { padding: .75rem; background: var(--bg-light); border-radius: .6rem; }
-  h3 { font-size: 1rem; margin: 0 0 .65rem; }
-  .mapping p { margin: .5rem 0; }
-  .mapping-line { display: flex; gap: .75rem; align-items: center;
-    justify-content: space-between; margin: .5rem 0; min-width: 0; }
-  .mapping-line > span, .mapping-line > code { overflow-wrap: anywhere; min-width: 0; }
-  .mapping-line :global(.select-wrap) { width: min(330px, 65%); flex-shrink: 0; }
-  .changes { border-top: 1px solid var(--bg-light-extra); padding-top: .65rem; }
-  summary { cursor: pointer; font-weight: 600; }
-  .change-list { max-height: 260px; overflow-y: auto; margin-top: .6rem; }
-  .change { padding: .55rem 0; border-bottom: 1px solid var(--bg-light-extra); }
-  .change-head, .field-line { display: flex; gap: .7rem; justify-content: space-between; }
-  .change-head { font-weight: 600; }
-  .field-line { font-size: .78rem; padding-top: .25rem; overflow-wrap: anywhere; }
-  .field-line code { flex-shrink: 0; }
-  .field-line span { color: var(--text-2); text-align: right; }
-  .validation { color: var(--danger); font-size: .85rem; }
-  .validation p { margin: .25rem 0; }
-  .actions { display: flex; justify-content: flex-end; gap: .5rem; width: 100%; }
-  @media (max-width: 570px) {
-    .mapping-line { align-items: stretch; flex-direction: column; }
-    .mapping-line :global(.select-wrap) { width: 100%; }
-    .section-line { align-items: flex-start; }
+  .import-config {
+    display: flex;
+    flex-direction: column;
+    gap: 1rem;
+    min-width: 0;
+    padding: 0.25rem 0.2rem;
+    max-height: 60vh;
+    overflow-y: auto;
+    overflow-wrap: anywhere;
+  }
+
+  .controls-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 0.5rem;
+    flex-wrap: wrap;
+  }
+
+  .controls {
+    display: inline-flex;
+    gap: 0.5rem;
+  }
+
+  .with-icon {
+    margin-left: 0.25rem;
+  }
+
+  .mode-toggle {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    font-size: 0.85rem;
+    color: var(--text-2);
+  }
+
+  .mode-toggle span {
+    transition: color 0.2s ease;
+  }
+
+  .mode-toggle span.active {
+    color: var(--text);
+    font-weight: 500;
+  }
+
+  .import-list {
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 0.75rem;
+    padding: 0.5rem 0;
+  }
+
+  .group-option {
+    display: flex;
+    gap: 0.75rem;
+    align-items: center;
+    padding: 0.75rem 1rem;
+    border-radius: 0.55rem;
+    border: 1px solid var(--bg-light-extra);
+    background-color: var(--bg-light);
+    position: relative;
+  }
+
+  .group-info {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.75rem;
+    flex: 1;
+    min-width: 0;
+  }
+
+  .group-name {
+    font-weight: 600;
+    color: var(--text);
+    word-break: break-word;
+    flex: 1;
+  }
+
+  .group-meta {
+    font-size: 0.8rem;
+    color: var(--text-2);
+    overflow-wrap: anywhere;
+    max-width: 55%;
+    min-width: 0;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .dialog-actions {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-top: 0.75rem;
+  }
+
+  @media (max-width: 500px) {
+    .dialog-actions {
+      flex-direction: column;
+      align-items: stretch;
+      gap: 1rem;
+    }
+
+    .mode-toggle {
+      justify-content: center;
+    }
+
+    .buttons {
+      display: flex;
+      width: 100%;
+      justify-content: space-between;
+    }
+  }
+
+  .buttons {
+    display: flex;
+    gap: 0.5rem;
+  }
+
+  .selected-count {
+    font-size: 0.85rem;
+    color: var(--text-2);
+  }
+
+  .import-list section {
+    display: flex;
+    flex-direction: column;
+    gap: 0.75rem;
+  }
+  h3 {
+    margin: 0;
+    font-size: 1rem;
+  }
+  .mapping {
+    display: flex;
+    flex-direction: column;
+    gap: 0.75rem;
+  }
+  .mapping p {
+    margin: 0;
+  }
+  .mapping-line {
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+    min-width: 0;
+  }
+  .import-config :global(.form-select) {
+    width: 100%;
+    min-width: 0;
+  }
+  .import-config :global(.form-select [data-select-trigger]) {
+    width: 100%;
+    box-sizing: border-box;
+    background: var(--bg-dark-extra);
+    border: 1px solid var(--bg-light-extra);
+    padding: 0.75rem;
+  }
+  .import-config :global(.form-select .selected) {
+    width: 100%;
+    justify-content: space-between;
+  }
+  .import-config :global(.checkbox .box) {
+    pointer-events: none;
+  }
+  .import-tabs :global([data-tabs-list]) {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+  }
+  .import-tabs :global([data-tabs-trigger]) {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.5rem;
+    min-width: 0;
+    max-width: 100%;
+    padding: 0.6rem;
+    border: 1px solid var(--bg-light-extra);
+    border-radius: 0.5rem;
+    background: var(--bg-light);
+    color: var(--text-2);
+    font: 400 1rem var(--font);
+    overflow-wrap: anywhere;
+    cursor: pointer;
+  }
+  .import-tabs :global([data-tabs-trigger][data-state="active"]),
+  .import-tabs :global([data-tabs-trigger]:hover) {
+    background: var(--bg-light-extra);
+    color: var(--text);
+  }
+  .import-tabs :global([data-tabs-trigger]:focus-visible) {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+  }
+  .import-config :global([data-tabs-content]) {
+    margin-top: 1rem;
   }
 </style>

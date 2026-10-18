@@ -1,4 +1,5 @@
 import type { Group, Profile, Subscription } from "../../types";
+import { webSettings } from "./web-settings";
 
 export type Json = null | boolean | number | string | Json[] | { [key: string]: Json };
 export type Settings = { [key: string]: Json };
@@ -31,6 +32,7 @@ export function exportSnapshot(
   source: NonNullable<PortableConfig["source"]>,
   exportedAt = new Date().toISOString(),
 ): PortableConfig {
+  const settings = webSettings(snapshot.settings);
   return {
     format: "mt-c-config",
     schemaVersion: 1,
@@ -71,7 +73,7 @@ export function exportSnapshot(
       interfaces: [...interfaces],
       on_unavailable,
     })),
-    settings: copy(snapshot.settings),
+    ...(Object.keys(settings).length ? { settings: copy(settings) } : {}),
   };
 }
 

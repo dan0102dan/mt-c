@@ -4,17 +4,12 @@
 
   import { t } from "../../data/locale.svelte";
   import { fetchProfiles, profiles, profilesDirty } from "../../data/profiles.svelte";
-  import { fetcher } from "../../utils/fetcher";
-  import { toast } from "../../utils/events";
   import ConfigTransferDialog from "../../modules/config-transfer/ConfigTransferDialog.svelte";
-  import { CONFIG_TRANSFER_CONTEXT, type ConfigTransferControls, type PolicyDraftSource } from "../../modules/config-transfer/context";
-  import { assertPlanCurrent, exportSnapshot, type ImportPlan, type PortableConfig, type Snapshot } from "../../modules/config-transfer/model";
-  import { configForApply, decodePortable, snapshotFromServer, unsupportedSettings, type ServerSnapshot, type TransferPolicy } from "../../modules/config-transfer/adapter";
   import type { GroupsStore } from "../../modules/groups/groups.svelte";
-  import type { SubscriptionsStore } from "../../modules/subscriptions/subscriptions.svelte";
   import GroupsView from "../../modules/groups/GroupsView.svelte";
   // import LogsPanel from "../../modules/logs/LogsPanel.svelte";
   import SettingsPanel from "../../modules/settings/SettingsPanel.svelte";
+  import type { SubscriptionsStore } from "../../modules/subscriptions/subscriptions.svelte";
   import SubscriptionsView from "../../modules/subscriptions/SubscriptionsView.svelte";
   import { persistedState } from "../../utils/persisted-state.svelte";
   import Overlay from "../feedback/Overlay.svelte";
@@ -23,6 +18,27 @@
   import Toast from "../feedback/Toast.svelte";
   import HeaderSettings from "./HeaderSettings.svelte";
 
+  import {
+    configForApply,
+    decodePortable,
+    snapshotFromServer,
+    type ServerSnapshot,
+    type TransferPolicy,
+  } from "../../modules/config-transfer/adapter";
+  import {
+    CONFIG_TRANSFER_CONTEXT,
+    type ConfigTransferControls,
+    type PolicyDraftSource,
+  } from "../../modules/config-transfer/context";
+  import {
+    assertPlanCurrent,
+    exportSnapshot,
+    type ImportPlan,
+    type PortableConfig,
+    type Snapshot,
+  } from "../../modules/config-transfer/model";
+  import { toast } from "../../utils/events";
+  import { fetcher } from "../../utils/fetcher";
   import { LayoutList, Menu, RSS, Settings } from "../ui/icons";
 
   const lastActiveTab = persistedState("active_tab", "groups");
@@ -41,16 +57,13 @@
     }
   });
 
-
   let groupsStore: GroupsStore | undefined;
   let subscriptionsStore: SubscriptionsStore | undefined;
   let policySource: PolicyDraftSource | undefined;
 
-  let fileName = $state("");
   let imported = $state<PortableConfig | undefined>();
   let previewServer = $state<ServerSnapshot | undefined>();
   let previewCurrent = $state<Snapshot | undefined>();
-  let targetInterfaces = $state<{ id: string; name?: string }[]>([]);
   let targetPolicies = $state<{ id: string; name: string; available: boolean }[]>([]);
   let transferBusy = $state(false);
 
@@ -58,7 +71,8 @@
     return snapshotFromServer(server.config, {
       ...(groupsStore?.dataLoaded ? { groups: $state.snapshot(groupsStore.data) } : {}),
       ...(subscriptionsStore?.dataLoaded
-        ? { subscriptions: $state.snapshot(subscriptionsStore.data) } : {}),
+        ? { subscriptions: $state.snapshot(subscriptionsStore.data) }
+        : {}),
       ...(profiles.loaded ? { profiles: $state.snapshot(profiles.draft) } : {}),
       ...(policySource?.get() ? { policy: policySource.get() as TransferPolicy } : {}),
     });
@@ -66,8 +80,13 @@
 
   async function fetchSnapshot(): Promise<ServerSnapshot> {
     const value = await fetcher.get<ServerSnapshot>("/system/config/snapshot");
-    if (!value?.revision || !value.config?.app || !value.config.groups ||
-        !value.config.subscriptions) throw new Error("Invalid configuration snapshot response");
+    if (
+      !value?.revision ||
+      !value.config?.app ||
+      !value.config.groups ||
+      !value.config.subscriptions
+    )
+      throw new Error("Invalid configuration snapshot response");
     return value;
   }
 
@@ -109,25 +128,21 @@
       if (file.size > 20 * 1024 * 1024) throw new Error("Файл слишком большой");
       const parsed = decodePortable(await file.text());
       const server = await fetchSnapshot();
-      if (parsed.settings) {
-        const unsupported = unsupportedSettings(parsed.settings, server.config.app);
-        if (unsupported.length)
-          throw new Error("Неподдерживаемые настройки этого устройства: " + unsupported.join(", "));
-      }
-      const [interfaceResponse, policyResponse] = await Promise.all([
-        fetcher.get<{ interfaces: { id: string; name?: string }[] }>("/system/interfaces"),
+      const policyResponse =
         parsed.settings?.keeneticPolicy && server.config.app.keeneticPolicy
-          ? fetcher.get<{ policies: { id: string; name: string; available: boolean }[] }>(
-              "/keenetic/policies", { silent: true, timeoutMs: 5000 },
-            ).catch(() => ({ policies: [] }))
-          : Promise.resolve({ policies: [] }),
-      ]);
-      targetInterfaces = interfaceResponse.interfaces;
+          ? await fetcher
+              .get<{ policies: { id: string; name: string; available: boolean }[] }>(
+                "/keenetic/policies",
+                { silent: true, timeoutMs: 5000 },
+              )
+              .catch(() => ({ policies: [] }))
+          : { policies: [] };
       targetPolicies = policyResponse.policies;
       previewServer = server;
-      previewCurrent = currentSnapshot(server);
+      // Import only selected file sections. Unrelated editor drafts must not
+      // enter the full server payload or block it with unfinished references.
+      previewCurrent = snapshotFromServer(server.config);
       imported = parsed;
-      fileName = file.name;
     } catch (error) {
       console.error("Configuration import failed", error);
       toast.error(error instanceof Error ? error.message : "Некорректный файл конфигурации");
@@ -140,7 +155,7 @@
     if (transferBusy || !previewServer) return;
     transferBusy = true;
     try {
-      assertPlanCurrent(plan, currentSnapshot(previewServer));
+      assertPlanCurrent(plan, snapshotFromServer(previewServer.config));
       const nextConfig = configForApply(previewServer.config, plan.next);
       await fetcher.post<{ ok: boolean }>("/system/config/apply", {
         revision: previewServer.revision,
@@ -149,16 +164,23 @@
       imported = undefined;
       previewServer = undefined;
       previewCurrent = undefined;
-      // Import is an explicit server commit; refresh all draft baselines from
-      // the new canonical state after the acknowledgement, never beforehand.
-      profiles.loaded = false;
-      profiles.draft = [];
-      profiles.baseline = "[]";
+      // Keep drafts in untouched sections; refresh only confirmed changes,
+      // including consumers affected by an imported routing profile.
+      const changed = new Set(
+        plan.changes
+          .filter((change) => change.kind !== "unchanged")
+          .map((change) => change.section),
+      );
+      if (changed.has("profiles")) {
+        profiles.loaded = false;
+        profiles.draft = [];
+        profiles.baseline = "[]";
+      }
       await Promise.all([
-        groupsStore?.mount(),
-        subscriptionsStore?.mount(),
-        fetchProfiles({ fresh: true }),
-        policySource?.refresh(),
+        changed.has("groups") ? groupsStore?.mount() : undefined,
+        changed.has("subscriptions") ? subscriptionsStore?.mount() : undefined,
+        changed.has("profiles") ? fetchProfiles({ fresh: true }) : undefined,
+        changed.has("settings") ? policySource?.refresh() : undefined,
       ]);
       toast.success("Конфигурация импортирована");
     } catch (error) {
@@ -172,15 +194,21 @@
   const transferControls: ConfigTransferControls = {
     registerGroups(store) {
       groupsStore = store;
-      return () => { if (groupsStore === store) groupsStore = undefined; };
+      return () => {
+        if (groupsStore === store) groupsStore = undefined;
+      };
     },
     registerSubscriptions(store) {
       subscriptionsStore = store;
-      return () => { if (subscriptionsStore === store) subscriptionsStore = undefined; };
+      return () => {
+        if (subscriptionsStore === store) subscriptionsStore = undefined;
+      };
     },
     registerPolicy(source) {
       policySource = source;
-      return () => { if (policySource === source) policySource = undefined; };
+      return () => {
+        if (policySource === source) policySource = undefined;
+      };
     },
     exportConfig: exportCurrentConfig,
     importConfig: openConfigImport,
@@ -227,15 +255,22 @@
 {#if imported && previewServer && previewCurrent}
   <ConfigTransferDialog
     open={true}
-    {fileName}
+    initialSection={active_tab === "subscriptions"
+      ? "subscriptions"
+      : active_tab === "settings"
+        ? "settings"
+        : "groups"}
     {imported}
     current={previewCurrent}
-    interfaces={targetInterfaces}
     policies={targetPolicies}
     policySupported={Object.hasOwn(previewServer.config.app, "keeneticPolicy")}
     busy={transferBusy}
     onclose={() => {
-      if (!transferBusy) { imported = undefined; previewServer = undefined; previewCurrent = undefined; }
+      if (!transferBusy) {
+        imported = undefined;
+        previewServer = undefined;
+        previewCurrent = undefined;
+      }
     }}
     onapply={applyConfigImport}
   />

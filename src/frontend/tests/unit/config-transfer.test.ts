@@ -73,7 +73,7 @@ Deno.test("export preserves unfinished drafts and all sections", () => {
   assert.equal(result.profiles?.[0].name, "  Unsaved profile  ");
   assert.equal(result.groups?.[0].name, "");
   assert.equal(result.subscriptions?.[0].url, " incomplete draft URL ");
-  assert.deepEqual(result.settings, state.settings);
+  assert.deepEqual(result.settings, { keeneticPolicy: state.settings.keeneticPolicy });
   assert.equal(fingerprint(state), before);
 });
 Deno.test("export strips subscription caches, timestamps and profile usage", () => {
@@ -105,7 +105,7 @@ Deno.test("export detaches all nested arrays and settings", () => {
   assert.equal(result.groups![0].rules[0].enable, true);
   assert.deepEqual(result.profiles![0].interfaces, ["wg0", "wg1"]);
   assert.equal(result.subscriptions![0].overrides![0].enable, false);
-  assert.equal((result.settings!.dns as { port: number }).port, 5353);
+  assert.equal(result.settings!.dns, undefined);
 });
 Deno.test("replace distinguishes absent sections from explicitly empty groups", () => {
   const state = snapshot();
@@ -295,7 +295,10 @@ Deno.test("overrides use patterns and do not recreate removed source rules", () 
   ]);
   assert.deepEqual(result.unmatched, [{ rule: "removed.org", enable: false }]);
   assert.equal(fresh[0].enable, true);
-  assert.throws(() => applyRuleOverrides(fresh, [overrides[0], overrides[0]]), /Duplicate override/);
+  assert.throws(
+    () => applyRuleOverrides(fresh, [overrides[0], overrides[0]]),
+    /Duplicate override/,
+  );
 });
 Deno.test("type-only overrides do not change enabled state", () => {
   const fresh = [{ rule: "example.org", type: "namespace", enable: false }];
