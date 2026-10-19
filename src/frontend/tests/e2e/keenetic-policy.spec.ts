@@ -145,7 +145,7 @@ test.describe("Keenetic policy settings", () => {
       await mode.click();
       await expect(
         panel(page).getByText(
-          "Exclude: MT processes only devices except those in the selected policy",
+          "Exclude: MT processes all devices except those in the selected policy",
           { exact: true },
         ),
       ).toBeVisible();
@@ -465,8 +465,8 @@ test.describe("Save applies to the entire Settings page", () => {
     await name.fill("");
     await panel(page).getByRole("switch", { name: "Processing mode", exact: true }).click();
     await expect(save(page)).toBeDisabled();
-    expect(state.writes).toBe(0);
     expect(state.profileWrites).toBe(0);
+    expect(state.writes).toBe(0);
     await name.fill("Repaired");
     await expect(save(page)).toBeEnabled();
     await save(page).click();
