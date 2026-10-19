@@ -408,11 +408,21 @@ export function planImport(
   }
 
   // Do not normalize unrelated drafts. Only a changed definition updates retained consumers.
+  const previousRoutes = new Map(
+    [...current.groups, ...current.subscriptions].map((route) => [route.id, route]),
+  );
   for (const route of [...next.groups, ...next.subscriptions]) {
     if (!route.profile) continue;
     const profile = profilesById.get(route.profile);
-    if (!profile) problems.push(`Missing routing profile: ${route.profile}`);
-    else if (
+    // Existing broken references are not introduced by an unrelated import.
+    // Changed routes and deletion of a previously available profile still fail.
+    if (!profile) {
+      if (
+        oldProfilesById.has(route.profile) ||
+        fingerprint(previousRoutes.get(route.id)) !== fingerprint(route)
+      )
+        problems.push(`Missing routing profile: ${route.profile}`);
+    } else if (
       profile.interfaces.length &&
       oldProfilesById.get(profile.id)?.interfaces[0] !== profile.interfaces[0]
     ) {

@@ -15,10 +15,17 @@ const POLICIES: Policy[] = [
 ];
 
 // In-memory dev simulation: no RCI calls or routing changes. Restart resets settings.
-export function registerMockPolicyRoutes(app: Hono) {
+export function registerMockPolicyRoutes(
+  app: Hono,
+  source?: {
+    get: () => PolicySettings;
+    set: (settings: PolicySettings) => void;
+  },
+) {
   let settings: PolicySettings = { enabled: false, policy_id: "", mode: "include" };
   function status(): Status {
-    return { settings, runtime: { state: settings.enabled ? "ready" : "disabled" } };
+    const current = source?.get() ?? settings;
+    return { settings: current, runtime: { state: current.enabled ? "ready" : "disabled" } };
   }
 
   app.get(`${BASE}/policies`, (c) => c.json({ policies: POLICIES }));
@@ -60,6 +67,7 @@ export function registerMockPolicyRoutes(app: Hono) {
         );
     }
     settings = { enabled: body.enabled, policy_id: body.policy_id, mode: body.mode };
+    source?.set(settings);
     return c.json(status());
   });
 }

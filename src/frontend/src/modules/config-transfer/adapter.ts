@@ -7,8 +7,11 @@ import {
   type Profile,
   type Subscription,
 } from "../../types";
+import { cleanProfiles } from "../settings/profiles-data";
 import {
   copy,
+  exportSnapshot,
+  fingerprint,
   type Json,
   type PortableConfig,
   type ProfileDefinition,
@@ -137,7 +140,6 @@ export function unsupportedSettings(
 }
 
 export function decodePortable(text: string): PortableConfig {
-  if (text.length > 20 * 1024 * 1024) throw new Error("Configuration file exceeds 20 MB");
   const value: unknown = JSON.parse(text);
   if (!object(value)) throw new Error("Not a configuration object");
   if (value.format !== undefined && value.format !== "mt-c-config")
@@ -303,4 +305,26 @@ export function configForApply(server: ServerConfig, target: Snapshot): ServerCo
       };
     }),
   };
+}
+
+/** Confirm portable editor values, ignoring download caches and runtime fields.
+ * A 200/ok acknowledgement alone must not be presented as an applied import. */
+export function assertImportApplied(expected: Snapshot, actual: ServerConfig): void {
+  function comparable(snapshot: Snapshot) {
+    const portable = exportSnapshot(snapshot, { application: "mt-c" }, "");
+    return {
+      ...portable,
+      profiles: cleanProfiles(snapshot.profiles),
+      groups: portable.groups?.map((group) => ({
+        ...group,
+        rules: group.rules.map((rule) => ({ ...rule, name: rule.name ?? "" })),
+      })),
+      subscriptions: portable.subscriptions?.map((subscription) => ({
+        ...subscription,
+        overrides: [...(subscription.overrides ?? [])].sort((a, b) => a.rule.localeCompare(b.rule)),
+      })),
+    };
+  }
+  if (fingerprint(comparable(expected)) !== fingerprint(comparable(snapshotFromServer(actual))))
+    throw new Error("Imported configuration was not confirmed by the server");
 }

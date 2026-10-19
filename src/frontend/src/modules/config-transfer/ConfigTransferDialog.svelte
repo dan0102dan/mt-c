@@ -69,7 +69,6 @@
   ]);
   let replaceMode = $state(false);
   const mode = $derived(replaceMode ? "replace" : "merge");
-  let activeTab = $state<ImportTab>(untrack(() => initialSection));
   function showTab(value: string) {
     if (tabs.includes(value as ImportTab)) activeTab = value as ImportTab;
   }
@@ -86,6 +85,18 @@
             meta: "",
           }));
         const items = imported[section] ?? [];
+        // An explicit empty collection is an importable instruction in Replace
+        // mode. Give it a checkbox; an absent section still has no entry.
+        if (!items.length)
+          return [
+            {
+              key: `${section}:empty`,
+              section,
+              index: -1,
+              name: names[section],
+              meta: "",
+            },
+          ];
         return items.map((item, index) => ({
           key: `${section}:${index}`,
           section,
@@ -101,12 +112,22 @@
       },
     ),
   );
+  // Full exports include empty collections. Prefer actual objects/fields over
+  // empty placeholders so a profile export opened from Groups selects profiles.
+  // Empty-only files still preserve the source page for explicit Replace.
+  const initialTab = untrack(() => {
+    const populated = entries.filter((entry) => entry.key !== `${entry.section}:empty`);
+    const available = populated.length ? populated : entries;
+    return available.some((entry) => tabFor(entry.section) === initialSection)
+      ? initialSection
+      : (tabs.find((tab) => available.some((entry) => tabFor(entry.section) === tab)) ??
+          initialSection);
+  });
+  let activeTab = $state<ImportTab>(initialTab);
   let excluded = $state(
     new Set<string>(
       untrack(() =>
-        entries
-          .filter((entry) => tabFor(entry.section) !== initialSection)
-          .map((entry) => entry.key),
+        entries.filter((entry) => tabFor(entry.section) !== initialTab).map((entry) => entry.key),
       ),
     ),
   );
@@ -232,7 +253,6 @@
         ]
       : []),
   ]);
-  const hasWork = $derived(plan.changes.some((change) => change.kind !== "unchanged"));
   function problemMessage(problem: string) {
     const separator = problem.indexOf(": ");
     const reason = problem.slice(0, separator);
@@ -245,8 +265,20 @@
       return `${t("Profile")} ${profile?.name.trim() || id}: ${t(error)}`;
     }
     if (reason === "Missing routing profile") {
+      const removedProfile = current.profiles.some((profile) => profile.id === value);
+      const changedRoutes = new Set(
+        plan.changes
+          .filter(
+            (change) =>
+              (change.section === "groups" || change.section === "subscriptions") &&
+              change.kind !== "unchanged",
+          )
+          .map((change) => change.id),
+      );
       const objects = [...plan.next.groups, ...plan.next.subscriptions]
-        .filter((route) => route.profile === value)
+        .filter(
+          (route) => route.profile === value && (removedProfile || changedRoutes.has(route.id)),
+        )
         .map((route) => route.name || names["groups"]);
       return `${t("Routing profiles are missing for")}: ${objects.join(", ")}. ${t("Deselect these objects or include their profiles in the file.")}`;
     }
@@ -387,9 +419,9 @@
         ><Button
           type="button"
           aria-description={errors.length ? errors.join("\n") : undefined}
-          disabled={busy || !selectedCount || !!errors.length || !hasWork}
+          disabled={busy || !selectedCount || !!errors.length}
           onclick={() => {
-            if (!busy && selectedCount && !errors.length && hasWork) void onapply(plan);
+            if (!busy && selectedCount && !errors.length) void onapply(plan);
           }}
         >
           {busy ? t("Applying…") : t("Import")}

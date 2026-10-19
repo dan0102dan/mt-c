@@ -31,6 +31,7 @@ export async function show(anchor: HTMLElement, text: string) {
   let left = tRect.left + (tRect.width - mRect.width) / 2;
 
   if (top < PAD) top = tRect.bottom + 6;
+  top = Math.max(PAD, Math.min(top, globalThis.innerHeight - mRect.height - PAD));
   left = Math.max(PAD, Math.min(left, globalThis.innerWidth - mRect.width - PAD));
 
   tooltip.x = left;
@@ -40,6 +41,10 @@ export async function show(anchor: HTMLElement, text: string) {
 
 export function hideFor(anchor: HTMLElement) {
   if (activeAnchor === anchor) hide();
+}
+
+export function updateFor(anchor: HTMLElement, text: string) {
+  if (activeAnchor === anchor) void show(anchor, text);
 }
 
 export function hide() {

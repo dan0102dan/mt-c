@@ -5,10 +5,9 @@
   import PageControls from "../../components/layout/PageControls.svelte";
   import { t } from "../../data/locale.svelte";
   import ProfilesPanel from "./ProfilesPanel.svelte";
-  import { CONFIG_TRANSFER_CONTEXT, type ConfigTransferControls } from "../config-transfer/context";
 
   import { toast } from "../../utils/events";
-
+  import { CONFIG_TRANSFER_CONTEXT, type ConfigTransferControls } from "../config-transfer/context";
   import {
     SETTINGS_SECTIONS,
     type RegisterSection,
@@ -123,7 +122,7 @@
       onSave={() => void saveAll()}
       saveButtonId="save-settings"
       {saveLabel}
-      exportLabel="Экспорт конфига"
+      exportLabel={t("Export Config")}
       importLabel={t("Import Config")}
       onExport={() => void transfer.exportConfig()}
       onImport={(event) => void transfer.importConfig(event)}

@@ -380,6 +380,31 @@ Deno.test("removing a referenced profile prevents application", () => {
   assert(plan.problems.some((p) => p.includes("Missing routing profile")));
   assert.throws(() => assertPlanCurrent(plan, state), /Missing routing profile/);
 });
+Deno.test(
+  "unselected existing missing profiles do not invalidate a no-op or unrelated import",
+  () => {
+    const state = snapshot();
+    state.profiles = [];
+    const input = exportSnapshot(state, { application: "mt-c" });
+    const empty = planImport(state, input, opts({ selected: new Set() }));
+    assert.deepEqual(empty.problems, []);
+    assert.deepEqual(empty.next, state);
+    const unrelated = planImport(
+      state,
+      { settings: { log: "debug" } },
+      opts({ selected: new Set(["settings"]) }),
+    );
+    assert.deepEqual(unrelated.problems, []);
+    assert.deepEqual(unrelated.next.groups, state.groups);
+    assert.deepEqual(unrelated.next.subscriptions, state.subscriptions);
+    const changed = planImport(
+      state,
+      { groups: [{ ...state.groups[0], name: "Changed" }] },
+      opts({ choices: new Map([["groups:11223344", "replace"]]) }),
+    );
+    assert(changed.problems.includes("Missing routing profile: vpn"));
+  },
+);
 Deno.test("interface mapping preserves order and rejects duplicate results", () => {
   const state = snapshot();
   const input = { profiles: state.profiles };

@@ -24,6 +24,7 @@
   import HeaderSettings from "./HeaderSettings.svelte";
 
   import {
+    assertImportApplied,
     configForApply,
     decodePortable,
     snapshotFromServer,
@@ -38,10 +39,13 @@
   import {
     assertPlanCurrent,
     exportSnapshot,
+    fingerprint,
     type ImportPlan,
     type PortableConfig,
+    type Section,
     type Snapshot,
   } from "../../modules/config-transfer/model";
+  import { cleanProfiles } from "../../modules/settings/profiles-data";
   import { toast } from "../../utils/events";
   import { fetcher } from "../../utils/fetcher";
   import { LayoutList, Menu, RSS, Settings } from "../ui/icons";
@@ -73,13 +77,22 @@
   let transferBusy = $state(false);
 
   function currentSnapshot(server: ServerSnapshot): Snapshot {
+    const names = new Map(profiles.list.map((profile) => [profile.id, profile.name]));
+    const profileDraftChanged =
+      profilesDirty() || profiles.draft.some((profile) => names.get(profile.id) !== profile.name);
     return snapshotFromServer(server.config, {
-      ...(groupsStore?.dataLoaded ? { groups: $state.snapshot(groupsStore.data) } : {}),
-      ...(subscriptionsStore?.dataLoaded
+      ...(groupsStore?.dataLoaded && groupsStore.tracker.isDirty
+        ? { groups: $state.snapshot(groupsStore.data) }
+        : {}),
+      ...(subscriptionsStore?.dataLoaded && subscriptionsStore.tracker.isDirty
         ? { subscriptions: $state.snapshot(subscriptionsStore.data) }
         : {}),
-      ...(profiles.loaded ? { profiles: $state.snapshot(profiles.draft) } : {}),
-      ...(policySource?.get() ? { policy: policySource.get() as TransferPolicy } : {}),
+      ...(profiles.loaded && profileDraftChanged
+        ? { profiles: $state.snapshot(profiles.draft) }
+        : {}),
+      ...(policySource?.dirty() && policySource.get()
+        ? { policy: policySource.get() as TransferPolicy }
+        : {}),
     });
   }
 
@@ -117,7 +130,7 @@
       setTimeout(() => URL.revokeObjectURL(url), 5000);
     } catch (error) {
       console.error("Configuration export failed", error);
-      toast.error("Не удалось экспортировать текущую конфигурацию");
+      toast.error(t("Failed to export current configuration"));
     } finally {
       transferBusy = false;
     }
@@ -129,9 +142,10 @@
     input.value = "";
     if (!file || transferBusy) return;
     transferBusy = true;
+    let failure = "Invalid config file";
     try {
-      if (file.size > 20 * 1024 * 1024) throw new Error("Файл слишком большой");
       const parsed = decodePortable(await file.text());
+      failure = "Failed to import configuration";
       const server = await fetchSnapshot();
       const policyResponse =
         parsed.settings?.keeneticPolicy && server.config.app.keeneticPolicy
@@ -149,15 +163,36 @@
       imported = parsed;
     } catch (error) {
       console.error("Configuration import failed", error);
-      toast.error(error instanceof Error ? error.message : "Некорректный файл конфигурации");
+      toast.error(t(failure));
     } finally {
       transferBusy = false;
     }
   }
 
+  async function refreshImportViews(changed: ReadonlySet<Section>, confirmed: ServerSnapshot) {
+    await Promise.all([
+      changed.has("groups") ? groupsStore?.mount({ preserveDrafts: true }) : undefined,
+      changed.has("subscriptions")
+        ? subscriptionsStore?.mount({ preserveDrafts: true })
+        : undefined,
+      changed.has("profiles") ? fetchProfiles({ fresh: true, rebaseDrafts: true }) : undefined,
+      changed.has("settings") ? policySource?.refresh() : undefined,
+    ]);
+    if (
+      (changed.has("groups") && groupsStore?.fetchError) ||
+      (changed.has("subscriptions") && subscriptionsStore?.fetchError) ||
+      (changed.has("profiles") &&
+        (profiles.failed ||
+          fingerprint(cleanProfiles(profiles.list)) !==
+            fingerprint(cleanProfiles(confirmed.config.profiles ?? []))))
+    )
+      throw new Error("Imported configuration view refresh failed");
+  }
+
   async function applyConfigImport(plan: ImportPlan) {
     if (transferBusy || !previewServer) return;
     transferBusy = true;
+    let failure = t("Failed to import configuration");
     try {
       assertPlanCurrent(plan, snapshotFromServer(previewServer.config));
       if (
@@ -166,7 +201,17 @@
         profiles.saving ||
         policySource?.saving()
       ) {
-        throw new Error(t("Wait for the current save to finish before importing."));
+        failure = t("Wait for the current save to finish before importing.");
+        throw new Error(failure);
+      }
+      if (!plan.changes.some((change) => change.kind !== "unchanged")) {
+        const confirmed = await fetchSnapshot();
+        assertImportApplied(plan.next, confirmed.config);
+        const refresh = new Set<Section>(["groups", "subscriptions", "profiles"]);
+        if (!policySource?.dirty()) refresh.add("settings");
+        await refreshImportViews(refresh, confirmed);
+        toast.info(t("No changes to import"));
+        return;
       }
       const dirtyIds = {
         groups: groupsStore?.tracker.dirtyRootIds ?? new Set<string>(),
@@ -203,18 +248,18 @@
         }
       }
       if (conflictNames.size) {
-        throw new Error(
-          `${t("Save or discard local changes before importing:")} ${[...conflictNames].join(", ")}`,
-        );
+        failure = `${t("Save or discard local changes before importing:")} ${[...conflictNames].join(", ")}`;
+        throw new Error(failure);
       }
       const nextConfig = configForApply(previewServer.config, plan.next);
-      await fetcher.post<{ ok: boolean }>("/system/config/apply", {
+      const response = await fetcher.post<unknown>("/system/config/apply", {
         revision: previewServer.revision,
         config: nextConfig,
       });
-      imported = undefined;
-      previewServer = undefined;
-      previewCurrent = undefined;
+      if (!response || typeof response !== "object" || !("ok" in response) || response.ok !== true)
+        throw new Error("Invalid configuration apply acknowledgement");
+      const confirmed = await fetchSnapshot();
+      assertImportApplied(plan.next, confirmed.config);
       // Rebase untouched object drafts onto the confirmed server baseline.
       // They remain unsaved and never enter the import payload.
       const changed = new Set(
@@ -222,18 +267,14 @@
           .filter((change) => change.kind !== "unchanged")
           .map((change) => change.section),
       );
-      await Promise.all([
-        changed.has("groups") ? groupsStore?.mount({ preserveDrafts: true }) : undefined,
-        changed.has("subscriptions")
-          ? subscriptionsStore?.mount({ preserveDrafts: true })
-          : undefined,
-        changed.has("profiles") ? fetchProfiles({ fresh: true, rebaseDrafts: true }) : undefined,
-        changed.has("settings") ? policySource?.refresh() : undefined,
-      ]);
-      toast.success("Конфигурация импортирована");
+      await refreshImportViews(changed, confirmed);
+      imported = undefined;
+      previewServer = undefined;
+      previewCurrent = undefined;
+      toast.success(t("Configuration imported"));
     } catch (error) {
       console.error("Configuration import apply failed", error);
-      toast.error(error instanceof Error ? error.message : "Не удалось импортировать конфигурацию");
+      toast.error(failure);
     } finally {
       transferBusy = false;
     }

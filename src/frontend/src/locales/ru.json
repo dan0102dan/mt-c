@@ -298,5 +298,9 @@
   "This file has no data for this section": "В файле нет данных для этого раздела",
   "Unsupported setting": "Неподдерживаемая настройка",
   "Routing profiles are missing for": "В файле нет профилей маршрутизации для",
-  "Deselect these objects or include their profiles in the file.": "Снимите выбор с этих объектов или добавьте их профили в файл."
+  "Deselect these objects or include their profiles in the file.": "Снимите выбор с этих объектов или добавьте их профили в файл.",
+  "Failed to export current configuration": "Не удалось экспортировать текущую конфигурацию",
+  "Configuration imported": "Конфигурация импортирована",
+  "No changes to import": "Нет изменений для импорта",
+  "Failed to import configuration": "Не удалось импортировать конфигурацию"
 }

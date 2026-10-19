@@ -128,7 +128,7 @@
     controlsClass="group-controls"
     addLabel={t("Add Group")}
     canSave={store.canSave}
-    exportLabel="Экспорт конфига"
+    exportLabel={t("Export Config")}
     importLabel={t("Import Config")}
     onAdd={() => store.addGroup()}
     onExport={() => void transfer.exportConfig()}

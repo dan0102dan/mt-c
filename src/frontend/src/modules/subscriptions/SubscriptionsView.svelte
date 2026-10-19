@@ -9,7 +9,6 @@
   import SubscriptionPanel from "./components/SubscriptionPanel.svelte";
   import SubscriptionSearch from "./components/SubscriptionSearch.svelte";
   import AddSubscriptionDialog from "./dialogs/AddSubscriptionDialog.svelte";
-  import { CONFIG_TRANSFER_CONTEXT, type ConfigTransferControls } from "../config-transfer/context";
   import {
     SUBSCRIPTIONS_STORE_CONTEXT,
     SubscriptionsStore,
@@ -19,6 +18,7 @@
 
   import { droppable } from "../../lib/dnd";
   import { copyRulePatternsToClipboard } from "../../utils/copy-rule-patterns";
+  import { CONFIG_TRANSFER_CONTEXT, type ConfigTransferControls } from "../config-transfer/context";
 
   type Props = {
     onRenderComplete?: () => void;
@@ -82,7 +82,7 @@
     controlsClass="subscription-controls"
     addLabel={t("Add Subscription")}
     canSave={store.canSave}
-    exportLabel="Экспорт конфига"
+    exportLabel={t("Export Config")}
     importLabel={t("Import Config")}
     onExport={() => void transfer.exportConfig()}
     onImport={(event) => void transfer.importConfig(event)}

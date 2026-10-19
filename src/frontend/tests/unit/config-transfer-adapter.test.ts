@@ -10,8 +10,32 @@ import type { Subscription } from "../../src/types";
 import { installSvelteRunesMocks } from "../mocks/setup-svelte-runes";
 
 installSvelteRunesMocks();
-const { configForApply, decodePortable, snapshotFromServer } =
+const { assertImportApplied, configForApply, decodePortable, snapshotFromServer } =
   await import("../../src/modules/config-transfer/adapter");
+
+Deno.test("applied import verification rejects missing or different profiles", () => {
+  const original = server();
+  const expected = snapshotFromServer(original);
+  assert.doesNotThrow(() => assertImportApplied(expected, original));
+  for (const profiles of [
+    [],
+    [{ ...original.profiles![0], name: "Ignored import" }],
+    [{ ...original.profiles![0], interfaces: ["wg1", "wg0"] }],
+  ]) {
+    assert.throws(() => assertImportApplied(expected, { ...original, profiles }), /not confirmed/);
+  }
+});
+
+Deno.test("applied import verification ignores caches and equivalent profile defaults", () => {
+  const original = server();
+  const expected = snapshotFromServer(original);
+  expected.subscriptions[0].overrides = [];
+  const actual = structuredClone(original);
+  actual.profiles![0].on_unavailable = "blackhole";
+  actual.subscriptions[0].last_update++;
+  actual.subscriptions[0].rules = [];
+  assert.doesNotThrow(() => assertImportApplied(expected, actual));
+});
 
 const server = (): ServerConfig => ({
   configVersion: "0.8.5",
