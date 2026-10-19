@@ -66,7 +66,7 @@ static int fetch_progress(void *ud, curl_off_t total, curl_off_t now, curl_off_t
 {
     (void)total; (void)now; (void)up_total; (void)up_now;
     const atomic_bool *stop = ud;
-    return stop && atomic_load(stop) ? 1 : 0;
+    return atomic_load(stop) ? 1 : 0;
 }
 mt_err_t mt_dns_clients_fetch_keenetic(mt_dns_client_t **clients, size_t *count,
                                       const atomic_bool *stop, void *ud)
@@ -87,9 +87,13 @@ mt_err_t mt_dns_clients_fetch_keenetic(mt_dns_client_t **clients, size_t *count,
     SET(CURLOPT_NOSIGNAL, 1L);
     SET(CURLOPT_WRITEFUNCTION, receive_clients);
     SET(CURLOPT_WRITEDATA, &response);
-    SET(CURLOPT_XFERINFOFUNCTION, fetch_progress);
-    SET(CURLOPT_XFERINFODATA, stop);
-    SET(CURLOPT_NOPROGRESS, 0L);
+    /* Install progress reporting only with a live cancellation flag. A NULL
+     * flag keeps libcurl's default (progress disabled) for uncancelled reads. */
+    if (stop) {
+        SET(CURLOPT_XFERINFOFUNCTION, fetch_progress);
+        SET(CURLOPT_XFERINFODATA, stop);
+        SET(CURLOPT_NOPROGRESS, 0L);
+    }
 #undef SET
     CURLcode result = setup == CURLE_OK ? curl_easy_perform(curl) : setup;
     long status = 0;
