@@ -145,7 +145,7 @@ test.describe("Keenetic policy settings", () => {
       await mode.click();
       await expect(
         panel(page).getByText(
-          "Exclude: MT processes all devices except those in the selected policy",
+          "Exclude: MT processes only devices except those in the selected policy",
           { exact: true },
         ),
       ).toBeVisible();
@@ -302,8 +302,8 @@ test.describe("Shared settings toolbar", () => {
       await name.fill("Unsaved profile name");
       await expect(save(page)).toBeEnabled();
       const button = await save(page).elementHandle();
-      await page.evaluate(() => window.scrollTo(0, document.documentElement.scrollHeight));
-      // Reaching the bottom must preserve a still-visible section's title and Add.
+      await placeHeading(36);
+      // Observe this section boundary, not a footer that later sections can move.
       await expect(heading).toHaveAccessibleName("Interface priority profiles");
       await expect(panel(page).getByRole("heading", { name: "Keenetic policy" })).toBeInViewport();
       await expect(page.getByRole("button", { name: "Add profile", exact: true })).toBeVisible();
@@ -354,7 +354,7 @@ test.describe("Shared settings toolbar", () => {
       await expect(heading).toHaveAccessibleName("Interface priority profiles");
       await expect(add).toBeVisible();
       await expect(page.locator(".context-add")).toHaveCSS("opacity", "1");
-      await page.evaluate(() => window.scrollTo(0, document.documentElement.scrollHeight));
+      await placeHeading(-8);
       await expect(heading).toHaveAccessibleName("Keenetic policy");
       await expect(add).toHaveCount(0);
       await expect(page.locator(".settings-page .page-controls")).toHaveCount(1);
@@ -465,8 +465,8 @@ test.describe("Save applies to the entire Settings page", () => {
     await name.fill("");
     await panel(page).getByRole("switch", { name: "Processing mode", exact: true }).click();
     await expect(save(page)).toBeDisabled();
-    expect(state.profileWrites).toBe(0);
     expect(state.writes).toBe(0);
+    expect(state.profileWrites).toBe(0);
     await name.fill("Repaired");
     await expect(save(page)).toBeEnabled();
     await save(page).click();
