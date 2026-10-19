@@ -1,4 +1,5 @@
 import type { DnsQuery, DnsQueryResponse } from "./dns-query-data";
+import { normalizeDnsClient } from "./dns-client-labels";
 
 // snapshot is an internal, already decoded value; never serialized back
 // into a giant JSON string after receiving the bounded wire chunks.
@@ -58,6 +59,7 @@ function isQuery(value: unknown): value is DnsQuery {
   return (
     Number.isSafeInteger(row.id) && row.id > 0 &&
     Number.isFinite(row.time_ms) && typeof row.client === "string" && row.client.length <= 48 &&
+    (row.client_name === undefined || typeof row.client_name === "string") &&
     typeof row.domain === "string" && row.domain.length <= 1024 &&
     Number.isInteger(row.qtype) && row.qtype >= 0 && row.qtype <= 65535 &&
     (row.protocol === "udp" || row.protocol === "tcp")
@@ -124,12 +126,12 @@ export function applyDnsEvent(state: DnsQueryResponse, event: StreamEvent): DnsQ
         snapshot.queries.length > snapshot.capacity || !snapshot.queries.every(isQuery) ||
         new Set(snapshot.queries.map((row) => row.id)).size !== snapshot.queries.length)
       throw new Error("Invalid DNS snapshot");
-    return { queries: snapshot.queries, capacity: snapshot.capacity };
+    return { queries: snapshot.queries.map(normalizeDnsClient), capacity: snapshot.capacity };
   }
   if (!isQuery(value) || !validCapacity(state.capacity)) throw new Error("Invalid DNS query event");
   return {
     capacity: state.capacity,
-    queries: [value, ...state.queries.filter((row) => row.id !== value.id)].slice(0, state.capacity),
+    queries: [normalizeDnsClient(value), ...state.queries.filter((row) => row.id !== value.id)].slice(0, state.capacity),
   };
 }
 

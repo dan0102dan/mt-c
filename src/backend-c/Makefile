@@ -85,6 +85,7 @@ CORE_SRCS := \
     src/platform/loop.c \
     src/dns/wire.c \
     src/dns/query_log.c \
+    src/interfaces/dns_clients.c \
     src/dns/proxy.c \
     src/dns_cache/cache.c \
     src/iptables/rule.c \
@@ -144,6 +145,7 @@ API_SRCS := \
     src/api/app.c \
     src/api/groups.c \
     src/api/system.c src/api/profiles_api.c \
+    src/platform/dns_clients_service.c \
     src/update/release.c src/platform/update.c \
     src/api/staticfiles.c \
     src/api/subscriptions_api.c \
@@ -164,6 +166,7 @@ KEENETIC_SRCS := \
     src/interfaces/keenetic_rci.c \
     src/netfilter/keenetic_policy.c \
     src/interfaces/keenetic_policy_rci.c \
+    src/interfaces/keenetic_dns_clients.c \
     src/api/keenetic_policy_api.c
 endif
 

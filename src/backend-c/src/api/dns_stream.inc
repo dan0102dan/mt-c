@@ -4,6 +4,9 @@
 typedef enum { DNS_SNAPSHOT_BEGIN, DNS_SNAPSHOT_ROWS, DNS_SNAPSHOT_END, DNS_LIVE } dns_phase_t;
 typedef struct dns_stream {
     mt_dns_query_log_t *log;
+    mt_dns_clients_t *clients;
+    uint64_t clients_revision;
+    int clients_subscription;
     mt_http_stream_t *http;
     int subscription;
     uint64_t cursor, revision, through;
@@ -31,6 +34,7 @@ static char *dns_event(const char *event, cJSON *json, size_t *len) {
 
 static char *dns_snapshot_begin(dns_stream_t *s, size_t *len) {
     s->revision = mt_dns_query_log_revision(s->log);
+    s->clients_revision = mt_dns_clients_revision(s->clients);
     s->through = mt_dns_query_log_sequence(s->log);
     s->snapshot_count = mt_dns_query_log_size(s->log);
     s->sent = 0;
@@ -50,6 +54,12 @@ static char *dns_stream_next(void *ud, size_t *len) {
     uint64_t revision = mt_dns_query_log_revision(s->log);
     size_t count = mt_dns_query_log_size(s->log);
     *len = 0;
+    /* Aliases arriving/renaming/disappearing update already displayed rows,
+     * not only future queries. Existing chunk staging makes replacement atomic
+     * and restarts an incomplete snapshot without a second protocol or queue. */
+    if (s->clients_revision != mt_dns_clients_revision(s->clients)) {
+        return dns_snapshot_begin(s, len);
+    }
     if (s->phase == DNS_SNAPSHOT_BEGIN) { return dns_snapshot_begin(s, len); }
     if (revision != s->revision) {
         if (s->phase != DNS_LIVE) {
@@ -76,7 +86,7 @@ static char *dns_stream_next(void *ud, size_t *len) {
             if (!mt_dns_query_log_get_id(s->log, first + i, &entry)) {
                 cJSON_Delete(data); return dns_snapshot_begin(s, len);
             }
-            cJSON *row = dns_query_json(&entry);
+            cJSON *row = dns_query_json(&entry, s->clients);
             if (!row || !cJSON_AddItemToArray(rows, row)) {
                 cJSON_Delete(row); cJSON_Delete(data); *len = SIZE_MAX; return NULL;
             }
@@ -100,7 +110,7 @@ static char *dns_stream_next(void *ud, size_t *len) {
     mt_dns_query_entry_t entry;
     if (!mt_dns_query_log_get_id(s->log, s->cursor + 1, &entry)) { *len = SIZE_MAX; return NULL; }
     s->cursor = entry.id;
-    return dns_event("query", dns_query_json(&entry), len);
+    return dns_event("query", dns_query_json(&entry, s->clients), len);
 }
 
 static void dns_stream_notify(void *ud) {
@@ -110,6 +120,7 @@ static void dns_stream_notify(void *ud) {
 static void dns_stream_closed(void *ud) {
     dns_stream_t *s = ud;
     mt_dns_query_log_unsubscribe(s->log, s->subscription);
+    mt_dns_clients_unsubscribe(s->clients, s->clients_subscription);
     free(s);
 }
 static void handle_dns_stream(mt_http_req_t *req, mt_http_res_t *res, void *ud) {
@@ -120,6 +131,11 @@ static void handle_dns_stream(mt_http_req_t *req, mt_http_res_t *res, void *ud) 
     s->subscription = mt_dns_query_log_subscribe(s->log, dns_stream_notify, s);
     if (!s->subscription) {
         free(s); mt_http_res_write_error(res, 503, "DNS stream subscriber limit reached"); return;
+    }
+    if (ctx->dns_clients) {
+        s->clients_subscription = mt_dns_clients_subscribe(ctx->dns_clients, dns_stream_notify, s);
+        /* Optional discovery must not reject a working DNS subscription. */
+        if (s->clients_subscription) { s->clients = ctx->dns_clients; }
     }
     s->http = mt_http_stream_open(req, res, dns_stream_next, dns_stream_closed, s);
     if (!s->http) {

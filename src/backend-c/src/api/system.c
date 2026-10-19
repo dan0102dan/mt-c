@@ -92,12 +92,18 @@ static void handle_netfilterd_hook(mt_http_req_t *req, mt_http_res_t *res, void 
     mt_http_res_write(res, 200, NULL, NULL, 0);
 }
 
-static cJSON *dns_query_json(const mt_dns_query_entry_t *entry) {
+static cJSON *dns_query_json(const mt_dns_query_entry_t *entry, const mt_dns_clients_t *clients) {
+    char address[MT_DNS_CLIENT_IP_LEN];
+    const char *ip = mt_dns_client_address(entry->client, address, sizeof(address)) ? address : entry->client;
+    const char *name = mt_dns_clients_lookup(clients, ip);
     cJSON *row = cJSON_CreateObject();
     if (!row) { return NULL; }
+    if (name && !cJSON_AddStringToObject(row, "client_name", name)) {
+        cJSON_Delete(row); return NULL;
+    }
     if (!cJSON_AddNumberToObject(row, "id", (double)entry->id) ||
         !cJSON_AddNumberToObject(row, "time_ms", (double)entry->time_ms) ||
-        !cJSON_AddStringToObject(row, "client", entry->client) ||
+        !cJSON_AddStringToObject(row, "client", ip) ||
         !cJSON_AddStringToObject(row, "domain", entry->domain) ||
         !cJSON_AddNumberToObject(row, "qtype", entry->qtype) ||
         !cJSON_AddStringToObject(row, "protocol", entry->tcp ? "tcp" : "udp")) {
@@ -107,7 +113,7 @@ static cJSON *dns_query_json(const mt_dns_query_entry_t *entry) {
     return row;
 }
 
-static cJSON *dns_snapshot(mt_dns_query_log_t *log) {
+static cJSON *dns_snapshot(mt_dns_query_log_t *log, const mt_dns_clients_t *clients) {
     cJSON *result = cJSON_CreateObject();
     if (!result) { return NULL; }
     cJSON *rows = cJSON_AddArrayToObject(result, "queries");
@@ -119,7 +125,7 @@ static cJSON *dns_snapshot(mt_dns_query_log_t *log) {
     for (size_t i = 0; i < count; i++) {
         mt_dns_query_entry_t entry;
         if (!mt_dns_query_log_get(log, i, &entry)) { break; }
-        cJSON *row = dns_query_json(&entry);
+        cJSON *row = dns_query_json(&entry, clients);
         if (!row || !cJSON_AddItemToArray(rows, row)) {
             cJSON_Delete(row);
             cJSON_Delete(result);
@@ -136,7 +142,7 @@ static cJSON *dns_snapshot(mt_dns_query_log_t *log) {
 static void handle_dns_queries(mt_http_req_t *req, mt_http_res_t *res, void *ud) {
     (void)req;
     mt_system_ctx_t *ctx = ud;
-    cJSON *result = dns_snapshot(ctx->query_log);
+    cJSON *result = dns_snapshot(ctx->query_log, ctx->dns_clients);
     if (!result) { mt_http_res_write_error(res, 500, "out of memory"); return; }
     mt_http_res_set_header(res, "Cache-Control", "no-store");
     mt_http_res_write_json(res, 200, result);

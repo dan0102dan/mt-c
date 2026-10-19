@@ -3,6 +3,7 @@ export type DnsQuery = {
   id: number;
   time_ms: number;
   client: string;
+  client_name?: string; // Optional current router label; IP remains the identity.
   domain: string;
   qtype: number;
   protocol: "udp" | "tcp";

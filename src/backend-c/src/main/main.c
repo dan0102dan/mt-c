@@ -72,6 +72,7 @@ struct daemon {
     mt_loop_t *loop;
     mt_dnsproxy_t *proxy;
     mt_dns_query_log_t *query_log;
+    mt_dns_clients_t *dns_clients;
     mt_cache_t *cache;
     mt_dns_pipeline_t *pipeline;
     mt_ipt_t *ipt4;
@@ -124,6 +125,9 @@ static void daemon_teardown(struct daemon *d)
     d->http_tcp = NULL;
     mt_httpd_destroy(d->http_unix);
     d->http_unix = NULL;
+    /* Streams unsubscribe before their optional label cache is destroyed. */
+    mt_dns_clients_destroy(d->dns_clients);
+    d->dns_clients = NULL;
 
     if (d->route_reconcile_timer) {
         (void)mt_loop_del_timer(d->loop, d->route_reconcile_timer);
@@ -791,6 +795,12 @@ int main(int argc, char **argv)
         return 1;
     }
 
+    /* Signals are already blocked. Device discovery is optional, read-only,
+     * and off-loop; failure falls back to addresses instead of stopping DNS. */
+    if (mt_dns_clients_create(d.loop, NULL, NULL, &d.dns_clients) != MT_OK) {
+        MT_WARN("device names unavailable; DNS journal will use IP addresses");
+    }
+
     /* ---- HTTP API: Unix socket (always on) + TCP WebUI (config-gated) ------ */
 
     mt_groups_ctx_t groups_ctx = {
@@ -801,6 +811,7 @@ int main(int argc, char **argv)
     mt_system_ctx_t system_ctx = {
         .app = d.app,
         .query_log = d.query_log,
+        .dns_clients = d.dns_clients,
         .config_path = config_path,
         .config_version = MT_VERSION,
     };

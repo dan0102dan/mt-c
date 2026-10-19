@@ -6,7 +6,7 @@
   import Placeholder from "../../components/ui/Placeholder.svelte";
   import Select from "../../components/ui/Select.svelte";
   import Tooltip from "../../components/ui/Tooltip.svelte";
-  import { Clear, Info, LayoutList, Refresh, Search, Sigma } from "../../components/ui/icons";
+  import { Clear, Info, LayoutList, Search, Sigma } from "../../components/ui/icons";
   import { token } from "../../data/auth.svelte";
   import { locales, t } from "../../data/locale.svelte";
   import { API_BASE, fetcher } from "../../utils/fetcher";
@@ -15,9 +15,9 @@
     filterDnsQueries,
     groupDnsQueries,
     type DnsQuery,
-    type DnsQueryResponse,
   } from "./dns-query-data";
   import { applyDnsEvent, subscribeDnsQueries, type StreamState } from "./dns-query-stream";
+  import { dnsClientNames } from "./dns-client-labels";
   import streamTranslations from "./dns-query-stream.ru.json";
   import { settingsSection } from "./section-controls";
 
@@ -44,10 +44,15 @@
   let requestGeneration = 0;
 
   const clients = $derived([...new Set(queries.map((row) => row.client))].sort());
+  const clientNames = $derived(dnsClientNames(queries));
   const deviceOptions = $derived([
     { value: "", label: t("All devices") },
     ...(device && !clients.includes(device) ? [{ value: device, label: device }] : []),
-    ...clients.map((client) => ({ value: client, label: client })),
+    ...clients.map((client) => ({
+      value: client,
+      label: clientNames.get(client) ?? client,
+      description: clientNames.has(client) ? client : undefined,
+    })),
   ]);
   const filtered = $derived(filterDnsQueries(queries, search, device));
   const groupedRows = $derived(groupDnsQueries(filtered));
@@ -115,32 +120,10 @@
     };
   });
 
-  async function refresh() {
-    if (loading || clearing) return;
-    if (!paused) {
-      streamRevision++;
-      return;
-    }
-    // Explicit refresh while paused is still a single snapshot GET.
-    const generation = ++requestGeneration;
-    loading = true;
-    try {
-      const response = await fetcher.get<DnsQueryResponse>("/system/dns/queries", {
-        silent: true,
-        timeoutMs: 8000,
-      });
-      if (generation !== requestGeneration) return;
-      const next = applyDnsEvent({ queries, capacity }, {
-        event: "snapshot", data: JSON.stringify(response),
-      });
-      queries = next.queries;
-      capacity = next.capacity;
-      failed = false;
-    } catch {
-      if (generation === requestGeneration) failed = true;
-    } finally {
-      if (generation === requestGeneration) loading = false;
-    }
+  function retryStream() {
+    if (clearing) return;
+    paused = false;
+    streamRevision++;
   }
 
   async function clearHistory() {
@@ -168,6 +151,17 @@
 
   const displayTime = (timestamp: number) => new Date(timestamp).toLocaleString();
 </script>
+
+{#snippet clientIdentity(address: string)}
+  <span class="client-identity">
+    {#if clientNames.get(address)}
+      <span>{clientNames.get(address)}</span>
+      <span class="client-address">{address}</span>
+    {:else}
+      <span>{address}</span>
+    {/if}
+  </span>
+{/snippet}
 
 <section
   class="dns-query-log"
@@ -198,7 +192,7 @@
         />
       </label>
       <div class="device-field">
-        <Select options={deviceOptions} bind:selected={device} compact ariaLabel={t("Device")} />
+        <Select options={deviceOptions} bind:selected={device} ariaLabel={t("Device")} />
       </div>
       <div class="dns-actions">
         <Tooltip value={grouped ? t("Individual queries") : t("Group by domain")}>
@@ -215,16 +209,6 @@
         <Button small type="button" aria-pressed={paused} onclick={() => (paused = !paused)}>
           {paused ? t("Resume") : t("Pause")}
         </Button>
-        <Tooltip value={t("Refresh")}>
-          <Button
-            small
-            type="button"
-            aria-label={t("Refresh")}
-            disabled={loading || clearing}
-            inactive={loading || clearing}
-            onclick={() => void refresh()}
-          ><Refresh size={20} /></Button>
-        </Tooltip>
         <Tooltip value={t("Clear history")}>
           <Button
             small
@@ -243,7 +227,7 @@
         <Placeholder variant="error" compact minHeight="auto">
           {t("Failed to load DNS queries")}
           {#snippet actions()}
-            <Button disabled={loading || clearing} onclick={() => void refresh()}>{t("Retry")}</Button>
+            <Button disabled={clearing} onclick={retryStream}>{t("Retry")}</Button>
           {/snippet}
         </Placeholder>
       </div>
@@ -297,7 +281,7 @@
               <tr>
                 <td class="domain"><span class="cell-label" aria-hidden="true">{t("Domain")}</span><span class="cell-value">{item.domain}</span></td>
                 <td class="number"><span class="cell-label" aria-hidden="true">{t("Requests")}</span><span class="cell-value">{item.count}</span></td>
-                <td><span class="cell-label" aria-hidden="true">{t("Clients")}</span><span class="cell-value">{item.clients.join(", ")}</span></td>
+                <td><span class="cell-label" aria-hidden="true">{t("Clients")}</span><span class="cell-value client-identities">{#each item.clients as client (client)}{@render clientIdentity(client)}{/each}</span></td>
                 <td class="timestamp"><span class="cell-label" aria-hidden="true">{t("Last request")}</span><span class="cell-value">{displayTime(item.lastTime)}</span></td>
               </tr>
             {/each}
@@ -305,7 +289,7 @@
             {#each queryPage as row (row.id)}
               <tr>
                 <td class="timestamp"><span class="cell-label" aria-hidden="true">{t("Time")}</span><span class="cell-value">{displayTime(row.time_ms)}</span></td>
-                <td><span class="cell-label" aria-hidden="true">{t("Client")}</span><span class="cell-value">{row.client}</span></td>
+                <td><span class="cell-label" aria-hidden="true">{t("Client")}</span><span class="cell-value">{@render clientIdentity(row.client)}</span></td>
                 <td class="domain"><span class="cell-label" aria-hidden="true">{t("Domain")}</span><span class="cell-value">{row.domain}</span></td>
                 <td><span class="cell-label" aria-hidden="true">{t("Type")}</span><span class="cell-value">{dnsQueryType(row.qtype)}</span></td>
                 <td><span class="cell-label" aria-hidden="true">{t("Protocol")}</span><span class="cell-value">{row.protocol.toUpperCase()}</span></td>
@@ -330,6 +314,21 @@
 <style>
   .dns-query-log {
     min-width: 0;
+  }
+  .client-identity,
+  .client-identities {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+    gap: 0.1rem;
+    overflow-wrap: anywhere;
+  }
+  .client-identities {
+    gap: 0.4rem;
+  }
+  .client-address {
+    color: var(--text-2);
+    font-size: 0.8rem;
   }
   h2 {
     margin: 0 0 1rem;

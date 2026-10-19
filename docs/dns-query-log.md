@@ -52,7 +52,7 @@ Clearing during a snapshot or evicting its unread rows starts a new `snapshot_be
 
 At most eight subscribers share the same ring. Per-writable-callback work remains bounded to 64 KiB/32 events. Idle heartbeat comments every 15 seconds maintain connectivity; DNS events do not wait for a timer. Nonprogressing writers time out. Responses set `Cache-Control: no-store, no-cache, no-transform` and `X-Accel-Buffering: no`; reverse proxies must preserve streaming.
 
-The frontend uses fetch streaming with the existing Bearer header, never a token in the URL. Pause, leaving Settings, hidden tab, logout and unmount abort the subscription. Resume reconnects; transport failures use bounded exponential backoff. Unauthorized responses stop retries. While paused, Refresh performs one finite read without resuming SSE.
+The frontend uses fetch streaming with the existing Bearer header, never a token in the URL. Pause, leaving Settings, hidden tab, logout and unmount abort the subscription. Resume reconnects; transport failures use bounded exponential backoff. Unauthorized responses stop retries. The DNS toolbar has no Refresh action or manual GET path; error recovery reconnects SSE. Device labels and normalized client addresses are documented in [DNS client labels](dns-client-labels.md).
 
 ## Verification
 
