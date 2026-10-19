@@ -23,14 +23,18 @@ const test = base.extend<{
     try {
       const port = await new Promise<number>((resolve, reject) => {
         let output = "";
-        const timer = setTimeout(() => reject(new Error("Mock backend startup timed out")), 10000);
+        let stderr = "";
+        const timer = setTimeout(
+          () => reject(new Error(`Mock backend startup timed out\n${stderr}`)),
+          10000,
+        );
         child.once("error", (error) => {
           clearTimeout(timer);
           reject(error);
         });
-        child.once("exit", () => {
+        child.once("exit", (code, signal) => {
           clearTimeout(timer);
-          reject(new Error("Mock backend exited during startup"));
+          reject(new Error(`Mock backend exited during startup (${code ?? signal})\n${stderr}`));
         });
         child.stdout.on("data", (chunk) => {
           output += chunk.toString();
@@ -40,7 +44,9 @@ const test = base.extend<{
             resolve(Number(match[1]));
           }
         });
-        child.stderr.on("data", () => {});
+        child.stderr.on("data", (chunk) => {
+          stderr = (stderr + chunk.toString()).slice(-8000);
+        });
       });
       const baseURL = `http://localhost:${port}`;
       const api = await playwright.request.newContext({

@@ -29,8 +29,30 @@ const INTERFACES: Interfaces = {
   ],
 };
 
-const DATA = JSON.parse(Deno.readTextFileSync("./dev/groups.json"));
-DATA.groups = DATA.groups.map((group: Group) => withPriorityDefault(group, DEFAULT_GROUP_PRIORITY));
+const DATA: { groups: Group[]; profiles: Profile[] } = {
+  groups: [
+    {
+      id: "11223344",
+      name: "Example group",
+      color: "#5b337f",
+      interface: "wg0",
+      profile: "mock_vpn",
+      enable: true,
+      priority: DEFAULT_GROUP_PRIORITY,
+      rules: [
+        { id: "aabbccdd", name: "Example", rule: "example.org", type: "namespace", enable: true },
+      ],
+    },
+  ],
+  profiles: [
+    {
+      id: "mock_vpn",
+      name: "Example VPN",
+      interfaces: ["wg0", "nwg0"],
+      on_unavailable: "blackhole",
+    },
+  ],
+};
 const SUBSCRIPTIONS: Subscription[] = [
   {
     id: "a1b2c3d4",
