@@ -122,10 +122,10 @@ test("DNS journal filters and groups all matching rows", async ({ page, dns }) =
   await expect(region.locator("tbody tr")).toHaveCount(3);
   await region.getByRole("searchbox").fill("EXAMPLE");
   await expect(region.locator("tbody tr")).toHaveCount(2);
-  await region.getByRole("combobox", { name: "Device" }).click();
+  await region.getByRole("button", { name: "Device", exact: true }).click();
   await page.getByRole("option", { name: "192.168.1.10", exact: true }).click();
   await expect(region.locator("tbody tr")).toHaveCount(1);
-  await region.getByRole("combobox", { name: "Device" }).click();
+  await region.getByRole("button", { name: "Device", exact: true }).click();
   await page.getByRole("option", { name: "All devices", exact: true }).click();
   await region.getByRole("searchbox").fill("");
   await region.getByRole("button", { name: "Group by domain" }).click();
@@ -165,10 +165,10 @@ test("DNS streaming controls and long records fit a phone viewport", async ({ pa
   dns.emit({ ...liveQuery(), domain, client: "2001:db8:1234:5678:abcd:ef01:2345:6789" });
   await expect(region.locator("tbody tr")).toHaveCount(4);
   await expect(region.getByText(domain, { exact: true })).toBeVisible();
-  await region.getByRole("combobox", { name: "Device" }).click();
+  await region.getByRole("button", { name: "Device", exact: true }).click();
   await expect(page.getByRole("option", { name: "All devices", exact: true })).toBeVisible();
   await page.keyboard.press("Escape");
-  await expect(region.getByRole("combobox", { name: "Device" })).toBeFocused();
+  await expect(region.getByRole("button", { name: "Device", exact: true })).toBeFocused();
   expect(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth)).toBe(false);
   await region.getByRole("button", { name: "Group by domain" }).click();
   expect(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth)).toBe(false);
