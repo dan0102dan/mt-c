@@ -94,6 +94,27 @@ Deno.test("versioned empty sections are accepted", () => {
   assert.deepEqual(input.profiles, []);
 });
 
+Deno.test("imported override patterns enforce the backend UTF-8 byte limit", () => {
+  for (const rule of [
+    "a".repeat(4096),
+    "я".repeat(2048),
+    "界".repeat(1365) + "a",
+    "😀".repeat(1024),
+  ]) {
+    const state = snapshotFromServer(server());
+    state.subscriptions[0].overrides = [{ rule, enable: false }];
+    const portable = exportSnapshot(state, { application: "mt-c" });
+    assert.deepEqual(decodePortable(JSON.stringify(portable)).subscriptions![0].overrides, [
+      { rule, enable: false },
+    ]);
+    portable.subscriptions![0].overrides![0].rule += "a";
+    assert.throws(
+      () => decodePortable(JSON.stringify(portable)),
+      /Invalid or duplicate rule override/,
+    );
+  }
+});
+
 Deno.test("malformed and future files are rejected safely", () => {
   for (const input of [
     "{ broken",

@@ -93,7 +93,7 @@ function subscription(value: unknown): SubscriptionDefinition {
       !object(entry) ||
       typeof entry.rule !== "string" ||
       !entry.rule ||
-      entry.rule.length > 4096 ||
+      new TextEncoder().encode(entry.rule).byteLength > 4096 ||
       (entry.type !== undefined && typeof entry.type !== "string") ||
       (entry.enable !== undefined && typeof entry.enable !== "boolean") ||
       (entry.type === undefined && entry.enable === undefined) ||
