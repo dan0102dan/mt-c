@@ -1,10 +1,15 @@
 <script lang="ts">
   import { onMount, untrack } from "svelte";
 
+  import Pagination from "../../components/Pagination.svelte";
+  import Button from "../../components/ui/Button.svelte";
+  import Placeholder from "../../components/ui/Placeholder.svelte";
+  import Select from "../../components/ui/Select.svelte";
+  import Tooltip from "../../components/ui/Tooltip.svelte";
+  import { Clear, Info, LayoutList, Refresh, Search, Sigma } from "../../components/ui/icons";
   import { token } from "../../data/auth.svelte";
   import { locales, t } from "../../data/locale.svelte";
   import { API_BASE, fetcher } from "../../utils/fetcher";
-  import { settingsSection } from "./section-controls";
   import {
     dnsQueryType,
     filterDnsQueries,
@@ -14,9 +19,11 @@
   } from "./dns-query-data";
   import { applyDnsEvent, subscribeDnsQueries, type StreamState } from "./dns-query-stream";
   import streamTranslations from "./dns-query-stream.ru.json";
+  import { settingsSection } from "./section-controls";
 
+  type Props = { active?: boolean };
+  let { active = true }: Props = $props();
   Object.assign(locales.ru, streamTranslations);
-  let { active = true }: { active?: boolean } = $props();
 
   const section = settingsSection();
   const pageSize = 30;
@@ -37,6 +44,11 @@
   let requestGeneration = 0;
 
   const clients = $derived([...new Set(queries.map((row) => row.client))].sort());
+  const deviceOptions = $derived([
+    { value: "", label: t("All devices") },
+    ...(device && !clients.includes(device) ? [{ value: device, label: device }] : []),
+    ...clients.map((client) => ({ value: client, label: client })),
+  ]);
   const filtered = $derived(filterDnsQueries(queries, search, device));
   const groupedRows = $derived(groupDnsQueries(filtered));
   const total = $derived(grouped ? groupedRows.length : filtered.length);
@@ -45,8 +57,16 @@
   const groupedPage = $derived(groupedRows.slice((safePage - 1) * pageSize, safePage * pageSize));
   const queryPage = $derived(filtered.slice((safePage - 1) * pageSize, safePage * pageSize));
   const filtersKey = $derived(`${search}\u0000${device}\u0000${grouped}`);
-  const statusLabel = $derived(paused ? t("Paused") : streamState === "live" ? t("Live") :
-    streamState === "reconnecting" ? t("Reconnecting...") : t("Connecting..."));
+  // A healthy stream is the default, not a separate status banner.
+  const statusLabel = $derived(
+    paused
+      ? t("Paused")
+      : streamState === "live"
+        ? ""
+        : streamState === "reconnecting"
+          ? t("Reconnecting...")
+          : t("Connecting..."),
+  );
 
   $effect(() => {
     filtersKey;
@@ -63,8 +83,7 @@
     };
   });
 
-  // No periodic GET: one subscription while visible; abort on pause,
-  // navigation, logout, clear or unmount. Snapshots on reconnect replace state.
+  // One subscription while visible; snapshots on reconnect replace state.
   $effect(() => {
     streamRevision;
     const accessToken = token.current;
@@ -102,7 +121,7 @@
       streamRevision++;
       return;
     }
-    // An explicit manual refresh while paused is still a single snapshot GET.
+    // Explicit refresh while paused is still a single snapshot GET.
     const generation = ++requestGeneration;
     loading = true;
     try {
@@ -126,8 +145,7 @@
 
   async function clearHistory() {
     if (clearing || !confirm(t("Clear DNS query history?"))) return;
-    // Close the old stream before DELETE, preventing in-flight older data
-    // from overwriting the empty state. Other viewers receive a clear event.
+    // Invalidate the old stream before DELETE so older data cannot overwrite the clear.
     ++requestGeneration;
     loading = false;
     clearing = true;
@@ -163,158 +181,358 @@
     saveLabel: t("Save Changes"),
   })}
 >
-  <div class="section-heading">
-    <div>
-      <h2 id="dns-query-title">{t("DNS queries")}</h2>
-      <p class="subtitle">{t("Requests captured by the DNS proxy. Cached or encrypted DNS traffic is not visible.")}</p>
-    </div>
-    <span class="count">{queries.length} / {capacity}</span>
-  </div>
-  <p class="stream-status" class:live={!paused && streamState === "live"} role="status">{statusLabel}</p>
+  <!-- Direct section heading: SettingsPanel observes it for the shared sticky toolbar. -->
+  <h2 id="dns-query-title">{t("DNS queries")}</h2>
 
-  <div class="filters">
-    <label class="search-field">
-      <span>{t("Search domain")}</span>
-      <input
-        data-page-search
-        type="search"
-        placeholder={t("Search domains...")}
-        bind:value={search}
-        autocomplete="off"
-      />
-    </label>
-    <label class="device-field">
-      <span>{t("Device")}</span>
-      <select bind:value={device} aria-label={t("Device")}>
-        <option value="">{t("All devices")}</option>
-        {#if device && !clients.includes(device)}
-          <option value={device}>{device}</option>
-        {/if}
-        {#each clients as client (client)}
-          <option value={client}>{client}</option>
-        {/each}
-      </select>
-    </label>
-    <div class="actions">
-      <button type="button" class:chosen={grouped} aria-pressed={grouped} onclick={() => (grouped = !grouped)}>
-        {grouped ? t("Individual queries") : t("Group by domain")}
-      </button>
-      <button type="button" aria-pressed={paused} onclick={() => (paused = !paused)}>
-        {paused ? t("Resume") : t("Pause")}
-      </button>
-      <button type="button" disabled={loading || clearing} onclick={() => void refresh()}>
-        {t("Refresh")}
-      </button>
-      <button class="clear-button" type="button" disabled={clearing || !queries.length} onclick={() => void clearHistory()}>
-        {t("Clear history")}
-      </button>
+  <div class="dns-panel">
+    <div class="dns-toolbar">
+      <label class="search-field">
+        <span aria-hidden="true"><Search size={20} /></span>
+        <span class="sr-only">{t("Search domain")}</span>
+        <input
+          data-page-search
+          type="search"
+          placeholder={t("Search domains...")}
+          bind:value={search}
+          autocomplete="off"
+        />
+      </label>
+      <div class="device-field">
+        <Select options={deviceOptions} bind:selected={device} compact ariaLabel={t("Device")} />
+      </div>
+      <div class="dns-actions">
+        <Tooltip value={grouped ? t("Individual queries") : t("Group by domain")}>
+          <Button
+            small
+            type="button"
+            aria-label={grouped ? t("Individual queries") : t("Group by domain")}
+            aria-pressed={grouped}
+            onclick={() => (grouped = !grouped)}
+          >
+            {#if grouped}<LayoutList size={20} />{:else}<Sigma size={20} />{/if}
+          </Button>
+        </Tooltip>
+        <Button small type="button" aria-pressed={paused} onclick={() => (paused = !paused)}>
+          {paused ? t("Resume") : t("Pause")}
+        </Button>
+        <Tooltip value={t("Refresh")}>
+          <Button
+            small
+            type="button"
+            aria-label={t("Refresh")}
+            disabled={loading || clearing}
+            inactive={loading || clearing}
+            onclick={() => void refresh()}
+          ><Refresh size={20} /></Button>
+        </Tooltip>
+        <Tooltip value={t("Clear history")}>
+          <Button
+            small
+            type="button"
+            aria-label={t("Clear history")}
+            disabled={clearing || !queries.length}
+            inactive={clearing || !queries.length}
+            onclick={() => void clearHistory()}
+          ><Clear size={20} /></Button>
+        </Tooltip>
+      </div>
     </div>
-  </div>
 
-  {#if failed}
-    <div class="error-message" role="alert">
-      {t("Failed to load DNS queries")}
-      <button type="button" onclick={() => void refresh()} disabled={loading || clearing}>{t("Retry")}</button>
-    </div>
-  {/if}
-  {#if clearFailed}
-    <div class="error-message" role="alert">{t("Failed to clear DNS queries")}</div>
-  {/if}
+    {#if failed}
+      <div class="dns-message">
+        <Placeholder variant="error" compact minHeight="auto">
+          {t("Failed to load DNS queries")}
+          {#snippet actions()}
+            <Button disabled={loading || clearing} onclick={() => void refresh()}>{t("Retry")}</Button>
+          {/snippet}
+        </Placeholder>
+      </div>
+    {/if}
+    {#if clearFailed}
+      <div class="dns-message">
+        <Placeholder variant="error" compact minHeight="auto">{t("Failed to clear DNS queries")}</Placeholder>
+      </div>
+    {/if}
 
-  {#if !queries.length && loading}
-    <p class="empty-message">{t("Loading DNS queries...")}</p>
-  {:else if !total}
-    <p class="empty-message">{queries.length ? t("No matching DNS queries") : t("No DNS queries captured yet")}</p>
-  {:else}
-    <!-- svelte-ignore a11y_no_noninteractive_tabindex (Scrollable results need keyboard access.) -->
-    <div class="table-scroll" tabindex="0" role="region" aria-label={t("DNS query results")}>
-      <table>
+    {#if !queries.length && loading}
+      <div class="dns-message">
+        <Placeholder variant="loading" compact minHeight="auto">{t("Loading DNS queries...")}</Placeholder>
+      </div>
+    {:else if !total}
+      {#if !failed}
+        <div class="dns-message">
+          <Placeholder variant="empty" compact minHeight="auto">
+            {queries.length ? t("No matching DNS queries") : t("No DNS queries captured yet")}
+          </Placeholder>
+        </div>
+      {/if}
+    {:else}
+      <table class="dns-table" class:grouped aria-label={t("DNS query results")}>
+        <colgroup>
+          {#if grouped}
+            <col class="domain-column" /><col class="number-column" />
+            <col class="clients-column" /><col class="time-column" />
+          {:else}
+            <col class="time-column" /><col class="client-column" /><col class="domain-column" />
+            <col class="type-column" /><col class="protocol-column" />
+          {/if}
+        </colgroup>
         <thead>
           {#if grouped}
-            <tr><th>{t("Domain")}</th><th>{t("Requests")}</th><th>{t("Clients")}</th><th>{t("Last request")}</th></tr>
+            <tr>
+              <th scope="col">{t("Domain")}</th><th scope="col">{t("Requests")}</th>
+              <th scope="col">{t("Clients")}</th><th scope="col">{t("Last request")}</th>
+            </tr>
           {:else}
-            <tr><th>{t("Time")}</th><th>{t("Client")}</th><th>{t("Domain")}</th><th>{t("Type")}</th><th>{t("Protocol")}</th></tr>
+            <tr>
+              <th scope="col">{t("Time")}</th><th scope="col">{t("Client")}</th>
+              <th scope="col">{t("Domain")}</th><th scope="col">{t("Type")}</th>
+              <th scope="col">{t("Protocol")}</th>
+            </tr>
           {/if}
         </thead>
         <tbody>
           {#if grouped}
             {#each groupedPage as item (item.domain)}
               <tr>
-                <td class="domain">{item.domain}</td>
-                <td class="number">{item.count}</td>
-                <td class="client-list" title={item.clients.join(", ")}>{item.clients.join(", ")}</td>
-                <td class="timestamp">{displayTime(item.lastTime)}</td>
+                <td class="domain"><span class="cell-label" aria-hidden="true">{t("Domain")}</span><span class="cell-value">{item.domain}</span></td>
+                <td class="number"><span class="cell-label" aria-hidden="true">{t("Requests")}</span><span class="cell-value">{item.count}</span></td>
+                <td><span class="cell-label" aria-hidden="true">{t("Clients")}</span><span class="cell-value">{item.clients.join(", ")}</span></td>
+                <td class="timestamp"><span class="cell-label" aria-hidden="true">{t("Last request")}</span><span class="cell-value">{displayTime(item.lastTime)}</span></td>
               </tr>
             {/each}
           {:else}
             {#each queryPage as row (row.id)}
               <tr>
-                <td class="timestamp">{displayTime(row.time_ms)}</td>
-                <td class="client-list">{row.client}</td>
-                <td class="domain">{row.domain}</td>
-                <td>{dnsQueryType(row.qtype)}</td>
-                <td>{row.protocol.toUpperCase()}</td>
+                <td class="timestamp"><span class="cell-label" aria-hidden="true">{t("Time")}</span><span class="cell-value">{displayTime(row.time_ms)}</span></td>
+                <td><span class="cell-label" aria-hidden="true">{t("Client")}</span><span class="cell-value">{row.client}</span></td>
+                <td class="domain"><span class="cell-label" aria-hidden="true">{t("Domain")}</span><span class="cell-value">{row.domain}</span></td>
+                <td><span class="cell-label" aria-hidden="true">{t("Type")}</span><span class="cell-value">{dnsQueryType(row.qtype)}</span></td>
+                <td><span class="cell-label" aria-hidden="true">{t("Protocol")}</span><span class="cell-value">{row.protocol.toUpperCase()}</span></td>
               </tr>
             {/each}
           {/if}
         </tbody>
       </table>
-    </div>
-  {/if}
-
-  <div class="footer">
-    <span>{t("Showing")} {total ? (safePage - 1) * pageSize + 1 : 0}–{Math.min(safePage * pageSize, total)} {t("of")} {total}</span>
-    {#if pages > 1}
-      <div class="pagination">
-        <button type="button" disabled={safePage <= 1} onclick={() => (page = safePage - 1)} aria-label={t("Previous page")}>‹</button>
-        <span>{safePage} / {pages}</span>
-        <button type="button" disabled={safePage >= pages} onclick={() => (page = safePage + 1)} aria-label={t("Next page")}>›</button>
-      </div>
     {/if}
+
+    <div class="dns-summary">
+      <span class="count">{t("Requests")}: {queries.length} / {capacity}</span>
+      <span class="connection-state" role="status">{statusLabel}</span>
+      <Tooltip value={t("Requests captured by the DNS proxy. Cached or encrypted DNS traffic is not visible.")}>
+        <Button small type="button" aria-label={t("Requests captured by the DNS proxy. Cached or encrypted DNS traffic is not visible.")}><Info size={16} /></Button>
+      </Tooltip>
+    </div>
+    <Pagination totalItems={total} {pageSize} currentPage={safePage} onPageChange={(value) => (page = value)} />
   </div>
 </section>
 
 <style>
-  .dns-query-log { min-width: 0; }
-  .stream-status { margin: 0 0 0.7rem; color: var(--text-2); font-size: 0.85rem; }
-  .stream-status.live { color: var(--green); }
-  .section-heading { display: flex; flex-wrap: wrap; align-items: flex-start; justify-content: space-between; gap: 0.6rem 1rem; margin-bottom: 1rem; }
-  h2 { margin: 0 0 0.35rem; color: var(--text-2); font: 600 1.3rem / 1.4 var(--font); }
-  .subtitle { margin: 0; color: var(--text-2); font-size: 0.87rem; line-height: 1.5; }
-  .count { font: 0.83rem / 1.5 var(--font-mono); color: var(--text-2); padding-top: 0.35rem; white-space: nowrap; }
-  .filters { display: flex; align-items: flex-end; flex-wrap: wrap; gap: 0.7rem; margin-bottom: 0.8rem; }
-  .search-field, .device-field { display: grid; gap: 0.3rem; min-width: 0; }
-  .search-field { flex: 1 1 14rem; }
-  .device-field { flex: 0 1 13rem; }
-  label span { color: var(--text-2); font-size: 0.85rem; }
-  input, select { box-sizing: border-box; width: 100%; max-width: 100%; height: 2.4rem; border: 1px solid var(--border-light); border-radius: 0.5rem; background: var(--bg-light); color: var(--text); padding: 0.45rem 0.7rem; font: 0.9rem var(--font); }
-  input:focus-visible, select:focus-visible, button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
-  .actions { display: flex; flex: 1 1 100%; gap: 0.5rem; flex-wrap: wrap; }
-  button { background: var(--bg-light); color: var(--text); border: 1px solid var(--border-light); border-radius: 0.5rem; padding: 0.45rem 0.75rem; cursor: pointer; font: 0.86rem var(--font); min-height: 2.35rem; }
-  button:hover:not(:disabled), button.chosen { border-color: var(--accent); background: var(--bg-light-extra); }
-  button:disabled { opacity: 0.45; cursor: default; }
-  .clear-button { margin-left: auto; color: var(--red); }
-  .error-message { display: flex; gap: 1rem; flex-wrap: wrap; align-items: center; color: var(--red); margin: 0.6rem 0; font-size: 0.88rem; }
-  .error-message button { color: var(--text); }
-  .empty-message { color: var(--text-2); text-align: center; padding: 2.5rem 0.5rem; margin: 0; }
-  .table-scroll { width: 100%; max-width: 100%; overflow: auto; border: 1px solid var(--border-light); border-radius: 0.6rem; }
-  table { width: 100%; min-width: 640px; border-collapse: collapse; text-align: left; font-size: 0.87rem; }
-  th { color: var(--text-2); font-weight: 500; background: var(--bg-medium); position: sticky; top: 0; }
-  th, td { padding: 0.67rem 0.8rem; border-bottom: 1px solid var(--border-light); }
-  tr:last-child td { border-bottom: 0; }
-  tbody tr:hover { background: var(--bg-light); }
-  td.domain { overflow-wrap: anywhere; min-width: 10rem; max-width: 21rem; }
-  .client-list { font-family: var(--font-mono); font-size: 0.8rem; overflow-wrap: anywhere; max-width: 18rem; }
-  .timestamp { color: var(--text-2); white-space: nowrap; font-size: 0.81rem; }
-  .number { font-variant-numeric: tabular-nums; }
-  .footer { display: flex; align-items: center; justify-content: space-between; gap: 1rem; flex-wrap: wrap; font-size: 0.85rem; color: var(--text-2); padding: 0.6rem 0; }
-  .pagination { display: flex; align-items: center; gap: 0.8rem; }
-  .pagination button { min-height: 2rem; min-width: 2rem; padding: 0; font-size: 1.3rem; }
+  .dns-query-log {
+    min-width: 0;
+  }
+  h2 {
+    margin: 0 0 1rem;
+    color: var(--text-2);
+    font: 600 1.3rem / 1.4 var(--font);
+  }
+  /* Same panel and alternating rows as ProfilePanel and the rule lists. */
+  .dns-panel {
+    min-width: 0;
+    background-color: var(--bg-medium);
+    border: 1px solid var(--bg-light-extra);
+    border-radius: 0.5rem;
+  }
+  .dns-toolbar {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+    padding: 0.5rem;
+    background-color: var(--bg-light);
+    border-radius: 0.5rem 0.5rem 0 0;
+  }
+  .search-field {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+    flex: 1 1 12rem;
+    min-width: 0;
+    padding: 0.3rem 0.5rem;
+    background: var(--bg-medium);
+    border: 1px solid var(--bg-light-extra);
+    border-radius: 0.5rem;
+    color: var(--text-2);
+  }
+  .search-field > span:first-child {
+    display: inline-flex;
+    flex-shrink: 0;
+  }
+  .search-field:focus-within {
+    border-color: var(--accent);
+  }
+  input {
+    box-sizing: border-box;
+    width: 100%;
+    min-width: 0;
+    padding: 0;
+    border: none;
+    outline: none;
+    background: transparent;
+    color: var(--text);
+    font: 400 1rem / 1.5 var(--font);
+  }
+  input::placeholder {
+    color: var(--text-2);
+  }
+  .device-field {
+    min-width: 0;
+    max-width: 100%;
+  }
+  .device-field :global(.select-wrap),
+  .device-field :global([data-select-trigger]) {
+    min-width: 0;
+    max-width: 100%;
+  }
+  .dns-actions {
+    display: flex;
+    align-items: center;
+    gap: 0.35rem;
+    margin-left: auto;
+    flex-shrink: 0;
+  }
+  .dns-actions :global(button[aria-pressed="true"]) {
+    color: var(--text);
+    background-color: var(--bg-dark);
+    border-color: var(--bg-light-extra);
+  }
+  .dns-panel :global(button:focus-visible) {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+  }
+  .dns-message {
+    padding: 1rem 0.5rem;
+  }
+  .dns-table {
+    width: 100%;
+    border-collapse: collapse;
+    table-layout: fixed;
+    text-align: left;
+    color: var(--text);
+    font: 400 1rem / 1.5 var(--font);
+  }
+  .time-column, .client-column {
+    width: 21%;
+  }
+  .type-column, .protocol-column {
+    width: 9%;
+  }
+  .number-column {
+    width: 12%;
+  }
+  .clients-column {
+    width: 31%;
+  }
+  th {
+    padding: 0.6rem 0.5rem 0.2rem;
+    border-bottom: 1px solid var(--bg-light-extra);
+    color: var(--text-2);
+    font-size: 0.9rem;
+    font-weight: 400;
+    overflow-wrap: anywhere;
+  }
+  td {
+    height: 2rem;
+    padding: 0.1rem 0.5rem;
+    vertical-align: middle;
+  }
+  tbody tr:nth-child(even) {
+    background-color: var(--bg-light);
+  }
+  .cell-value {
+    min-width: 0;
+    overflow-wrap: anywhere;
+  }
+  .cell-label {
+    display: none;
+  }
+  .timestamp, .number {
+    color: var(--text-2);
+    font-size: 0.9rem;
+    font-variant-numeric: tabular-nums;
+  }
+  .dns-summary {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+    padding: 0.35rem 0.5rem;
+    color: var(--text-2);
+    font-size: 0.85rem;
+  }
+  .count {
+    margin-right: auto;
+    font-variant-numeric: tabular-nums;
+  }
+  .connection-state:empty {
+    display: none;
+  }
+  .sr-only {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+    border: 0;
+  }
   @media (max-width: 700px) {
-    .search-field, .device-field { flex: 1 1 100%; }
-    .actions { gap: 0.45rem; }
-    .actions button { flex: 1 1 auto; }
-    .clear-button { margin-left: 0; }
-    .table-scroll { border-radius: 0.4rem; }
+    .search-field {
+      flex-basis: 100%;
+    }
+    .device-field {
+      flex: 1 1 8rem;
+    }
+    .dns-table, .dns-table tbody {
+      display: block;
+    }
+    .dns-table colgroup {
+      display: none;
+    }
+    .dns-table thead {
+      position: absolute;
+      width: 1px;
+      height: 1px;
+      overflow: hidden;
+      clip-path: inset(50%);
+      white-space: nowrap;
+    }
+    .dns-table tbody tr {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr);
+      gap: 0.25rem;
+      padding: 0.5rem 0.35rem 0.45rem;
+    }
+    .dns-table td {
+      display: grid;
+      grid-template-columns: 5.6rem minmax(0, 1fr);
+      align-items: baseline;
+      gap: 0.35rem;
+      min-width: 0;
+      height: auto;
+      padding: 0.05rem 0;
+    }
+    .dns-table td.domain {
+      order: -1;
+    }
+    .cell-label {
+      display: block;
+      text-align: right;
+      color: var(--text-2);
+      font: 400 0.9rem / 1.5 var(--font);
+      overflow-wrap: anywhere;
+    }
   }
 </style>

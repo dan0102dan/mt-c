@@ -84,12 +84,20 @@ async function setup(page: Page, dns: Backend) {
 }
 const liveQuery = (): DnsQuery => ({ ...sample[0], id: 4, domain: "live.example", time_ms: 4000 });
 
+function seedHistory(dns: Backend, count: number) {
+  dns.state.through = count;
+  dns.state.history = Array.from({ length: count }, (_, index) => ({
+    ...sample[0], id: count - index, domain: `host${count - index}.example`,
+  }));
+}
+
 test("one open connection receives immediate updates without 3-second polling", async ({ page, dns }) => {
   const region = await setup(page, dns);
   await expect(region.locator("tbody tr")).toHaveCount(3);
   dns.emit(liveQuery());
   await expect(region.locator("tbody tr")).toHaveCount(4);
-  await expect(region.getByRole("status")).toHaveText("Live");
+  await expect(region).toHaveAttribute("aria-busy", "false");
+  await expect(region.getByText("Live", { exact: true })).toHaveCount(0);
   await page.waitForTimeout(3400); // Prove the removed polling interval does not recur.
   expect(dns.state.connections).toBe(1); expect(dns.state.snapshots).toBe(0);
 });
@@ -97,7 +105,7 @@ test("partial snapshots do not appear until end; reconnect discards unfinished s
   dns.state.holdEnd = true;
   const region = await setup(page, dns);
   await expect.poll(() => dns.clients.size).toBe(1);
-  await expect(region.getByRole("status")).not.toHaveText("Live");
+  await expect(region).toHaveAttribute("aria-busy", "true");
   await expect(region.locator("tbody tr")).toHaveCount(0);
   dns.disconnect();
   dns.state.history = [{ ...sample[0], id: 9, domain: "replacement.example" }]; dns.state.through = 9;
@@ -106,7 +114,7 @@ test("partial snapshots do not appear until end; reconnect discards unfinished s
   dns.endSnapshot();
   await expect(region.locator("tbody tr")).toHaveCount(1);
   await expect(region.locator("tbody")).toContainText("replacement.example");
-  await expect(region.getByRole("status")).toHaveText("Live");
+  await expect(region).toHaveAttribute("aria-busy", "false");
   expect(dns.state.snapshots).toBe(0);
 });
 test("DNS journal filters and groups all matching rows", async ({ page, dns }) => {
@@ -114,9 +122,11 @@ test("DNS journal filters and groups all matching rows", async ({ page, dns }) =
   await expect(region.locator("tbody tr")).toHaveCount(3);
   await region.getByRole("searchbox").fill("EXAMPLE");
   await expect(region.locator("tbody tr")).toHaveCount(2);
-  await region.getByLabel("Device").selectOption("192.168.1.10");
+  await region.getByRole("combobox", { name: "Device" }).click();
+  await page.getByRole("option", { name: "192.168.1.10", exact: true }).click();
   await expect(region.locator("tbody tr")).toHaveCount(1);
-  await region.getByLabel("Device").selectOption("");
+  await region.getByRole("combobox", { name: "Device" }).click();
+  await page.getByRole("option", { name: "All devices", exact: true }).click();
   await region.getByRole("searchbox").fill("");
   await region.getByRole("button", { name: "Group by domain" }).click();
   await expect(region.locator("tbody tr")).toHaveCount(2);
@@ -127,6 +137,7 @@ test("pause closes the subscription; resume and reconnect replace the snapshot",
   await expect(region.locator("tbody tr")).toHaveCount(3);
   await region.getByRole("button", { name: "Pause", exact: true }).click();
   await expect.poll(() => dns.clients.size).toBe(0);
+  await expect(region.locator(".dns-summary").getByRole("status")).toHaveText("Paused");
   dns.emit(liveQuery());
   await expect(region.locator("tbody tr")).toHaveCount(3);
   await region.getByRole("button", { name: "Resume", exact: true }).click();
@@ -145,10 +156,71 @@ test("clear broadcasts and a failed connection retries without a snapshot GET", 
   await expect(region.getByText("No DNS queries captured yet")).toBeVisible();
   expect(dns.state.clears).toBe(1); expect(dns.state.snapshots).toBe(0);
 });
-test("DNS streaming controls fit a phone viewport", async ({ page, dns }) => {
+test("DNS streaming controls and long records fit a phone viewport", async ({ page, dns }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   const region = await setup(page, dns);
   await expect(region.locator("tbody tr")).toHaveCount(3);
   await expect(region.getByRole("button", { name: "Group by domain" })).toBeVisible();
+  const domain = `${"a".repeat(63)}.${"b".repeat(63)}.${"c".repeat(63)}.example`;
+  dns.emit({ ...liveQuery(), domain, client: "2001:db8:1234:5678:abcd:ef01:2345:6789" });
+  await expect(region.locator("tbody tr")).toHaveCount(4);
+  await expect(region.getByText(domain, { exact: true })).toBeVisible();
+  await region.getByRole("combobox", { name: "Device" }).click();
+  await expect(page.getByRole("option", { name: "All devices", exact: true })).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(region.getByRole("combobox", { name: "Device" })).toBeFocused();
   expect(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth)).toBe(false);
+  await region.getByRole("button", { name: "Group by domain" }).click();
+  expect(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth)).toBe(false);
+});
+
+for (const width of [1280, 390]) {
+  test(`DNS heading joins the shared scroll toolbar without losing filters (${width}px)`, async ({ page, dns }) => {
+    await page.setViewportSize({ width, height: 844 });
+    await page.emulateMedia({ reducedMotion: "reduce" });
+    seedHistory(dns, 90);
+    const region = await setup(page, dns);
+    await expect(region.locator("tbody tr")).toHaveCount(30);
+    const heading = page.locator(".settings-toolbar").getByRole("heading", { level: 2 });
+    const inline = region.getByRole("heading", { name: "DNS queries", exact: true });
+    const save = page.locator("#save-settings");
+    const saveNode = await save.elementHandle();
+    await expect(save).toBeDisabled();
+    await region.getByRole("searchbox").fill("example");
+    await region.getByRole("button", { name: "Group by domain" }).click();
+    await expect(region.locator("tbody tr")).toHaveCount(30);
+    for (const offset of [36, -8, 44, -16, 36]) {
+      await page.evaluate((offset) => {
+        const title = document.querySelector("#dns-query-title")!.getBoundingClientRect();
+        const toolbar = document.querySelector(".settings-toolbar")!.getBoundingClientRect();
+        window.scrollBy(0, title.bottom - toolbar.height - offset);
+      }, offset);
+      if (offset < 0) await expect(heading).toHaveAccessibleName("DNS queries");
+      else await expect(heading).not.toHaveAccessibleName("DNS queries");
+      await expect(region.getByRole("searchbox")).toHaveValue("example");
+      await expect(region.getByRole("button", { name: "Individual queries" })).toHaveAttribute("aria-pressed", "true");
+    }
+    await expect(inline).toHaveCSS("position", "static");
+    await expect(page.locator(".settings-page .page-controls")).toHaveCount(1);
+    await expect(save).toBeDisabled();
+    expect(await saveNode!.evaluate((node) => node === document.querySelector("#save-settings"))).toBe(true);
+    expect(dns.state.connections).toBe(1);
+    expect(dns.state.snapshots).toBe(0);
+  });
+}
+
+test("shared pagination and empty-search state remain functional", async ({ page, dns }) => {
+  seedHistory(dns, 65);
+  const region = await setup(page, dns);
+  await expect(region.locator("tbody tr")).toHaveCount(30);
+  await region.getByRole("button", { name: "Next Page", exact: true }).click();
+  await expect(region.locator(".page-number")).toHaveText("2 / 3");
+  await expect(region.locator("tbody tr").first()).toContainText("host35.example");
+  await region.getByRole("button", { name: "Next Page", exact: true }).click();
+  await expect(region.locator("tbody tr")).toHaveCount(5);
+  await region.getByRole("searchbox").fill("does-not-exist");
+  await expect(region.getByText("No matching DNS queries", { exact: true })).toBeVisible();
+  await region.getByRole("searchbox").fill("");
+  await expect(region.locator(".page-number")).toHaveText("1 / 3");
+  await expect(region.locator("tbody tr")).toHaveCount(30);
 });
