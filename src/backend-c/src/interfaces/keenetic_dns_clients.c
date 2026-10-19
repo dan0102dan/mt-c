@@ -62,11 +62,14 @@ static size_t receive_clients(char *data, size_t size, size_t count, void *ud)
     memcpy(next + r->len, data, n); r->len += n; next[r->len] = '\0';
     return n;
 }
+/* libcurl owns only an opaque pointer, not the read-only cancellation flag.
+ * This stack context outlives the synchronous transfer and its callbacks. */
+typedef struct { const atomic_bool *stop; } client_progress_t;
 static int fetch_progress(void *ud, curl_off_t total, curl_off_t now, curl_off_t up_total, curl_off_t up_now)
 {
     (void)total; (void)now; (void)up_total; (void)up_now;
-    const atomic_bool *stop = ud;
-    return atomic_load(stop) ? 1 : 0;
+    const client_progress_t *ctx = ud;
+    return atomic_load(ctx->stop) ? 1 : 0;
 }
 mt_err_t mt_dns_clients_fetch_keenetic(mt_dns_client_t **clients, size_t *count,
                                       const atomic_bool *stop, void *ud)
@@ -77,6 +80,7 @@ mt_err_t mt_dns_clients_fetch_keenetic(mt_dns_client_t **clients, size_t *count,
     CURL *curl = curl_easy_init();
     if (!curl) { return MT_ERR_NOMEM; }
     client_response_t response = {0};
+    client_progress_t progress = {.stop = stop};
     CURLcode setup = CURLE_OK;
 #define SET(option, value) do { if (setup == CURLE_OK) { setup = curl_easy_setopt(curl, option, value); } } while (0)
     SET(CURLOPT_URL, "http://127.0.0.1:79/rci/show/ip/hotspot");
@@ -91,7 +95,7 @@ mt_err_t mt_dns_clients_fetch_keenetic(mt_dns_client_t **clients, size_t *count,
      * flag keeps libcurl's default (progress disabled) for uncancelled reads. */
     if (stop) {
         SET(CURLOPT_XFERINFOFUNCTION, fetch_progress);
-        SET(CURLOPT_XFERINFODATA, stop);
+        SET(CURLOPT_XFERINFODATA, &progress);
         SET(CURLOPT_NOPROGRESS, 0L);
     }
 #undef SET
