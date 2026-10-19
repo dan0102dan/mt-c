@@ -167,7 +167,10 @@ KEENETIC_SRCS := \
     src/netfilter/keenetic_policy.c \
     src/interfaces/keenetic_policy_rci.c \
     src/interfaces/keenetic_dns_clients.c \
-    src/api/keenetic_policy_api.c
+    src/api/keenetic_policy_api.c \
+    src/interfaces/keenetic_ifstate.c \
+    src/interfaces/keenetic_ifstate_rci.c \
+    src/platform/keenetic_ifstate_service.c
 endif
 
 LIB_SRCS := $(CORE_SRCS) $(CONFIG_SRCS) $(NETFILTER_SRCS) $(API_SRCS) $(SUBSCRIPTIONS_SRCS) \
@@ -205,7 +208,7 @@ TEST_SUPPORT_OBJS := $(TEST_SUPPORT_SRCS:tests/unit/%.c=$(BUILDDIR)/tests/suppor
 
 TEST_SRCS := $(filter-out $(TEST_SUPPORT_SRCS), $(wildcard tests/unit/*.c))
 ifneq ($(strip $(ENTWARE_KN)),1)
-TEST_SRCS := $(filter-out tests/unit/test_keenetic_rci.c tests/unit/test_keenetic_policy_addresses.c,$(TEST_SRCS))
+TEST_SRCS := $(filter-out tests/unit/test_keenetic_rci.c tests/unit/test_keenetic_policy_addresses.c tests/unit/test_keenetic_ifstate.c tests/unit/test_keenetic_ifstate_service.c tests/unit/test_keenetic_ifstate_rci.c,$(TEST_SRCS))
 endif
 TEST_BINS := $(TEST_SRCS:tests/unit/%.c=$(BUILDDIR)/tests/%)
 
@@ -283,6 +286,11 @@ $(BUILDDIR)/tests/test_system: tests/unit/test_system.c $(LIB_OBJS) $(TEST_SUPPO
 	$(CC) $(CFLAGS) -Itests/vendor -Itests/unit $(LDFLAGS) -Wl,--wrap=mt_kn_get_iface_aliases -o $@ $< $(LIB_OBJS) $(TEST_SUPPORT_OBJS) $(LDLIBS) $(DEP_LIBS)
 endif
 
+# Inspect the snapshot transport without exporting test-only production helpers.
+$(BUILDDIR)/tests/test_keenetic_ifstate_rci: tests/unit/test_keenetic_ifstate_rci.c src/interfaces/keenetic_ifstate_rci.c $(LIB_OBJS) $(TEST_SUPPORT_OBJS)
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) -Itests/vendor -Itests/unit $(LDFLAGS) -o $@ $< $(filter-out $(BUILDDIR)/src/interfaces/keenetic_ifstate_rci.o,$(LIB_OBJS)) $(TEST_SUPPORT_OBJS) $(LDLIBS) $(DEP_LIBS)
+
 # Local address snapshots/failures without a router or privileged namespaces.
 $(BUILDDIR)/tests/test_keenetic_policy_addresses: tests/unit/test_keenetic_policy_addresses.c $(LIB_OBJS) $(TEST_SUPPORT_OBJS)
 	@mkdir -p $(dir $@)
@@ -316,7 +324,7 @@ $(BUILDDIR)/tests/test_route_recovery: tests/unit/test_route_recovery.c $(MAIN_S
 	$(CC) $(CFLAGS) -Itests/vendor -Itests/unit $(LDFLAGS) \
 	    -Wl,--wrap=mt_loop_add_timer -Wl,--wrap=mt_loop_del_timer \
 	    -Wl,--wrap=mt_loop_add_fd -Wl,--wrap=mt_loop_del_fd -Wl,--wrap=mt_loop_stop \
-	    -Wl,--wrap=mt_app_reconcile_routes -Wl,--wrap=mt_app_force_commit_iptables -Wl,--wrap=mnl_socket_open -Wl,--wrap=mnl_socket_recvfrom \
+	    -Wl,--wrap=mt_app_reconcile_routes -Wl,--wrap=mt_app_reconcile_profiles -Wl,--wrap=mt_app_force_commit_iptables -Wl,--wrap=mnl_socket_open -Wl,--wrap=mnl_socket_recvfrom \
 	    -o $@ $< $(LIB_OBJS) $(TEST_SUPPORT_OBJS) $(LDLIBS) $(DEP_LIBS)
 
 # Exercise production link staging with in-memory netfilter transports.
@@ -363,6 +371,11 @@ fuzz: $(FUZZ_BINS)
 .PHONY: bench_large_rules
 bench_large_rules: $(BUILDDIR)/bench-large-rules
 $(BUILDDIR)/bench-large-rules: ../../tools/bench/large-rules.c $(LIB_OBJS)
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $< $(LIB_OBJS) $(LDLIBS) $(DEP_LIBS)
+
+.PHONY: bench_subscription_overrides
+bench_subscription_overrides: $(BUILDDIR)/bench-subscription-overrides
+$(BUILDDIR)/bench-subscription-overrides: ../../tools/bench/subscription-overrides.c $(LIB_OBJS)
 	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $< $(LIB_OBJS) $(LDLIBS) $(DEP_LIBS)
 
 # ---- analysis ---------------------------------------------------------

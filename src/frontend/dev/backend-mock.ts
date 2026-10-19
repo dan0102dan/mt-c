@@ -4,6 +4,8 @@ import { serveStatic } from "hono/deno";
 import { logger } from "hono/logger";
 import { streamSSE } from "hono/streaming";
 
+import type { ServerConfig } from "../src/modules/config-transfer/adapter.ts";
+import { applyRuleOverrides, type RuleOverride } from "../src/modules/config-transfer/model.ts";
 import { cleanProfiles, profileError } from "../src/modules/settings/profiles-data.ts";
 import type { RuleChange } from "../src/modules/subscriptions/subscription-payload.ts";
 import type { Group, Interfaces, Profile, Subscription } from "../src/types.ts";
@@ -27,8 +29,30 @@ const INTERFACES: Interfaces = {
   ],
 };
 
-const DATA = JSON.parse(Deno.readTextFileSync("./dev/groups.json"));
-DATA.groups = DATA.groups.map((group: Group) => withPriorityDefault(group, DEFAULT_GROUP_PRIORITY));
+const DATA: { groups: Group[]; profiles: Profile[] } = {
+  groups: [
+    {
+      id: "11223344",
+      name: "Example group",
+      color: "#5b337f",
+      interface: "wg0",
+      profile: "mock_vpn",
+      enable: true,
+      priority: DEFAULT_GROUP_PRIORITY,
+      rules: [
+        { id: "aabbccdd", name: "Example", rule: "example.org", type: "namespace", enable: true },
+      ],
+    },
+  ],
+  profiles: [
+    {
+      id: "mock_vpn",
+      name: "Example VPN",
+      interfaces: ["wg0", "nwg0"],
+      on_unavailable: "blackhole",
+    },
+  ],
+};
 const SUBSCRIPTIONS: Subscription[] = [
   {
     id: "a1b2c3d4",
@@ -72,7 +96,7 @@ function randomLogLine() {
 
 let sse_id = 0;
 
-const PORT = 6969;
+const PORT = Number(Deno.env.get("MOCK_PORT") ?? 6969);
 const STATIC_TOKEN = "magitrickle_mock_token_2026";
 const AUTH_ENABLED = true;
 
@@ -167,7 +191,7 @@ app.post(`${API_BASE}/auth`, async (c) => {
   return c.json({ error: "Invalid credentials" }, 403);
 });
 
-let PROFILES: Profile[] = [];
+let PROFILES: Profile[] = structuredClone(DATA.profiles ?? []);
 function profileResponse() {
   return {
     profiles: PROFILES.map((profile) => ({
@@ -273,6 +297,12 @@ app.put(`${API_BASE}/subscriptions`, async (c) => {
     if (incoming.ruleChanges && !previous)
       return c.json({ error: "subscription changed; reload before saving" }, 409);
     const rules = structuredClone(incoming.rules ?? previous?.rules ?? []);
+    const overrides = new Map<string, RuleOverride>(
+      (incoming.overrides ?? previous?.overrides ?? []).map((entry: RuleOverride) => [
+        entry.rule,
+        { ...entry },
+      ]),
+    );
     const byId = new Map<string, Subscription["rules"][number]>(
       rules.map((r: Subscription["rules"][number]) => [r.id, r]),
     );
@@ -288,6 +318,13 @@ app.put(`${API_BASE}/subscriptions`, async (c) => {
       }
       rule.type = change.type;
       rule.enable = change.enable;
+      if (change.type !== change.previousType || change.enable !== change.previousEnable)
+        overrides.set(change.rule, {
+          ...overrides.get(change.rule),
+          rule: change.rule,
+          ...(change.type !== change.previousType ? { type: change.type } : {}),
+          ...(change.enable !== change.previousEnable ? { enable: change.enable } : {}),
+        });
     }
     const { ruleChanges: _, ...metadata } = incoming;
     if (metadata.profile && !PROFILES.some((p) => p.id === metadata.profile)) {
@@ -295,7 +332,13 @@ app.put(`${API_BASE}/subscriptions`, async (c) => {
     }
     replacement.push(
       withPriorityDefault(
-        applyProfile({ ...previous, ...metadata, profile: metadata.profile, rules }),
+        applyProfile({
+          ...previous,
+          ...metadata,
+          profile: metadata.profile,
+          rules,
+          overrides: [...overrides.values()],
+        }),
         DEFAULT_SUBSCRIPTION_PRIORITY,
       ),
     );
@@ -374,7 +417,112 @@ app.delete(`${API_BASE}/subscriptions/:id`, async (c) => {
 
 // The on-device updater has no side effects in local development.
 registerMockUpdateRoutes(app);
-registerMockPolicyRoutes(app);
+registerMockPolicyRoutes(app, {
+  get: () => {
+    const value = appSettings.keeneticPolicy;
+    if (!value || typeof value !== "object" || Array.isArray(value))
+      return { enabled: false, policy_id: "", mode: "include" };
+    return {
+      enabled: value.enabled === true,
+      policy_id: typeof value.policyId === "string" ? value.policyId : "",
+      mode: value.mode === "exclude" ? "exclude" : "include",
+    };
+  },
+  set: (value) => {
+    appSettings.keeneticPolicy = {
+      enabled: value.enabled,
+      policyId: value.policy_id,
+      mode: value.mode,
+    };
+  },
+});
+
+/* Mirror the live-config endpoints during frontend development and E2E tests.
+ * Existing group/subscription handlers above remain authoritative. */
+let appSettings: ServerConfig["app"] = {
+  httpWeb: {
+    enabled: true,
+    auth: { enabled: false },
+    host: { address: "0.0.0.0", port: 6969 },
+    skin: "",
+  },
+  dnsProxy: {
+    host: { address: "0.0.0.0", port: 53 },
+    upstream: { address: "8.8.8.8", port: 53 },
+    disableRemap53: false,
+    disableFakePTR: false,
+    disableDropAAAA: false,
+    maxIdleConns: 128,
+    maxConcurrent: 128,
+    timeout: "10s",
+  },
+  netfilter: {
+    iptables: { chainPrefix: "MT_" },
+    ipset: { tablePrefix: "mt_", additionalTTL: "30s" },
+    disableIPv4: false,
+    disableIPv6: false,
+    startMarkTableIndex: 150,
+  },
+  keeneticPolicy: { enabled: false, policyId: "", mode: "include" },
+  link: [],
+  showAllInterfaces: false,
+  logLevel: "info",
+};
+function mockConfig(): ServerConfig {
+  return {
+    configVersion: "0.8.5",
+    app: structuredClone(appSettings),
+    groups: structuredClone(DATA.groups),
+    profiles: structuredClone(PROFILES),
+    subscriptions: SUBSCRIPTIONS.map((sub) => ({
+      ...structuredClone(sub),
+      interval: sub.interval ?? 86400,
+      last_update: sub.lastUpdate ?? 0,
+    })),
+  };
+}
+function mockRevision() {
+  return JSON.stringify(mockConfig());
+}
+app.get(`${API_BASE}/system/config/snapshot`, (c) =>
+  c.json({ revision: mockRevision(), config: mockConfig() }),
+);
+app.post(`${API_BASE}/system/config/apply`, async (c) => {
+  const body = await c.req.json();
+  if (body.revision !== mockRevision()) return c.json({ error: "stale config preview" }, 409);
+  const candidate: ServerConfig = body.config;
+  if (
+    !Array.isArray(candidate?.groups) ||
+    !Array.isArray(candidate?.profiles) ||
+    !Array.isArray(candidate?.subscriptions) ||
+    !candidate.app
+  ) {
+    return c.json({ error: "invalid config" }, 400);
+  }
+  const ids = new Set(candidate.profiles.map((p) => p.id));
+  if (
+    [...candidate.groups, ...candidate.subscriptions].some(
+      (route) => route.profile && !ids.has(route.profile),
+    )
+  )
+    return c.json({ error: "missing profile" }, 400);
+  PROFILES = structuredClone(candidate.profiles);
+  DATA.groups = structuredClone(candidate.groups);
+  const before = new Map(SUBSCRIPTIONS.map((sub) => [sub.id, sub]));
+  SUBSCRIPTIONS.splice(
+    0,
+    SUBSCRIPTIONS.length,
+    ...candidate.subscriptions.map((sub) => {
+      const cached = before.get(sub.id);
+      const retained = cached?.url === sub.url ? cached : undefined;
+      const originalRules = sub.rules ?? retained?.rules ?? [];
+      const rules = applyRuleOverrides(originalRules, sub.overrides ?? []).rules;
+      return { ...sub, rules, lastUpdate: retained?.lastUpdate ?? sub.last_update ?? 0 };
+    }),
+  );
+  appSettings = structuredClone(candidate.app);
+  return c.json({ ok: true });
+});
 
 app.get(`${API_BASE}/system/interfaces`, (c) => c.json(INTERFACES));
 app.get(`${API_BASE}/logs`, async (c) => {
@@ -392,6 +540,6 @@ app.get(`${API_BASE}/logs`, async (c) => {
 app.get("*", serveStatic({ root: "./dist" }));
 
 Deno.serve(
-  { port: PORT, onListen: () => console.log(`running mock server on port ${PORT}...`) },
+  { port: PORT, onListen: ({ port }) => console.log(`running mock server on port ${port}...`) },
   app.fetch,
 );

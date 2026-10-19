@@ -3716,3 +3716,104 @@ its own CPU. Three alternating paired repeats and a fixed offered-load
 scenario supplement capacity measurements. Old raw snapshots and backend
 goldens are not rewritten. See `tools/bench/router-benchmark.md` and
 `docs/c-rewrite/router-raw/2026-10-14/` for protocol and package identities.
+
+## D-81 — NDM readiness may veto Keenetic profile candidates (2026-10-14)
+
+Status: **accepted at the user's request; intentional routing divergence**
+(PR #17; recorded in this log on 2026-10-17).
+
+**Context.** The frozen Go→C routing baseline is kernel-driven. Before this
+addition, interface-priority profiles selected the first candidate passing the
+existing kernel link/address/gateway checks, without an NDM-state veto. On
+Keenetic, an NDM-disabled or otherwise unavailable connection can still have a
+kernel-ready interface. The approved addition therefore changes observable
+profile selection; it is not a behavior-preserving rewrite optimization.
+
+**Decision.** Only `_kn` builds (`MT_ENTWARE_KN`) consult NDM readiness when
+choosing members of an MT interface-priority profile. Known negative `conf`,
+`link`, `ctrl`, or the selected family's IP-layer state may veto a candidate
+that would otherwise pass the kernel checks. IPv4 and IPv6 are evaluated
+separately, and all existing kernel checks remain necessary: NDM cannot make
+a kernel-unready candidate usable. Select the first usable member in the
+configured order, fail over to a lower-priority usable member when necessary,
+and fail back when a higher-priority member recovers. If no member is usable,
+retain the existing terminal blackhole; do not fall through to ordinary WAN.
+
+Unknown, missing, or nonapplicable NDM data does not by itself create a veto.
+Without NDM metadata, retain the existing kernel-check fallback. Unknown values
+and failed RCI reads must not erase a previously known negative state; stale
+snapshots must not overwrite newer events. The event/snapshot precedence and
+recovery contract is specified in
+[NDM interface readiness for routing profiles](../keenetic-interface-readiness.md).
+
+**Scope and consequences.** This is an explicit exception to frozen routing
+parity, not a general relaxation of the Go→C compatibility contract. A group
+or subscription using a profile can intentionally select a different egress,
+or remain blackholed, while its kernel interface state is unchanged. Direct
+interface selection, group/subscription matching and rule priorities, DNS
+behavior, and existing device Include/Exclude filtering are unchanged. D-79's
+optional Keenetic-policy device scope remains independent; it is not required
+for the NDM profile veto. Generic Entware/OpenWrt builds retain their previous
+selection behavior and contain no new NDM payload or dependencies. No new
+connectivity probes, global conntrack flush, ordinary-WAN fallback, or seamless
+migration guarantee for established flows is introduced.
+
+**Compatibility audits and regression coverage.** Treat NDM-driven profile
+failover/failback and blackholing within the above scope as this accepted
+behavioral divergence, not an undocumented regression. Preserve frozen Go
+fixtures for unaffected behavior; do not silently redefine the baseline to
+hide the exception. Existing `src/backend-c/tests/unit/test_profile_routes.c`
+exercises NDM veto/failback with kernel links kept up, per-family readiness,
+direct-interface exemption, blackhole fallback, and avoidance of duplicate
+route writes in an isolated network namespace. The state and recovery cases
+are covered by `test_keenetic_ifstate.c`, `test_keenetic_ifstate_rci.c`,
+`test_keenetic_ifstate_service.c`, and `test_route_recovery.c` in the same test
+directory. Host tests do not establish which failure notifications every
+firmware emits; on-device acceptance and delivery-loss limitations remain as
+documented in the linked feature contract.
+
+## D-82 — Portable subscription exceptions and legacy cache migration (2026-10-18)
+
+Status: **implemented at the user's request after reviewing PR #19**.
+Portable configuration excludes downloaded subscription rules. User changes to
+individual rules must therefore survive in a separate, pattern-keyed
+`overrides` array. Cached rule IDs and `last_update` remain device-local cache
+data and are not included in the portable file.
+
+An absent/null `overrides` field in legacy `config.yaml` means the cache still
+contains the only record of manual edits. Loading migrates only differences
+from the source parser's deterministic defaults: enabled rules and
+`mt_sub_detect_type(pattern)`. A disabled flag and a changed type are captured
+independently; unchanged downloaded rules are not copied into exceptions.
+The first occurrence of a legacy duplicate pattern remains authoritative,
+matching subscription reconciliation. Empty legacy cache records have no
+stable source pattern and are not turned into exceptions.
+
+A present array is authoritative, including `overrides: []`. Before applying
+it to a persisted or inherited cache, the loader reconstructs source defaults
+and overlays only the specified fields. Removing an exception, or removing
+only its `type`/`enable` field, thus restores source behavior immediately.
+Authoritative empty arrays are saved explicitly so a later load cannot infer
+deleted edits again. The additive YAML field retains the `0.*` version gate;
+older binaries ignore it and can use the effective cached rules, but cannot
+preserve unmatched exceptions across a downgrade/resave. The affected config
+fixture goldens intentionally gain this field; unrelated byte contracts and
+historical benchmark results remain unchanged.
+
+Complete `/system/config/apply` requests treat omitted exceptions as an empty
+target list for compatibility with the first PR #19 WebUI. They preserve the
+download cache only for the same subscription ID and URL. Fresh synchronization
+retains rule IDs, then applies explicit exceptions over the new source rules;
+it no longer copies prior effective type/enable values back into fresh rules.
+The standalone legacy `mt_sub_refresh_rules` helper keeps its old behavior.
+
+Sparse API edits merge only fields actually changed by the client. Full-rule
+requests from older API clients also capture only changes, while exceptions
+for temporarily absent patterns are retained. Model insertion, copying,
+duplicate checks and application use `mt_lookup_t` indexes, avoiding the
+quadratic scans introduced in PR #19. Tests cover legacy upgrade, empty and
+partial replacement, save/reload, actual HTTP import followed by asynchronous
+source synchronization, sparse consecutive edits and 50,000-rule exceptions.
+The opt-in `tools/bench/subscription-overrides.c` microbenchmark and
+`override-benchmark-raw/2026-10-18/host.txt` record the same host CPU workload
+before and after this change; they do not claim router or HTTP latency.

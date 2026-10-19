@@ -286,8 +286,9 @@ mt_err_t mt_sub_rules_fix_ids(mt_sub_rule_t **rules, size_t n) {
     return err;
 }
 
-mt_err_t mt_sub_reconcile_rules(mt_sub_rule_t **parsed, size_t n,
-                                 mt_sub_rule_t **existing, size_t n_existing) {
+static mt_err_t reconcile_rules(mt_sub_rule_t **parsed, size_t n,
+                                mt_sub_rule_t **existing, size_t n_existing,
+                                bool preserve_effective) {
     mt_lookup_t by_text = {0};
     mt_err_t err = MT_OK;
     for (size_t i = 0; i < n_existing; i++) {
@@ -300,12 +301,25 @@ mt_err_t mt_sub_reconcile_rules(mt_sub_rule_t **parsed, size_t n,
         mt_sub_rule_t *r = parsed[i]; size_t j;
         if (!r || !r->rule || !mt_lookup_get(&by_text, r->rule, strlen(r->rule), &j)) { continue; }
         const mt_sub_rule_t *old = existing[j];
-        r->id = old->id; r->enable = old->enable;
-        if (old->type && *old->type) { err = mt_strset(&r->type, old->type); }
+        r->id = old->id;
+        if (preserve_effective) {
+            r->enable = old->enable;
+            if (old->type && *old->type) { err = mt_strset(&r->type, old->type); }
+        }
     }
     mt_lookup_clear(&by_text);
     if (err == MT_OK) { err = mt_sub_rules_fix_ids(parsed, n); }
     return err;
+}
+
+mt_err_t mt_sub_reconcile_rules(mt_sub_rule_t **parsed, size_t n,
+                                 mt_sub_rule_t **existing, size_t n_existing) {
+    return reconcile_rules(parsed, n, existing, n_existing, true);
+}
+
+mt_err_t mt_sub_reconcile_rule_ids(mt_sub_rule_t **parsed, size_t n,
+                                    mt_sub_rule_t **existing, size_t n_existing) {
+    return reconcile_rules(parsed, n, existing, n_existing, false);
 }
 
 mt_err_t mt_sub_refresh_rules(const char *list, mt_sub_rule_t **existing,

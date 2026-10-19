@@ -526,6 +526,7 @@
   }
 
   .subscription-actions {
+    min-height: 2.25rem;
     display: flex;
     align-items: center;
     justify-content: center;
@@ -605,6 +606,21 @@
         color: var(--text);
         border: 1px solid var(--bg-light-extra);
       }
+    }
+  }
+
+  @media (min-width: 701px) {
+    .update-line {
+      flex-wrap: nowrap;
+    }
+    .update-text {
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .update-interval {
+      flex-shrink: 0;
     }
   }
 

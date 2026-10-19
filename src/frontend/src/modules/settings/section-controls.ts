@@ -4,7 +4,6 @@ export type SectionControls = {
   title: string;
   canSave: boolean;
   dirty: boolean;
-  saveLabel: string;
   onSave: () => Promise<void>;
   addLabel?: string;
   canAdd?: boolean;

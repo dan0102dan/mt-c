@@ -10,7 +10,6 @@
     search?: Snippet;
     addLabel?: string;
     canSave: boolean;
-    saveDirty?: boolean;
     canAdd?: boolean;
     controlsClass?: string;
     contextual?: boolean;
@@ -31,7 +30,6 @@
     addLabel,
     actionsClass = "",
     canSave,
-    saveDirty,
     canAdd = true,
     controlsClass = "",
     contextual = false,
@@ -71,7 +69,7 @@
         id={saveButtonId}
         aria-label={saveLabel}
         class="accent"
-        inactive={!(saveDirty ?? canSave)}
+        inactive={!canSave}
         disabled={!canSave}
       >
         <Save size={22} />

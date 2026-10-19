@@ -231,7 +231,8 @@ test("draft survives tab navigation without a footer; invalid empty chain cannot
   await expect(page.locator("#save-settings")).toBeDisabled();
   expect(state.profiles[0].interfaces).toHaveLength(3);
   await expect(page.getByText("Add at least one interface", { exact: true })).toHaveCount(0);
-  await expect(page.locator("#save-settings")).toHaveAccessibleName("Add at least one interface");
+  await expect(page.locator("#save-settings")).toHaveAccessibleName("Save Changes");
+  await expect(page.locator("#save-settings")).toHaveClass(/inactive/);
   await addInterface(page.locator(".profile"), "tun1");
   await page.locator("#save-settings").click();
   await expect(page.locator("#save-settings")).toBeDisabled();
@@ -448,5 +449,225 @@ for (const width of [1280, 390]) {
     expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(
       width,
     );
+  });
+}
+
+async function geometry(locator: Locator) {
+  const box = await locator.boundingBox();
+  if (!box) throw new Error("Missing layout element");
+  return box;
+}
+
+async function navigate(page: Page, name: string) {
+  const menu = page.locator(".mobile-dropdown-btn");
+  if ((await menu.isVisible()) && (await menu.getAttribute("aria-expanded")) !== "true")
+    await menu.click();
+  await page.getByRole("tab", { name, exact: true }).click();
+}
+
+for (const width of [390, 540, 700, 701, 1280]) {
+  for (const descriptions of [false, true]) {
+    test(`route selection preserves card geometry at ${width}px, descriptions=${descriptions}`, async ({
+      page,
+    }) => {
+      await page.setViewportSize({ width, height: 900 });
+      const state = await backend(page);
+      state.interfaces[2].name = descriptions ? "WireGuard tunnel with a description" : "";
+      state.interfaces[3].name = descriptions ? "Long interface description ".repeat(10) : "";
+      const longName = Array(12).fill("Long profile name").join(" ");
+      state.profiles = [
+        { id: "short", name: "VPN", interfaces: ["tun0"], on_unavailable: "blackhole" },
+        { id: "long", name: longName, interfaces: ["tun1"], on_unavailable: "blackhole" },
+      ];
+      state.groups[0].profile = "missing_profile";
+      state.subscriptions[0].profile = "missing_profile";
+      state.groups.push({ ...state.groups[0], id: "aabbccee", name: "Following group" });
+      state.subscriptions.push({
+        ...state.subscriptions[0],
+        id: "11223355",
+        name: "Following subscription",
+      });
+      await page.goto("/");
+      await page.evaluate(() => document.fonts.ready);
+      for (const section of ["Groups", "Subscriptions"]) {
+        await navigate(page, section);
+        const headers = page.locator(
+          section === "Groups" ? ".group-header" : ".subscription-header",
+        );
+        await expect(headers).toHaveCount(2);
+        const route = headers.first().locator('[data-select-trigger][aria-label="Route"]');
+        const initial = {
+          header: await geometry(headers.first()),
+          following: await geometry(headers.last()),
+          route: await geometry(route),
+        };
+        const widths = new Map<string, number>();
+        for (const value of ["tun0", "tun1", "blackhole", "VPN", longName, "tun2", "tun0"]) {
+          await route.click();
+          const list = page.getByRole("listbox");
+          await expect(list).toBeVisible();
+          const popup = await geometry(list);
+          expect(popup.x).toBeGreaterThanOrEqual(0);
+          expect(popup.x + popup.width).toBeLessThanOrEqual(width);
+          const option = page.getByRole("option", {
+            name: value.startsWith("tun") ? new RegExp(`^${value}(\\s|$)`) : value,
+            exact: !value.startsWith("tun"),
+          });
+          await option.click();
+          await expect(list).not.toBeVisible();
+          await expect(route).toContainText(value);
+          const current = await geometry(headers.first());
+          const following = await geometry(headers.last());
+          const selected = await geometry(route);
+          expect(selected.height).toBeGreaterThanOrEqual(30);
+          expect(selected.height).toBeLessThanOrEqual(33);
+          expect(Math.abs(selected.height - initial.route.height)).toBeLessThan(0.5);
+          expect(
+            Math.abs(current.height - initial.header.height),
+            `${section}: ${value}, initial=${initial.header.height}, current=${current.height}`,
+          ).toBeLessThan(0.5);
+          expect(Math.abs(following.y - initial.following.y)).toBeLessThan(0.5);
+          widths.set(value, selected.width);
+          // The lower padding is part of the hit target even for a short profile name.
+          await route.click({ position: { x: 6, y: selected.height - 3 } });
+          await expect(list).toBeVisible();
+          await page.keyboard.press("Escape");
+          expect(
+            await page.evaluate(() => document.documentElement.scrollWidth),
+          ).toBeLessThanOrEqual(width);
+        }
+        expect(widths.get("blackhole")!).toBeGreaterThan(widths.get("VPN")! + 10);
+        expect(widths.get(longName)!).toBeGreaterThan(widths.get("VPN")! + 20);
+      }
+    });
+  }
+
+  for (const language of ["en", "ru"]) {
+    test(`profile header stays stable through editing and first save at ${width}px in ${language}`, async ({
+      page,
+    }) => {
+      await page.setViewportSize({ width, height: 900 });
+      await page.addInitScript(
+        (value) => localStorage.setItem("locale", JSON.stringify({ value })),
+        language,
+      );
+      const state = await backend(page);
+      state.interfaces[2].name = "WireGuard tunnel";
+      const labels =
+        language === "ru"
+          ? {
+              settings: "Настройки",
+              add: "Добавить профиль",
+              name: "Название профиля",
+              interface: "Добавить интерфейс",
+            }
+          : {
+              settings: "Settings",
+              add: "Add profile",
+              name: "Profile name",
+              interface: "Add interface",
+            };
+      await page.goto("/");
+      await navigate(page, labels.settings);
+      await page.getByRole("button", { name: labels.add, exact: true }).click();
+      const card = page.locator(".profile");
+      await expect(card).toBeVisible();
+      await page.evaluate(() => document.fonts.ready);
+      const header = card.locator(".profile-header");
+      const blank = await geometry(header);
+      for (const name of ["VPN", "Long profile name ".repeat(10), "Saved VPN"]) {
+        await card.getByLabel(labels.name, { exact: true }).fill(name);
+        expect(Math.abs((await geometry(header)).height - blank.height)).toBeLessThan(0.5);
+      }
+      const picker = card.locator(`[data-select-trigger][aria-label="${labels.interface}"]`);
+      for (const name of ["tun0", "tun1", "tun2"]) {
+        await picker.click();
+        await card.getByRole("option", { name: new RegExp(`^${name}(\\s|$)`) }).click();
+        await expect(card.locator(`[data-interface="${name}"]`)).toBeVisible();
+        expect(Math.abs((await geometry(header)).height - blank.height)).toBeLessThan(0.5);
+      }
+      await expect(picker).toBeDisabled();
+      const rows = card.locator(".interface:not(.terminal) .interface-row");
+      const rowHeights = await rows.evaluateAll((nodes) =>
+        nodes.map((node) => node.getBoundingClientRect().height),
+      );
+      expect(Math.max(...rowHeights) - Math.min(...rowHeights)).toBeLessThan(0.5);
+      const filled = await geometry(card);
+      const rowPositions = await rows.evaluateAll((nodes) =>
+        nodes.map((node) => node.getBoundingClientRect().y),
+      );
+      await page.locator("#save-settings").click();
+      await expect(page.locator("#save-settings")).toBeDisabled();
+      await expect(card.locator(".usage svg")).toBeVisible();
+      expect(state.profiles[0].interfaces).toEqual(["tun0", "tun1", "tun2"]);
+      expect(Math.abs((await geometry(header)).height - blank.height)).toBeLessThan(0.5);
+      expect(Math.abs((await geometry(card)).height - filled.height)).toBeLessThan(0.5);
+      const savedRows = await rows.evaluateAll((nodes) =>
+        nodes.map((node) => node.getBoundingClientRect().y),
+      );
+      savedRows.forEach((y, index) => expect(Math.abs(y - rowPositions[index])).toBeLessThan(0.5));
+      expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(
+        width,
+      );
+    });
+  }
+}
+
+for (const language of ["en", "ru"]) {
+  test(`Save stays inactive for unnamed objects and keeps its tooltip in ${language}`, async ({
+    page,
+  }) => {
+    await page.addInitScript(
+      (value) => localStorage.setItem("locale", JSON.stringify({ value })),
+      language,
+    );
+    await backend(page);
+    await page.goto("/");
+    const saveLabel = language === "ru" ? "Сохранить изменения" : "Save Changes";
+    for (const section of [
+      { tab: language === "ru" ? "Группы" : "Groups", id: "save-changes", input: ".group-name" },
+      {
+        tab: language === "ru" ? "Подписки" : "Subscriptions",
+        id: "save-subscriptions",
+        input: ".subscription-name",
+      },
+      {
+        tab: language === "ru" ? "Настройки" : "Settings",
+        id: "save-settings",
+        input: ".profile-name",
+      },
+    ]) {
+      await navigate(page, section.tab);
+      if (section.id === "save-settings") {
+        await page
+          .getByRole("button", {
+            name: language === "ru" ? "Добавить профиль" : "Add profile",
+            exact: true,
+          })
+          .click();
+        const card = page.locator(".profile");
+        await card.locator("[data-select-trigger]").click();
+        await card.getByRole("option", { name: "tun0", exact: true }).click();
+      }
+      const button = page.locator(`#${section.id}`);
+      const tooltip = page.locator('[role="tooltip"]').filter({ has: button });
+      const name = page.locator(section.input).first();
+      for (const value of ["", "   ", "Valid name", ""]) {
+        await name.fill(value);
+        await expect(button).toHaveAccessibleName(saveLabel);
+        await expect(tooltip).toHaveAttribute("data-value", saveLabel);
+        if (value.trim()) {
+          await expect(button).toBeEnabled();
+          await expect(button).not.toHaveClass(/inactive/);
+        } else {
+          await expect(button).toBeDisabled();
+          await expect(button).toHaveClass(/inactive/);
+        }
+      }
+      await tooltip.hover();
+      await expect(page.locator("#global-tooltip")).toHaveText(saveLabel);
+      // Keep other pages' drafts valid while checking the next editor.
+      await name.fill("Valid name");
+    }
   });
 }

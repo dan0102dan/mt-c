@@ -493,4 +493,163 @@ describe("ChangeTracker", () => {
       );
     });
   });
+
+  describe("Rebasing after an unrelated import", () => {
+    type GroupItem = {
+      id: string;
+      name: string;
+      rules: RuleItem[];
+    };
+    const group = (overrides: Partial<GroupItem> = {}): GroupItem => ({
+      id: "group1",
+      name: "Original group",
+      rules: [createItem({ id: "rule1" }), createItem({ id: "rule2" })],
+      ...overrides,
+    });
+    const ids = (items: readonly { id: string }[]) => items.map((item) => item.id);
+
+    it("preserves a nested draft while accepting clean imported additions and updates", () => {
+      const initial = [group(), group({ id: "group2", rules: [] })];
+      const incoming = structuredClone(initial);
+      incoming[1].name = "Updated by import";
+      incoming.push(group({ id: "imported", rules: [] }));
+      const tracker = new ChangeTracker(initial);
+      tracker.data[0].rules[0].enable = false;
+
+      assert.deepStrictEqual([...tracker.dirtyRootIds], ["group1"]);
+      tracker.rebase(incoming);
+
+      assert.strictEqual(tracker.data[0].rules[0].enable, false);
+      assert.strictEqual(tracker.data[1].name, "Updated by import");
+      assert.deepStrictEqual(ids(tracker.data), ["group1", "group2", "imported"]);
+      assert.deepStrictEqual(ids(tracker.changes.mutated), ["rule1"]);
+      assert.deepStrictEqual(tracker.changes.added, []);
+      assert.deepStrictEqual(tracker.changes.deleted, []);
+      assert.deepStrictEqual([...tracker.dirtyRootIds], ["group1"]);
+      assert.strictEqual(incoming[0].rules[0].enable, true, "Server response stays untouched");
+
+      tracker.data[0].rules[0].enable = true;
+      assert.strictEqual(tracker.isDirty, false);
+      assert.deepStrictEqual([...tracker.dirtyRootIds], []);
+    });
+
+    it("retains local root additions and deletions without dirtying imported objects", () => {
+      const initial = [group(), group({ id: "group2", rules: [] })];
+      const incoming = [...structuredClone(initial), group({ id: "imported", rules: [] })];
+      const tracker = new ChangeTracker(initial);
+      tracker.data.shift();
+      tracker.data.push(group({ id: "local", rules: [createItem({ id: "local-rule" })] }));
+
+      assert.deepStrictEqual(new Set(tracker.dirtyRootIds), new Set(["group1", "local"]));
+      tracker.rebase(incoming);
+
+      assert.deepStrictEqual(ids(tracker.data), ["group2", "local", "imported"]);
+      assert.deepStrictEqual(ids(tracker.changes.added), ["local", "local-rule"]);
+      assert.deepStrictEqual(ids(tracker.changes.deleted), ["group1", "rule1", "rule2"]);
+      assert.deepStrictEqual(tracker.changes.mutated, []);
+      assert.deepStrictEqual(new Set(tracker.dirtyRootIds), new Set(["group1", "local"]));
+
+      tracker.data.splice(1, 1);
+      tracker.data.unshift(structuredClone(incoming[0]));
+      assert.strictEqual(tracker.isDirty, false);
+      assert.deepStrictEqual([...tracker.dirtyRootIds], []);
+    });
+
+    it("preserves nested rule membership and order and can revert to the new baseline", () => {
+      const initial = [group()];
+      const incoming = [...structuredClone(initial), group({ id: "imported", rules: [] })];
+      const tracker = new ChangeTracker(initial);
+      tracker.data[0].rules.pop();
+      tracker.data[0].rules.push(createItem({ id: "local-rule" }));
+      tracker.data[0].rules.reverse();
+
+      tracker.rebase(incoming);
+
+      assert.deepStrictEqual(ids(tracker.data[0].rules), ["local-rule", "rule1"]);
+      assert.deepStrictEqual(ids(tracker.changes.added), ["local-rule"]);
+      assert.deepStrictEqual(ids(tracker.changes.deleted), ["rule2"]);
+      assert.deepStrictEqual(tracker.changes.mutated, []);
+      assert.deepStrictEqual([...tracker.dirtyRootIds], ["group1"]);
+
+      tracker.data[0].rules.splice(0, 2, ...structuredClone(incoming[0].rules));
+      assert.strictEqual(tracker.isDirty, false);
+    });
+
+    it("keeps local root order but excludes order-only changes from dirtyRootIds", () => {
+      const initial = [group(), group({ id: "group2", rules: [] })];
+      const incoming = [...structuredClone(initial), group({ id: "imported", rules: [] })];
+      const tracker = new ChangeTracker(initial);
+      tracker.data.reverse();
+
+      assert.deepStrictEqual([...tracker.dirtyRootIds], []);
+      tracker.rebase(incoming);
+
+      assert.deepStrictEqual(ids(tracker.data), ["group2", "group1", "imported"]);
+      assert.strictEqual(tracker.isDirty, true);
+      assert.deepStrictEqual([...tracker.dirtyRootIds], []);
+      assert.deepStrictEqual(tracker.changes, { added: [], deleted: [], mutated: [] });
+
+      tracker.data.sort((a, b) => a.id.localeCompare(b.id));
+      assert.strictEqual(tracker.isDirty, false);
+    });
+
+    it("uses the acknowledged subscription refresh as baseline while retaining metadata edits", () => {
+      const initial = [{ ...group(), lastUpdate: 0 }];
+      const tracker = new ChangeTracker(initial);
+      tracker.data[0].name = "Unsaved subscription name";
+      tracker.data[0].rules[0].enable = false;
+      const refreshed = [createItem({ id: "server-rule", type: "domain" })];
+      tracker.acknowledgeUpdate(tracker.data[0], { rules: refreshed, lastUpdate: 123 });
+      const incoming = [
+        { ...group({ rules: structuredClone(refreshed) }), lastUpdate: 123 },
+        { ...group({ id: "imported", rules: [] }), lastUpdate: 456 },
+      ];
+
+      tracker.rebase(incoming);
+
+      assert.strictEqual(tracker.data[0].name, "Unsaved subscription name");
+      assert.strictEqual(tracker.data[0].lastUpdate, 123);
+      assert.deepStrictEqual(ids(tracker.data[0].rules), ["server-rule"]);
+      assert.deepStrictEqual(ids(tracker.changes.mutated), ["group1"]);
+      assert.deepStrictEqual(tracker.changes.added, []);
+      assert.deepStrictEqual(tracker.changes.deleted, []);
+      assert.deepStrictEqual([...tracker.dirtyRootIds], ["group1"]);
+
+      tracker.data[0].name = incoming[0].name;
+      assert.strictEqual(tracker.isDirty, false);
+      tracker.data[0].rules[0].enable = false;
+      assert.deepStrictEqual(ids(tracker.changes.mutated), ["server-rule"]);
+      tracker.data[0].rules[0].enable = true;
+      assert.strictEqual(tracker.isDirty, false);
+    });
+
+    it("keeps acknowledge methods working after rebasing a draft", () => {
+      const incoming = [group(), group({ id: "imported", rules: [] })];
+      const tracker = new ChangeTracker([group()]);
+      tracker.data[0].name = "Draft";
+      tracker.rebase(incoming);
+      tracker.acknowledgeUpdate(tracker.data[0]);
+      assert.strictEqual(tracker.isDirty, false);
+      assert.deepStrictEqual([...tracker.dirtyRootIds], []);
+
+      const added = group({ id: "new-persisted", rules: [] });
+      tracker.data.push(added);
+      tracker.acknowledgeNewItem(tracker.data, added);
+      assert.strictEqual(tracker.isDirty, false);
+      tracker.data.pop();
+      tracker.acknowledgeDelete(tracker.data, added.id);
+      assert.strictEqual(tracker.isDirty, false);
+      assert.deepStrictEqual([...tracker.dirtyRootIds], []);
+    });
+
+    it("rejects an ambiguous server deletion before changing a local draft", () => {
+      const tracker = new ChangeTracker([group()]);
+      tracker.data[0].name = "Draft";
+
+      assert.throws(() => tracker.rebase([]), /local draft removed from the server/);
+      assert.strictEqual(tracker.data[0].name, "Draft");
+      assert.strictEqual(tracker.isDirty, true);
+      assert.deepStrictEqual([...tracker.dirtyRootIds], ["group1"]);
+    });
+  });
 });

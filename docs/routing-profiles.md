@@ -95,8 +95,15 @@ and may remove profile fields when saving. Downgrade round-tripping is not promi
 
 Group exports include every referenced profile exactly once. Import remaps colliding
 IDs and all imported references together; matching display names are not treated as
-identity. An identical existing definition with the same ID is reused. Review
-interface names when transferring to another router.
+identity. An identical existing definition with the same ID is reused. Import
+preserves interface names from the file, including interfaces absent on the current
+device; it does not require replacements before applying. Review and correct these
+interfaces in the ordinary editors after transferring to another router.
+
+Portable WebUI files contain groups, rules, subscriptions, routing profiles and
+WebUI-editable settings (the Keenetic policy filter on supported builds). Daemon
+HTTP/DNS/netfilter/logging settings are excluded from exports and ignored when
+reading older portable files. Import preserves the device's daemon settings.
 
 ## What “available” means
 

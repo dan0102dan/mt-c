@@ -21,6 +21,9 @@ mt_err_t __wrap_mt_loop_del_fd(mt_loop_t *loop, int fd);
 void __wrap_mt_loop_stop(mt_loop_t *loop);
 mt_err_t __wrap_mt_app_reconcile_routes(mt_app_t *app, const char *name);
 mt_err_t __wrap_mt_app_force_commit_iptables(mt_app_t *app);
+#ifdef MT_ENTWARE_KN
+mt_err_t __wrap_mt_app_reconcile_profiles(mt_app_t *app, const char *name);
+#endif
 struct mnl_socket *__real_mnl_socket_open(int bus);
 struct mnl_socket *__wrap_mnl_socket_open(int bus);
 ssize_t __wrap_mnl_socket_recvfrom(const struct mnl_socket *nl, void *data, size_t len);
@@ -36,6 +39,8 @@ static struct {
     uint64_t now;
     int serial, fd, recv_error;
     unsigned opens, registrations, removals, reconciles, open_failures, policy_refreshes;
+    unsigned profile_reconciles, all_profiles;
+    char profile_names[128][16];
     mt_fd_cb readable;
     void *read_ud;
     mt_err_t result;
@@ -87,6 +92,18 @@ mt_err_t __wrap_mt_app_reconcile_routes(mt_app_t *app, const char *name)
     fx.reconciles++;
     return name ? MT_ERR_INVAL : fx.result;
 }
+#ifdef MT_ENTWARE_KN
+mt_err_t __wrap_mt_app_reconcile_profiles(mt_app_t *app, const char *name)
+{
+    (void)app;
+    if (!name) { fx.all_profiles++; }
+    if (fx.profile_reconciles < 128 && name) {
+        snprintf(fx.profile_names[fx.profile_reconciles], 16, "%s", name);
+    }
+    fx.profile_reconciles++;
+    return fx.result;
+}
+#endif
 mt_err_t __wrap_mt_app_force_commit_iptables(mt_app_t *app)
 {
     (void)app;
@@ -250,6 +267,52 @@ TEST watcher_scheduler_failure_stops_instead_of_losing_recovery(void)
 }
 
 #ifdef MT_ENTWARE_KN
+TEST ndm_events_coalesce_only_affected_profiles_and_never_rebuild_iptables(void)
+{
+    ASSERT(setup());
+    for (unsigned i = 0; i < 30; i++) { on_ndm_state_changed(&d, "nwg0"); }
+    on_ndm_state_changed(&d, "nwg1");
+    ASSERT_EQ(1u, timer_count()); ASSERT_EQ(20u, next_delay());
+    ASSERT(fire_next());
+    ASSERT_EQ(2u, fx.profile_reconciles); ASSERT_EQ(0u, fx.reconciles);
+    ASSERT_STR_EQ("nwg0", fx.profile_names[0]); ASSERT_STR_EQ("nwg1", fx.profile_names[1]);
+    ASSERT_EQ(0u, fx.policy_refreshes); ASSERT_EQ(0u, timer_count());
+    ASSERT_EQ(0u, d.n_ndm_names);
+    daemon_teardown(&d); PASS();
+}
+
+TEST ndm_busy_retry_retains_names_and_kernel_events_share_the_same_timer(void)
+{
+    ASSERT(setup()); fx.result = MT_ERR_AGAIN;
+    on_ndm_state_changed(&d, "nwg0");
+    ASSERT(fire_next()); ASSERT_EQ(100u, next_delay());
+    on_ndm_state_changed(&d, "nwg1");
+    ASSERT_EQ(1u, timer_count());
+    fx.result = MT_OK;
+    ASSERT(fire_next()); ASSERT_EQ(0u, timer_count());
+    ASSERT_EQ(3u, fx.profile_reconciles);
+    on_ndm_state_changed(&d, "nwg0");
+    on_route_change(&d);
+    ASSERT_EQ(1u, timer_count()); ASSERT(fire_next());
+    ASSERT_EQ(1u, fx.reconciles); ASSERT_EQ(3u, fx.profile_reconciles);
+    ASSERT_EQ(0u, d.n_ndm_names); ASSERT_EQ(0u, fx.policy_refreshes);
+    daemon_teardown(&d); PASS();
+}
+
+TEST ndm_pending_overflow_falls_back_to_all_profiles_not_all_direct_routes(void)
+{
+    ASSERT(setup());
+    for (unsigned i = 0; i < 100; i++) {
+        char name[16]; snprintf(name, sizeof(name), "nwg%u", i);
+        on_ndm_state_changed(&d, name);
+    }
+    ASSERT_EQ(1u, timer_count()); ASSERT(fire_next());
+    ASSERT_EQ(1u, fx.all_profiles); ASSERT_EQ(1u, fx.profile_reconciles);
+    ASSERT_EQ(0u, fx.reconciles); ASSERT_EQ(0u, fx.policy_refreshes);
+    ASSERT_EQ(0u, timer_count());
+    daemon_teardown(&d); PASS();
+}
+
 TEST policy_local_addresses_refresh_only_on_topology_events(void)
 {
     ASSERT(setup());
@@ -279,6 +342,9 @@ int main(int argc, char **argv)
     GREATEST_MAIN_BEGIN();
 #ifdef MT_ENTWARE_KN
     RUN_TEST(policy_local_addresses_refresh_only_on_topology_events);
+    RUN_TEST(ndm_events_coalesce_only_affected_profiles_and_never_rebuild_iptables);
+    RUN_TEST(ndm_busy_retry_retains_names_and_kernel_events_share_the_same_timer);
+    RUN_TEST(ndm_pending_overflow_falls_back_to_all_profiles_not_all_direct_routes);
 #endif
     RUN_TEST(lost_and_malformed_events_coalesce_without_periodic_polling);
     RUN_TEST(contention_and_apply_error_retry_then_stop_on_success);

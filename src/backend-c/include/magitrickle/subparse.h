@@ -33,6 +33,10 @@ void mt_sub_rules_free(mt_sub_rule_t **rules, size_t n);
 /* Modifies only the caller-owned parsed array, never existing live rules. */
 mt_err_t mt_sub_reconcile_rules(mt_sub_rule_t **parsed, size_t n,
                                  mt_sub_rule_t **existing, size_t n_existing);
+/* Modern subscriptions keep user settings separately. Preserve only IDs so
+ * removed overrides cannot be resurrected from the previous effective cache. */
+mt_err_t mt_sub_reconcile_rule_ids(mt_sub_rule_t **parsed, size_t n,
+                                    mt_sub_rule_t **existing, size_t n_existing);
 mt_err_t mt_sub_rules_fix_ids(mt_sub_rule_t **rules, size_t n);
 
 /* Detected type for a single trimmed pattern; returns one of the

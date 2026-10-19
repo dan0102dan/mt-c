@@ -1,3 +1,32 @@
+type IdObject = { id: string } & Record<string, unknown>;
+
+function isIdObject(value: unknown): value is IdObject {
+  return (
+    value !== null &&
+    typeof value === "object" &&
+    "id" in value &&
+    typeof value.id === "string" &&
+    value.id.length > 0
+  );
+}
+
+function sameValue(left: unknown, right: unknown): boolean {
+  if (left === right) return true;
+  if (!left || !right || typeof left !== "object" || typeof right !== "object") return false;
+  if (Array.isArray(left) || Array.isArray(right)) {
+    return (
+      Array.isArray(left) &&
+      Array.isArray(right) &&
+      left.length === right.length &&
+      left.every((value, index) => sameValue(value, right[index]))
+    );
+  }
+  const a = left as Record<string, unknown>;
+  const b = right as Record<string, unknown>;
+  const keys = new Set([...Object.keys(a), ...Object.keys(b)]);
+  return [...keys].every((key) => sameValue(a[key], b[key]));
+}
+
 export class ChangeTracker<T extends object> {
   private state: T;
   private proxy: T;
@@ -130,7 +159,7 @@ export class ChangeTracker<T extends object> {
     let dirty = originals.length !== currentIds.length;
     if (!dirty) {
       for (let i = 0; i < originals.length; i++) {
-        if (originals[i] !== currentIds[i]) {
+        if (!sameValue(originals[i], currentIds[i])) {
           dirty = true;
           break;
         }
@@ -241,6 +270,122 @@ export class ChangeTracker<T extends object> {
   get isDirty() {
     const _ = this.version;
     return this.dirtyObjectProps.size > 0 || this.dirtyArrays.size > 0;
+  }
+
+  private idObjects(value: unknown): IdObject[] {
+    if (
+      !Array.isArray(value) ||
+      !value.every(isIdObject) ||
+      new Set(value.map((item) => item.id)).size !== value.length
+    ) {
+      throw new Error("Draft rebasing requires an array of objects with unique IDs");
+    }
+    return value;
+  }
+
+  private containsDirtyState(node: unknown): boolean {
+    if (!node || typeof node !== "object") return false;
+    if (Array.isArray(node)) {
+      return this.dirtyArrays.has(node) || node.some((item) => this.containsDirtyState(item));
+    }
+    if (isIdObject(node) && this.dirtyObjectProps.has(node.id)) return true;
+    return Object.values(node).some((value) => this.containsDirtyState(value));
+  }
+
+  /** Root objects affected by a local edit, including nested rules and membership.
+   * Reordering the root collection alone does not make every object a conflict. */
+  get dirtyRootIds(): ReadonlySet<string> {
+    const _ = this.version;
+    const items = this.idObjects(this.state);
+    const originalIds = new Set(this.originalArrays.get(this.state) ?? []);
+    const currentIds = new Set(items.map((item) => item.id));
+    const dirty = new Set<string>();
+    for (const item of items) {
+      if (!originalIds.has(item.id) || this.containsDirtyState(item)) dirty.add(item.id);
+    }
+    for (const id of originalIds) {
+      if (!currentIds.has(id)) dirty.add(id);
+    }
+    return dirty;
+  }
+
+  /** Replay a retained draft on the freshly indexed server object. Keeping its
+   * existing rule arrays/objects lets normal edits and reversions keep working. */
+  private replayDraft(target: IdObject, draft: IdObject) {
+    for (const key of new Set([...Object.keys(target), ...Object.keys(draft)])) {
+      const current = target[key];
+      const desired = draft[key];
+      if (sameValue(current, desired)) continue;
+      if (Array.isArray(current) && Array.isArray(desired)) {
+        let next: unknown[];
+        if (current.every(isIdObject) && desired.every(isIdObject)) {
+          const byId = new Map(current.map((item) => [item.id, item]));
+          next = desired.map((item) => {
+            const existing = byId.get(item.id);
+            if (!existing) return structuredClone(item);
+            this.replayDraft(existing, item);
+            return existing;
+          });
+        } else {
+          next = structuredClone(desired);
+        }
+        for (let index = 0; index < next.length; index++) current[index] = next[index];
+        current.length = next.length;
+        this.checkArrayStructure(current);
+      } else {
+        if (Object.hasOwn(draft, key)) target[key] = structuredClone(desired);
+        else delete target[key];
+        this.checkObjectField(target, key);
+      }
+    }
+  }
+
+  /** Accept an imported server baseline without saving unrelated local drafts.
+   * The caller must reject imports that also edit dirtyRootIds. This deliberately
+   * retains whole dirty roots rather than guessing how conflicting edits merge. */
+  rebase(newData: T) {
+    const incoming = this.idObjects(structuredClone(newData));
+    const local = this.idObjects($state.snapshot(this.state));
+    const dirty = this.dirtyRootIds;
+    const originalIds = new Set(this.originalArrays.get(this.state) ?? []);
+    const localById = new Map(local.map((item) => [item.id, item]));
+    const incomingIds = new Set(incoming.map((item) => item.id));
+    const deleted = new Set([...dirty].filter((id) => !localById.has(id)));
+    for (const id of dirty) {
+      if (originalIds.has(id) && localById.has(id) && !incomingIds.has(id)) {
+        throw new Error(`Cannot rebase a local draft removed from the server: ${id}`);
+      }
+    }
+
+    const orderedIds = this.dirtyArrays.has(this.state)
+      ? local
+          .filter((item) => dirty.has(item.id) || incomingIds.has(item.id))
+          .map((item) => item.id)
+      : incoming.filter((item) => !deleted.has(item.id)).map((item) => item.id);
+    const included = new Set(orderedIds);
+    for (const item of incoming) {
+      if (!included.has(item.id) && !deleted.has(item.id)) {
+        orderedIds.push(item.id);
+        included.add(item.id);
+      }
+    }
+
+    // Clone before reset: replaying local fields must never change the caller's
+    // accepted server response or the store's independent save baseline.
+    this.reset(incoming as unknown as T);
+    const target = this.idObjects(this.state);
+    const byId = new Map(target.map((item) => [item.id, item]));
+    const next = orderedIds.map((id) => {
+      const saved = byId.get(id);
+      const draft = dirty.has(id) ? localById.get(id) : undefined;
+      if (!saved) return draft!;
+      if (draft) this.replayDraft(saved, draft);
+      return saved;
+    });
+    for (let index = 0; index < next.length; index++) target[index] = next[index];
+    target.length = next.length;
+    this.checkArrayStructure(target);
+    this.notify();
   }
 
   get changes() {

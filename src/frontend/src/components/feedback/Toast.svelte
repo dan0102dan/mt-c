@@ -158,7 +158,7 @@
     display: flex;
     flex-direction: column;
     gap: 0.6rem;
-    z-index: 15;
+    z-index: 30;
     align-items: center;
   }
 

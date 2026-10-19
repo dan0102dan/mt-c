@@ -6,7 +6,8 @@ from pathlib import Path
 BACKEND = [
     b'/api/v1/keenetic/policy', b'/rci/show/ip/policy', b'keeneticPolicy',
     b'POLICY_RULES', b'/rci/show/interface', b'http://127.0.0.1:79',
-    b'failed to load interface aliases',
+    b'failed to load interface aliases', b'/api/v1/system/hooks/ndm-interface',
+    b'magitrickle-ndm-lost', b'NDM interface snapshot unavailable',
 ]
 FRONTEND = [
     b'/keenetic/policy', b'Use policy based filter', b'keenetic-policy-enabled',

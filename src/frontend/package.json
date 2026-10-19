@@ -13,7 +13,7 @@
     "format:check": "prettier --check \"src/**/*\" \"tests/**/*\" \"dev/**/*\" --ignore-unknown",
     "format": "prettier --write \"src/**/*\" \"tests/**/*\" \"dev/**/*\" --ignore-unknown",
     "dev:frontend": "vite --host",
-    "dev:backend": "deno -A ./dev/backend-mock.ts",
+    "dev:backend": "deno -A --unstable-sloppy-imports ./dev/backend-mock.ts",
     "test:e2e": "playwright test",
     "test:e2e:ui": "playwright test --ui",
     "test:unit": "deno test --allow-scripts=npm:esbuild --no-check --unstable-sloppy-imports --ignore=tests/e2e tests/"

@@ -110,6 +110,14 @@ ifneq ($(MAGITRICKLE_IS_KN),)
 	$(INSTALL_BIN) \
 		$(PKG_BUILD_DIR)/files/entware_kn/etc/ndm/netfilter.d/100-magitrickle \
 		$(1)/opt/etc/ndm/netfilter.d/100-magitrickle
+
+	$(INSTALL_DIR) $(1)/opt/lib/magitrickle
+	$(INSTALL_BIN) $(PKG_BUILD_DIR)/files/entware_kn/lib/magitrickle/ndm-interface-hook \
+		$(1)/opt/lib/magitrickle/ndm-interface-hook
+	$(foreach hook,iflayerchanged.d ifstatechanged.d ifcreated.d ifdestroyed.d, \
+		$(INSTALL_DIR) $(1)/opt/etc/ndm/$(hook) && \
+		$(INSTALL_BIN) $(PKG_BUILD_DIR)/files/entware_kn/etc/ndm/$(hook)/100-magitrickle \
+			$(1)/opt/etc/ndm/$(hook)/100-magitrickle || exit 1;)
 else
 	$(INSTALL_BIN) $(PKG_BUILD_DIR)/files/entware/etc/init.d/S99magitrickle \
 		$(1)/opt/etc/init.d/S99magitrickle

@@ -52,13 +52,6 @@
     canSave: dirty && !unavailable && !validation,
     onAdd: addProfile,
     onSave: save,
-    saveLabel: profiles.saving
-      ? t("Saving...")
-      : profiles.persistencePending
-        ? t("Changes are applied but not saved to disk. Retry saving.")
-        : dirty && validation
-          ? t(validation)
-          : t("Save Changes"),
   })}
 >
   {#if profiles.failed}

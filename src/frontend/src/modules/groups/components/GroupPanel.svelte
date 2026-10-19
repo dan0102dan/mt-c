@@ -560,6 +560,7 @@
 
   .group-header {
     & {
+      min-height: 2.25rem;
       display: flex;
       justify-content: space-between;
       align-items: center;
@@ -722,6 +723,7 @@
 
   .group-actions {
     & {
+      min-height: 2.25rem;
       display: flex;
       align-items: center;
       justify-content: center;

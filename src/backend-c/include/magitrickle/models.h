@@ -20,6 +20,7 @@
 #include "magitrickle/duration.h"
 #include "magitrickle/err.h"
 #include "magitrickle/id.h"
+#include "magitrickle/lookup.h"
 #ifdef MT_ENTWARE_KN
 #include "magitrickle/keenetic_policy.h"
 #endif
@@ -76,6 +77,13 @@ typedef struct mt_sub_rule {
     bool enable;
 } mt_sub_rule_t;
 
+/* User-authored rule exceptions are stored separately from downloaded rules. */
+typedef struct mt_sub_override {
+    char *rule;
+    char *type; /* NULL means leave type detected by source */
+    int enable; /* -1: keep source, 0: disabled, 1: enabled */
+} mt_sub_override_t;
+
 typedef struct mt_subscription {
     mt_id_t id;
     char *name;
@@ -91,6 +99,10 @@ typedef struct mt_subscription {
     bool sync_pending;   /* at most one accepted fetch per incarnation */
     mt_sub_rule_t **rules;
     size_t n_rules;
+    mt_sub_override_t **overrides;
+    size_t n_overrides;
+    bool overrides_present; /* absent legacy YAML differs from explicit overrides: [] */
+    mt_lookup_t override_index; /* owning pattern -> overrides array index; runtime only */
 } mt_subscription_t;
 
 /* A reusable ordered failover chain. The final action is always blackhole.
@@ -175,6 +187,19 @@ void mt_sub_rule_free(mt_sub_rule_t *r);
 mt_subscription_t *mt_subscription_new(void);
 void mt_subscription_free(mt_subscription_t *s);
 mt_err_t mt_subscription_add_rule(mt_subscription_t *s, mt_sub_rule_t *r);
+/* A pattern is the stable identity across subscription refreshes. */
+mt_err_t mt_subscription_override_set(mt_subscription_t *s, const char *rule,
+                                      const char *type, int enable);
+const mt_sub_override_t *mt_subscription_override_find(const mt_subscription_t *s,
+                                                      const char *rule);
+mt_err_t mt_subscription_overrides_copy(mt_subscription_t *dst, const mt_subscription_t *src);
+/* Capture only legacy cached values that differ from deterministic source defaults. */
+mt_err_t mt_subscription_migrate_overrides(mt_subscription_t *s);
+mt_err_t mt_subscription_apply_overrides(const mt_subscription_t *sub,
+                                        mt_sub_rule_t **rules, size_t count);
+/* Persisted caches contain effective values; restore source defaults before an
+ * authoritative override list is applied (including an explicit empty list). */
+mt_err_t mt_subscription_restore_cached_rules(mt_subscription_t *sub);
 
 mt_profile_t *mt_profile_new(void);
 void mt_profile_free(mt_profile_t *p);

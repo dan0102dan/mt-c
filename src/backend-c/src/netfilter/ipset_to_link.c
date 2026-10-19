@@ -36,6 +36,7 @@ struct mt_ipset_to_link {
     bool enabled;
 #ifdef MT_ENTWARE_KN
     const mt_kn_policy_scope_t *policy;
+    const mt_kn_ifstate_t *interface_states;
 #endif
     uint32_t mark;
     uint32_t table;
@@ -81,6 +82,9 @@ void mt_ipset_to_link_set_priority(mt_ipset_to_link_t *l, uint16_t priority) {
 /* ---- iptables chain rules ------------------------------------------------ */
 
 #ifdef MT_ENTWARE_KN
+void mt_ipset_to_link_set_interface_states(mt_ipset_to_link_t *self, const mt_kn_ifstate_t *state) {
+    if (self) { self->interface_states = state; }
+}
 void mt_ipset_to_link_set_policy(mt_ipset_to_link_t *self, const mt_kn_policy_scope_t *scope) {
     if (self) { self->policy = scope; }
 }
@@ -255,6 +259,11 @@ static mt_err_t probe_candidate(void *ctx, const char *name, int family,
     mt_ipset_to_link_t *l = ctx;
     *available = false;
     if (!*name || strcmp(name, MT_IPSET_TO_LINK_BLACKHOLE) == 0) { return MT_OK; }
+#ifdef MT_ENTWARE_KN
+    /* NDM is an additional veto for PROFILE candidates only. A positive or
+     * unknown NDM state still needs the unchanged per-family kernel checks. */
+    if (l->n_interfaces && mt_kn_ifstate_blocks(l->interface_states, name, family)) { return MT_OK; }
+#endif
     mt_link_info_t li;
     bool found;
     mt_err_t err = mt_rtnl_link_by_name(l->rtnl, name, &li, &found);
