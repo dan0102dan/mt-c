@@ -105,6 +105,7 @@ export class SubscriptionsStore {
   valid_subscription_urls = $derived(this.subscriptionUrlErrors.size === 0);
   canSave = $derived(
     this.hasUnsavedChanges &&
+      this.data.every((subscription) => Boolean(subscription.name.trim())) &&
       this.valid_rules &&
       this.valid_priorities &&
       this.valid_subscription_urls &&

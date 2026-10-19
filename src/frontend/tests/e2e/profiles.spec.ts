@@ -231,7 +231,8 @@ test("draft survives tab navigation without a footer; invalid empty chain cannot
   await expect(page.locator("#save-settings")).toBeDisabled();
   expect(state.profiles[0].interfaces).toHaveLength(3);
   await expect(page.getByText("Add at least one interface", { exact: true })).toHaveCount(0);
-  await expect(page.locator("#save-settings")).toHaveAccessibleName("Add at least one interface");
+  await expect(page.locator("#save-settings")).toHaveAccessibleName("Save Changes");
+  await expect(page.locator("#save-settings")).toHaveClass(/inactive/);
   await addInterface(page.locator(".profile"), "tun1");
   await page.locator("#save-settings").click();
   await expect(page.locator("#save-settings")).toBeDisabled();
@@ -610,4 +611,63 @@ for (const width of [390, 540, 700, 701, 1280]) {
       );
     });
   }
+}
+
+for (const language of ["en", "ru"]) {
+  test(`Save stays inactive for unnamed objects and keeps its tooltip in ${language}`, async ({
+    page,
+  }) => {
+    await page.addInitScript(
+      (value) => localStorage.setItem("locale", JSON.stringify({ value })),
+      language,
+    );
+    await backend(page);
+    await page.goto("/");
+    const saveLabel = language === "ru" ? "Сохранить изменения" : "Save Changes";
+    for (const section of [
+      { tab: language === "ru" ? "Группы" : "Groups", id: "save-changes", input: ".group-name" },
+      {
+        tab: language === "ru" ? "Подписки" : "Subscriptions",
+        id: "save-subscriptions",
+        input: ".subscription-name",
+      },
+      {
+        tab: language === "ru" ? "Настройки" : "Settings",
+        id: "save-settings",
+        input: ".profile-name",
+      },
+    ]) {
+      await navigate(page, section.tab);
+      if (section.id === "save-settings") {
+        await page
+          .getByRole("button", {
+            name: language === "ru" ? "Добавить профиль" : "Add profile",
+            exact: true,
+          })
+          .click();
+        const card = page.locator(".profile");
+        await card.locator("[data-select-trigger]").click();
+        await card.getByRole("option", { name: "tun0", exact: true }).click();
+      }
+      const button = page.locator(`#${section.id}`);
+      const tooltip = page.locator('[role="tooltip"]').filter({ has: button });
+      const name = page.locator(section.input).first();
+      for (const value of ["", "   ", "Valid name", ""]) {
+        await name.fill(value);
+        await expect(button).toHaveAccessibleName(saveLabel);
+        await expect(tooltip).toHaveAttribute("data-value", saveLabel);
+        if (value.trim()) {
+          await expect(button).toBeEnabled();
+          await expect(button).not.toHaveClass(/inactive/);
+        } else {
+          await expect(button).toBeDisabled();
+          await expect(button).toHaveClass(/inactive/);
+        }
+      }
+      await tooltip.hover();
+      await expect(page.locator("#global-tooltip")).toHaveText(saveLabel);
+      // Keep other pages' drafts valid while checking the next editor.
+      await name.fill("Valid name");
+    }
+  });
 }

@@ -115,7 +115,8 @@ test.describe("Keenetic policy settings", () => {
       const picker = panel(page).getByRole("button", { name: "Router policy", exact: true });
       await expect(picker).toHaveText("mt");
       await expect(save(page)).toBeDisabled();
-      await expect(save(page)).not.toHaveClass(/inactive/);
+      await expect(save(page)).toHaveClass(/inactive/);
+      await expect(save(page)).toHaveAccessibleName("Save Changes");
       await expect(
         panel(page).getByText('Create the "mt" policy in Keenetic, then reload this page.'),
       ).toBeVisible();
@@ -414,15 +415,19 @@ test.describe("Shared settings toolbar", () => {
   });
 });
 
-
 test.describe("Save applies to the entire Settings page", () => {
   test.skip(!keenetic, "Keenetic-only editor");
   test("a profile edit remains saveable while viewing policy", async ({ page }) => {
     await page.setViewportSize({ width: 390, height: 540 });
     const state = await backend(page, true);
-    state.profiles = [{
-      id: "one", name: "Original", interfaces: ["tun0"], on_unavailable: "blackhole",
-    }];
+    state.profiles = [
+      {
+        id: "one",
+        name: "Original",
+        interfaces: ["tun0"],
+        on_unavailable: "blackhole",
+      },
+    ];
     await openSettings(page);
     await page.getByPlaceholder("Profile name", { exact: true }).fill("New name");
     await page.evaluate(() => window.scrollTo(0, document.documentElement.scrollHeight));
@@ -449,14 +454,21 @@ test.describe("Save applies to the entire Settings page", () => {
 
   test("invalid changes block all writes until corrected", async ({ page }) => {
     const state = await backend(page, true);
-    state.profiles = [{
-      id: "one", name: "Original", interfaces: ["tun0"], on_unavailable: "blackhole",
-    }];
+    state.profiles = [
+      {
+        id: "one",
+        name: "Original",
+        interfaces: ["tun0"],
+        on_unavailable: "blackhole",
+      },
+    ];
     await openSettings(page);
     const name = page.getByPlaceholder("Profile name", { exact: true });
     await name.fill("");
     await panel(page).getByRole("switch", { name: "Processing mode", exact: true }).click();
     await expect(save(page)).toBeDisabled();
+    await expect(save(page)).toHaveClass(/inactive/);
+    await expect(save(page)).toHaveAccessibleName("Save Changes");
     expect(state.profileWrites).toBe(0);
     expect(state.writes).toBe(0);
     await name.fill("Repaired");
@@ -470,9 +482,14 @@ test.describe("Save applies to the entire Settings page", () => {
 
   test("partial disk failure retries only the remaining dirty section", async ({ page }) => {
     const state = await backend(page, true);
-    state.profiles = [{
-      id: "one", name: "Original", interfaces: ["tun0"], on_unavailable: "blackhole",
-    }];
+    state.profiles = [
+      {
+        id: "one",
+        name: "Original",
+        interfaces: ["tun0"],
+        on_unavailable: "blackhole",
+      },
+    ];
     await openSettings(page);
     await page.getByPlaceholder("Profile name", { exact: true }).fill("Saved once");
     await panel(page).getByRole("switch", { name: "Processing mode", exact: true }).click();

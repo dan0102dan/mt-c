@@ -27,7 +27,6 @@
     sections.find((section) => section.controls().dirty && !section.controls().canSave)?.controls(),
   );
   const canSave = $derived(dirty && !saving && !invalid);
-  const saveLabel = $derived(saving ? t("Saving...") : (invalid?.saveLabel ?? t("Save Changes")));
 
   async function saveAll() {
     if (!canSave) return;
@@ -118,10 +117,9 @@
   <div class="settings-toolbar" bind:this={toolbar}>
     <PageControls
       {canSave}
-      saveDirty={dirty}
       onSave={() => void saveAll()}
       saveButtonId="save-settings"
-      {saveLabel}
+      saveLabel={t("Save Changes")}
       exportLabel={t("Export Config")}
       importLabel={t("Import Config")}
       onExport={() => void transfer.exportConfig()}

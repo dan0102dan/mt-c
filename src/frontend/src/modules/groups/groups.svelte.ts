@@ -111,7 +111,11 @@ export class GroupsStore {
   valid_rules = $state(true);
   valid_priorities = $derived(this.data.every((group) => isValidPriority(group.priority)));
   canSave = $derived(
-    this.hasUnsavedChanges && this.valid_rules && this.valid_priorities && !this.saving,
+    this.hasUnsavedChanges &&
+      this.data.every((group) => Boolean(group.name.trim())) &&
+      this.valid_rules &&
+      this.valid_priorities &&
+      !this.saving,
   );
 
   open_state = $state<Record<string, boolean>>({});

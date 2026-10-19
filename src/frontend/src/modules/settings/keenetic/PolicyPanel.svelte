@@ -77,7 +77,6 @@
     dirty,
     canSave: dirty && policy.loaded && !policy.saving && valid,
     onSave: save,
-    saveLabel: policy.saving ? t("Saving...") : t("Save Changes"),
   })}
 >
   <h2 id="keenetic-policy-title">{t("Keenetic policy")}</h2>
