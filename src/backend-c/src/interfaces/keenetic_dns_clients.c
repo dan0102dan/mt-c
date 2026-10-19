@@ -80,7 +80,7 @@ mt_err_t mt_dns_clients_fetch_keenetic(mt_dns_client_t **clients, size_t *count,
     CURL *curl = curl_easy_init();
     if (!curl) { return MT_ERR_NOMEM; }
     client_response_t response = {0};
-    client_progress_t progress = {.stop = stop};
+    const client_progress_t progress = {.stop = stop};
     CURLcode setup = CURLE_OK;
 #define SET(option, value) do { if (setup == CURLE_OK) { setup = curl_easy_setopt(curl, option, value); } } while (0)
     SET(CURLOPT_URL, "http://127.0.0.1:79/rci/show/ip/hotspot");
