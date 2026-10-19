@@ -10,6 +10,7 @@
     loading?: boolean;
     variant?: Variant;
     compact?: boolean;
+    iconSize?: number;
     minHeight?: string;
     subtitle?: string;
     actions?: Snippet;
@@ -21,6 +22,7 @@
     loading = false,
     variant = "neutral",
     compact = false,
+    iconSize = 30,
     minHeight = "300px",
     subtitle,
     actions,
@@ -33,7 +35,11 @@
   const ariaLive = $derived(resolvedVariant === "error" ? "assertive" : "polite");
 </script>
 
-<div class="placeholder" style={`min-height: ${minHeight};`} {...rest}>
+<div
+  class="placeholder"
+  style={`min-height: ${minHeight}; --placeholder-icon-size: ${iconSize}px;`}
+  {...rest}
+>
   <div
     class="card"
     data-variant={resolvedVariant}
@@ -45,14 +51,14 @@
     <div class="icon" aria-hidden="true">
       {#if resolvedVariant === "loading"}
         <span class="spin">
-          <LoaderCircle size={30} />
+          <LoaderCircle size={iconSize} />
         </span>
       {:else if resolvedVariant === "error"}
-        <TriangleAlert size={30} />
+        <TriangleAlert size={iconSize} />
       {:else if resolvedVariant === "empty"}
-        <SearchSlash size={30} />
+        <SearchSlash size={iconSize} />
       {:else}
-        <CircleInfo size={30} />
+        <CircleInfo size={iconSize} />
       {/if}
     </div>
 
@@ -109,8 +115,8 @@
   }
 
   .icon {
-    width: 40px;
-    height: 40px;
+    width: calc(var(--placeholder-icon-size) + 10px);
+    height: calc(var(--placeholder-icon-size) + 10px);
     border-radius: 12px;
 
     display: grid;

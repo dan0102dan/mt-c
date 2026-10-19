@@ -1,15 +1,13 @@
 <script lang="ts">
-  import { onDestroy, onMount, setContext, tick } from "svelte";
+  import { getContext, onDestroy, onMount, setContext, tick } from "svelte";
 
   import BulkActions from "../../components/bulk/BulkActions.svelte";
   import SelectionFrame from "../../components/bulk/SelectionFrame.svelte";
   import PageControls from "../../components/layout/PageControls.svelte";
   import Placeholder from "../../components/ui/Placeholder.svelte";
   import { t } from "../../data/locale.svelte";
-  import { fetchProfiles, profiles, profilesDirty, saveProfiles } from "../../data/profiles.svelte";
   import GroupPanel from "./components/GroupPanel.svelte";
   import Search from "./components/Search.svelte";
-  import ImportConfigDialog from "./dialogs/ImportConfigDialog.svelte";
   import ImportRulesDialog from "./dialogs/ImportRulesDialog.svelte";
   import {
     GROUPS_STORE_CONTEXT,
@@ -19,15 +17,10 @@
   } from "./groups.svelte";
 
   import { droppable } from "../../lib/dnd";
-  import { parseConfig, type Group, type Profile, type Rule } from "../../types";
+  import { type Rule } from "../../types";
   import { copyRulePatternsToClipboard } from "../../utils/copy-rule-patterns";
   import { toast } from "../../utils/events";
-  import {
-    cleanProfiles,
-    exportWithProfiles,
-    newProfileId,
-    prepareProfileImport,
-  } from "../settings/profiles-data";
+  import { CONFIG_TRANSFER_CONTEXT, type ConfigTransferControls } from "../config-transfer/context";
 
   type Props = {
     onRenderComplete?: () => void;
@@ -37,6 +30,8 @@
 
   const store = new GroupsStore({ onRenderComplete: () => onRenderComplete?.() });
   setContext(GROUPS_STORE_CONTEXT, store);
+  const transfer = getContext<ConfigTransferControls>(CONFIG_TRANSFER_CONTEXT);
+  const unregisterTransfer = transfer.registerGroups(store);
 
   let selectedIds = $state<string[]>([]);
   let selectedItems = $derived(store.data.filter((item) => selectedIds.includes(item.id)));
@@ -64,22 +59,8 @@
     groupIndex: null,
   });
 
-  let importConfigModal = $state<{ open: boolean; fileName: string }>({
-    open: false,
-    fileName: "",
-  });
-
-  let importedGroups = $state<Group[]>([]);
-  let importedProfiles = $state<Profile[]>([]);
-  let isImportingConfig = $state(false);
   let isImportingRules = $state(false);
   let pendingToast = $state<string | null>(null);
-
-  function resetImportConfigModal() {
-    importConfigModal = { open: false, fileName: "" };
-    importedGroups = [];
-    importedProfiles = [];
-  }
 
   function openImportRulesModal(groupIndex: number) {
     importRulesModal = { open: true, groupIndex };
@@ -87,64 +68,6 @@
 
   function closeImportRulesModal() {
     importRulesModal = { open: false, groupIndex: null };
-  }
-
-  function exportConfig() {
-    let payload;
-    try {
-      payload = exportWithProfiles(store.toConfigPayload().groups, profiles.list);
-    } catch (error) {
-      toast.error(t(error instanceof Error ? error.message : "Failed to export profiles"));
-      return;
-    }
-    if (!payload.groups.length) {
-      toast.warning(t("Empty config exported"));
-    }
-    const blob = new Blob([JSON.stringify(payload)], { type: "application/json" });
-    const link = document.createElement("a");
-    link.href = URL.createObjectURL(blob);
-    link.download = "config.mtrickle";
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
-    URL.revokeObjectURL(link.href);
-  }
-
-  function importConfig(event: Event) {
-    const input = event?.currentTarget as HTMLInputElement;
-    const file = input?.files?.[0];
-    if (!file) {
-      alert(t("Please select a CONFIG file to load."));
-      return;
-    }
-
-    const reader = new FileReader();
-    reader.onload = (event) => {
-      try {
-        const { groups, profiles: definitions } = parseConfig(event.target?.result as string);
-        if (!groups?.length) {
-          toast.error(t("Invalid config file"));
-          return;
-        }
-
-        importedGroups = groups;
-        importedProfiles = definitions ?? [];
-        importConfigModal = {
-          open: true,
-          fileName: file.name,
-        };
-      } catch (error) {
-        console.error("Error parsing CONFIG:", error);
-        toast.error(t("Invalid config file"));
-      }
-    };
-    reader.onerror = (event) => {
-      console.error("Error reading file:", event.target?.error);
-      toast.error(t("Invalid config file"));
-    };
-
-    reader.readAsText(file);
-    input.value = "";
   }
 
   async function handleImportRules(event: CustomEvent<{ group_index: number; rules: Rule[] }>) {
@@ -164,46 +87,10 @@
     }
   }
 
-  async function handleImportConfig(payload: { groups: Group[]; replace: boolean }) {
-    if (!payload.groups.length) return;
-
-    isImportingConfig = true;
-    await tick();
-    try {
-      let groups = payload.groups;
-      if (importedProfiles.length || groups.some((group) => group.profile)) {
-        if (profilesDirty()) throw new Error("Save or cancel profile edits before importing");
-        await fetchProfiles();
-        if (profiles.failed) throw new Error("Failed to load profiles");
-        const mapped = prepareProfileImport(groups, importedProfiles, profiles.list, newProfileId);
-        if (
-          JSON.stringify(cleanProfiles(mapped.profiles)) !==
-          JSON.stringify(cleanProfiles(profiles.list))
-        ) {
-          await saveProfiles(mapped.profiles);
-        }
-        groups = mapped.groups;
-      }
-      const cloned = await store.cloneGroupsWithNewIds(groups);
-      if (payload.replace) {
-        await store.overwriteGroups(cloned);
-      } else {
-        await store.addGroups(cloned);
-      }
-      pendingToast = `${t("Config imported")}: ${cloned.length}`;
-    } catch (error) {
-      console.error("Failed to import config:", error);
-      toast.error(t(error instanceof Error ? error.message : "Failed to import config"));
-    } finally {
-      isImportingConfig = false;
-      resetImportConfigModal();
-    }
-  }
-
   $effect(() => {
     const message = pendingToast;
     if (!message) return;
-    if (isImportingConfig || isImportingRules) return;
+    if (isImportingRules) return;
     if (!store.isAllRendered) return;
 
     let cancelled = false;
@@ -230,6 +117,7 @@
   });
 
   onDestroy(() => {
+    unregisterTransfer();
     store.destroy();
   });
 </script>
@@ -243,8 +131,8 @@
     exportLabel={t("Export Config")}
     importLabel={t("Import Config")}
     onAdd={() => store.addGroup()}
-    onExport={exportConfig}
-    onImport={importConfig}
+    onExport={() => void transfer.exportConfig()}
+    onImport={(event) => void transfer.importConfig(event)}
     onSave={() => store.saveChanges()}
     saveButtonId="save-changes"
     saveLabel={t("Save Changes")}
@@ -258,7 +146,7 @@
     <Placeholder variant="error" minHeight="auto" subtitle={t("Check connection or try again")}>
       {t("Failed to load groups")}
     </Placeholder>
-  {:else if isImportingConfig || isImportingRules || !store.isAllRendered}
+  {:else if isImportingRules || !store.isAllRendered}
     <Placeholder variant="loading" minHeight="auto">
       {t("Loading groups...")}
     </Placeholder>
@@ -274,8 +162,8 @@
 
   <div
     class="group-list"
-    class:visible={store.isAllRendered && !isImportingConfig && !isImportingRules}
-    style={store.isAllRendered && !isImportingConfig && !isImportingRules ? "" : "display: none;"}
+    class:visible={store.isAllRendered && !isImportingRules}
+    style={store.isAllRendered && !isImportingRules ? "" : "display: none;"}
     oninput={store.markDataRevision}
     onchange={store.markDataRevision}
   >
@@ -333,14 +221,6 @@
   group_index={importRulesModal.groupIndex}
   on:close={closeImportRulesModal}
   on:import={handleImportRules}
-/>
-
-<ImportConfigDialog
-  open={importConfigModal.open}
-  groups={importedGroups}
-  fileName={importConfigModal.fileName}
-  onclose={resetImportConfigModal}
-  onimport={handleImportConfig}
 />
 
 {#if selectedItems.length}

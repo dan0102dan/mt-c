@@ -56,4 +56,5 @@ subscriptions:
   url: https://example.com/x.txt
   interval: 0
   last_update: 0
+  overrides: []
   rules: []

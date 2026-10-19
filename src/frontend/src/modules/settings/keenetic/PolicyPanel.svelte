@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount } from "svelte";
+  import { getContext, onMount } from "svelte";
 
   import Button from "../../../components/ui/Button.svelte";
   import Placeholder from "../../../components/ui/Placeholder.svelte";
@@ -15,12 +15,17 @@
     selectedPolicyId,
   } from "./state.svelte";
 
+  import {
+    CONFIG_TRANSFER_CONTEXT,
+    type ConfigTransferControls,
+  } from "../../config-transfer/context";
   import { settingsSection } from "../section-controls";
   import ru from "./ru.json";
 
   // This module and its translations are never imported by generic builds.
   Object.assign(locales.ru, ru);
   const section = settingsSection();
+  const transfer = getContext<ConfigTransferControls | undefined>(CONFIG_TRANSFER_CONTEXT);
   const dirty = $derived(policyDirty());
   const selectedId = $derived(selectedPolicyId());
   const selected = $derived(policy.policies.find((p) => p.id === selectedId));
@@ -34,6 +39,15 @@
   ]);
 
   onMount(() => {
+    const unregister = transfer?.registerPolicy({
+      get: () => (policy.loaded ? { ...policy.draft } : undefined),
+      dirty: () => policy.loaded && policyDirty(),
+      saving: () => policy.saving,
+      refresh: async () => {
+        policy.loaded = false;
+        await fetchPolicySettings();
+      },
+    });
     void fetchPolicySettings();
     if (!policy.listLoaded && !policy.listFailed) void refreshPolicies();
     const timer = setInterval(() => {
@@ -44,7 +58,10 @@
       )
         void fetchPolicySettings(true);
     }, 3000);
-    return () => clearInterval(timer);
+    return () => {
+      clearInterval(timer);
+      unregister?.();
+    };
   });
   async function save() {
     await savePolicySettings();
@@ -60,7 +77,6 @@
     dirty,
     canSave: dirty && policy.loaded && !policy.saving && valid,
     onSave: save,
-    saveLabel: policy.saving ? t("Saving...") : t("Save Changes"),
   })}
 >
   <h2 id="keenetic-policy-title">{t("Keenetic policy")}</h2>

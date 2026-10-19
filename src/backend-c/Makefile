@@ -369,6 +369,11 @@ bench_large_rules: $(BUILDDIR)/bench-large-rules
 $(BUILDDIR)/bench-large-rules: ../../tools/bench/large-rules.c $(LIB_OBJS)
 	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $< $(LIB_OBJS) $(LDLIBS) $(DEP_LIBS)
 
+.PHONY: bench_subscription_overrides
+bench_subscription_overrides: $(BUILDDIR)/bench-subscription-overrides
+$(BUILDDIR)/bench-subscription-overrides: ../../tools/bench/subscription-overrides.c $(LIB_OBJS)
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $< $(LIB_OBJS) $(LDLIBS) $(DEP_LIBS)
+
 # ---- analysis ---------------------------------------------------------
 
 static_analysis:

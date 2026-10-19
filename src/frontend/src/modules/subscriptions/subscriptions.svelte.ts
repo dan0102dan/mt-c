@@ -105,6 +105,7 @@ export class SubscriptionsStore {
   valid_subscription_urls = $derived(this.subscriptionUrlErrors.size === 0);
   canSave = $derived(
     this.hasUnsavedChanges &&
+      this.data.every((subscription) => Boolean(subscription.name.trim())) &&
       this.valid_rules &&
       this.valid_priorities &&
       this.valid_subscription_urls &&
@@ -266,17 +267,20 @@ export class SubscriptionsStore {
     }
   }
 
-  mount = async () => {
-    this.finishedSubscriptionsCount = 0;
+  mount = async (options: { preserveDrafts?: boolean } = {}) => {
+    // Existing keyed panels stay mounted during an import refresh and will
+    // not report their initial render a second time.
+    if (!options.preserveDrafts) this.finishedSubscriptionsCount = 0;
     this.fetchError = false;
     try {
       const fetched = (
         (await fetcher.get<{ subscriptions: Subscription[] }>("/subscriptions"))?.subscriptions ??
         []
       ).map((subscription) => withPriorityDefault(subscription, DEFAULT_SUBSCRIPTION_PRIORITY));
+      if (options.preserveDrafts) this.tracker.rebase(fetched);
+      else this.tracker = new ChangeTracker(fetched);
       this.#savedRules = new Map(fetched.map((sub) => [sub.id, snapshotRules(sub.rules)]));
-      this.tracker = new ChangeTracker(fetched);
-      this.dataRevision = 0;
+      this.markDataRevision();
       if (typeof window !== "undefined") {
         setTimeout(() => this.checkRulesValidityState(), 10);
       }
@@ -416,6 +420,21 @@ export class SubscriptionsStore {
         buildSubscriptionUpdate(sub, this.#savedRules.get(sub.id)),
       );
       await fetcher.put("/subscriptions", { subscriptions });
+      // The C backend persists user-authored exceptions by stable rule
+      // pattern, not by short-lived downloaded rule IDs. Keep local editor
+      // baselines in sync, including before a page reload.
+      for (let i = 0; i < rawData.length; i++) {
+        const byRule = new Map((rawData[i].overrides ?? []).map((o) => [o.rule, { ...o }]));
+        for (const change of subscriptions[i].ruleChanges) {
+          byRule.set(change.rule, {
+            ...byRule.get(change.rule),
+            rule: change.rule,
+            ...(change.type !== change.previousType ? { type: change.type } : {}),
+            ...(change.enable !== change.previousEnable ? { enable: change.enable } : {}),
+          });
+        }
+        if (byRule.size) rawData[i].overrides = [...byRule.values()];
+      }
       this.#savedRules = new Map(rawData.map((sub) => [sub.id, snapshotRules(sub.rules)]));
       this.tracker.reset(rawData);
       this.persistencePending = false;

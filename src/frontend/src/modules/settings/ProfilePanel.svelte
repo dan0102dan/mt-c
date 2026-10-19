@@ -85,12 +85,12 @@
           aria-label={t("Profile name")}
           maxlength={256}
         />
-        {#if usage}
-          <div class="usage" title={t("Used by")}>
+        <div class="usage" title={usage ? t("Used by") : undefined} aria-hidden={!usage}>
+          {#if usage}
             <Link size={14} aria-hidden="true" />
             <span>{usage.groups} {t("groups")}, {usage.subscriptions} {t("subscriptions")}</span>
-          </div>
-        {/if}
+          {/if}
+        </div>
       </div>
       <div class="profile-actions">
         <div
@@ -268,6 +268,8 @@
     align-items: center;
     gap: 0.4rem;
     font-size: 0.8rem;
+    min-height: 1.2em;
+    line-height: 1.2;
     color: var(--text-2);
     margin-left: 0.4rem;
   }
@@ -397,9 +399,15 @@
       padding: 0.35rem 0.35rem 0.35rem 0;
     }
     .interface-label {
-      flex-direction: column;
+      display: grid;
+      grid-template-rows: 1.2rem 0.96rem;
+      align-items: start;
       gap: 0.1rem;
       padding: 0;
+    }
+    .interface-id,
+    .interface-description {
+      line-height: 1.2;
     }
     .interface-description {
       max-width: 100%;

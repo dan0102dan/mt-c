@@ -784,7 +784,9 @@ static mt_err_t apply_subscription_rules(mt_app_t *app, mt_id_t id,
     *out_changed = false;
     mt_subscription_t *sub = find_subscription_mut(app, id);
     if (!sub) { free_sub_rule_array(refreshed, n_refreshed); return MT_ERR_NOENT; }
-    mt_err_t rerr = mt_sub_reconcile_rules(refreshed, n_refreshed, sub->rules, sub->n_rules);
+    mt_err_t rerr = mt_subscription_migrate_overrides(sub);
+    if (rerr == MT_OK) rerr = mt_sub_reconcile_rule_ids(refreshed, n_refreshed, sub->rules, sub->n_rules);
+    if (rerr == MT_OK) rerr = mt_subscription_apply_overrides(sub, refreshed, n_refreshed);
     if (rerr != MT_OK) { free_sub_rule_array(refreshed, n_refreshed); return rerr; }
     bool rules_changed = !mt_sub_same_rules(sub->rules, sub->n_rules, refreshed, n_refreshed);
 
@@ -913,7 +915,7 @@ static mt_err_t mt_app_sync_due_subscriptions_unlocked(mt_app_t *app, int64_t no
     size_t n_plans = 0;
 
     for (size_t i = 0; i < n_due; i++) {
-        const mt_subscription_t *sub = find_subscription_mut(app, due_ids[i]);
+        mt_subscription_t *sub = find_subscription_mut(app, due_ids[i]);
         if (!sub || !sub->url || sub->url[0] == '\0') { continue; }
 
         char *body = NULL;
@@ -928,9 +930,12 @@ static mt_err_t mt_app_sync_due_subscriptions_unlocked(mt_app_t *app, int64_t no
 
         mt_sub_rule_t **refreshed = NULL;
         size_t n_refreshed = 0;
-        mt_err_t rerr = mt_sub_refresh_rules(body, sub->rules, sub->n_rules, &refreshed, &n_refreshed);
+        mt_err_t rerr = mt_subscription_migrate_overrides(sub);
+        if (rerr == MT_OK) rerr = mt_sub_parse_rules(body, &refreshed, &n_refreshed);
         free(body);
-        if (rerr != MT_OK) { continue; }
+        if (rerr == MT_OK) rerr = mt_sub_reconcile_rule_ids(refreshed, n_refreshed, sub->rules, sub->n_rules);
+        if (rerr == MT_OK) rerr = mt_subscription_apply_overrides(sub, refreshed, n_refreshed);
+        if (rerr != MT_OK) { free_sub_rule_array(refreshed, n_refreshed); continue; }
 
         plans[n_plans].id = due_ids[i];
         plans[n_plans].refreshed = refreshed;
@@ -1376,6 +1381,10 @@ done:
 
 mt_err_t mt_app_save_config(mt_app_t *app, const char *path, const char *version) {
     return mt_config_save_file(app->cfg, version, path);
+}
+
+mt_err_t mt_app_config_snapshot(mt_app_t *app, const char *version, char **out, size_t *out_len) {
+    return mt_config_save_buffer(app->cfg, version, out, out_len);
 }
 
 void mt_app_set_port_remap(mt_app_t *app, mt_port_remap_t *remap) {

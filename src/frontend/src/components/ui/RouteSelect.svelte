@@ -52,13 +52,32 @@
   }
 </script>
 
-<Select
-  {options}
-  {selected}
-  {disabled}
-  onValueChange={change}
-  ariaLabel={ariaLabel ?? t("Route")}
-  missingLabel={profile ? `${t("Missing profile")}: ${profile}` : iface || placeholder}
-  compact={Boolean(profile)}
-  {...rest}
-/>
+<div class="route-select">
+  <Select
+    {options}
+    {selected}
+    {disabled}
+    onValueChange={change}
+    ariaLabel={ariaLabel ?? t("Route")}
+    missingLabel={profile ? `${t("Missing profile")}: ${profile}` : iface || placeholder}
+    compact={Boolean(profile)}
+    bounded
+    {...rest}
+  />
+</div>
+
+<style>
+  .route-select {
+    width: max-content;
+    max-width: 12rem;
+    min-width: 0;
+    flex-shrink: 1;
+  }
+  .route-select :global([data-select-trigger]) {
+    height: 2rem;
+    padding-block: 0.1rem;
+  }
+  .route-select :global([data-select-trigger] .selected-text) {
+    height: auto;
+  }
+</style>

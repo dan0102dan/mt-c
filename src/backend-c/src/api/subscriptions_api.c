@@ -64,6 +64,17 @@ static mt_sub_rule_t *sub_rule_from_req(const cJSON *req, const mt_lookup_t *bas
 /* Sparse overrides carry the old values as optimistic preconditions. An
  * automatic refresh must not turn an edit into an overwrite of a newer rule.
  * Work only on the detached replacement; failure cannot partially edit live state. */
+static mt_err_t record_rule_override(mt_subscription_t *sub, const mt_sub_rule_t *rule,
+                                      const char *before_type, bool before_enable) {
+    bool type_changed = strcmp(rule->type ? rule->type : "", before_type) != 0;
+    bool enable_changed = rule->enable != before_enable;
+    if (!type_changed && !enable_changed) { return MT_OK; }
+    const mt_sub_override_t *previous = mt_subscription_override_find(sub, rule->rule);
+    const char *type = type_changed ? rule->type : previous ? previous->type : NULL;
+    int enable = enable_changed ? (rule->enable ? 1 : 0) : previous ? previous->enable : -1;
+    return mt_subscription_override_set(sub, rule->rule, type, enable);
+}
+
 static mt_err_t apply_rule_changes(const cJSON *changes, mt_subscription_t *sub,
                                     const char **err_msg) {
     if (!cJSON_IsArray(changes)) { *err_msg = "invalid ruleChanges"; return MT_ERR_INVAL; }
@@ -101,8 +112,35 @@ static mt_err_t apply_rule_changes(const cJSON *changes, mt_subscription_t *sub,
         err = mt_lookup_put(&seen, id.b, 4, index, NULL);
         if (err == MT_OK) { err = mt_strset(&rule->type, type->valuestring); }
         if (err == MT_OK) { rule->enable = cJSON_IsTrue(enable); }
+        if (err == MT_OK) {
+            err = record_rule_override(sub, rule, previous_type->valuestring, cJSON_IsTrue(previous_enable));
+        }
     }
     mt_lookup_clear(&by_id); mt_lookup_clear(&seen);
+    return err;
+}
+
+/* Older API clients may still send a complete effective rule array. Capture
+ * only their changed fields, retaining exceptions for temporarily absent
+ * source patterns without turning an unchanged downloaded list into overrides. */
+static mt_err_t record_full_rule_changes(mt_subscription_t *sub, const mt_subscription_t *existing) {
+    mt_lookup_t baseline = {0};
+    mt_err_t err = MT_OK;
+    for (size_t i = 0; existing && err == MT_OK && i < existing->n_rules; i++) {
+        const char *pattern = existing->rules[i]->rule;
+        if (pattern) { err = mt_lookup_put(&baseline, pattern, strlen(pattern), i, NULL); }
+    }
+    for (size_t i = 0; err == MT_OK && i < sub->n_rules; i++) {
+        const mt_sub_rule_t *rule = sub->rules[i];
+        if (!rule->rule || !*rule->rule) { continue; }
+        size_t old_index;
+        const mt_sub_rule_t *old = existing && mt_lookup_get(&baseline, rule->rule, strlen(rule->rule), &old_index)
+                                   ? existing->rules[old_index] : NULL;
+        err = record_rule_override(sub, rule,
+            old ? (old->type ? old->type : "") : mt_sub_detect_type(rule->rule),
+            old ? old->enable : true);
+    }
+    mt_lookup_clear(&baseline);
     return err;
 }
 
@@ -206,6 +244,15 @@ static mt_err_t subscription_from_req(mt_app_t *app, const cJSON *req, const mt_
             }
         }
     }
+    if (existing) {
+        err = mt_subscription_overrides_copy(sub, existing);
+        if (err != MT_OK) { mt_subscription_free(sub); return err; }
+    }
+    if (cJSON_IsArray(rules_j)) {
+        err = record_full_rule_changes(sub, existing);
+        if (err != MT_OK) { mt_subscription_free(sub); return err; }
+    }
+    sub->overrides_present = true;
     cJSON *changes = cJSON_GetObjectItemCaseSensitive(req, "ruleChanges");
     if (changes) {
         if (!existing) {
@@ -288,6 +335,17 @@ static cJSON *subscription_to_json(const mt_subscription_t *s) {
     cJSON_AddNumberToObject(obj, "interval", s->interval);
     cJSON_AddNumberToObject(obj, "lastUpdate", s->last_update);
     cJSON_AddItemToObject(obj, "rules", sub_rules_to_json_array(s->rules, s->n_rules));
+    if (s->n_overrides) {
+        cJSON *arr = cJSON_AddArrayToObject(obj, "overrides");
+        for (size_t i = 0; i < s->n_overrides; i++) {
+            const mt_sub_override_t *override = s->overrides[i];
+            cJSON *item = cJSON_CreateObject();
+            cJSON_AddStringToObject(item, "rule", override->rule);
+            if (override->type) cJSON_AddStringToObject(item, "type", override->type);
+            if (override->enable >= 0) cJSON_AddBoolToObject(item, "enable", override->enable != 0);
+            cJSON_AddItemToArray(arr, item);
+        }
+    }
     return obj;
 }
 

@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onDestroy, onMount, setContext } from "svelte";
+  import { getContext, onDestroy, onMount, setContext } from "svelte";
 
   import BulkActions from "../../components/bulk/BulkActions.svelte";
   import SelectionFrame from "../../components/bulk/SelectionFrame.svelte";
@@ -18,6 +18,7 @@
 
   import { droppable } from "../../lib/dnd";
   import { copyRulePatternsToClipboard } from "../../utils/copy-rule-patterns";
+  import { CONFIG_TRANSFER_CONTEXT, type ConfigTransferControls } from "../config-transfer/context";
 
   type Props = {
     onRenderComplete?: () => void;
@@ -35,6 +36,8 @@
 
   const store = new SubscriptionsStore({ onRenderComplete: () => onRenderComplete?.() });
   setContext(SUBSCRIPTIONS_STORE_CONTEXT, store);
+  const transfer = getContext<ConfigTransferControls>(CONFIG_TRANSFER_CONTEXT);
+  const unregisterTransfer = transfer.registerSubscriptions(store);
 
   let selectedIds = $state<string[]>([]);
   let selectedItems = $derived(store.data.filter((item) => selectedIds.includes(item.id)));
@@ -68,6 +71,7 @@
   });
 
   onDestroy(() => {
+    unregisterTransfer();
     store.destroy();
   });
 </script>
@@ -78,6 +82,10 @@
     controlsClass="subscription-controls"
     addLabel={t("Add Subscription")}
     canSave={store.canSave}
+    exportLabel={t("Export Config")}
+    importLabel={t("Import Config")}
+    onExport={() => void transfer.exportConfig()}
+    onImport={(event) => void transfer.importConfig(event)}
     onAdd={() => (addSubscriptionModal = true)}
     onSave={() => store.saveChanges()}
     saveButtonId="save-subscriptions"

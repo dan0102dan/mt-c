@@ -14,6 +14,7 @@
     triggerClass?: string;
     disabled?: boolean;
     compact?: boolean;
+    bounded?: boolean;
     missingLabel?: string;
     [key: string]: any;
   };
@@ -27,6 +28,7 @@
     triggerClass,
     disabled = false,
     compact = false,
+    bounded = false,
     missingLabel,
     ...rest
   }: Props = $props();
@@ -52,7 +54,7 @@
   );
 </script>
 
-<div class="select-wrap" class:missing={missing_selection} {...rest}>
+<div class="select-wrap" class:missing={missing_selection} class:bounded {...rest}>
   <Select.Root type="single" {onValueChange} {disabled} items={options} bind:value={selected}>
     <Select.Trigger aria-label={ariaLabel} class={triggerClass}>
       {#if trigger}
@@ -72,7 +74,12 @@
       {/if}
     </Select.Trigger>
 
-    <Select.Content align="start" sideOffset={4} aria-label={ariaLabel}>
+    <Select.Content
+      align="start"
+      sideOffset={4}
+      aria-label={ariaLabel}
+      class={bounded ? "bounded-select-content" : undefined}
+    >
       {#each optionGroups as group}
         <Select.Group>
           {#if group.label}<Select.GroupHeading class="option-group-heading"
@@ -112,6 +119,41 @@
     display: inline-block;
     width: max-content;
     max-width: 90vw;
+  }
+
+  .bounded {
+    max-width: 100%;
+    min-width: 0;
+  }
+  .bounded :global([data-select-trigger]) {
+    box-sizing: border-box;
+    max-width: 100%;
+    min-width: 0;
+  }
+  .bounded .selected {
+    min-width: 0;
+  }
+
+  :global(.bounded-select-content) {
+    box-sizing: border-box;
+    max-width: min(32rem, calc(100vw - 1rem));
+  }
+  :global(.bounded-select-content) .option {
+    width: 100%;
+    min-width: 0;
+    box-sizing: border-box;
+  }
+  :global(.bounded-select-content) .option-text {
+    flex: 1;
+    flex-wrap: wrap;
+  }
+  :global(.bounded-select-content) .option-label,
+  :global(.bounded-select-content) .option-description {
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
+  :global(.bounded-select-content) .option-check {
+    flex-shrink: 0;
   }
 
   :global([data-select-root]) {

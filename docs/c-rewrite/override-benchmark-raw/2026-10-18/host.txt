@@ -1,0 +1,39 @@
+PR #19 subscription override CPU microbenchmark
+Date: 2026-10-18 UTC
+Host architecture: x86_64
+Compiler: gcc (Ubuntu 13.3.0-6ubuntu2~24.04) 13.3.0
+Build: C11, -O2, no sanitizers
+Baseline: e8d651943c181a4a16d0f3a27d03a00226d84ee1
+After: working tree implementing decisions.md D-82
+
+Reproducible source: tools/bench/subscription-overrides.c
+Build from src/backend-c: make bench_subscription_overrides
+Run from repository root:
+  src/backend-c/build/host/bench-subscription-overrides 10000
+  src/backend-c/build/host/bench-subscription-overrides 50000
+For a revision predating the benchmark target, carry the benchmark source
+and its opt-in Makefile target into that checkout without changing production
+sources. Standard host dependency development packages are required.
+
+Protocol: one cached enabled namespace rule and one enable:false exception
+for each site%05zu.example.org pattern. Input generation is outside the
+timers. Apply overlays the complete exception list on cached rules. Copy
+copies all exceptions into a new subscription, exercising insertion too.
+The after run includes temporary index construction for a directly
+constructed model. Normal API/YAML insertions maintain a persistent index.
+The measured operations and generated inputs are identical to the original
+review harness; the checked-in version adds argument/allocation/result checks
+outside the timed regions. Outputs below are individual observations, not
+averages or a latency SLA. Shared host scheduling can affect these numbers.
+These are local CPU measurements, not router or end-to-end HTTP latency.
+
+Before:
+rules=10000 overrides=10000 apply_s=0.234450 apply_err=0 copy_s=0.215105 copy_err=0
+rules=50000 overrides=50000 apply_s=5.330297 apply_err=0 copy_s=4.726258 copy_err=0
+
+After:
+rules=10000 overrides=10000 apply_s=0.002028 apply_err=0 copy_s=0.002280 copy_err=0
+rules=50000 overrides=50000 apply_s=0.039306 apply_err=0 copy_s=0.015951 copy_err=0
+
+No wall-clock threshold is used in CI. Functional tests separately exercise
+inserting, copying, updating and applying 50,000 pattern-keyed exceptions.
