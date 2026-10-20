@@ -137,7 +137,9 @@ test("pause closes the subscription; resume and reconnect replace the snapshot",
   await expect(region.locator("tbody tr")).toHaveCount(3);
   await region.getByRole("button", { name: "Pause", exact: true }).click();
   await expect.poll(() => dns.clients.size).toBe(0);
-  await expect(region.locator(".dns-summary").getByRole("status")).toHaveText("Paused");
+  await expect(region.locator(".dns-summary").getByRole("status")).toHaveText(
+    "Viewing is paused; recording continues.",
+  );
   dns.emit(liveQuery());
   await expect(region.locator("tbody tr")).toHaveCount(3);
   await region.getByRole("button", { name: "Resume", exact: true }).click();

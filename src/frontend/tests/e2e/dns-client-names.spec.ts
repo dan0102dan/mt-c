@@ -198,7 +198,13 @@ test("a burst uses bounded history and preserves the newest requests", async ({ 
   }).join("");
   for (const stream of dns.streams) stream.write(wire);
   await expect(region.locator("tbody tr").first()).toContainText("burst-10003.example");
-  await expect(region.locator(".dns-summary")).toContainText("1000 / 1000");
+  await expect(region.locator(".dns-summary .count")).toHaveText("Stored requests: 1000");
+  // A byte-bounded journal does not promise a fixed row quota. Check the
+  // actual retained IDs too, not only the visible counter/newest record.
+  await region.getByRole("searchbox").fill("burst-9003.example");
+  await expect(region.locator("tbody tr")).toHaveCount(0);
+  await region.getByRole("searchbox").fill("burst-9004.example");
+  await expect(region.locator("tbody tr")).toHaveCount(1);
   expect(dns.state.manualGets).toBe(0);
   expect(dns.state.snapshots).toBe(1);
 });

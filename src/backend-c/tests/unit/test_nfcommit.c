@@ -116,7 +116,7 @@ TEST request_triggers_a_rebuild(void) {
     PASS();
 }
 
-/* Nothing owed to the caller: the hook must return while the write is
+/* Nothing owed to the caller: the hook that asks must return while the write is
  * still going. */
 TEST request_does_not_wait_for_the_write(void) {
     probe_t p;
@@ -156,9 +156,12 @@ TEST request_interrupts_and_restarts(void) {
     mt_nfcommit_request(c);
     AWAIT(&p, p.interrupted >= 1);
 
-    /* Let the restarted pass through; it must actually happen. */
+    /* Wait until the retry is parked too, then release the callback itself:
+     * it copied p.block on entry, so changing only p.block is insufficient. */
+    AWAIT(&p, p.started >= 2);
     pthread_mutex_lock(&p.mu);
     p.block = false;
+    p.release = true;
     pthread_mutex_unlock(&p.mu);
 
     AWAIT(&p, p.finished >= 1);
@@ -286,9 +289,14 @@ TEST interrupt_yields_without_asking_for_more_work(void) {
 
     mt_nfcommit_interrupt(c);
     AWAIT(&p, p.interrupted >= 1);
+    AWAIT(&p, p.started >= 2);
 
     pthread_mutex_lock(&p.mu);
     p.block = false;
+    /* The automatic retry may already have copied block=true before this
+     * thread wakes. Release that in-flight callback too, rather than waiting
+     * forever for a value it only reads on entry. */
+    p.release = true;
     pthread_mutex_unlock(&p.mu);
     AWAIT(&p, p.finished >= 1);
 

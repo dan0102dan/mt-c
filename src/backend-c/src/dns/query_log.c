@@ -247,7 +247,6 @@ static size_t parse_name(const char *text, uint8_t name[MT_DNS_MAX_NAME]) {
 }
 void mt_dns_query_log_append(mt_dns_query_log_t *log, const char *client, const char *domain,
     uint16_t qtype, bool tcp, int64_t time_ms) {
-    if (!mt_dns_query_log_enabled(log)) return;
     if (!mt_dns_query_log_enabled(log)) { return; }
     uint8_t name[MT_DNS_MAX_NAME], addr[16]; size_t len = parse_name(domain, name), addr_len = 0;
     if (!len) return;
