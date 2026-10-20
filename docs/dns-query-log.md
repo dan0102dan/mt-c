@@ -9,7 +9,7 @@ will increase RAM use (up to 1 MiB for storage plus streaming/UI overhead).
 Capture state is shared by all viewers and is not saved in YAML, configuration
 exports or localStorage. Enabled recording continues after closing the page.
 Stop recording disables collection, deletes history and frees the ring,
-dictionaries and string pools; a small control object remains. Existing viewers
+domain index and name allocations; a small control object remains. Existing viewers
 receive the state change. Pause only freezes the local view; it does not stop
 capture. Clear removes retained rows while leaving capture enabled.
 
@@ -26,7 +26,7 @@ This is not a cap on total daemon RSS: allocator bookkeeping, JSON/network buffe
 additional. The UI warns about this and displays history usage separately.
 
 The production ring has at most **8192 individual records**. The byte budget may
-evict earlier depending on unique domain lengths and clients. Allocation and latency measurements are recorded separately in
+evict earlier depending on unique domain lengths. Allocation and latency measurements are recorded separately in
 `dns-review-performance.md`; they are not router RSS measurements. The explicitly enabled, row-bounded `create_sized` constructor
 remains available for tests/embedders; its `memory_limit=0` does not describe
 production behavior.
@@ -54,6 +54,16 @@ shows every raw type and millisecond timestamp. Combining can be toggled off.
 This is presentation only: raw events remain separate in RAM and the stored
 request count is not the number of display groups. Global domain grouping,
 search, device filters, pagination and router-provided device names are retained.
+
+The clickable **Time** header uses the same sort indicators as Groups → Pattern,
+but has only two states: **newest first** (default) and **oldest first**. In
+aggregate domain mode, **Last request** controls the same direction using the
+latest timestamp for each domain, rather than request count. Sorting is applied
+to the complete filtered display before pagination. Switching it returns to the
+first page; filters, related-query membership and the live subscription are
+preserved. Equal timestamps keep stable order, and new SSE records and
+reconnected snapshots obey the selected direction. This is local view state;
+no router configuration or retained/streamed order is changed.
 
 ## Authenticated API and SSE
 

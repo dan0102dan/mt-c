@@ -79,6 +79,8 @@
   "Requests": "Запросы",
   "Clients": "Клиенты",
   "Last request": "Последний запрос",
+  "Oldest first": "Сначала старые",
+  "Newest first": "Сначала новые",
   "Time": "Время",
   "Client": "Клиент",
   "Protocol": "Протокол",

@@ -226,3 +226,149 @@ test("shared pagination and empty-search state remain functional", async ({ page
   await expect(region.locator(".page-number")).toHaveText("1 / 3");
   await expect(region.locator("tbody tr")).toHaveCount(30);
 });
+
+for (const width of [1280, 390]) {
+  test(`time header alternates newest/oldest and preserves live sorting (${width}px)`, async ({
+    page,
+    dns,
+  }) => {
+    await page.setViewportSize({ width, height: 844 });
+    // A router clock adjustment can make arrival IDs differ from wall time.
+    dns.state.history = [
+      { ...sample[0], id: 3, time_ms: 1000, domain: "late-arrival.example" },
+      { ...sample[0], id: 2, time_ms: 9000, domain: "newest.example" },
+      { ...sample[0], id: 1, time_ms: 3000, domain: "middle.example" },
+    ];
+    const region = await setup(page, dns);
+    const header = region.locator(".time-sort-header");
+    const sort = region.getByRole("button", { name: "Time", exact: true });
+    const domains = region.locator("tbody td.domain .cell-value");
+    await expect(sort).toBeVisible();
+    await expect(header).toHaveAttribute("aria-sort", "descending");
+    await expect(sort).toHaveAttribute("title", "Oldest first");
+    await expect(domains).toHaveText(["newest.example", "middle.example", "late-arrival.example"]);
+    await sort.focus();
+    await page.keyboard.press("Enter");
+    await expect(header).toHaveAttribute("aria-sort", "ascending");
+    await expect(sort).toHaveAttribute("title", "Newest first");
+    await expect(domains).toHaveText(["late-arrival.example", "middle.example", "newest.example"]);
+    await page.keyboard.press("Space");
+    await expect(header).toHaveAttribute("aria-sort", "descending");
+    await sort.click(); // Third click returns to ascending, never to an unsorted state.
+    await expect(header).toHaveAttribute("aria-sort", "ascending");
+    await region.getByRole("searchbox").fill("example");
+    dns.emit({ ...liveQuery(), time_ms: 7000 });
+    await expect(domains).toHaveText([
+      "late-arrival.example",
+      "middle.example",
+      "live.example",
+      "newest.example",
+    ]);
+    expect(dns.state.connections).toBe(1);
+    dns.disconnect();
+    await expect.poll(() => dns.state.connections).toBe(2);
+    await expect(header).toHaveAttribute("aria-sort", "ascending");
+    await expect(domains).toHaveText([
+      "late-arrival.example",
+      "middle.example",
+      "live.example",
+      "newest.example",
+    ]);
+    await expect(region.getByRole("searchbox")).toHaveValue("example");
+    expect(dns.state.snapshots).toBe(0);
+    await page.locator(".locale button").click();
+    const russianSort = region.getByRole("button", { name: "Время", exact: true });
+    await expect(russianSort).toHaveAttribute("title", "Сначала новые");
+    await russianSort.click();
+    await expect(header).toHaveAttribute("aria-sort", "descending");
+    await expect(russianSort).toHaveAttribute("title", "Сначала старые");
+    await region.getByRole("button", { name: "Группировать по домену" }).click();
+    await expect(
+      region.getByRole("button", { name: "Последний запрос", exact: true }),
+    ).toBeVisible();
+    await expect(header).toHaveAttribute("aria-sort", "descending");
+    expect(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth)).toBe(
+      false,
+    );
+  });
+}
+
+test("time sorting happens before pagination and resets only the page", async ({ page, dns }) => {
+  seedHistory(dns, 65);
+  dns.state.history = dns.state.history.map((row) => ({ ...row, time_ms: row.id * 1000 }));
+  const region = await setup(page, dns);
+  await region.getByRole("searchbox").fill("host");
+  await region.getByRole("button", { name: "Device", exact: true }).click();
+  await page.getByRole("option", { name: "192.168.1.10", exact: true }).click();
+  const rows = region.locator("tbody tr");
+  await expect(rows.first()).toContainText("host65.example");
+  await region.getByRole("button", { name: "Next Page", exact: true }).click();
+  await expect(region.locator(".page-number")).toHaveText("2 / 3");
+  await expect(rows.first()).toContainText("host35.example");
+  await region.getByRole("button", { name: "Time", exact: true }).click();
+  await expect(region.locator(".page-number")).toHaveText("1 / 3");
+  await expect(rows.first()).toContainText("host1.example");
+  await expect(rows.last()).toContainText("host30.example");
+  await expect(region.getByRole("searchbox")).toHaveValue("host");
+  await expect(region.getByRole("button", { name: "Device", exact: true })).toContainText(
+    "192.168.1.10",
+  );
+  await region.getByRole("button", { name: "Next Page", exact: true }).click();
+  await expect(rows.first()).toContainText("host31.example");
+  expect(dns.state.connections).toBe(1);
+  expect(dns.state.snapshots).toBe(0);
+});
+
+test("domain grouping uses the same time direction rather than request count", async ({
+  page,
+  dns,
+}) => {
+  dns.state.through = 4;
+  dns.state.history = [
+    { ...sample[0], id: 4, time_ms: 9000, domain: "new.example" },
+    { ...sample[0], id: 3, time_ms: 3000, domain: "busy.example" },
+    { ...sample[0], id: 2, time_ms: 2000, domain: "busy.example" },
+    { ...sample[0], id: 1, time_ms: 1000, domain: "old.example" },
+  ];
+  const region = await setup(page, dns);
+  await region.getByRole("button", { name: "Group by domain" }).click();
+  const domains = region.locator("tbody td.domain .cell-value");
+  const sort = region.getByRole("button", { name: "Last request", exact: true });
+  await expect(region.locator(".time-sort-header")).toHaveAttribute("aria-sort", "descending");
+  await expect(domains).toHaveText(["new.example", "busy.example", "old.example"]);
+  await sort.click();
+  await expect(domains).toHaveText(["old.example", "busy.example", "new.example"]);
+  dns.emit({ ...liveQuery(), id: 5, time_ms: 10000, domain: "old.example" });
+  await expect(domains).toHaveText(["busy.example", "new.example", "old.example"]);
+  await region.getByRole("button", { name: "Individual queries" }).click();
+  await expect(region.locator(".time-sort-header")).toHaveAttribute("aria-sort", "ascending");
+  await expect(region.locator("tbody tr").first()).toContainText("old.example");
+  expect(dns.state.connections).toBe(1);
+});
+
+test("time sorting preserves combined-question membership and details", async ({ page, dns }) => {
+  dns.state.through = 4;
+  dns.state.history = [
+    { ...sample[0], id: 4, time_ms: 6000, domain: "later.example" },
+    { ...sample[0], id: 3, time_ms: 1500, domain: "related.example", qtype: 65 },
+    { ...sample[0], id: 2, time_ms: 1200, domain: "related.example", qtype: 28 },
+    { ...sample[0], id: 1, time_ms: 1000, domain: "related.example", qtype: 1 },
+  ];
+  const region = await setup(page, dns);
+  const rows = region.locator("tbody tr");
+  await expect(rows).toHaveCount(2);
+  await expect(rows.first()).toContainText("later.example");
+  const combined = rows.filter({ hasText: "related.example" });
+  await combined.locator("summary").click();
+  await expect(combined.locator(".raw-query")).toHaveCount(3);
+  await region.getByRole("button", { name: "Time", exact: true }).click();
+  await expect(rows.first()).toContainText("related.example");
+  await expect(combined.locator("details")).toHaveAttribute("open", "");
+  await expect(combined.locator(".raw-query")).toHaveCount(3);
+  await region.getByRole("button", { name: "Combine related queries", exact: true }).click();
+  await expect(rows).toHaveCount(4);
+  await expect(rows.first()).toContainText("IPv4");
+  await expect(rows.last()).toContainText("later.example");
+  await expect(region.locator(".dns-summary .count")).toHaveText("Stored requests: 4");
+  expect(dns.state.connections).toBe(1);
+});

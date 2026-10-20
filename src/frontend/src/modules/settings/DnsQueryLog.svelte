@@ -9,13 +9,22 @@
   import { token } from "../../data/auth.svelte";
   import { locales, t } from "../../data/locale.svelte";
 
-  import { Clear, Info, LayoutList, Search, Sigma } from "../../components/ui/icons";
+  import {
+    Clear,
+    Info,
+    LayoutList,
+    Search,
+    Sigma,
+    SortAsc,
+    SortDesc,
+  } from "../../components/ui/icons";
   import { API_BASE, fetcher } from "../../utils/fetcher";
   import { parseCaptureState, type CaptureState } from "./dns-capture";
   import captureTranslations from "./dns-capture.ru.json";
   import { createDnsHistory } from "./dns-history";
   import { groupDnsBursts } from "./dns-query-bursts";
   import { dnsQueryType, filterDnsQueries, groupDnsQueries, type DnsQuery } from "./dns-query-data";
+  import { nextDnsTimeSort, sortDnsByTime, type DnsTimeSort } from "./dns-query-sort";
   import { subscribeDnsQueries, type StreamState } from "./dns-query-stream";
   import streamTranslations from "./dns-query-stream.ru.json";
   import { settingsSection } from "./section-controls";
@@ -40,6 +49,7 @@
   let streamState = $state<StreamState>("connecting");
   let grouped = $state(false);
   let combine = $state(true);
+  let timeSort = $state<DnsTimeSort>("desc");
   let search = $state("");
   let device = $state("");
   let page = $state(1);
@@ -57,16 +67,26 @@
     })),
   ]);
   const filtered = $derived(filterDnsQueries(queries, search, device));
-  const groupedRows = $derived(groupDnsQueries(filtered));
+  const groupedRows = $derived(
+    sortDnsByTime(groupDnsQueries(filtered), timeSort, (row) => row.lastTime),
+  );
   const timeline = $derived(
-    combine ? groupDnsBursts(filtered) : filtered.map((row) => ({ ...row, queries: [row] })),
+    sortDnsByTime(
+      combine ? groupDnsBursts(filtered) : filtered.map((row) => ({ ...row, queries: [row] })),
+      timeSort,
+      (row) => row.time_ms,
+    ),
   );
   const total = $derived(grouped ? groupedRows.length : timeline.length);
   const pages = $derived(Math.max(1, Math.ceil(total / pageSize)));
   const safePage = $derived(Math.min(page, pages));
   const groupedPage = $derived(groupedRows.slice((safePage - 1) * pageSize, safePage * pageSize));
   const queryPage = $derived(timeline.slice((safePage - 1) * pageSize, safePage * pageSize));
-  const filtersKey = $derived(`${search}\u0000${device}\u0000${grouped}\u0000${combine}`);
+  const filtersKey = $derived(
+    `${search}\u0000${device}\u0000${grouped}\u0000${combine}\u0000${timeSort}`,
+  );
+  const timeSortAria = $derived(timeSort === "asc" ? "ascending" : "descending");
+  const timeSortAction = $derived(timeSort === "desc" ? "Oldest first" : "Newest first");
   const statusLabel = $derived(
     paused
       ? t("Viewing is paused; recording continues.")
@@ -207,6 +227,25 @@
           ? t("HTTPS parameters")
           : dnsQueryType(qtype);
 </script>
+
+{#snippet timeSortButton(label: string)}
+  <Button
+    small
+    type="button"
+    class="time-sort"
+    title={t(timeSortAction)}
+    onclick={() => (timeSort = nextDnsTimeSort(timeSort))}
+  >
+    {t(label)}
+    <span class="sort-icon" aria-hidden="true">
+      {#if timeSort === "desc"}
+        <SortAsc size={16} />
+      {:else}
+        <SortDesc size={16} />
+      {/if}
+    </span>
+  </Button>
+{/snippet}
 
 {#snippet clientIdentity(address: string)}
   <span class="client-identity">
@@ -362,12 +401,16 @@
             >{#if grouped}<tr
                 ><th scope="col">{t("Domain")}</th><th scope="col">{t("Requests")}</th><th
                   scope="col">{t("Clients")}</th
-                ><th scope="col">{t("Last request")}</th></tr
+                ><th scope="col" class="time-sort-header" aria-sort={timeSortAria}
+                  >{@render timeSortButton("Last request")}</th
+                ></tr
               >
             {:else}<tr
-                ><th scope="col">{t("Time")}</th><th scope="col">{t("Client")}</th><th scope="col"
-                  >{t("Domain")}</th
-                ><th scope="col">{t("Type")}</th><th scope="col">{t("Protocol")}</th></tr
+                ><th scope="col" class="time-sort-header" aria-sort={timeSortAria}
+                  >{@render timeSortButton("Time")}</th
+                ><th scope="col">{t("Client")}</th><th scope="col">{t("Domain")}</th><th scope="col"
+                  >{t("Type")}</th
+                ><th scope="col">{t("Protocol")}</th></tr
               >{/if}</thead
           >
           <tbody>
@@ -619,6 +662,29 @@
     font-weight: 400;
     overflow-wrap: anywhere;
   }
+  .dns-table :global(button.time-sort) {
+    width: 100%;
+    padding: 0;
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+    color: inherit;
+    font: inherit;
+    justify-content: flex-start;
+    text-align: left;
+    user-select: none;
+    transition: color 0.12s ease;
+  }
+  .dns-table :global(button.time-sort:hover) {
+    color: var(--text);
+  }
+  .sort-icon {
+    margin-left: 0.4rem;
+    display: flex;
+    align-items: center;
+    flex-shrink: 0;
+    color: var(--text-2);
+  }
   td {
     height: 2rem;
     padding: 0.1rem 0.5rem;
@@ -697,7 +763,16 @@
     .dns-table colgroup {
       display: none;
     }
-    .dns-table thead {
+    /* Keep the same sort control reachable when rows become mobile cards. */
+    .dns-table thead,
+    .dns-table thead tr {
+      display: block;
+    }
+    .dns-table .time-sort-header {
+      display: block;
+      padding: 0.5rem 0.35rem;
+    }
+    .dns-table th:not(.time-sort-header) {
       position: absolute;
       width: 1px;
       height: 1px;
