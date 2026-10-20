@@ -4,8 +4,8 @@
 
   import PageControls from "../../components/layout/PageControls.svelte";
   import { t } from "../../data/locale.svelte";
-  import ProfilesPanel from "./ProfilesPanel.svelte";
   import DnsQueryLog from "./DnsQueryLog.svelte";
+  import ProfilesPanel from "./ProfilesPanel.svelte";
 
   import { toast } from "../../utils/events";
   import { CONFIG_TRANSFER_CONTEXT, type ConfigTransferControls } from "../config-transfer/context";
@@ -80,7 +80,19 @@
     const observeHeadings = () => {
       if (!page.getClientRects().length) return;
       intersection?.disconnect();
-      const inset = toolbar.getBoundingClientRect().height;
+      const title = toolbar.querySelector<HTMLElement>(".settings-title")!;
+      // Use a stable switching line even when the active title makes the
+      // toolbar shorter. Otherwise scroll anchoring can flip it back and forth.
+      const tallestTitle = Math.max(
+        ...Array.from(
+          toolbar.querySelectorAll<HTMLElement>(".title-layer"),
+          (layer) => layer.scrollHeight,
+        ),
+      );
+      const inset = Math.ceil(
+        toolbar.getBoundingClientRect().height +
+          Math.max(0, tallestTitle - title.getBoundingClientRect().height),
+      );
       passed.clear();
       const targets = new Map<Element, SettingsSection>();
       for (const section of sections) {
@@ -183,11 +195,15 @@
   }
   .title-layer {
     grid-area: 1 / 1;
+    /* Preserve title width and fading without reserving hidden titles' height. */
+    height: 0;
+    align-self: start;
     pointer-events: none;
     opacity: 0;
     transition: opacity var(--context-transition);
   }
   .title-layer.current {
+    height: auto;
     opacity: 1;
   }
   @media (prefers-reduced-motion: reduce) {
