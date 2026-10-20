@@ -36,9 +36,13 @@
  * No request/status JSON, install.log or backup files are created here. */
 #define UPDATE_DIR MT_APP_STATE_DIR "/update"
 #if defined(MT_PLATFORM_ENTWARE)
+/* Keenetic's /bin/sh may be a firmware wrapper which drops sh -c arguments.
+ * Use Entware's own shell, with no fallback to the incompatible wrapper. */
+#define INSTALL_SHELL "/opt/bin/sh"
 #define INIT_SCRIPT "/opt/etc/init.d/S99magitrickle"
 #define INSTALL_ROOT "/opt"
 #else
+#define INSTALL_SHELL "/bin/sh"
 #define INIT_SCRIPT "/etc/init.d/magitrickle"
 #define INSTALL_ROOT "/"
 #endif
@@ -127,7 +131,7 @@ static const char *capability(char *suffix, size_t cap) {
     mt_update_version_t version;
     if (!identity(suffix, cap, &manager)) { return "Unsupported build target"; }
     if (!mt_update_version_parse(MT_VERSION, MT_PACKAGE_REVISION, &version)) { return "Unknown installed version"; }
-    if (geteuid() != 0 || access("/bin/sh", X_OK) || access(manager, X_OK)) { return "Installer unavailable"; }
+    if (geteuid() != 0 || access(INSTALL_SHELL, X_OK) || access(manager, X_OK)) { return "Installer unavailable"; }
     return NULL;
 }
 
@@ -298,7 +302,7 @@ static bool launch_install(int lock, const char *manager, const char *package,
         sigset_t empty;
         sigemptyset(&empty);
         if (sigprocmask(SIG_SETMASK, &empty, NULL)) { goto failed; }
-        execve("/bin/sh", args, env);
+        execve(INSTALL_SHELL, args, env);
 failed: {
             int err = errno;
             ssize_t sent;
