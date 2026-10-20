@@ -7,13 +7,15 @@ static cJSON *dns_capture_json(mt_dns_query_log_t *log) {
         !cJSON_AddNumberToObject(out, "memory_limit", (double)mt_dns_query_log_memory_limit(log)) ||
         !cJSON_AddNumberToObject(out, "memory_used", (double)stats.allocated_bytes) ||
         !cJSON_AddNumberToObject(out, "count", (double)stats.count) ||
-        !cJSON_AddNumberToObject(out, "capacity", (double)stats.capacity)) {
+        !cJSON_AddNumberToObject(out, "capacity", (double)stats.capacity) ||
+        !cJSON_AddNumberToObject(out, "dropped", (double)stats.dropped)) {
         cJSON_Delete(out); return NULL;
     }
     return out;
 }
 static void handle_dns_capture(mt_http_req_t *req, mt_http_res_t *res, void *ud) {
     mt_system_ctx_t *ctx = ud;
+    if (!dns_require_log(ctx->query_log, res)) { return; }
     if (strcmp(mt_http_req_method(req), "PUT") == 0) {
         size_t len = 0;
         const uint8_t *body = mt_http_req_body(req, &len);

@@ -191,6 +191,7 @@ static mt_ruleset_t *find_ruleset(struct daemon *d, mt_id_t id)
 static void reload_config(struct daemon *d)
 {
     mt_err_t err = mt_app_reload_config(d->app, d->config_path);
+    mt_httpd_revalidate_streams(d->http_tcp);
     if (d->proxy) {
         mt_dnsproxy_set_disable_flags(d->proxy,
             d->cfg->app.dns_proxy.disable_fake_ptr,
@@ -690,10 +691,8 @@ int main(int argc, char **argv)
 
     d.query_log = mt_dns_query_log_create();
     if (!d.query_log) {
-        MT_ERROR("failed to allocate DNS query history");
-        daemon_teardown(&d);
-        mt_config_clear(&cfg);
-        return 1;
+        /* Optional diagnostics must not turn low RAM into a DNS outage. */
+        MT_WARN("DNS history unavailable (out of memory); DNS forwarding will continue");
     }
     if (mt_dnsproxy_create(&pcfg, d.loop, on_response, &d, &d.proxy) !=
         MT_OK) {

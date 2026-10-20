@@ -33,13 +33,13 @@ static void sample(size_t capacity, size_t domains, size_t clients, bool longest
     }
     mt_dns_query_log_stats_t s;
     mt_dns_query_log_stats(log, &s);
-    assert(s.count == capacity && s.domains == domains && s.clients == clients);
+    assert(s.count == capacity && s.domains == domains);
     printf("%zu,%zu,%zu,%s,%zu,%zu,%zu,%zu\n", capacity, domains, clients, longest ? "wire255" : "text31",
         s.entry_bytes, s.index_bytes, s.pool_bytes, s.allocated_bytes);
     mt_dns_query_log_destroy(log);
 }
 int main(void) {
-    puts("rows,domains,clients,names,ring_bytes,index_bytes,pool_reserved_bytes,total_allocated_bytes");
+    puts("rows,domains,clients,names,ring_bytes,index_bytes,name_bytes,total_allocated_bytes");
     sample(1000, 200, 20, false);
     sample(1000, 1000, 20, false);
     sample(1000, 1000, 1000, true);

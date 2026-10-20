@@ -9,6 +9,7 @@
 #define MT_HTTP_STREAM_MAX_FRAME ((size_t)64 * 1024)
 #define MT_HTTP_STREAM_MAX_CLIENTS 8
 #define MT_HTTP_STREAM_HEARTBEAT_MS 15000
+#define MT_HTTP_STREAM_AUTH_CHECK_MS 1000
 
 typedef struct mt_http_stream mt_http_stream_t;
 /* Return malloc'd SSE text, NULL/len=0 when caught up, NULL/len=SIZE_MAX

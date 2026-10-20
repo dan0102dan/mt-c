@@ -42,3 +42,11 @@ https://support.keenetic.ru/eaeu/ultra/kn-1811/ru/45307-accessing-a-network-devi
 
 IPv4-mapped IPv6 format: RFC 4291, section 2.5.5.2:
 https://www.rfc-editor.org/rfc/rfc4291.html#section-2.5.5.2
+
+## Independent metadata stream
+
+Client inventories now travel as bounded `clients_begin/chunk/end` events. A
+rename or inventory failure atomically updates the client-name map without
+serializing the DNS history again. DNS rows carry canonical IP identity, not a
+copy of the name in every event. Labels describe the current inventory and
+never prove which device owned that IP at the recorded time.

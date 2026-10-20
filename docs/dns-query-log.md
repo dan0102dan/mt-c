@@ -16,26 +16,28 @@ capture. Clear removes retained rows while leaving capture enabled.
 ## Memory and eviction
 
 Production storage has a **1,048,576-byte requested-allocation budget** including
-24-byte ring records, dictionary metadata, hash buckets, reserved string pools
-and the control object. Pools share the remaining byte budget instead of each
-reserving a megabyte. Unused reserve is reclaimed before oldest records are
-evicted. No history buffers are allocated while off.
+40-byte ring records with inline binary client IPs, domain dictionary metadata, hash buckets, exact-sized name allocations
+and the control object. The domain dictionary shares the remaining byte budget. A 255-byte reserve
+allows allocating the next name before eviction, preserving all retained rows
+and sequence IDs when allocation fails. Only distinct domain names allocate.
+There is no moving string arena or compaction of retained names. No history buffers are allocated while off.
 
-This is not a cap on total daemon RSS: allocator bookkeeping, temporary realloc
-copies, JSON/network buffers, client-name discovery and browser memory are
+This is not a cap on total daemon RSS: allocator bookkeeping, JSON/network buffers, client-name discovery and browser memory are
 additional. The UI warns about this and displays history usage separately.
 
 The production ring has at most **8192 individual records**. The byte budget may
-evict earlier depending on unique domain lengths and clients. In a local
-synthetic maximum-length-name/IPv6 stress test, 1844 rows used 1,048,448 bytes;
-short repeated names retain more. This is not a traffic prediction or router
-RSS measurement. The explicitly enabled, row-bounded `create_sized` constructor
+evict earlier depending on unique domain lengths and clients. Allocation and latency measurements are recorded separately in
+`dns-review-performance.md`; they are not router RSS measurements. The explicitly enabled, row-bounded `create_sized` constructor
 remains available for tests/embedders; its `memory_limit=0` does not describe
 production behavior.
 
 Each raw question retains ID, timestamp, type, protocol and exact domain/client
-identity. Reference-counted dictionaries store decompressed wire names and
-binary IPs once. Eviction releases unused keys, and pools compact/shrink. Stop
+identity. A reference-counted dictionary stores decompressed wire names once; binary IPs
+are inline in each ring entry. Eviction frees the last reference to an exact-sized
+name allocation. The native allocator handles reuse; no whole-history movement
+is possible. `dropped` counts allocation failures, not normal retention eviction.
+An unavailable control object leaves DNS forwarding operational and returns
+503 / `DNS_LOG_UNAVAILABLE` from journal endpoints. Stop
 releases all history buffers. No compression dependency, flash logging or
 background persistent archive is added.
 
@@ -58,9 +60,13 @@ search, device filters, pagination and router-provided device names are retained
 - `GET /api/v1/system/dns/capture` reads runtime state.
 - `PUT /api/v1/system/dns/capture` accepts exactly `{"enabled":true}` or
   `{"enabled":false}`. Invalid/trailing input and extra fields are rejected.
-- State contains `enabled`, `memory_limit`, `memory_used`, `count`, `capacity`.
+- State contains `enabled`, `memory_limit`, `memory_used`, `count`, `capacity`, `dropped`.
 - `GET /api/v1/system/dns/stream` is one long-lived authenticated SSE response.
-- `GET /api/v1/system/dns/queries` is a finite snapshot for explicit consumers.
+- `GET /api/v1/system/dns/queries?limit=128&before=1234` is a bounded page for
+  explicit consumers, newest first. `limit` is 1..128 (default 128); `before`
+  is an optional exclusive positive ID. `next_before` is the next cursor or
+  zero when no older retained rows remain. `retained_from` signals eviction.
+  It never constructs the entire journal. Use SSE for a complete initial view.
 - `DELETE /api/v1/system/dns/queries` clears retained history without changing
   enabled state; the response includes updated capture state and `cleared`.
 
@@ -78,8 +84,30 @@ exists. Hidden/inactive/paused views close their local subscriptions; background
 capture continues if explicitly enabled. Read-only viewers do not start client
 inventory lookup while capture is off.
 
-The existing eight-subscriber limit, bounded writable-callback work, idle
-heartbeat and stalled-writer timeout remain. History is volatile DNS metadata,
+The eight-subscriber limit and bounded writable-callback work remain. One
+persistent timer per connection checks the last write progress, idle heartbeat
+and authorization. Burst notifications only arm EPOLLOUT once. Every successful
+send updates a timestamp, never creates a timerfd. The same admission middleware
+revalidates credentials at most once/second during streaming, including expiry,
+password changes and auth becoming enabled. HTTP mutations/config reload also
+recheck streams; external credential changes have at most a one-second recheck
+interval, subject to event-loop scheduling. Client-side logout is not the
+security boundary.
+
+Slow snapshots have a total 30-second deadline and at most three eviction
+restarts. A lagging subscriber is closed rather than endlessly replaying
+history. Browser reconnect remains exponentially backed off.
+
+Current client labels use a separate atomic `clients_begin {count}` →
+`clients_chunk {offset,clients:[{ip,name}]}` → `clients_end {}` transfer, at
+most 32 labels per event / 2048 total. Alias changes do not restart a DNS
+snapshot or replay request rows. They describe current router labels, not
+historical device ownership of an IP.
+
+The WebUI ingests queries into a bounded, non-reactive ring and publishes
+immutable row snapshots at most once per animation frame. It does not queue
+unbounded events or copy/filter the full history for every received request.
+Pause, clear, capture consent and raw-event preservation remain unchanged. History is volatile DNS metadata,
 not visited URLs; cached queries and encrypted DNS bypassing the proxy are not
 captured. The address seen by the proxy may be a forwarding/NAT device.
 

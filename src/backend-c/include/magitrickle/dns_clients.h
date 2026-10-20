@@ -57,6 +57,10 @@ void mt_dns_clients_destroy(mt_dns_clients_t *clients);
 int mt_dns_clients_subscribe(mt_dns_clients_t *clients, mt_dns_clients_notify_fn fn, void *ud);
 void mt_dns_clients_unsubscribe(mt_dns_clients_t *clients, int subscription);
 void mt_dns_clients_refresh(mt_dns_clients_t *clients);
+/* Loop-local inventory view for bounded metadata events. Never retain these
+ * pointers across callbacks; check revision again before the next batch. */
+size_t mt_dns_clients_count(const mt_dns_clients_t *clients);
+const mt_dns_client_t *mt_dns_clients_at(const mt_dns_clients_t *clients, size_t index);
 uint64_t mt_dns_clients_revision(const mt_dns_clients_t *clients);
 const char *mt_dns_clients_lookup(const mt_dns_clients_t *clients, const char *address);
 

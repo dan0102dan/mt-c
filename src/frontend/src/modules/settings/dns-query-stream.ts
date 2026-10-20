@@ -1,10 +1,20 @@
+import {
+  isDnsClientName,
+  normalizeDnsClient,
+  normalizeDnsClientAddress,
+} from "./dns-client-labels";
 import type { DnsQuery, DnsQueryResponse } from "./dns-query-data";
-import { normalizeDnsClient } from "./dns-client-labels";
 
 // snapshot is an internal, already decoded value; never serialized back
 // into a giant JSON string after receiving the bounded wire chunks.
-export type StreamEvent = { event: string; data: string; snapshot?: DnsQueryResponse };
-export type StreamState = "connecting" | "live" | "reconnecting";
+export type DnsClientLabel = { ip: string; name: string };
+export type StreamEvent = {
+  event: string;
+  data: string;
+  snapshot?: DnsQueryResponse;
+  clients?: DnsClientLabel[];
+};
+export type StreamState = "connecting" | "live" | "reconnecting" | "unavailable";
 export const MAX_EVENT_SIZE = 64 * 1024;
 export const MAX_DNS_CAPACITY = 60000;
 const SNAPSHOT_BATCH = 32;
@@ -53,24 +63,33 @@ export function createEventParser(emit: (event: StreamEvent) => void) {
   };
 }
 
-function isQuery(value: unknown): value is DnsQuery {
+export function isDnsQuery(value: unknown): value is DnsQuery {
   if (!value || typeof value !== "object") return false;
   const row = value as DnsQuery;
   return (
-    Number.isSafeInteger(row.id) && row.id > 0 &&
-    Number.isFinite(row.time_ms) && typeof row.client === "string" && row.client.length <= 48 &&
+    Number.isSafeInteger(row.id) &&
+    row.id > 0 &&
+    Number.isFinite(row.time_ms) &&
+    typeof row.client === "string" &&
+    row.client.length <= 48 &&
     (row.client_name === undefined || typeof row.client_name === "string") &&
-    typeof row.domain === "string" && row.domain.length <= 1024 &&
-    Number.isInteger(row.qtype) && row.qtype >= 0 && row.qtype <= 65535 &&
+    typeof row.domain === "string" &&
+    row.domain.length <= 1024 &&
+    Number.isInteger(row.qtype) &&
+    row.qtype >= 0 &&
+    row.qtype <= 65535 &&
     (row.protocol === "udp" || row.protocol === "tcp")
   );
 }
 function validCapacity(value: unknown): value is number {
-  return typeof value === "number" && Number.isInteger(value) && value > 0 && value <= MAX_DNS_CAPACITY;
+  return (
+    typeof value === "number" && Number.isInteger(value) && value > 0 && value <= MAX_DNS_CAPACITY
+  );
 }
 function objectData(event: StreamEvent): Record<string, unknown> {
   const value: unknown = JSON.parse(event.data);
-  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Invalid DNS event");
+  if (!value || typeof value !== "object" || Array.isArray(value))
+    throw new Error("Invalid DNS event");
   return value as Record<string, unknown>;
 }
 
@@ -78,25 +97,103 @@ function objectData(event: StreamEvent): Record<string, unknown> {
  * Begin restarts staging after eviction/clear; end commits exactly once.
  * Size limits apply to each event and retained row count, not total JSON bytes. */
 export function createSnapshotReceiver(): (event: StreamEvent) => StreamEvent | null {
-  let pending: { capacity: number; count: number; through: number; queries: DnsQuery[] } | undefined;
+  let pending:
+    | { capacity: number; count: number; through: number; queries: DnsQuery[] }
+    | undefined;
+  let clients: { count: number; rows: DnsClientLabel[]; seen: Set<string> } | undefined;
+  let enabled: boolean | undefined;
   return (event) => {
+    if (event.event === "capture") {
+      const value = objectData(event);
+      if (typeof value.enabled !== "boolean") throw new Error("Invalid capture state");
+      if (enabled !== undefined && enabled !== value.enabled) {
+        pending = undefined;
+        clients = undefined;
+      }
+      enabled = value.enabled;
+    }
+    if (event.event === "clients_begin") {
+      const value = objectData(event);
+      if (
+        !Number.isInteger(value.count) ||
+        typeof value.count !== "number" ||
+        value.count < 0 ||
+        value.count > 2048
+      )
+        throw new Error("Invalid DNS clients begin");
+      clients = { count: value.count, rows: [], seen: new Set() };
+      return null;
+    }
+    if (event.event === "clients_chunk") {
+      const value = objectData(event);
+      if (
+        !clients ||
+        value.offset !== clients.rows.length ||
+        !Array.isArray(value.clients) ||
+        !value.clients.length ||
+        value.clients.length > SNAPSHOT_BATCH ||
+        clients.rows.length + value.clients.length > clients.count
+      )
+        throw new Error("Invalid DNS clients chunk");
+      for (const row of value.clients) {
+        if (
+          !row ||
+          typeof row.ip !== "string" ||
+          !row.ip.length ||
+          row.ip.length > 48 ||
+          !isDnsClientName(row.name)
+        )
+          throw new Error("Invalid DNS client label");
+        const ip = normalizeDnsClientAddress(row.ip);
+        if (clients.seen.has(ip)) throw new Error("Duplicate DNS client label");
+        clients.seen.add(ip);
+        clients.rows.push({ ip, name: row.name });
+      }
+      return null;
+    }
+    if (event.event === "clients_end") {
+      objectData(event);
+      if (!clients || clients.rows.length !== clients.count)
+        throw new Error("Incomplete DNS clients snapshot");
+      const complete = { event: "clients", data: "", clients: clients.rows };
+      clients = undefined;
+      return complete;
+    }
     if (event.event === "snapshot_begin") {
       const value = objectData(event);
-      if (!validCapacity(value.capacity) || typeof value.count !== "number" ||
-          !Number.isInteger(value.count) || value.count < 0 || value.count > value.capacity ||
-          typeof value.through !== "number" || !Number.isSafeInteger(value.through) ||
-          value.through < value.count) throw new Error("Invalid DNS snapshot begin");
-      pending = { capacity: value.capacity, count: value.count, through: value.through, queries: [] };
+      if (
+        !validCapacity(value.capacity) ||
+        typeof value.count !== "number" ||
+        !Number.isInteger(value.count) ||
+        value.count < 0 ||
+        value.count > value.capacity ||
+        typeof value.through !== "number" ||
+        !Number.isSafeInteger(value.through) ||
+        value.through < value.count
+      )
+        throw new Error("Invalid DNS snapshot begin");
+      pending = {
+        capacity: value.capacity,
+        count: value.count,
+        through: value.through,
+        queries: [],
+      };
       return null;
     }
     if (event.event === "snapshot_chunk") {
       const value = objectData(event);
-      if (!pending || value.offset !== pending.queries.length || !Array.isArray(value.queries) ||
-          !value.queries.length || value.queries.length > SNAPSHOT_BATCH ||
-          pending.queries.length + value.queries.length > pending.count) throw new Error("Invalid DNS snapshot chunk");
+      if (
+        !pending ||
+        value.offset !== pending.queries.length ||
+        !Array.isArray(value.queries) ||
+        !value.queries.length ||
+        value.queries.length > SNAPSHOT_BATCH ||
+        pending.queries.length + value.queries.length > pending.count
+      )
+        throw new Error("Invalid DNS snapshot chunk");
       for (const row of value.queries) {
         const expected = pending.through - pending.count + pending.queries.length + 1;
-        if (!isQuery(row) || row.id !== expected) throw new Error("Out-of-order DNS snapshot");
+        if (!isDnsQuery(row) || row.id !== expected) throw new Error("Out-of-order DNS snapshot");
         pending.queries.push(row);
       }
       return null;
@@ -119,19 +216,29 @@ export function createSnapshotReceiver(): (event: StreamEvent) => StreamEvent | 
 export function applyDnsEvent(state: DnsQueryResponse, event: StreamEvent): DnsQueryResponse {
   if (event.event === "clear") return { ...state, queries: [] };
   if (event.event !== "snapshot" && event.event !== "query") return state;
-  const value: unknown = event.event === "snapshot" && event.snapshot ? event.snapshot : JSON.parse(event.data);
+  const value: unknown =
+    event.event === "snapshot" && event.snapshot ? event.snapshot : JSON.parse(event.data);
   if (event.event === "snapshot") {
     const snapshot = value as DnsQueryResponse | null;
-    if (!snapshot || !validCapacity(snapshot.capacity) || !Array.isArray(snapshot.queries) ||
-        snapshot.queries.length > snapshot.capacity || !snapshot.queries.every(isQuery) ||
-        new Set(snapshot.queries.map((row) => row.id)).size !== snapshot.queries.length)
+    if (
+      !snapshot ||
+      !validCapacity(snapshot.capacity) ||
+      !Array.isArray(snapshot.queries) ||
+      snapshot.queries.length > snapshot.capacity ||
+      !snapshot.queries.every(isDnsQuery) ||
+      new Set(snapshot.queries.map((row) => row.id)).size !== snapshot.queries.length
+    )
       throw new Error("Invalid DNS snapshot");
     return { queries: snapshot.queries.map(normalizeDnsClient), capacity: snapshot.capacity };
   }
-  if (!isQuery(value) || !validCapacity(state.capacity)) throw new Error("Invalid DNS query event");
+  if (!isDnsQuery(value) || !validCapacity(state.capacity))
+    throw new Error("Invalid DNS query event");
+  // IDs are monotonic within a stream. A duplicate/stale event must not move
+  // old history to the front, and needs no full-history duplicate scan.
+  if (value.id <= (state.queries[0]?.id ?? 0)) return state;
   return {
     capacity: state.capacity,
-    queries: [normalizeDnsClient(value), ...state.queries.filter((row) => row.id !== value.id)].slice(0, state.capacity),
+    queries: [normalizeDnsClient(value), ...state.queries.slice(0, state.capacity - 1)],
   };
 }
 
@@ -168,16 +275,27 @@ export function subscribeDnsQueries(options: Options): () => void {
       const headers: Record<string, string> = { Accept: "text/event-stream" };
       if (options.token) headers.Authorization = `Bearer ${options.token}`;
       const response = await request(options.url, {
-        headers, signal: attempt.signal, cache: "no-store",
+        headers,
+        signal: attempt.signal,
+        cache: "no-store",
       });
+      if (response.status === 503 && response.headers.get("X-DNS-Log-Available") === "0") {
+        stopped = true;
+        await response.body?.cancel();
+        options.onState("unavailable");
+        return;
+      }
       if (response.status === 401 || response.status === 403) {
         stopped = true;
         await response.body?.cancel();
         options.onUnauthorized();
         return;
       }
-      if (!response.ok || !response.body ||
-          response.headers.get("Content-Type")?.split(";")[0].trim() !== "text/event-stream") {
+      if (
+        !response.ok ||
+        !response.body ||
+        response.headers.get("Content-Type")?.split(";")[0].trim() !== "text/event-stream"
+      ) {
         await response.body?.cancel();
         throw new Error("DNS stream unavailable");
       }
@@ -188,7 +306,10 @@ export function subscribeDnsQueries(options: Options): () => void {
       const parse = createEventParser((event) => {
         if (stopped) return;
         const complete = receive(event);
-        if (!complete) { options.onState("connecting"); return; }
+        if (!complete) {
+          if (event.event.startsWith("snapshot_")) options.onState("connecting");
+          return;
+        }
         options.onEvent(complete);
         if (["snapshot", "query", "clear"].includes(complete.event)) {
           retryDelay = 1000;
@@ -207,7 +328,11 @@ export function subscribeDnsQueries(options: Options): () => void {
     } finally {
       clearTimeout(watchdog);
       attempt.abort();
-      try { await reader?.cancel(); } catch { /* Transport may already be closed. */ }
+      try {
+        await reader?.cancel();
+      } catch {
+        /* Transport may already be closed. */
+      }
       reader?.releaseLock();
       if (!stopped) {
         const delay = Math.round(retryDelay * (0.8 + Math.random() * 0.4));

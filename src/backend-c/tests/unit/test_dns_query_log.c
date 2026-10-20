@@ -16,9 +16,8 @@ TEST compact_keys_and_history(void) {
     mt_dns_query_log_stats_t stats;
     mt_dns_query_log_stats(log, &stats);
     ASSERT_EQ(1000u, stats.count);
-    ASSERT_EQ(24000u, stats.entry_bytes);
+    ASSERT_EQ(40000u, stats.entry_bytes);
     ASSERT_EQ(200u, stats.domains);
-    ASSERT_EQ(20u, stats.clients);
     ASSERT(stats.allocated_bytes < 100 * 1024);
     mt_dns_query_entry_t row;
     ASSERT(mt_dns_query_log_get(log, 0, &row));
@@ -35,7 +34,7 @@ TEST compact_keys_and_history(void) {
     PASS();
 }
 
-TEST churn_reclaims_keys_and_compacts_pools(void) {
+TEST churn_reclaims_domain_keys_without_moving_history(void) {
     enum { CAP = 257, ITERATIONS = 20000 };
     mt_dns_query_log_t *log = mt_dns_query_log_create_sized(CAP);
     ASSERT(log != NULL);
@@ -69,14 +68,12 @@ TEST churn_reclaims_keys_and_compacts_pools(void) {
     for (size_t i = 0; i < CAP; i++) mt_dns_query_log_append(log, NULL, "one.example", 1, false, 0);
     mt_dns_query_log_stats(log, &after);
     ASSERT_EQ(1u, after.domains);
-    ASSERT_EQ(1u, after.clients);
     ASSERT(after.pool_bytes < before.pool_bytes);
     uint64_t sequence = mt_dns_query_log_sequence(log);
     mt_dns_query_log_clear(log);
     mt_dns_query_log_stats(log, &after);
     ASSERT_EQ(0u, after.count);
     ASSERT_EQ(0u, after.domains);
-    ASSERT_EQ(0u, after.clients);
     ASSERT_EQ(0u, after.pool_bytes);
     mt_dns_query_log_append(log, NULL, "after.example", 1, false, 0);
     mt_dns_query_entry_t row;
@@ -115,7 +112,6 @@ TEST binary_names_and_addresses_are_lossless(void) {
     mt_dns_query_log_stats_t stats;
     mt_dns_query_log_stats(log, &stats);
     ASSERT_EQ(1u, stats.domains);
-    ASSERT_EQ(2u, stats.clients);
     ASSERT_EQ(3u, stats.count);
     ASSERT(mt_dns_query_log_get(log, 1, &row));
     ASSERT_STR_EQ(expected, row.domain);
@@ -166,7 +162,7 @@ GREATEST_MAIN_DEFS();
 int main(int argc, char **argv) {
     GREATEST_MAIN_BEGIN();
     RUN_TEST(compact_keys_and_history);
-    RUN_TEST(churn_reclaims_keys_and_compacts_pools);
+    RUN_TEST(churn_reclaims_domain_keys_without_moving_history);
     RUN_TEST(binary_names_and_addresses_are_lossless);
     RUN_TEST(invalid_inputs_and_subscriber_lifetime);
     GREATEST_MAIN_END();

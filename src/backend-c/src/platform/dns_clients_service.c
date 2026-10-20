@@ -33,6 +33,11 @@ struct mt_dns_clients {
     uint64_t revision;
 };
 
+size_t mt_dns_clients_count(const mt_dns_clients_t *s) { return s ? s->count : 0; }
+const mt_dns_client_t *mt_dns_clients_at(const mt_dns_clients_t *s, size_t index)
+{
+    return s && index < s->count ? &s->entries[index] : NULL;
+}
 uint64_t mt_dns_clients_revision(const mt_dns_clients_t *s)
 {
     return s ? s->revision : 0;

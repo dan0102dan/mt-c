@@ -13,5 +13,7 @@
   "Stored requests": "Хранимые запросы",
   "History RAM": "ОЗУ журнала",
   "Viewing is paused; recording continues.": "Просмотр приостановлен; запись продолжается.",
-  "The 1 MiB limit covers journal storage, dictionaries and reserved pools, not total daemon or browser memory.": "Лимит 1 МиБ включает записи, словари и резерв пулов, но не всю память сервиса или браузера."
+  "The 1 MiB limit covers journal storage, dictionaries and reserved pools, not total daemon or browser memory.": "Лимит 1 МиБ включает записи, словари и резерв пулов, но не всю память сервиса или браузера.",
+  "DNS history unavailable; DNS forwarding is still running.": "Журнал DNS недоступен. Обработка DNS-запросов продолжает работать.",
+  "Queries not recorded": "Не удалось записать запросы"
 }

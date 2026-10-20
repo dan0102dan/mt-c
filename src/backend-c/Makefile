@@ -279,6 +279,19 @@ $(BUILDDIR)/tests/%: tests/unit/%.c $(LIB_OBJS) $(TEST_SUPPORT_OBJS)
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -Itests/vendor -Itests/unit $(LDFLAGS) -o $@ $< $(LIB_OBJS) $(TEST_SUPPORT_OBJS) $(LDLIBS) $(DEP_LIBS)
 
+$(BUILDDIR)/tests/test_dns_stream_bounds: tests/unit/test_dns_stream_bounds.c src/api/system.c src/api/dns_stream.inc $(LIB_OBJS) $(TEST_SUPPORT_OBJS)
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) -Itests/vendor -Itests/unit $(LDFLAGS) -o $@ $< $(filter-out $(BUILDDIR)/src/api/system.o,$(LIB_OBJS)) $(TEST_SUPPORT_OBJS) $(LDLIBS) $(DEP_LIBS)
+
+# Operation-count and allocation-failure regressions, not timing gates.
+$(BUILDDIR)/tests/test_dns_stream: tests/unit/test_dns_stream.c $(LIB_OBJS) $(TEST_SUPPORT_OBJS)
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) -Itests/vendor -Itests/unit $(LDFLAGS) -Wl,--wrap=timerfd_create -Wl,--wrap=epoll_ctl -o $@ $< $(LIB_OBJS) $(TEST_SUPPORT_OBJS) $(LDLIBS) $(DEP_LIBS)
+
+$(BUILDDIR)/tests/test_dns_query_alloc: tests/unit/test_dns_query_alloc.c $(LIB_OBJS) $(TEST_SUPPORT_OBJS)
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) -Itests/vendor -Itests/unit $(LDFLAGS) -Wl,--wrap=malloc -Wl,--wrap=calloc -Wl,--wrap=memmove -Wl,--wrap=realloc -o $@ $< $(LIB_OBJS) $(TEST_SUPPORT_OBJS) $(LDLIBS) $(DEP_LIBS)
+
 # Exercise alias enrichment/failure via the real interface API without a router.
 ifeq ($(strip $(ENTWARE_KN)),1)
 $(BUILDDIR)/tests/test_system: tests/unit/test_system.c $(LIB_OBJS) $(TEST_SUPPORT_OBJS)

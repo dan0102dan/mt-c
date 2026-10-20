@@ -588,27 +588,25 @@ static request_disp_t handle_request_common(mt_dnsproxy_t *p, exchange_t *ex)
     if (mt_dns_msg_parse(ex->req, ex->req_len, &req_msg) != MT_OK) {
         return REQ_DROP;
     }
-    if (p->query_log && req_msg->n_questions > 0) {
-        char client[MT_DNS_QUERY_LOG_CLIENT_LEN] = "";
+    if (mt_dns_query_log_enabled(p->query_log) && req_msg->n_questions > 0) {
+        const uint8_t *addr = NULL;
+        size_t addr_len = 0;
         if (ex->client.ss_family == AF_INET) {
             const struct sockaddr_in *sa = (const struct sockaddr_in *)&ex->client;
-            (void)inet_ntop(AF_INET, &sa->sin_addr, client, sizeof(client));
+            addr = (const uint8_t *)&sa->sin_addr;
+            addr_len = 4;
         } else if (ex->client.ss_family == AF_INET6) {
             const struct sockaddr_in6 *sa = (const struct sockaddr_in6 *)&ex->client;
-            (void)inet_ntop(AF_INET6, &sa->sin6_addr, client, sizeof(client));
+            addr = (const uint8_t *)&sa->sin6_addr;
+            addr_len = 16;
         }
         struct timespec ts = {0};
         (void)clock_gettime(CLOCK_REALTIME, &ts);
         int64_t seen_ms = (int64_t)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
         for (size_t i = 0; i < req_msg->n_questions; i++) {
             const mt_dns_question_t *q = &req_msg->questions[i];
-            char domain[MT_DNS_QUERY_LOG_DOMAIN_LEN];
-            if (mt_dns_name_to_string(q->name, q->name_len, domain,
-                                      sizeof(domain)) != MT_OK) { continue; }
-            size_t len = strlen(domain);
-            if (len > 1 && domain[len - 1] == '.') { domain[len - 1] = '\0'; }
-            mt_dns_query_log_append(p->query_log, client[0] ? client : "unknown",
-                                    domain, q->qtype, ex->is_tcp, seen_ms);
+            (void)mt_dns_query_log_append_wire(p->query_log, addr, addr_len,
+                q->name, q->name_len, q->qtype, ex->is_tcp, seen_ms);
         }
     }
     mt_dns_msg_free(req_msg);

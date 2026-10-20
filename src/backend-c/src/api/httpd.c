@@ -16,6 +16,7 @@
 #include <sys/socket.h>
 #include <sys/un.h>
 #include <unistd.h>
+#include <time.h>
 
 #include "magitrickle/json.h"
 #include "magitrickle/log.h"
@@ -256,6 +257,7 @@ mt_err_t mt_httpd_route(mt_httpd_t *h, const char *method, const char *pattern,
 void mt_httpd_set_middleware(mt_httpd_t *h, mt_http_middleware_fn fn, void *ud) {
     h->middleware = fn;
     h->middleware_ud = ud;
+    mt_httpd_revalidate_streams(h);
 }
 
 void mt_httpd_set_not_found(mt_httpd_t *h, mt_http_handler_fn fn, void *ud) {
@@ -479,6 +481,7 @@ void mt_http_deferred_json(mt_http_deferred_t *p, int status, cJSON *obj) {
     free(p);
     if (!c) { cJSON_Delete(obj); return; }
     c->pending = NULL;
+    mt_httpd_revalidate_streams(c->server);
     mt_http_res_t res = {0};
     mt_http_res_write_json(&res, status, obj);
     build_response_bytes(c, &res);
@@ -658,6 +661,11 @@ static void handle_complete_request(mt_http_conn_t *c) {
         } else {
             mt_http_res_write_error(&res, 404, "not found");
         }
+    }
+    /* Mutations can enable auth or change access rules while streams stay
+     * open. Recheck them before completing this finite response. */
+    if (proceed && strcmp(req->method, "GET") != 0 && strcmp(req->method, "HEAD") != 0) {
+        mt_httpd_revalidate_streams(c->server);
     }
     if (res.streaming) {
         free(res.body);

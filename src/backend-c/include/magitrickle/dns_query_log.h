@@ -25,7 +25,8 @@ typedef struct mt_dns_query_entry {
 typedef struct mt_dns_query_log_stats {
     size_t capacity, count;
     size_t entry_bytes, index_bytes, pool_bytes, allocated_bytes;
-    size_t domains, clients;
+    size_t domains;
+    uint64_t dropped; /* Allocation failures, not expected retention evictions. */
 } mt_dns_query_log_stats_t;
 /* Allocates only the small control object, not the history or dictionaries. */
 mt_dns_query_log_t *mt_dns_query_log_create(void);
@@ -38,7 +39,8 @@ size_t mt_dns_query_log_memory_limit(const mt_dns_query_log_t *log);
 void mt_dns_query_log_append(mt_dns_query_log_t *log, const char *client,
     const char *domain, uint16_t qtype, bool tcp, int64_t time_ms);
 /* Valid decompressed wire name, including root; IP length 0/4/16. Disabled
- * capture is a no-op. Memory pressure evicts oldest rows, never blocks DNS. */
+ * capture is a no-op. Byte pressure evicts oldest rows. Allocation failure
+ * preserves retained rows and increments stats.dropped; it never blocks DNS. */
 bool mt_dns_query_log_append_wire(mt_dns_query_log_t *log,
     const uint8_t *addr, size_t addr_len, const uint8_t *name, size_t name_len,
     uint16_t qtype, bool tcp, int64_t time_ms);
@@ -49,8 +51,9 @@ bool mt_dns_query_log_get(const mt_dns_query_log_t *log, size_t newest_index,
 bool mt_dns_query_log_get_id(const mt_dns_query_log_t *log, uint64_t id,
     mt_dns_query_entry_t *out);
 void mt_dns_query_log_clear(mt_dns_query_log_t *log);
-/* Requested allocation bytes including reserved pool/index space. Excludes
- * allocator bookkeeping, temporary realloc/HTTP buffers and browser RAM. */
+/* Requested allocation bytes including the ring, domain index and exact name
+ * allocations. pool_bytes is the name payload (no moving arena). Excludes
+ * allocator bookkeeping, HTTP buffers and browser RAM. O(1) on the DNS loop. */
 void mt_dns_query_log_stats(const mt_dns_query_log_t *log, mt_dns_query_log_stats_t *out);
 typedef void (*mt_dns_query_log_notify_fn)(void *ud);
 int mt_dns_query_log_subscribe(mt_dns_query_log_t *log, mt_dns_query_log_notify_fn notify, void *ud);
