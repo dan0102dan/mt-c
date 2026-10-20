@@ -108,8 +108,11 @@ test("explicit capture combines related DNS types but preserves all raw records"
   await expect(region.getByText(/HTTPS \(TYPE 65\)/)).toBeVisible();
   expect(dns.state.queries).toHaveLength(3);
   await expect(region.getByText("Stored requests: 3", { exact: true })).toBeVisible();
-  await region.getByRole("button", { name: "Combine related queries" }).click();
-  await expect(region.locator("tbody tr")).toHaveCount(3);
+  await expect(region.getByRole("button", { name: "Combine related queries" })).toHaveCount(0);
+  await expect(region.locator(".raw-query")).toHaveCount(3);
+  await expect(region.locator(".capture-toolbar")).not.toContainText("1024 / 1024 KiB");
+  await expect(region.locator(".capture-toolbar").getByRole("button", { name: "History RAM" })).toHaveCount(0);
+  await expect(region.locator(".dns-summary").getByRole("button")).toHaveCount(0);
   await page.reload(); await settings(page);
   await expect(region.locator("tbody tr")).toHaveCount(1);
   expect(dns.state.writes).toBe(1); // Restoring an enabled session never auto-starts another.

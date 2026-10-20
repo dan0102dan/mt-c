@@ -382,6 +382,32 @@ test("mobile Settings keeps add controls visible and allows an empty draft to be
   expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(390);
 });
 
+for (const width of [390, 320]) {
+  test(`mobile Settings action buttons are separated and fit at ${width}px`, async ({ page }) => {
+    await backend(page);
+    await page.setViewportSize({ width, height: 844 });
+    await page.goto("/");
+    await openSettings(page);
+
+    const actions = [
+      page.locator("#save-settings"),
+      page.getByRole("button", { name: "Import Config", exact: true }),
+      page.getByRole("button", { name: "Export Config", exact: true }),
+      page.getByRole("button", { name: "Add profile", exact: true }),
+    ];
+    for (const action of actions) await expect(action).toBeVisible();
+    const boxes = await Promise.all(actions.map((action) => action.boundingBox()));
+    if (boxes.some((box) => !box)) throw new Error("Missing action geometry");
+    for (let i = 0; i < boxes.length - 1; i++) {
+      const previous = boxes[i]!;
+      const next = boxes[i + 1]!;
+      expect(next.x - (previous.x + previous.width)).toBeGreaterThanOrEqual(6);
+      expect(next.x + next.width).toBeLessThanOrEqual(width);
+    }
+    expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(width);
+  });
+}
+
 test("page controls and first cards stay aligned when switching tabs", async ({ page }) => {
   const state = await backend(page);
   state.profiles = [

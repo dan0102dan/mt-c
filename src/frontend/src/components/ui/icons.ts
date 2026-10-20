@@ -33,6 +33,7 @@ export { default as ToTop } from "@lucide/svelte/icons/arrow-up-to-line";
 export { default as ImportList } from "@lucide/svelte/icons/list-plus";
 export { default as Search } from "@lucide/svelte/icons/search";
 export { default as LayoutList } from "@lucide/svelte/icons/layout-list";
+export { default as ListOrdered } from "@lucide/svelte/icons/list-ordered";
 export { default as Menu } from "@lucide/svelte/icons/menu";
 export { default as X } from "@lucide/svelte/icons/x";
 export { default as LogOut } from "@lucide/svelte/icons/log-out";

@@ -365,10 +365,13 @@ test("time sorting preserves combined-question membership and details", async ({
   await expect(rows.first()).toContainText("related.example");
   await expect(combined.locator("details")).toHaveAttribute("open", "");
   await expect(combined.locator(".raw-query")).toHaveCount(3);
-  await region.getByRole("button", { name: "Combine related queries", exact: true }).click();
-  await expect(rows).toHaveCount(4);
-  await expect(rows.first()).toContainText("IPv4");
-  await expect(rows.last()).toContainText("later.example");
+  await expect(region.getByRole("button", { name: "Combine related queries" })).toHaveCount(0);
+  await region.getByRole("button", { name: "Group by domain" }).click();
+  await expect(rows).toHaveCount(2);
+  await region.getByRole("button", { name: "Individual queries" }).click();
+  await expect(rows).toHaveCount(2);
+  await expect(rows.first()).toContainText("related.example");
+  await expect(rows.filter({ hasText: "related.example" }).locator(".raw-query")).toHaveCount(3);
   await expect(region.locator(".dns-summary .count")).toHaveText("Stored requests: 4");
   expect(dns.state.connections).toBe(1);
 });

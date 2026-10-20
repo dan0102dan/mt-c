@@ -11,10 +11,9 @@
 
   import {
     Clear,
-    Info,
     LayoutList,
     Search,
-    Sigma,
+    ListOrdered,
     SortAsc,
     SortDesc,
   } from "../../components/ui/icons";
@@ -49,7 +48,6 @@
   let streamRevision = $state(0);
   let streamState = $state<StreamState>("connecting");
   let grouped = $state(false);
-  let combine = $state(true);
   let timeSort = $state<DnsTimeSort>("desc");
   let search = $state("");
   let device = $state("");
@@ -73,7 +71,7 @@
   );
   const timeline = $derived(
     sortDnsByTime(
-      combine ? groupDnsBursts(filtered) : filtered.map((row) => ({ ...row, queries: [row] })),
+      groupDnsBursts(filtered),
       timeSort,
       (row) => row.time_ms,
     ),
@@ -84,7 +82,7 @@
   const groupedPage = $derived(groupedRows.slice((safePage - 1) * pageSize, safePage * pageSize));
   const queryPage = $derived(timeline.slice((safePage - 1) * pageSize, safePage * pageSize));
   const filtersKey = $derived(
-    `${search}\u0000${device}\u0000${grouped}\u0000${combine}\u0000${timeSort}`,
+    `${search}\u0000${device}\u0000${grouped}\u0000${timeSort}`,
   );
   const timeSortAria = $derived(timeSort === "asc" ? "ascending" : "descending");
   const timeSortAction = $derived(timeSort === "desc" ? "Oldest first" : "Newest first");
@@ -281,21 +279,9 @@
         {capture?.enabled ? t("Stop recording") : t("Start recording")}
       </Button>
       {#if capture?.enabled}
-        {#if capture.dropped}<span class="memory-usage"
+        {#if capture.dropped}<span class="dropped-count"
             >{t("Queries not recorded")}: {capture.dropped}</span
           >{/if}
-        <span class="memory-usage"
-          >{t("History RAM")}: {Math.ceil(capture.memory_used / 1024)} / {Math.ceil(
-            capture.memory_limit / 1024,
-          )} KiB</span
-        >
-        <Tooltip
-          value={t(
-            "The 1 MiB limit covers journal storage, dictionaries and reserved pools, not total daemon or browser memory.",
-          )}
-        >
-          <Button small type="button" aria-label={t("History RAM")}><Info size={16} /></Button>
-        </Tooltip>
       {/if}
     </div>
     {#if captureFailed}
@@ -330,19 +316,6 @@
           <Select options={deviceOptions} bind:selected={device} ariaLabel={t("Device")} />
         </div>
         <div class="dns-actions">
-          <Tooltip
-            value={t(
-              "Combine A, AAAA and HTTPS from the same device and domain within one second. Raw requests remain available in the details.",
-            )}
-          >
-            <Button
-              small
-              type="button"
-              aria-label={t("Combine related queries")}
-              aria-pressed={combine}
-              onclick={() => (combine = !combine)}>{t("Combine queries")}</Button
-            >
-          </Tooltip>
           <Tooltip value={grouped ? t("Individual queries") : t("Group by domain")}>
             <Button
               small
@@ -351,7 +324,7 @@
               aria-pressed={grouped}
               onclick={() => (grouped = !grouped)}
             >
-              {#if grouped}<LayoutList size={20} />{:else}<Sigma size={20} />{/if}
+              {#if grouped}<LayoutList size={20} />{:else}<ListOrdered size={20} />{/if}
             </Button>
           </Tooltip>
           <Button small type="button" aria-pressed={paused} onclick={() => (paused = !paused)}
@@ -487,19 +460,6 @@
       <div class="dns-summary">
         <span class="count">{t("Stored requests")}: {queries.length}</span>
         <span class="connection-state" role="status">{statusLabel}</span>
-        <Tooltip
-          value={t(
-            "Requests captured by the DNS proxy. Cached or encrypted DNS traffic is not visible.",
-          )}
-        >
-          <Button
-            small
-            type="button"
-            aria-label={t(
-              "Requests captured by the DNS proxy. Cached or encrypted DNS traffic is not visible.",
-            )}><Info size={16} /></Button
-          >
-        </Tooltip>
       </div>
       <Pagination
         totalItems={total}
@@ -564,7 +524,8 @@
     border-radius: 0.5rem 0.5rem 0 0;
     border-bottom: 1px solid var(--bg-light-extra);
   }
-  .memory-usage {
+  .dropped-count {
+    margin-left: auto;
     color: var(--text-2);
     font-size: 0.85rem;
   }

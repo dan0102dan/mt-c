@@ -73,7 +73,8 @@ questions of the same type begin another group, so retries are not swallowed.
 Other types and different clients/transports remain separate.
 
 Rows appear immediately and expand as sibling questions arrive. Expanding a row
-shows every raw type and millisecond timestamp. Combining can be toggled off.
+shows every raw type and millisecond timestamp. The timeline combines
+related types automatically, without a separate Combine queries button.
 This is presentation only: raw events remain separate in RAM and the stored
 request count is not the number of display groups. Global domain grouping,
 search, device filters, pagination and router-provided device names are retained.

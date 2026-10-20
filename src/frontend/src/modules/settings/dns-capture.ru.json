@@ -6,14 +6,9 @@
   "Enable DNS recording? History storage will use up to 1 MiB of RAM, with additional memory for streaming and the interface. Recording continues after closing this page until stopped or the service restarts.": "Включить запись DNS-запросов? Хранилище займёт до 1 МиБ оперативной памяти, дополнительно потребуется память для потока и интерфейса. Запись продолжится после закрытия страницы до её отключения или перезапуска сервиса.",
   "Stop recording and delete the DNS history? Its buffers will be freed for all viewers.": "Остановить запись и удалить историю DNS-запросов? Буферы будут освобождены, история исчезнет у всех пользователей.",
   "Failed to change DNS recording": "Не удалось изменить состояние записи DNS-запросов",
-  "Combine related queries": "Объединять близкие запросы",
-  "Combine queries": "Объединять",
-  "Combine A, AAAA and HTTPS from the same device and domain within one second. Raw requests remain available in the details.": "Объединять A, AAAA и HTTPS одного устройства к одному домену в пределах секунды. Исходные запросы доступны в подробностях.",
   "HTTPS parameters": "Параметры HTTPS",
   "Stored requests": "Хранимые запросы",
-  "History RAM": "ОЗУ журнала",
   "Viewing is paused; recording continues.": "Просмотр приостановлен; запись продолжается.",
-  "The 1 MiB limit covers journal storage, dictionaries and reserved pools, not total daemon or browser memory.": "Лимит 1 МиБ включает записи, словари и резерв пулов, но не всю память сервиса или браузера.",
   "DNS history unavailable; DNS forwarding is still running.": "Журнал DNS недоступен. Обработка DNS-запросов продолжает работать.",
   "Queries not recorded": "Не удалось записать запросы"
 }

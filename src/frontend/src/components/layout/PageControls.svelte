@@ -186,6 +186,17 @@
   }
 
   @media (max-width: 570px) {
+    /* Space persistent actions without leaving a gap for collapsed Add. */
+    .page-controls-actions.contextual {
+      gap: 0.5rem;
+    }
+    .page-controls-actions.contextual .context-add {
+      margin-left: -0.5rem;
+    }
+    .page-controls-actions.contextual .context-add.present {
+      margin-left: 0;
+    }
+
     .page-controls {
       display: block;
       padding: 0.3rem 0;
