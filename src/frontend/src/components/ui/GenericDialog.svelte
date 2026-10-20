@@ -28,7 +28,6 @@
     escapeKeydownBehavior="close"
     onOpenAutoFocus={(e) => {
       e.preventDefault();
-      // textArea?.focus();
     }}
     style={`--generic-dialog-max-width: ${maxWidth}px`}
   >

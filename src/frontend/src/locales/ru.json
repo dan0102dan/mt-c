@@ -331,5 +331,7 @@
   "Failed to export current configuration": "Не удалось экспортировать текущую конфигурацию",
   "Configuration imported": "Конфигурация импортирована",
   "No changes to import": "Нет изменений для импорта",
-  "Failed to import configuration": "Не удалось импортировать конфигурацию"
+  "Failed to import configuration": "Не удалось импортировать конфигурацию",
+  "Enable DNS recording?": "Включить запись DNS-запросов?",
+  "History storage will use up to 1 MiB of RAM, with additional memory for streaming and the interface. Recording continues after closing this page until stopped or the service restarts.": "Хранилище займёт до 1 МиБ оперативной памяти, дополнительно потребуется память для потока и интерфейса. Запись продолжится после закрытия страницы до её отключения или перезапуска сервиса."
 }

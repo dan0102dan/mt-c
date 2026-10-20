@@ -1,52 +1,114 @@
-import { expect, test as base, type Page } from "@playwright/test";
 import { createServer, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
+import { test as base, expect, type Page } from "@playwright/test";
+
 import type { DnsQuery } from "../../src/modules/settings/dns-query-data";
 
 const sample: DnsQuery[] = [
-  { id: 3, time_ms: 3000, client: "192.168.1.10", domain: "example.com", qtype: 1, protocol: "udp" },
-  { id: 2, time_ms: 2000, client: "192.168.1.11", domain: "example.com", qtype: 28, protocol: "tcp" },
-  { id: 1, time_ms: 1000, client: "192.168.1.10", domain: "another.net", qtype: 65, protocol: "udp" },
+  {
+    id: 3,
+    time_ms: 3000,
+    client: "192.168.1.10",
+    domain: "example.com",
+    qtype: 1,
+    protocol: "udp",
+  },
+  {
+    id: 2,
+    time_ms: 2000,
+    client: "192.168.1.11",
+    domain: "example.com",
+    qtype: 28,
+    protocol: "tcp",
+  },
+  {
+    id: 1,
+    time_ms: 1000,
+    client: "192.168.1.10",
+    domain: "another.net",
+    qtype: 65,
+    protocol: "udp",
+  },
 ];
-function frame(event: string, data: unknown) { return `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`; }
+function frame(event: string, data: unknown) {
+  return `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
+}
 function createBackend() {
-  const state = { history: [...sample], through: 3, connections: 0, snapshots: 0, clears: 0, failNext: false, holdEnd: false };
+  const state = {
+    history: [...sample],
+    through: 3,
+    connections: 0,
+    snapshots: 0,
+    clears: 0,
+    failNext: false,
+    holdEnd: false,
+  };
   const clients = new Set<ServerResponse>();
   const pending = new Map<ServerResponse, number>();
-  const broadcast = (event: string, data: unknown) => { for (const res of clients) res.write(frame(event, data)); };
+  const broadcast = (event: string, data: unknown) => {
+    for (const res of clients) res.write(frame(event, data));
+  };
   const server = createServer((req, res) => {
     res.setHeader("Access-Control-Allow-Origin", "*");
     res.setHeader("Access-Control-Allow-Headers", "Authorization, Content-Type");
     res.setHeader("Access-Control-Allow-Methods", "GET, DELETE, OPTIONS");
-    if (req.method === "OPTIONS") { res.writeHead(204).end(); return; }
+    if (req.method === "OPTIONS") {
+      res.writeHead(204).end();
+      return;
+    }
     if (req.url?.endsWith("/stream")) {
       state.connections++;
-      if (state.failNext) { state.failNext = false; res.writeHead(503).end(); return; }
+      if (state.failNext) {
+        state.failNext = false;
+        res.writeHead(503).end();
+        return;
+      }
       res.writeHead(200, { "Content-Type": "text/event-stream", "Cache-Control": "no-store" });
       const queries = [...state.history].reverse();
-      res.write(frame("snapshot_begin", { capacity: 1000, count: queries.length, through: state.through }));
+      res.write(
+        frame("snapshot_begin", { capacity: 1000, count: queries.length, through: state.through }),
+      );
       for (let offset = 0; offset < queries.length; offset += 32)
         res.write(frame("snapshot_chunk", { offset, queries: queries.slice(offset, offset + 32) }));
       if (state.holdEnd) pending.set(res, state.through);
       else res.write(frame("snapshot_end", { through: state.through }));
       clients.add(res);
-      res.on("close", () => { clients.delete(res); pending.delete(res); });
+      res.on("close", () => {
+        clients.delete(res);
+        pending.delete(res);
+      });
       return; // A genuinely open HTTP response, not a completed route.fulfill mock.
     }
     res.setHeader("Content-Type", "application/json");
     if (req.method === "DELETE") {
-      state.history = []; state.clears++; pending.clear();
-      broadcast("clear", {}); res.end(JSON.stringify({ cleared: true }));
+      state.history = [];
+      state.clears++;
+      pending.clear();
+      broadcast("clear", {});
+      res.end(JSON.stringify({ cleared: true }));
     } else {
       state.snapshots++;
       res.end(JSON.stringify({ queries: state.history, capacity: 1000 }));
     }
   });
   return {
-    state, server, clients,
-    endSnapshot() { for (const [res, through] of pending) res.write(frame("snapshot_end", { through })); pending.clear(); },
-    emit(row: DnsQuery) { state.through = row.id; state.history = [row, ...state.history].slice(0, 1000); broadcast("query", row); },
-    disconnect() { for (const res of clients) res.destroy(); clients.clear(); pending.clear(); },
+    state,
+    server,
+    clients,
+    endSnapshot() {
+      for (const [res, through] of pending) res.write(frame("snapshot_end", { through }));
+      pending.clear();
+    },
+    emit(row: DnsQuery) {
+      state.through = row.id;
+      state.history = [row, ...state.history].slice(0, 1000);
+      broadcast("query", row);
+    },
+    disconnect() {
+      for (const res of clients) res.destroy();
+      clients.clear();
+      pending.clear();
+    },
   };
 }
 type Backend = ReturnType<typeof createBackend> & { url: string };
@@ -55,9 +117,11 @@ const test = base.extend<{ dns: Backend }>({
     const backend = createBackend();
     await new Promise<void>((resolve) => backend.server.listen(0, "127.0.0.1", resolve));
     const url = `http://127.0.0.1:${(backend.server.address() as AddressInfo).port}`;
-    try { await use({ ...backend, url }); }
-    finally {
-      backend.disconnect(); backend.server.closeAllConnections();
+    try {
+      await use({ ...backend, url });
+    } finally {
+      backend.disconnect();
+      backend.server.closeAllConnections();
       await new Promise<void>((resolve) => backend.server.close(() => resolve()));
     }
   },
@@ -65,12 +129,21 @@ const test = base.extend<{ dns: Backend }>({
 async function setup(page: Page, dns: Backend) {
   await page.route("**/api/v1/**", async (route) => {
     const path = new URL(route.request().url()).pathname.slice("/api/v1".length);
-    if (path.startsWith("/system/dns/")) { await route.continue({ url: `${dns.url}${path}` }); return; }
-    if (route.request().method() === "OPTIONS") { await route.fulfill({ status: 204 }); return; }
+    if (path.startsWith("/system/dns/")) {
+      await route.continue({ url: `${dns.url}${path}` });
+      return;
+    }
+    if (route.request().method() === "OPTIONS") {
+      await route.fulfill({ status: 204 });
+      return;
+    }
     const fixtures: Record<string, unknown> = {
-      "/auth": { enabled: false }, "/groups": { groups: [] },
-      "/subscriptions": { subscriptions: [] }, "/profiles": { profiles: [] },
-      "/system/interfaces": { interfaces: [] }, "/system/update/status": { stage: "idle" },
+      "/auth": { enabled: false },
+      "/groups": { groups: [] },
+      "/subscriptions": { subscriptions: [] },
+      "/profiles": { profiles: [] },
+      "/system/interfaces": { interfaces: [] },
+      "/system/update/status": { stage: "idle" },
     };
     await route.fulfill({ json: fixtures[path.replace(/\/$/, "")] ?? {} });
   });
@@ -87,11 +160,16 @@ const liveQuery = (): DnsQuery => ({ ...sample[0], id: 4, domain: "live.example"
 function seedHistory(dns: Backend, count: number) {
   dns.state.through = count;
   dns.state.history = Array.from({ length: count }, (_, index) => ({
-    ...sample[0], id: count - index, domain: `host${count - index}.example`,
+    ...sample[0],
+    id: count - index,
+    domain: `host${count - index}.example`,
   }));
 }
 
-test("one open connection receives immediate updates without 3-second polling", async ({ page, dns }) => {
+test("one open connection receives immediate updates without 3-second polling", async ({
+  page,
+  dns,
+}) => {
   const region = await setup(page, dns);
   await expect(region.locator("tbody tr")).toHaveCount(3);
   dns.emit(liveQuery());
@@ -99,16 +177,21 @@ test("one open connection receives immediate updates without 3-second polling", 
   await expect(region).toHaveAttribute("aria-busy", "false");
   await expect(region.getByText("Live", { exact: true })).toHaveCount(0);
   await page.waitForTimeout(3400); // Prove the removed polling interval does not recur.
-  expect(dns.state.connections).toBe(1); expect(dns.state.snapshots).toBe(0);
+  expect(dns.state.connections).toBe(1);
+  expect(dns.state.snapshots).toBe(0);
 });
-test("partial snapshots do not appear until end; reconnect discards unfinished staging", async ({ page, dns }) => {
+test("partial snapshots do not appear until end; reconnect discards unfinished staging", async ({
+  page,
+  dns,
+}) => {
   dns.state.holdEnd = true;
   const region = await setup(page, dns);
   await expect.poll(() => dns.clients.size).toBe(1);
   await expect(region).toHaveAttribute("aria-busy", "true");
   await expect(region.locator("tbody tr")).toHaveCount(0);
   dns.disconnect();
-  dns.state.history = [{ ...sample[0], id: 9, domain: "replacement.example" }]; dns.state.through = 9;
+  dns.state.history = [{ ...sample[0], id: 9, domain: "replacement.example" }];
+  dns.state.through = 9;
   await expect.poll(() => dns.state.connections).toBe(2);
   await expect.poll(() => dns.clients.size).toBe(1);
   dns.endSnapshot();
@@ -132,7 +215,10 @@ test("DNS journal filters and groups all matching rows", async ({ page, dns }) =
   await expect(region.locator("tbody tr")).toHaveCount(2);
   await expect(region.locator("tbody tr").first()).toContainText("192.168.1.11");
 });
-test("pause closes the subscription; resume and reconnect replace the snapshot", async ({ page, dns }) => {
+test("pause closes the subscription; resume and reconnect replace the snapshot", async ({
+  page,
+  dns,
+}) => {
   const region = await setup(page, dns);
   await expect(region.locator("tbody tr")).toHaveCount(3);
   await region.getByRole("button", { name: "Pause", exact: true }).click();
@@ -148,15 +234,22 @@ test("pause closes the subscription; resume and reconnect replace the snapshot",
   await expect.poll(() => dns.state.connections).toBe(3);
   await expect(region.locator("tbody tr")).toHaveCount(4);
 });
-test("clear broadcasts and a failed connection retries without a snapshot GET", async ({ page, dns }) => {
+test("clear broadcasts and a failed connection retries without a snapshot GET", async ({
+  page,
+  dns,
+}) => {
   dns.state.failNext = true;
   const region = await setup(page, dns);
   await expect(region.locator("tbody tr")).toHaveCount(3);
   expect(dns.state.connections).toBe(2);
-  page.once("dialog", (dialog) => dialog.accept());
   await region.getByRole("button", { name: "Clear history" }).click();
+  await page
+    .getByRole("dialog", { name: "Clear history", exact: true })
+    .getByRole("button", { name: "Clear history", exact: true })
+    .click();
   await expect(region.getByText("No DNS queries captured yet")).toBeVisible();
-  expect(dns.state.clears).toBe(1); expect(dns.state.snapshots).toBe(0);
+  expect(dns.state.clears).toBe(1);
+  expect(dns.state.snapshots).toBe(0);
 });
 test("DNS streaming controls and long records fit a phone viewport", async ({ page, dns }) => {
   await page.setViewportSize({ width: 390, height: 844 });
@@ -177,7 +270,10 @@ test("DNS streaming controls and long records fit a phone viewport", async ({ pa
 });
 
 for (const width of [1280, 390]) {
-  test(`DNS heading joins the shared scroll toolbar without losing filters (${width}px)`, async ({ page, dns }) => {
+  test(`DNS heading joins the shared scroll toolbar without losing filters (${width}px)`, async ({
+    page,
+    dns,
+  }) => {
     await page.setViewportSize({ width, height: 844 });
     await page.emulateMedia({ reducedMotion: "reduce" });
     seedHistory(dns, 90);
@@ -200,12 +296,17 @@ for (const width of [1280, 390]) {
       if (offset < 0) await expect(heading).toHaveAccessibleName("DNS queries");
       else await expect(heading).not.toHaveAccessibleName("DNS queries");
       await expect(region.getByRole("searchbox")).toHaveValue("example");
-      await expect(region.getByRole("button", { name: "Individual queries" })).toHaveAttribute("aria-pressed", "true");
+      await expect(region.getByRole("button", { name: "Individual queries" })).toHaveAttribute(
+        "aria-pressed",
+        "true",
+      );
     }
     await expect(inline).toHaveCSS("position", "static");
     await expect(page.locator(".settings-page .page-controls")).toHaveCount(1);
     await expect(save).toBeDisabled();
-    expect(await saveNode!.evaluate((node) => node === document.querySelector("#save-settings"))).toBe(true);
+    expect(
+      await saveNode!.evaluate((node) => node === document.querySelector("#save-settings")),
+    ).toBe(true);
     expect(dns.state.connections).toBe(1);
     expect(dns.state.snapshots).toBe(0);
   });

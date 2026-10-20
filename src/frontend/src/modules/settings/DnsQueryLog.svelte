@@ -3,6 +3,7 @@
 
   import Pagination from "../../components/Pagination.svelte";
   import Button from "../../components/ui/Button.svelte";
+  import GenericDialog from "../../components/ui/GenericDialog.svelte";
   import Placeholder from "../../components/ui/Placeholder.svelte";
   import Select from "../../components/ui/Select.svelte";
   import Tooltip from "../../components/ui/Tooltip.svelte";
@@ -12,8 +13,8 @@
   import {
     Clear,
     LayoutList,
-    Search,
     ListOrdered,
+    Search,
     SortAsc,
     SortDesc,
   } from "../../components/ui/icons";
@@ -38,6 +39,31 @@
   let capacity = $state(1);
   let capture = $state.raw<CaptureState | null>(null);
   let changing = $state(false);
+  let confirmation = $state<"start" | "stop" | "clear" | null>(null);
+  const confirmationLabel = $derived(
+    confirmation === "clear"
+      ? t("Clear history")
+      : confirmation === "stop"
+        ? t("Stop recording")
+        : t("Start recording"),
+  );
+  const confirmationMessage = $derived(
+    confirmation === "clear"
+      ? t("Clear DNS query history?")
+      : confirmation === "stop"
+        ? t("Stop recording and delete the DNS history? Its buffers will be freed for all viewers.")
+        : t(
+            "History storage will use up to 1 MiB of RAM, with additional memory for streaming and the interface. Recording continues after closing this page until stopped or the service restarts.",
+          ),
+  );
+
+  function confirmAction() {
+    const action = confirmation;
+    confirmation = null;
+    if (action === "clear") void clearHistory();
+    else if (action) void setRecording(action === "start");
+  }
+
   let captureFailed = $state(false);
   let loading = $state(false);
   let clearing = $state(false);
@@ -70,20 +96,14 @@
     sortDnsByTime(groupDnsQueries(filtered), timeSort, (row) => row.lastTime),
   );
   const timeline = $derived(
-    sortDnsByTime(
-      groupDnsBursts(filtered),
-      timeSort,
-      (row) => row.time_ms,
-    ),
+    sortDnsByTime(groupDnsBursts(filtered), timeSort, (row) => row.time_ms),
   );
   const total = $derived(grouped ? groupedRows.length : timeline.length);
   const pages = $derived(Math.max(1, Math.ceil(total / pageSize)));
   const safePage = $derived(Math.min(page, pages));
   const groupedPage = $derived(groupedRows.slice((safePage - 1) * pageSize, safePage * pageSize));
   const queryPage = $derived(timeline.slice((safePage - 1) * pageSize, safePage * pageSize));
-  const filtersKey = $derived(
-    `${search}\u0000${device}\u0000${grouped}\u0000${timeSort}`,
-  );
+  const filtersKey = $derived(`${search}\u0000${device}\u0000${grouped}\u0000${timeSort}`);
   const timeSortAria = $derived(timeSort === "asc" ? "ascending" : "descending");
   const timeSortAction = $derived(timeSort === "desc" ? "Oldest first" : "Newest first");
   const statusLabel = $derived(
@@ -163,12 +183,6 @@
 
   async function setRecording(enabled: boolean) {
     if (changing || clearing) return;
-    const warning = enabled
-      ? t(
-          "Enable DNS recording? History storage will use up to 1 MiB of RAM, with additional memory for streaming and the interface. Recording continues after closing this page until stopped or the service restarts.",
-        )
-      : t("Stop recording and delete the DNS history? Its buffers will be freed for all viewers.");
-    if (!confirm(warning)) return;
     requestGeneration++;
     changing = true;
     captureFailed = false;
@@ -193,7 +207,7 @@
     }
   }
   async function clearHistory() {
-    if (clearing || changing || !confirm(t("Clear DNS query history?"))) return;
+    if (clearing || changing) return;
     requestGeneration++;
     loading = false;
     clearing = true;
@@ -255,6 +269,20 @@
   </span>
 {/snippet}
 
+<GenericDialog
+  open={confirmation !== null}
+  title={confirmation === "start" ? t("Enable DNS recording?") : confirmationLabel}
+  maxWidth={480}
+  on:close={() => (confirmation = null)}
+  on:submit={confirmAction}
+>
+  <p slot="body" class="confirmation-message">{confirmationMessage}</p>
+  <div slot="actions" class="confirmation-actions">
+    <Button onclick={() => (confirmation = null)}>{t("Cancel")}</Button>
+    <Button class="accent" onclick={confirmAction}>{confirmationLabel}</Button>
+  </div>
+</GenericDialog>
+
 <section
   class="dns-query-log"
   aria-labelledby="dns-query-title"
@@ -274,7 +302,7 @@
         small
         type="button"
         disabled={changing || clearing || streamState === "unavailable"}
-        onclick={() => void setRecording(!capture?.enabled)}
+        onclick={() => (confirmation = capture?.enabled ? "stop" : "start")}
       >
         {capture?.enabled ? t("Stop recording") : t("Start recording")}
       </Button>
@@ -337,7 +365,7 @@
               aria-label={t("Clear history")}
               disabled={clearing || changing || !queries.length}
               inactive={clearing || changing || !queries.length}
-              onclick={() => void clearHistory()}><Clear size={20} /></Button
+              onclick={() => (confirmation = "clear")}><Clear size={20} /></Button
             >
           </Tooltip>
         </div>
@@ -482,6 +510,19 @@
 </section>
 
 <style>
+  .confirmation-message {
+    margin: 0;
+    color: var(--text-2);
+    font: 400 1rem / 1.5 var(--font);
+  }
+  .confirmation-actions {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+    gap: 0.5rem;
+    margin-top: 0.5rem;
+  }
+
   .dns-query-log {
     min-width: 0;
   }
