@@ -201,7 +201,7 @@ test("stop frees history for all viewers and does not resume on reload", async (
   await expect(otherRegion.locator("tbody tr")).toHaveCount(1);
   await region.getByRole("button", { name: "Stop recording" }).click();
   await page
-    .getByRole("dialog", { name: "Stop recording", exact: true })
+    .getByRole("dialog", { name: "Stop recording?", exact: true })
     .getByRole("button", { name: "Stop recording", exact: true })
     .click();
   await expect(region.getByText("DNS recording is off", { exact: true })).toBeVisible();

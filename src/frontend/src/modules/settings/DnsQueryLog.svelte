@@ -53,7 +53,7 @@
     confirmation === "clear"
       ? t("Clear DNS query history?")
       : confirmation === "stop"
-        ? t("Stop recording and delete the DNS history? Its buffers will be freed for all viewers.")
+        ? t("DNS query history will be deleted for all viewers, and its memory will be freed.")
         : t(
             "History storage will use up to 1 MiB of RAM, with additional memory for streaming and the interface. Recording continues after closing this page until stopped or the service restarts.",
           ),
@@ -265,7 +265,11 @@
 
 <GenericDialog
   open={confirmation !== null}
-  title={confirmation === "start" ? t("Enable DNS recording?") : confirmationLabel}
+  title={confirmation === "start"
+    ? t("Enable DNS recording?")
+    : confirmation === "stop"
+      ? `${t("Stop recording")}?`
+      : confirmationLabel}
   maxWidth={480}
   on:close={() => (confirmation = null)}
   on:submit={confirmAction}
