@@ -84,10 +84,10 @@ Deno.test("DNS mock streams capture changes to connected viewers", async () => {
     assert.match(initial, /event: capture/);
     assert.match(initial, /"enabled":false/);
     assert.equal((await capture()).enabled, false);
-    await save({ enabled: true });
+    const started = parseCaptureState(await (await save({ enabled: true })).json());
     assert.match(await until("event: query"), /"enabled":true/);
     // Drain all queued sample rows before checking the next transition.
-    await until('"id":4');
+    await until(`"id":${started.count},`);
     await app.request(`${base}/queries`, { method: "DELETE" });
     assert.match(await until("event: clear"), /"count":0/);
     await save({ enabled: false });
@@ -95,4 +95,60 @@ Deno.test("DNS mock streams capture changes to connected viewers", async () => {
   } finally {
     await reader.cancel();
   }
+});
+
+Deno.test("DNS mock releases subscriber slots when requests are aborted", async () => {
+  const { app } = fixture();
+  const readers: ReadableStreamDefaultReader<Uint8Array>[] = [];
+  const controllers: AbortController[] = [];
+  try {
+    for (let i = 0; i < 8; i++) {
+      const controller = new AbortController();
+      controllers.push(controller);
+      const response = await app.request(`${base}/stream`, { signal: controller.signal });
+      assert.equal(response.status, 200);
+      const reader = response.body!.getReader();
+      readers.push(reader);
+      await reader.read();
+    }
+    const excess = await app.request(`${base}/stream`);
+    assert.equal(excess.status, 503);
+    await excess.body?.cancel();
+    for (const controller of controllers) controller.abort();
+    const replacement = await app.request(`${base}/stream`);
+    readers.push(replacement.body!.getReader());
+    assert.equal(replacement.status, 200);
+  } finally {
+    for (const reader of readers) await reader.cancel();
+  }
+});
+
+Deno.test("DNS mock history covers multiple pages, dates, devices and record types", async () => {
+  const { app, save } = fixture();
+  const state = parseCaptureState(await (await save({ enabled: true })).json());
+  const rows: Array<{
+    id: number;
+    time_ms: number;
+    client: string;
+    domain: string;
+    qtype: number;
+    protocol: string;
+  }> = [];
+  let before = 0;
+  do {
+    const page = await (
+      await app.request(`${base}/queries?limit=128${before ? `&before=${before}` : ""}`)
+    ).json();
+    rows.push(...page.queries);
+    before = page.next_before;
+  } while (before);
+  assert.equal(rows.length, state.count);
+  assert.ok(rows.length > 128);
+  assert.equal(new Set(rows.map((row) => row.id)).size, rows.length);
+  assert.ok(rows[0].time_ms - rows.at(-1)!.time_ms > 48 * 60 * 60 * 1000);
+  assert.ok(new Set(rows.map((row) => row.client)).size >= 6);
+  assert.ok(new Set(rows.map((row) => row.domain)).size > 30);
+  assert.ok(new Set(rows.map((row) => row.qtype)).size > 3);
+  assert.deepEqual(new Set(rows.map((row) => row.protocol)), new Set(["udp", "tcp"]));
+  assert.ok(rows.every((row, index) => !index || row.id < rows[index - 1].id));
 });

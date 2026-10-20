@@ -49,6 +49,8 @@ export { default as ChevronRight } from "@lucide/svelte/icons/chevron-right";
 export { default as SortDesc } from "@lucide/svelte/icons/arrow-down-a-z";
 export { default as SortAsc } from "@lucide/svelte/icons/arrow-up-a-z";
 export { default as SortNeutral } from "@lucide/svelte/icons/arrow-up-down";
+export { default as SortCountDesc } from "@lucide/svelte/icons/arrow-down-wide-narrow";
+export { default as SortCountAsc } from "@lucide/svelte/icons/arrow-up-wide-narrow";
 export { default as Refresh } from "@lucide/svelte/icons/refresh-cw";
 export { default as Link } from "@lucide/svelte/icons/link";
 export { default as Type } from "@lucide/svelte/icons/type";

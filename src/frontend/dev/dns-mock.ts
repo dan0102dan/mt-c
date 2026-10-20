@@ -1,51 +1,34 @@
 import type { Hono } from "hono";
 import { streamSSE } from "hono/streaming";
 
+import type { DnsQuery } from "../src/modules/settings/dns-query-data.ts";
+
 const API_BASE = "/api/v1";
 
 export function registerMockDnsRoutes(app: Hono) {
-  const sampleQueries: Array<{
-    id: number;
-    time_ms: number;
-    client: string;
-    domain: string;
-    qtype: number;
-    protocol: "udp" | "tcp";
-  }> = [
-    {
-      id: 4,
-      time_ms: Date.now() - 2000,
-      client: "192.168.1.101",
-      domain: "github.com",
-      qtype: 1,
-      protocol: "udp",
-    },
-    {
-      id: 3,
-      time_ms: Date.now() - 7000,
-      client: "192.168.1.104",
-      domain: "example.org",
-      qtype: 28,
-      protocol: "udp",
-    },
-    {
-      id: 2,
-      time_ms: Date.now() - 12000,
-      client: "192.168.1.101",
-      domain: "github.com",
-      qtype: 65,
-      protocol: "tcp",
-    },
-    {
-      id: 1,
-      time_ms: Date.now() - 17000,
-      client: "192.168.1.103",
-      domain: "example.net",
-      qtype: 1,
-      protocol: "udp",
-    },
+  const dnsQueries: DnsQuery[] = [];
+  const devices = [
+    { client: "192.168.1.101", client_name: "Рабочий ноутбук" },
+    { client: "192.168.1.102", client_name: "Living room TV" },
+    { client: "192.168.1.103" },
+    { client: "2001:db8:1234:5678::104", client_name: "Телефон Александра" },
+    { client: "192.168.1.105", client_name: "Home server — media and backups" },
+    { client: "2001:db8:1234:5678:abcd:ef01:2345:6789" },
   ];
-  const dnsQueries: typeof sampleQueries = [];
+  const domains = [
+    "github.com",
+    "example.org",
+    "example.net",
+    "api.github.com",
+    "dns.google",
+    "cloudflare-dns.com",
+    "www.wikipedia.org",
+    "registry.npmjs.org",
+    "updates.example.org",
+    "_dns.resolver.arpa",
+    "very-long-service-name.eu-central-1.streaming.media.example.org",
+    "telemetry.device-with-a-long-name.home-network.example.net",
+  ];
   let enabled = false;
   let dnsThrough = 0;
   const capacity = 1000;
@@ -88,16 +71,26 @@ export function registerMockDnsRoutes(app: Hono) {
       dnsQueries.length = 0;
       if (enabled) {
         // Simulate incoming traffic only after explicit recording consent.
-        dnsQueries.push(
-          ...[...sampleQueries]
-            .reverse()
-            .map((row) => ({
-              ...row,
+        const now = Date.now() - 1000;
+        for (let burst = 0; burst < 120; burst++) {
+          const types =
+            burst % 5 === 0 ? [15, 16, 64] : burst % 7 === 0 ? [12, 33, 257] : [1, 28, 65];
+          const domain =
+            burst % 3 === 0
+              ? `service-${burst % 40}.regional-edge.cdn.example.com`
+              : domains[burst % domains.length];
+          for (const [offset, qtype] of types.entries()) {
+            dnsQueries.push({
+              ...devices[burst % devices.length],
               id: ++dnsThrough,
-              time_ms: Date.now(),
-            }))
-            .reverse(),
-        );
+              time_ms: now - (119 - burst) * 36 * 60 * 1000 + offset * 20,
+              domain,
+              qtype,
+              protocol: burst % 4 === 0 ? "tcp" : "udp",
+            });
+          }
+        }
+        dnsQueries.reverse();
       }
       for (const emit of dnsSubscribers) emit("capture", captureState());
       for (const row of [...dnsQueries].reverse())
@@ -144,11 +137,22 @@ export function registerMockDnsRoutes(app: Hono) {
         void stream.writeSSE({ event, data: JSON.stringify(data) }).catch(finish);
       };
       dnsSubscribers.add(emit);
-      stream.onAbort(finish);
       // Keep-alive comments only; data is pushed by events, not sampled on a timer.
       const heartbeat = setInterval(() => {
         void stream.write(": heartbeat\n\n").catch(finish);
       }, 15000);
+      const cleanup = () => {
+        clearInterval(heartbeat);
+        dnsSubscribers.delete(emit);
+        finish();
+      };
+      stream.onAbort(cleanup);
+      // Hono's response-body cancellation hook alone does not cover Deno's
+      // request abort signal. Release the slot immediately on either path.
+      const signal = c.req.raw.signal;
+      const abort = () => stream.abort();
+      signal.addEventListener("abort", abort, { once: true });
+      if (signal.aborted) abort();
       try {
         do {
           restart = false;
@@ -173,8 +177,8 @@ export function registerMockDnsRoutes(app: Hono) {
         ready = true;
         await done;
       } finally {
-        clearInterval(heartbeat);
-        dnsSubscribers.delete(emit);
+        signal.removeEventListener("abort", abort);
+        cleanup();
       }
     });
   });

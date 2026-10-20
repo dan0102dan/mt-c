@@ -387,9 +387,7 @@ for (const width of [1280, 390]) {
     await expect(header).toHaveAttribute("aria-sort", "descending");
     await expect(russianSort).toHaveAttribute("title", "Сначала старые");
     await region.getByRole("button", { name: "Группировать по домену" }).click();
-    await expect(
-      region.getByRole("button", { name: "Последний запрос", exact: true }),
-    ).toBeVisible();
+    await expect(region.getByRole("button", { name: "Время", exact: true })).toBeVisible();
     await expect(header).toHaveAttribute("aria-sort", "descending");
     expect(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth)).toBe(
       false,
@@ -437,7 +435,7 @@ test("domain grouping uses the same time direction rather than request count", a
   const region = await setup(page, dns);
   await region.getByRole("button", { name: "Group by domain" }).click();
   const domains = region.locator("tbody td.domain .cell-value");
-  const sort = region.getByRole("button", { name: "Last request", exact: true });
+  const sort = region.getByRole("button", { name: "Time", exact: true });
   await expect(region.locator(".time-sort-header")).toHaveAttribute("aria-sort", "descending");
   await expect(domains).toHaveText(["new.example", "busy.example", "old.example"]);
   await sort.click();
@@ -463,19 +461,70 @@ test("time sorting preserves combined-question membership and details", async ({
   await expect(rows).toHaveCount(2);
   await expect(rows.first()).toContainText("later.example");
   const combined = rows.filter({ hasText: "related.example" });
-  await combined.locator("summary").click();
-  await expect(combined.locator(".raw-query")).toHaveCount(3);
+  const before = await combined.boundingBox();
+  await combined.locator(".query-details").click();
+  const popup = page.getByRole("dialog", { name: "DNS query details" });
+  await expect(popup.locator(".raw-query")).toHaveCount(3);
+  expect((await combined.boundingBox())!.height).toBe(before!.height);
+  await page.keyboard.press("Escape");
+  await expect(popup).not.toBeVisible();
+  await expect(combined.locator(".query-details")).toBeFocused();
   await region.getByRole("button", { name: "Time", exact: true }).click();
   await expect(rows.first()).toContainText("related.example");
-  await expect(combined.locator("details")).toHaveAttribute("open", "");
-  await expect(combined.locator(".raw-query")).toHaveCount(3);
+  await combined.locator(".query-details").click();
+  await expect(popup.locator(".raw-query")).toHaveCount(3);
+  await page.keyboard.press("Escape");
   await expect(region.getByRole("button", { name: "Combine related queries" })).toHaveCount(0);
   await region.getByRole("button", { name: "Group by domain" }).click();
   await expect(rows).toHaveCount(2);
   await region.getByRole("button", { name: "Individual queries" }).click();
   await expect(rows).toHaveCount(2);
   await expect(rows.first()).toContainText("related.example");
-  await expect(rows.filter({ hasText: "related.example" }).locator(".raw-query")).toHaveCount(3);
+  await rows.filter({ hasText: "related.example" }).locator(".query-details").click();
+  await expect(popup.locator(".raw-query")).toHaveCount(3);
   await expect(region.locator(".dns-summary .count")).toHaveText("Stored requests: 4");
   expect(dns.state.connections).toBe(1);
 });
+
+for (const width of [1280, 390]) {
+  test(`group count sorting covers all pages and live updates at ${width}px`, async ({
+    page,
+    dns,
+  }) => {
+    await page.setViewportSize({ width, height: width === 390 ? 844 : 900 });
+    seedHistory(dns, 65);
+    for (let id = 66; id <= 69; id++)
+      dns.state.history.unshift({ ...sample[0], id, time_ms: id * 1000, domain: "host1.example" });
+    dns.state.through = 69;
+    const region = await setup(page, dns);
+    await region.getByRole("button", { name: "Group by domain" }).click();
+    const count = region.getByRole("button", { name: "Requests", exact: true });
+    const domains = region.locator("tbody td.domain .cell-value");
+    await region.getByRole("button", { name: "Next Page" }).click();
+    await count.click();
+    await expect(domains.first()).toHaveText("host1.example");
+    await expect(domains).toHaveCount(30);
+    await expect(region.locator(".count-sort-header")).toHaveAttribute("aria-sort", "descending");
+    await expect(region.locator(".time-sort-header")).toHaveAttribute("aria-sort", "none");
+    await count.click();
+    await expect(domains.first()).not.toHaveText("host1.example");
+    await expect(region.locator(".count-sort-header")).toHaveAttribute("aria-sort", "ascending");
+    await region.getByRole("button", { name: "Next Page" }).click();
+    await region.getByRole("button", { name: "Next Page" }).click();
+    await expect(domains.last()).toHaveText("host1.example");
+    await count.click();
+    await expect(domains.first()).toHaveText("host1.example");
+    for (let id = 70; id <= 75; id++)
+      dns.emit({ ...sample[0], id, time_ms: id * 1000, domain: "host2.example" });
+    await expect(domains.first()).toHaveText("host2.example");
+    await page.locator(".locale button").click();
+    await expect(region.getByRole("button", { name: "Запросы", exact: true })).toHaveAttribute(
+      "title",
+      "Сначала меньше запросов",
+    );
+    await region.getByRole("button", { name: "Время", exact: true }).click();
+    await expect(region.locator(".count-sort-header")).toHaveAttribute("aria-sort", "none");
+    await expect(region.locator(".time-sort-header")).toHaveAttribute("aria-sort", "descending");
+    expect(dns.state.connections).toBe(1);
+  });
+}
