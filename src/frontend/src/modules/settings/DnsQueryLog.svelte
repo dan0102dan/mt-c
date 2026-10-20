@@ -71,7 +71,6 @@
   let clearFailed = $state(false);
   let paused = $state(false);
   let visible = $state(false);
-  let streamRevision = $state(0);
   let streamState = $state<StreamState>("connecting");
   let grouped = $state(false);
   let timeSort = $state<DnsTimeSort>("desc");
@@ -134,7 +133,6 @@
 
   // Status subscriptions are read-only: GET/SSE never enables collection.
   $effect(() => {
-    streamRevision;
     const accessToken = token.current;
     if (!active || !visible || paused || clearing || changing) return;
     const generation = ++requestGeneration;
@@ -174,12 +172,6 @@
       loading = false;
     };
   });
-  function retryStream() {
-    if (!clearing && !changing) {
-      paused = false;
-      streamRevision++;
-    }
-  }
 
   async function setRecording(enabled: boolean) {
     if (changing || clearing) return;
@@ -501,9 +493,6 @@
           {streamState === "unavailable"
             ? t("DNS history unavailable; DNS forwarding is still running.")
             : t("Failed to load DNS queries")}
-          {#snippet actions()}<Button disabled={clearing || changing} onclick={retryStream}
-              >{t("Retry")}</Button
-            >{/snippet}
         </Placeholder>
       </div>{/if}
   </div>

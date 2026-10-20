@@ -231,7 +231,10 @@ test("pause closes the subscription; resume and reconnect replace the snapshot",
   await region.getByRole("button", { name: "Resume", exact: true }).click();
   await expect(region.locator("tbody tr")).toHaveCount(4);
   dns.disconnect();
+  await expect(region.locator(".dns-summary").getByRole("status")).toHaveText("Reconnecting...");
+  await expect(region.getByRole("button", { name: "Retry", exact: true })).toHaveCount(0);
   await expect.poll(() => dns.state.connections).toBe(3);
+  await expect(region.locator(".dns-summary [role='status']")).toHaveText("");
   await expect(region.locator("tbody tr")).toHaveCount(4);
 });
 test("clear broadcasts and a failed connection retries without a snapshot GET", async ({

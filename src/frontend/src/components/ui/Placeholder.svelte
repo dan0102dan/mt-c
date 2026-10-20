@@ -109,7 +109,10 @@
   }
 
   .card[data-compact="true"] {
-    padding: 10px 12px;
+    width: fit-content;
+    max-width: 100%;
+    box-sizing: border-box;
+    padding: 10px 17px 10px 12px;
     border-radius: 10px;
     gap: 10px;
   }
