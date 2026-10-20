@@ -30,11 +30,12 @@
   const selectedId = $derived(selectedPolicyId());
   const selected = $derived(policy.policies.find((p) => p.id === selectedId));
   const valid = $derived(
-    !policy.draft.enabled ||
-      Boolean(selected?.available && policy.listLoaded && !policy.listFailed),
+    !policy.draft.enabled || Boolean(selectedId && policy.listLoaded && !policy.listFailed),
   );
   const options = $derived([
-    ...(policy.policies.some((p) => p.name === "mt") ? [] : [{ value: "", label: "mt" }]),
+    ...(policy.policies.some((p) => p.name === "mt" || p.id === "mt")
+      ? []
+      : [{ value: "mt", label: "mt" }]),
     ...policy.policies.map((p) => ({ value: p.id, label: p.name || p.id })),
   ]);
 
@@ -135,13 +136,11 @@
                   ? `${policy.draft.policy_id} · ${t("Policy unavailable")}`
                   : "mt"}
               />
-              {#if !policy.listing && !valid}
+              {#if !policy.listing && (policy.listFailed || !selected?.available)}
                 <p class="validation" role="status">
                   {policy.listFailed
                     ? t("Could not load policies. Reload the page to retry.")
-                    : !selectedId
-                      ? t('Create the "mt" policy in Keenetic, then reload this page.')
-                      : t("Select an available policy to save.")}
+                    : t("The filter will become active when the policy is available.")}
                 </p>
               {/if}
             </div>

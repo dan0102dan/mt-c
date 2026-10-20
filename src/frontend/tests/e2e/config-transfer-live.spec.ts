@@ -513,3 +513,45 @@ test("subscription rule overrides survive save, export, import and reload", asyn
     exported.subscriptions?.[0].overrides,
   );
 });
+
+for (const width of [1280, 390]) {
+  test(`a foreign Keenetic policy can be imported and saved before it exists (${width}px)`, async ({
+    page,
+    backend,
+  }) => {
+    test.skip(process.env.VITE_ENTWARE_KN !== "1", "Keenetic-only bundle");
+    await page.setViewportSize({ width, height: width === 390 ? 844 : 900 });
+    await page.goto("/");
+    await showPage(page, "Settings");
+    const dialog = await upload(page, {
+      settings: { keeneticPolicy: { enabled: true, policyId: "ForeignPolicy73", mode: "exclude" } },
+    });
+    await expect(
+      dialog.getByRole("button", { name: "Keenetic policy mapping", exact: true }),
+    ).toHaveText("ForeignPolicy73");
+    await expect(dialog.getByRole("button", { name: "Import", exact: true })).toBeEnabled();
+    await dialog.getByRole("button", { name: "Import", exact: true }).click();
+    await expect(dialog).toHaveCount(0);
+    expect((await backend.snapshot()).config.app.keeneticPolicy).toEqual({
+      enabled: true,
+      policyId: "ForeignPolicy73",
+      mode: "exclude",
+    });
+    const panel = page.locator(".policy-settings");
+    await panel.getByRole("switch", { name: "Processing mode", exact: true }).click();
+    await expect(page.locator("#save-settings")).toBeEnabled();
+    await page.locator("#save-settings").click();
+    await expect(page.locator("#save-settings")).toBeDisabled();
+    await page.reload();
+    await expect(panel.getByRole("button", { name: "Router policy", exact: true })).toContainText(
+      "ForeignPolicy73",
+    );
+    expect((await backend.snapshot()).config.app.keeneticPolicy).toEqual({
+      enabled: true,
+      policyId: "ForeignPolicy73",
+      mode: "include",
+    });
+    const state = await (await backend.api.get("/api/v1/keenetic/policy")).json();
+    expect(state.runtime).toEqual({ state: "unavailable", reason: "POLICY_NOT_FOUND" });
+  });
+}

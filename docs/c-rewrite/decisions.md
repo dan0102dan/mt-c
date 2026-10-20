@@ -3676,7 +3676,7 @@ remain applicable to the update handoff and release discovery behaviors.
 ## D-79 — Keenetic policy as an optional device scope (2026-10-11)
 
 Status: **implemented at the user's request; Keenetic hardware acceptance required**.
-Only `_kn` builds include a disabled-by-default selector for one existing
+Only `_kn` builds include a disabled-by-default selector for one
 Keenetic policy, with include/exclude semantics. It scopes existing MT rules,
 not their destination interfaces. Policy IDs are persisted; marks are resolved
 in a bounded asynchronous backend-only RCI worker. Missing/unavailable policies
@@ -3694,15 +3694,27 @@ API, lifecycle/failure behavior, build isolation and hardware acceptance.
 
 The WebUI defaults an unset selection to the policy named `mt`, resolving its
 actual ID from the current policy list on save. Existing selections are retained.
-If `mt` is absent, it remains the default option; enabling cannot be saved until
-an available policy is selected. The list loads when the editor opens and is
-refetched on page reload, without a refresh button. A single switch selects
+Any valid policy ID can be saved before the policy exists or has a usable mark,
+including an ID imported from another router. Import preserves that ID without
+requiring a mapping to an available local policy. PUT persists the selection
+with HTTP 200 and runtime `unavailable`; background discovery activates it when
+a usable mark becomes available. Both include and exclude keep the existing
+closed scope until then. If `mt` is absent, it remains the default option and
+can also be saved: actual IDs are matched first, then the pending default `mt`
+resolves the policy named `mt`. Other saved IDs are matched exactly.
+The list loads when the editor opens and is refetched on page reload, without
+a refresh button. A single switch selects
 include/exclude with a changing label; policy options have no ID descriptions.
 Backend defaults and the disabled-by-default behavior are unchanged.
 
 The policy editor highlights Save whenever its draft changes, independently of
-validation. An unavailable policy still disables submission and shows a concise
-inline explanation; switching the filter off remains saveable without RCI.
+validation. A missing or unready policy shows a concise inline explanation
+without blocking submission. Validation, concurrent-save conflicts, RCI
+transport errors and persistence-error acknowledgements retain their contracts;
+switching the filter off remains saveable without RCI. Regression coverage
+includes real C HTTP requests and persisted YAML for both modes, missing-policy
+recovery, unready marks, and WebUI save/import/reload of an arbitrary foreign ID
+on desktop and mobile.
 
 ## D-80 — Correct the benchmark's disabled-group bias (2026-10-14)
 

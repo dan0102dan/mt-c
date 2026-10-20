@@ -236,7 +236,7 @@
     if (!policySupported) return true;
     if (!inputPolicy.enabled) return false;
     const id = policyId || inputPolicy.policyId;
-    return !policies.some((p) => p.id === id && p.available);
+    return !id;
   });
   const errors = $derived([
     ...plan.problems.map(problemMessage),
@@ -246,11 +246,7 @@
         )
       : []),
     ...(missingPolicy
-      ? [
-          policySupported
-            ? t("Select an available Keenetic policy")
-            : t("This build does not support Keenetic policies"),
-        ]
+      ? [policySupported ? t("Select policy") : t("This build does not support Keenetic policies")]
       : []),
   ]);
   function problemMessage(problem: string) {
@@ -376,12 +372,13 @@
           selected={policyId || inputPolicy.policyId || ""}
           options={[
             { value: "", label: t("Select policy") },
-            ...policies
-              .filter((item) => item.available)
-              .map((item) => ({
-                value: item.id,
-                label: item.name || item.id,
-              })),
+            ...(inputPolicy.policyId && !policies.some((item) => item.id === inputPolicy.policyId)
+              ? [{ value: inputPolicy.policyId, label: inputPolicy.policyId }]
+              : []),
+            ...policies.map((item) => ({
+              value: item.id,
+              label: item.name || item.id,
+            })),
           ]}
           onValueChange={(value) => (policyId = value)}
           ariaLabel={t("Keenetic policy mapping")}
