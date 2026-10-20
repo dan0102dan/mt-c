@@ -86,7 +86,7 @@ TEST hotspot_prefers_user_name_and_falls_back_to_hostname(void)
 TEST hotspot_empty_errors_and_conflicts_do_not_invent_names(void)
 {
     mt_dns_client_t *clients = NULL; size_t n = 0;
-    const char *bad[] = {"garbage", "{\"host\":null}", "{\"host\":[]}trailing", "[]{}"};
+    const char *bad[] = {"garbage", "{\"host\":null}", "{\"unexpected\":true}", "{\"host\":[]}trailing", "[]{}"};
     for (size_t i = 0; i < sizeof(bad) / sizeof(*bad); i++) {
         ASSERT_EQ(MT_ERR_PROTO, mt_dns_clients_parse_hotspot(bad[i], strlen(bad[i]), &clients, &n));
         ASSERT(clients == NULL); ASSERT_EQ(0u, (unsigned)n);
