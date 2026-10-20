@@ -18,6 +18,8 @@ export { default as Sponsorship } from "@lucide/svelte/icons/heart";
 export { default as Save } from "@lucide/svelte/icons/save";
 export { default as ScrollToBottom } from "@lucide/svelte/icons/arrow-down-to-line";
 export { default as Clear } from "@lucide/svelte/icons/eraser";
+export { default as Play } from "@lucide/svelte/icons/play";
+export { default as Pause } from "@lucide/svelte/icons/pause";
 export { default as Filter } from "@lucide/svelte/icons/filter";
 export { default as Sigma } from "@lucide/svelte/icons/sigma";
 export { default as Bug } from "@lucide/svelte/icons/bug";

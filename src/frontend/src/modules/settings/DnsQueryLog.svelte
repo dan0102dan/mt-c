@@ -14,6 +14,8 @@
     Clear,
     LayoutList,
     ListOrdered,
+    Pause,
+    Play,
     Search,
     SortAsc,
     SortDesc,
@@ -347,9 +349,20 @@
               {#if grouped}<LayoutList size={20} />{:else}<ListOrdered size={20} />{/if}
             </Button>
           </Tooltip>
-          <Button small type="button" aria-pressed={paused} onclick={() => (paused = !paused)}
-            >{paused ? t("Resume") : t("Pause")}</Button
-          >
+          <Tooltip value={paused ? t("Resume") : t("Pause")}>
+            <Button
+              small
+              type="button"
+              aria-label={paused ? t("Resume") : t("Pause")}
+              aria-pressed={paused}
+              onclick={() => (paused = !paused)}
+            >
+              {#if paused}<Play size={20} aria-hidden="true" />{:else}<Pause
+                  size={20}
+                  aria-hidden="true"
+                />{/if}
+            </Button>
+          </Tooltip>
           <Tooltip value={t("Clear history")}>
             <Button
               small
