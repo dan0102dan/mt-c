@@ -1,3 +1,4 @@
+import { MAX_DNS_CAPACITY } from "./dns-query-limits";
 import {
   isDnsClientName,
   normalizeDnsClient,
@@ -16,7 +17,7 @@ export type StreamEvent = {
 };
 export type StreamState = "connecting" | "live" | "reconnecting" | "unavailable";
 export const MAX_EVENT_SIZE = 64 * 1024;
-export const MAX_DNS_CAPACITY = 60000;
+export { MAX_DNS_CAPACITY } from "./dns-query-limits";
 const SNAPSHOT_BATCH = 32;
 
 /** Incremental SSE parser: TCP/UTF-8 chunks are not event boundaries. */

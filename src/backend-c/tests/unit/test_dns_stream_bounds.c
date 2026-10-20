@@ -19,7 +19,8 @@ static void overrun(mt_dns_query_log_t *log) {
         mt_dns_query_log_append(log, "10.0.0.1", "churn.example", 1, false, 0);
 }
 TEST continuous_eviction_cannot_restart_one_snapshot_forever(void) {
-    mt_dns_query_log_t *log = mt_dns_query_log_create_sized(1000); ASSERT(log);
+    mt_dns_query_log_t *log = mt_dns_query_log_create_budget(32768); ASSERT(log);
+    ASSERT(mt_dns_query_log_set_enabled(log, true));
     overrun(log);
     dns_stream_t stream = {.log = log};
     ASSERT(advance_to_begin(&stream));
@@ -35,7 +36,8 @@ TEST continuous_eviction_cannot_restart_one_snapshot_forever(void) {
     mt_dns_query_log_destroy(log); PASS();
 }
 TEST snapshot_deadline_is_not_extended_by_write_progress(void) {
-    mt_dns_query_log_t *log = mt_dns_query_log_create_sized(1000); ASSERT(log);
+    mt_dns_query_log_t *log = mt_dns_query_log_create_budget(32768); ASSERT(log);
+    ASSERT(mt_dns_query_log_set_enabled(log, true));
     overrun(log); dns_stream_t stream = {.log = log};
     ASSERT(advance_to_begin(&stream));
     stream.snapshot_deadline = dns_now_ms() - 1;

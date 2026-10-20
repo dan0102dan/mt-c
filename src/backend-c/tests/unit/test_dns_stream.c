@@ -121,8 +121,8 @@ static bool start_options(harness_t *h, size_t capacity, bool prefill, bool real
     if (temp < 0) return false;
     close(temp); unlink(h->path);
     if (mt_loop_create(&h->loop) != MT_OK || mt_httpd_create(h->loop, &h->http) != MT_OK) return false;
-    h->log = mt_dns_query_log_create_sized(capacity);
-    if (!h->log) return false;
+    h->log = mt_dns_query_log_create_budget(prefill || capacity > 4096 ? MT_DNS_QUERY_LOG_MEMORY_LIMIT : 65536);
+    if (!h->log || !mt_dns_query_log_set_enabled(h->log, true)) return false;
     if (prefill) {
         for (size_t i = 0; i < capacity; i++) {
             uint8_t name[255]; size_t p = 0;
@@ -287,7 +287,7 @@ static bool snapshot(int fd, size_t expected_count, size_t capacity, size_t *byt
                 received++;
             }
         } else if (begun && strcmp(kind, "snapshot_end") == 0) {
-            ok = received == count && count == expected_count && number(data, "through") == (double)through;
+            ok = received == count && (expected_count == SIZE_MAX || count == expected_count) && number(data, "through") == (double)through;
             done = true;
         } else ok = false;
         cJSON_Delete(data);
@@ -302,11 +302,11 @@ TEST snapshot_live_clear_and_authorization(void) {
     ASSERT(unauthorized >= 0); ASSERT(headers(unauthorized, 401)); close(unauthorized);
     int first = request(&h, "GET", "/api/v1/system/dns/stream", true);
     ASSERT(first >= 0); ASSERT(headers(first, 200)); size_t bytes = 0;
-    ASSERT(snapshot(first, 0, 1000, &bytes, NULL, NULL));
+    ASSERT(snapshot(first, 0, mt_dns_query_log_capacity(h.log), &bytes, NULL, NULL));
     ASSERT(control(&h, "POST", "/test/append")); ASSERT(event_is(first, "query"));
     int second = request(&h, "GET", "/api/v1/system/dns/stream", true);
     ASSERT(second >= 0); ASSERT(headers(second, 200));
-    ASSERT(snapshot(second, 1, 1000, &bytes, NULL, NULL));
+    ASSERT(snapshot(second, 1, mt_dns_query_log_capacity(h.log), &bytes, NULL, NULL));
     ASSERT(control(&h, "DELETE", "/api/v1/system/dns/queries"));
     ASSERT(event_is(first, "clear")); ASSERT(event_is(second, "clear"));
     ASSERT(control(&h, "POST", "/test/append"));
@@ -319,7 +319,7 @@ TEST large_snapshot_is_bounded_and_restarts_on_clear_or_eviction(void) {
         int fd = request(&h, "GET", "/api/v1/system/dns/stream", true);
         ASSERT(fd >= 0); ASSERT(headers(fd, 200)); size_t bytes = 0;
         const char *action = scenario == 1 ? "/api/v1/system/dns/queries" : scenario == 2 ? "/test/flood" : NULL;
-        ASSERT(snapshot(fd, scenario == 1 ? 0 : 3000, 3000, &bytes, &h, action));
+        ASSERT(snapshot(fd, scenario == 1 ? 0 : scenario == 2 ? SIZE_MAX : 3000, mt_dns_query_log_capacity(h.log), &bytes, &h, action));
         if (scenario == 0) ASSERT(bytes > 2 * 1024 * 1024);
         ASSERT(control(&h, "POST", "/test/append")); ASSERT(event_is(fd, "query"));
         close(fd); finish(&h);
@@ -336,20 +336,20 @@ TEST capture_changes_are_authorized_and_broadcast_to_all_viewers(void) {
         viewers[i] = request(&h, "GET", "/api/v1/system/dns/stream", true);
         ASSERT(viewers[i] >= 0); ASSERT(headers(viewers[i], 200));
         ASSERT(capture_event(viewers[i], false));
-        ASSERT(snapshot(viewers[i], 0, 1000, &bytes, NULL, NULL));
+        ASSERT(snapshot(viewers[i], 0, mt_dns_query_log_capacity(h.log), &bytes, NULL, NULL));
     }
     ASSERT(control(&h, "POST", "/test/append")); /* No stored row while off. */
     ASSERT(capture(&h, true));
     for (size_t i = 0; i < 2; i++) {
         ASSERT(capture_event(viewers[i], true));
-        ASSERT(snapshot(viewers[i], 0, 1000, &bytes, NULL, NULL));
+        ASSERT(snapshot(viewers[i], 0, mt_dns_query_log_capacity(h.log), &bytes, NULL, NULL));
     }
     ASSERT(control(&h, "POST", "/test/append"));
     for (size_t i = 0; i < 2; i++) ASSERT(event_is(viewers[i], "query"));
     ASSERT(capture(&h, false));
     for (size_t i = 0; i < 2; i++) {
         ASSERT(capture_event(viewers[i], false));
-        ASSERT(snapshot(viewers[i], 0, 1000, &bytes, NULL, NULL));
+        ASSERT(snapshot(viewers[i], 0, mt_dns_query_log_capacity(h.log), &bytes, NULL, NULL));
         close(viewers[i]);
     }
     finish(&h); PASS();
@@ -360,7 +360,7 @@ TEST disconnect_and_subscriber_limit(void) {
     for (size_t i = 0; i < MT_HTTP_STREAM_MAX_CLIENTS; i++) {
         sockets[i] = request(&h, "GET", "/api/v1/system/dns/stream", true);
         ASSERT(sockets[i] >= 0); ASSERT(headers(sockets[i], 200));
-        ASSERT(snapshot(sockets[i], 0, 1000, &bytes, NULL, NULL));
+        ASSERT(snapshot(sockets[i], 0, mt_dns_query_log_capacity(h.log), &bytes, NULL, NULL));
     }
     int excess = request(&h, "GET", "/api/v1/system/dns/stream", true);
     ASSERT(excess >= 0); ASSERT(headers(excess, 503)); close(excess);
@@ -386,7 +386,7 @@ TEST authorization_changes_close_existing_streams(void) {
         if (mode == 1) atomic_store(&h.auth_enabled, false);
         int fd = request(&h, "GET", "/api/v1/system/dns/stream", mode != 1);
         ASSERT(fd >= 0); ASSERT(headers(fd, 200)); size_t bytes = 0;
-        ASSERT(snapshot(fd, 0, 1000, &bytes, NULL, NULL));
+        ASSERT(snapshot(fd, 0, mt_dns_query_log_capacity(h.log), &bytes, NULL, NULL));
         if (mode == 0) ASSERT(control(&h, "POST", "/test/revoke"));
         else if (mode == 1) ASSERT(control(&h, "POST", "/test/auth-enable"));
         else atomic_store(&h.revoked, true); /* external change, periodic recheck */
@@ -399,7 +399,7 @@ TEST password_change_revokes_a_real_signed_token_on_an_idle_stream(void) {
     harness_t h; ASSERT(start_options(&h, 1000, false, true, false));
     int fd = request(&h, "GET", "/api/v1/system/dns/stream", true);
     ASSERT(fd >= 0); ASSERT(headers(fd, 200)); size_t bytes = 0;
-    ASSERT(snapshot(fd, 0, 1000, &bytes, NULL, NULL));
+    ASSERT(snapshot(fd, 0, mt_dns_query_log_capacity(h.log), &bytes, NULL, NULL));
     /* Atomic rename models the shadow-file update without a partial-read race. */
     char replacement[180]; snprintf(replacement, sizeof(replacement), "%s.new", h.shadow);
     FILE *file = fopen(replacement, "w"); ASSERT(file != NULL);
@@ -436,7 +436,7 @@ TEST alias_rename_does_not_replay_dns_history(void) {
     ASSERT(control(&h, "POST", "/test/append"));
     int fd = request(&h, "GET", "/api/v1/system/dns/stream", true);
     ASSERT(fd >= 0); ASSERT(headers(fd, 200)); size_t bytes = 0;
-    ASSERT(snapshot(fd, 1, 1000, &bytes, NULL, NULL));
+    ASSERT(snapshot(fd, 1, mt_dns_query_log_capacity(h.log), &bytes, NULL, NULL));
     /* The first fetch may finish before or after the initial DNS snapshot.
      * Wait on the provider, then consume any metadata still pending. */
     struct timespec wait = {.tv_nsec = 100000000}; nanosleep(&wait, NULL);
@@ -451,7 +451,7 @@ TEST streaming_reuses_timers_and_coalesces_wakeup_syscalls(void) {
     harness_t h; ASSERT(start(&h, 1000, false));
     int fd = request(&h, "GET", "/api/v1/system/dns/stream", true);
     ASSERT(fd >= 0); ASSERT(headers(fd, 200)); size_t bytes = 0;
-    ASSERT(snapshot(fd, 0, 1000, &bytes, NULL, NULL));
+    ASSERT(snapshot(fd, 0, mt_dns_query_log_capacity(h.log), &bytes, NULL, NULL));
     ASSERT(control(&h, "POST", "/test/burst"));
     for (unsigned i = 0; i < 128; i++) ASSERT(event_is(fd, "query"));
     /* A finite control request can add/reset its own idle timer, but 128
@@ -460,9 +460,24 @@ TEST streaming_reuses_timers_and_coalesces_wakeup_syscalls(void) {
     ASSERT(atomic_load(&interest_changes) < 16);
     close(fd); finish(&h); PASS();
 }
+TEST byte_budget_history_over_60000_survives_streaming(void) {
+    harness_t h; ASSERT(start(&h, 100000, false));
+    ASSERT(control(&h, "POST", "/test/flood"));
+    /* The handler finished on the loop before its response. No concurrent
+     * capture source exists in this harness between the control requests. */
+    size_t count = mt_dns_query_log_size(h.log);
+    ASSERT(count > 95000);
+    int fd = request(&h, "GET", "/api/v1/system/dns/stream", true);
+    ASSERT(fd >= 0); ASSERT(headers(fd, 200)); size_t bytes = 0;
+    ASSERT(snapshot(fd, count, mt_dns_query_log_capacity(h.log), &bytes, NULL, NULL));
+    ASSERT(bytes > 2 * 1024 * 1024);
+    ASSERT(control(&h, "POST", "/test/append")); ASSERT(event_is(fd, "query"));
+    close(fd); finish(&h); PASS();
+}
 GREATEST_MAIN_DEFS();
 int main(int argc, char **argv) {
     GREATEST_MAIN_BEGIN();
+    RUN_TEST(byte_budget_history_over_60000_survives_streaming);
     RUN_TEST(snapshot_live_clear_and_authorization);
     RUN_TEST(large_snapshot_is_bounded_and_restarts_on_clear_or_eviction);
     RUN_TEST(capture_changes_are_authorized_and_broadcast_to_all_viewers);

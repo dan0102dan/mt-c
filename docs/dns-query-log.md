@@ -8,38 +8,61 @@ will increase RAM use (up to 1 MiB for storage plus streaming/UI overhead).
 
 Capture state is shared by all viewers and is not saved in YAML, configuration
 exports or localStorage. Enabled recording continues after closing the page.
-Stop recording disables collection, deletes history and frees the ring,
-domain index and name allocations; a small control object remains. Existing viewers
+Stop recording disables collection, deletes history and frees the shared
+byte store; a small control object remains. Existing viewers
 receive the state change. Pause only freezes the local view; it does not stop
 capture. Clear removes retained rows while leaving capture enabled.
 
 ## Memory and eviction
 
-Production storage has a **1,048,576-byte requested-allocation budget** including
-40-byte ring records with inline binary client IPs, domain dictionary metadata, hash buckets, exact-sized name allocations
-and the control object. The domain dictionary shares the remaining byte budget. A 255-byte reserve
-allows allocating the next name before eviction, preserving all retained rows
-and sequence IDs when allocation fails. Only distinct domain names allocate.
-There is no moving string arena or compaction of retained names. No history buffers are allocated while off.
+Production history is limited **only by a 1,048,576-byte requested-allocation
+budget**, including its control object, page directory, hash buckets, key
+metadata, record pages and all stored names/addresses. There is no independent
+8192/60000-record retention limit. The `capacity` response field is a conservative
+upper bound derived from bytes and the encoding, not an allocation of that many
+records and not a second eviction rule. Clients must follow `retained_from`.
 
-This is not a cap on total daemon RSS: allocator bookkeeping, JSON/network buffers, client-name discovery and browser memory are
-additional. The UI warns about this and displays history usage separately.
+Enabling capture reserves the byte store once; appending and eviction make no
+heap allocations. While off only the small control object remains. `memory_used`
+reports **reserved requested bytes**, including unused pages and size-class
+slack, so an enabled empty journal already reports the 1 MiB reservation. Stop
+frees the store; Clear keeps the enabled store but resets its contents.
 
-The production ring has at most **8192 individual records**. The byte budget may
-evict earlier depending on unique domain lengths. Allocation and latency measurements are recorded separately in
-`dns-review-performance.md`; they are not router RSS measurements. The explicitly enabled, row-bounded `create_sized` constructor
-remains available for tests/embedders; its `memory_limit=0` does not describe
-production behavior.
+This is not a cap on total daemon RSS. Bookkeeping for the two top-level heap
+allocations, JSON/network buffers, device-name discovery and browser memory are
+additional. There is no per-record native-allocator overhead.
 
-Each raw question retains ID, timestamp, type, protocol and exact domain/client
-identity. A reference-counted dictionary stores decompressed wire names once; binary IPs
-are inline in each ring entry. Eviction frees the last reference to an exact-sized
-name allocation. The native allocator handles reuse; no whole-history movement
-is possible. `dropped` counts allocation failures, not normal retention eviction.
-An unavailable control object leaves DNS forwarding operational and returns
-503 / `DNS_LOG_UNAVAILABLE` from journal endpoints. Stop
-releases all history buffers. No compression dependency, flash logging or
-background persistent archive is added.
+A normal record is **10 bytes**: a 30-bit millisecond offset and two flags, 16-bit
+domain/client handles and the complete 16-bit query type. IDs are reconstructed
+from the monotonic sequence, not stored in every row. Each record page has a
+64-bit timestamp base. Backwards clock changes or offsets exceeding the encoded
+range use a separate full signed 64-bit timestamp, preserving every millisecond
+including INT64_MIN/MAX. These exceptional slots also count against the budget.
+
+Wire-format domains and binary IPv4/IPv6 addresses are reference-counted in
+shared, nonmoving size-class pages. Metadata is allocated for actual keys, not
+for the maximum possible record count. Key reference counts are 32-bit, including
+when more than 65535 retained requests share one name. Unknown clients use no
+key. Case, escaping, address family and every raw question remain lossless.
+
+Records and keys compete for the same pages. Under byte pressure the oldest
+rows are evicted until the necessary slot/page can be reused, possibly several
+rows at a time. Unused slab pages immediately return to the shared pool; no
+whole-history movement or compaction occurs. Record lookup by ID remains O(1).
+A page has 408 records, so freeing a record page never requires scanning the
+whole history. The default budget's page count and handle representation are
+checked at compile time; smaller-byte test constructors have no row quota either.
+
+Failure to allocate the store leaves recording disabled, without discarding
+history or stopping forwarding. After successful enable there is no allocation
+failure on append; `dropped` remains a compatible counter (zero in this
+allocation-free path). An unavailable control object leaves DNS operational and
+journal endpoints return 503 / `DNS_LOG_UNAVAILABLE`. No compression library,
+flash logging or persistent archive is added.
+
+Reproduction, workload-dependent retention, exact accounting and timing tradeoffs
+are documented in `dns-byte-budget.md`. The earlier review measurements remain in
+`dns-review-performance.md` as historical results, not measurements of this layout.
 
 ## Related questions in one display row
 
@@ -84,7 +107,7 @@ Streams begin with a `capture` state event, then `snapshot_begin`, batches of at
 most 32 rows in `snapshot_chunk`, and `snapshot_end`. New queries are pushed
 immediately. Enable/disable changes are broadcast with `capture`; clearing uses
 `clear`. Live rows carry `retained_from` so the WebUI drops byte-budget evictions
-even below the ring's slot count, and `memory_used` updates the usage display.
+independently of the byte-derived admission bound, and `memory_used` updates the usage display.
 
 Snapshots may exceed 2 MiB in total, but each event is bounded to 64 KiB. The
 browser stages chunks and atomically replaces history after complete validation.
@@ -127,5 +150,9 @@ Core tests cover disabled no-op behavior, explicit start, idempotent toggles,
 freed buffers, restart defaults, subscriber neutrality, and 24,000 maximum-name
 requests under the shared byte cap. HTTP tests cover strict authorized control
 and state broadcasts, in addition to existing chunking/auth/clear tests.
-Frontend tests cover anchored-window grouping, raw-event preservation, retention
+Additional regressions cover more than 100000 retained records, slab reuse, all
+wire-name size classes, arbitrary IPv4/IPv6 clients, full-range timestamps,
+clear/re-enable sequence continuity and zero heap/moving operations on append.
+Frontend tests cover 100000-row snapshot staging and byte-pressure eviction,
+anchored-window grouping, raw-event preservation, retention
 boundaries, RAM confirmation cancellation, page reload and multi-viewer stop.

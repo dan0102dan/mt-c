@@ -12,9 +12,9 @@ void *__wrap_calloc(size_t n, size_t size);
 void *__wrap_realloc(void *p, size_t size);
 void *__wrap_memmove(void *dst, const void *src, size_t size);
 static bool fail_alloc, counting;
-static size_t moves, reallocs;
-void *__wrap_malloc(size_t n) { return fail_alloc ? NULL : __real_malloc(n); }
-void *__wrap_calloc(size_t n, size_t size) { return fail_alloc ? NULL : __real_calloc(n, size); }
+static size_t moves, reallocs, mallocs, callocs;
+void *__wrap_malloc(size_t n) { if (counting) mallocs++; return fail_alloc ? NULL : __real_malloc(n); }
+void *__wrap_calloc(size_t n, size_t size) { if (counting) callocs++; return fail_alloc ? NULL : __real_calloc(n, size); }
 void *__wrap_realloc(void *p, size_t size) {
     if (counting) reallocs++;
     return fail_alloc ? NULL : __real_realloc(p, size);
@@ -35,23 +35,27 @@ static void max_name(uint8_t name[255], unsigned sequence) {
     name[3] = (uint8_t)sequence;
 }
 TEST churn_does_not_move_retained_names_or_resize_pools(void) {
-    const size_t capacities[] = {1000, 10000};
+    const size_t budgets[] = {32768, MT_DNS_QUERY_LOG_MEMORY_LIMIT};
     for (size_t c = 0; c < 2; c++) {
-        mt_dns_query_log_t *log = mt_dns_query_log_create_sized(capacities[c]); ASSERT(log);
+        mt_dns_query_log_t *log = mt_dns_query_log_create_budget(budgets[c]); ASSERT(log);
+        ASSERT(mt_dns_query_log_set_enabled(log, true));
         uint8_t name[255];
-        for (size_t i = 0; i < capacities[c]; i++) {
+        for (size_t i = 0; i < 20000u; i++) {
             max_name(name, (unsigned)i);
             ASSERT(mt_dns_query_log_append_wire(log, NULL, 0, name, sizeof(name), 1, false, 0));
         }
-        moves = reallocs = 0; counting = true;
+        moves = reallocs = mallocs = callocs = 0; counting = true; fail_alloc = true;
         bool ok = true;
-        for (size_t i = 0; i < capacities[c] * 2; i++) {
-            max_name(name, (unsigned)(i + capacities[c]));
+        for (size_t i = 0; i < 20000u * 2; i++) {
+            max_name(name, (unsigned)(i + 20000u));
             if (!mt_dns_query_log_append_wire(log, NULL, 0, name, sizeof(name), 1, false, 0)) ok = false;
         }
-        counting = false;
+        counting = false; fail_alloc = false;
         ASSERT(ok); ASSERT_EQ(0u, moves); ASSERT_EQ(0u, reallocs);
-        ASSERT_EQ(capacities[c], mt_dns_query_log_size(log));
+        ASSERT_EQ(0u, mallocs); ASSERT_EQ(0u, callocs);
+        ASSERT(mt_dns_query_log_size(log) > 0);
+        mt_dns_query_log_stats_t stats; mt_dns_query_log_stats(log, &stats);
+        ASSERT_EQ(budgets[c], stats.allocated_bytes);
         mt_dns_query_log_destroy(log);
     }
     PASS();
@@ -67,24 +71,25 @@ TEST allocation_failure_preserves_history_and_explicit_capture_consent(void) {
     fail_alloc = false;
     ASSERT(!enabled); ASSERT(!mt_dns_query_log_enabled(off));
     mt_dns_query_log_destroy(off);
-    mt_dns_query_log_t *log = mt_dns_query_log_create_sized(2); ASSERT(log);
+    mt_dns_query_log_t *log = mt_dns_query_log_create(); ASSERT(log);
+    ASSERT(mt_dns_query_log_set_enabled(log, true));
     mt_dns_query_log_append(log, "10.0.0.1", "old.example", 1, false, 1);
     mt_dns_query_log_append(log, "10.0.0.2", "last.example", 28, false, 2);
     uint8_t name[255]; max_name(name, 123);
     fail_alloc = true;
     bool appended = mt_dns_query_log_append_wire(log, NULL, 0, name, sizeof(name), 1, false, 3);
     fail_alloc = false;
-    ASSERT(!appended); ASSERT_EQ(2u, mt_dns_query_log_size(log));
-    ASSERT_EQ(2u, mt_dns_query_log_sequence(log));
+    ASSERT(appended); ASSERT_EQ(3u, mt_dns_query_log_size(log));
+    ASSERT_EQ(3u, mt_dns_query_log_sequence(log));
     mt_dns_query_entry_t row; ASSERT(mt_dns_query_log_get_id(log, 1, &row));
     ASSERT_STR_EQ("old.example", row.domain);
-    mt_dns_query_log_stats_t stats; mt_dns_query_log_stats(log, &stats); ASSERT_EQ(1u, stats.dropped);
-    /* Repeated names need no allocation and still record under memory pressure. */
+    mt_dns_query_log_stats_t stats; mt_dns_query_log_stats(log, &stats); ASSERT_EQ(0u, stats.dropped);
+    /* Both unique and repeated names record even when every heap call fails. */
     fail_alloc = true;
     mt_dns_query_log_append(log, "10.0.0.3", "last.example", 1, false, 4);
     fail_alloc = false;
-    ASSERT_EQ(3u, mt_dns_query_log_sequence(log));
-    ASSERT(mt_dns_query_log_get_id(log, 3, &row)); ASSERT_STR_EQ("10.0.0.3", row.client);
+    ASSERT_EQ(4u, mt_dns_query_log_sequence(log));
+    ASSERT(mt_dns_query_log_get_id(log, 4, &row)); ASSERT_STR_EQ("10.0.0.3", row.client);
     mt_dns_query_log_destroy(log); PASS();
 }
 GREATEST_MAIN_DEFS();

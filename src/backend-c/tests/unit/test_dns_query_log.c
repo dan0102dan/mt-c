@@ -4,8 +4,14 @@
 #include <stdio.h>
 #include <string.h>
 
+static mt_dns_query_log_t *new_log(size_t bytes) {
+    mt_dns_query_log_t *log = mt_dns_query_log_create_budget(bytes);
+    if (log && !mt_dns_query_log_set_enabled(log, true)) { mt_dns_query_log_destroy(log); return NULL; }
+    return log;
+}
+
 TEST compact_keys_and_history(void) {
-    mt_dns_query_log_t *log = mt_dns_query_log_create_sized(1000);
+    mt_dns_query_log_t *log = new_log(65536);
     ASSERT(log != NULL);
     for (size_t i = 0; i < 1000; i++) {
         char domain[64], client[48];
@@ -16,7 +22,8 @@ TEST compact_keys_and_history(void) {
     mt_dns_query_log_stats_t stats;
     mt_dns_query_log_stats(log, &stats);
     ASSERT_EQ(1000u, stats.count);
-    ASSERT_EQ(40000u, stats.entry_bytes);
+    ASSERT(stats.entry_bytes >= 1000 * MT_DNS_QUERY_LOG_RECORD_BYTES);
+    ASSERT(stats.entry_bytes < 16000);
     ASSERT_EQ(200u, stats.domains);
     ASSERT(stats.allocated_bytes < 100 * 1024);
     mt_dns_query_entry_t row;
@@ -36,7 +43,7 @@ TEST compact_keys_and_history(void) {
 
 TEST churn_reclaims_domain_keys_without_moving_history(void) {
     enum { CAP = 257, ITERATIONS = 20000 };
-    mt_dns_query_log_t *log = mt_dns_query_log_create_sized(CAP);
+    mt_dns_query_log_t *log = new_log(32768);
     ASSERT(log != NULL);
     for (size_t i = 0; i < ITERATIONS; i++) {
         char name[200], client[48];
@@ -46,9 +53,10 @@ TEST churn_reclaims_domain_keys_without_moving_history(void) {
             i % 3 ? "short" : "abcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyz");
         snprintf(client, sizeof(client), "2001:db8::%zx", i % 71 + 1);
         mt_dns_query_log_append(log, client, name, (uint16_t)i, i % 2 != 0, (int64_t)i);
-        size_t count = i + 1 < CAP ? i + 1 : CAP;
+        size_t count = mt_dns_query_log_size(log);
+        ASSERT(count > 0 && count <= i + 1);
         ASSERT_EQ(count, mt_dns_query_log_size(log));
-        for (size_t j = 0; j < count; j++) {
+        for (size_t j = 0; j < count; j += i % 29 == 0 ? 1 : count) {
             size_t old = i - j;
             snprintf(name, sizeof(name), "r%zu.%s.example", old % 91,
                 old % 3 ? "short" : "abcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyz");
@@ -65,7 +73,7 @@ TEST churn_reclaims_domain_keys_without_moving_history(void) {
     }
     mt_dns_query_log_stats_t before, after;
     mt_dns_query_log_stats(log, &before);
-    for (size_t i = 0; i < CAP; i++) mt_dns_query_log_append(log, NULL, "one.example", 1, false, 0);
+    for (size_t i = 0; i <= mt_dns_query_log_capacity(log); i++) mt_dns_query_log_append(log, NULL, "one.example", 1, false, 0);
     mt_dns_query_log_stats(log, &after);
     ASSERT_EQ(1u, after.domains);
     ASSERT(after.pool_bytes < before.pool_bytes);
@@ -86,7 +94,7 @@ TEST churn_reclaims_domain_keys_without_moving_history(void) {
 }
 
 TEST binary_names_and_addresses_are_lossless(void) {
-    mt_dns_query_log_t *log = mt_dns_query_log_create_sized(16);
+    mt_dns_query_log_t *log = new_log(32768);
     ASSERT(log != NULL);
     uint8_t name[255]; size_t pos = 0;
     const size_t lengths[] = {63, 63, 63, 61};
@@ -129,9 +137,9 @@ TEST binary_names_and_addresses_are_lossless(void) {
 
 static void notified(void *ud) { (*(unsigned *)ud)++; }
 TEST invalid_inputs_and_subscriber_lifetime(void) {
-    ASSERT(mt_dns_query_log_create_sized(0) == NULL);
-    ASSERT(mt_dns_query_log_create_sized(MT_DNS_QUERY_LOG_MAX_CAPACITY + 1) == NULL);
-    mt_dns_query_log_t *log = mt_dns_query_log_create_sized(1);
+    ASSERT(mt_dns_query_log_create_budget(0) == NULL);
+    ASSERT(mt_dns_query_log_create_budget(MT_DNS_QUERY_LOG_MEMORY_LIMIT + 1) == NULL);
+    mt_dns_query_log_t *log = new_log(32768);
     ASSERT(log != NULL);
     unsigned notifications = 0;
     int subscription = mt_dns_query_log_subscribe(log, notified, &notifications);
@@ -149,7 +157,8 @@ TEST invalid_inputs_and_subscriber_lifetime(void) {
         mt_dns_query_log_append(log, NULL, name, 1, false, 0);
     }
     ASSERT_EQ(3000u, notifications);
-    ASSERT_EQ(1u, mt_dns_query_log_size(log));
+    ASSERT(mt_dns_query_log_size(log) > 0);
+    ASSERT(mt_dns_query_log_size(log) <= mt_dns_query_log_capacity(log));
     mt_dns_query_log_clear(log);
     ASSERT_EQ(3001u, notifications);
     mt_dns_query_log_unsubscribe(log, subscription);

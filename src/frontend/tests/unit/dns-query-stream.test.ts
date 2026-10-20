@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import {
   applyDnsEvent, createEventParser, createSnapshotReceiver, subscribeDnsQueries,
-  MAX_EVENT_SIZE, type StreamEvent,
+  MAX_EVENT_SIZE, MAX_DNS_CAPACITY, type StreamEvent,
 } from "../../src/modules/settings/dns-query-stream.ts";
 
 const row = (id = 1) => ({ id, time_ms: 123456, client: "192.168.1.10", domain: "example.org", qtype: 1, protocol: "udp" as const });
@@ -90,7 +90,7 @@ Deno.test("malformed, reordered, oversized and incomplete snapshot batches fail 
     receive(event("snapshot_begin", { capacity: 1000, count: 2, through: 2 }));
     assert.throws(() => receive(bad));
   }
-  for (const capacity of [0, -1, 60001, 1.5, null]) {
+  for (const capacity of [0, -1, MAX_DNS_CAPACITY + 1, 1.5, null]) {
     assert.throws(() => createSnapshotReceiver()(event("snapshot_begin", { capacity, count: 0, through: 0 })));
   }
 });

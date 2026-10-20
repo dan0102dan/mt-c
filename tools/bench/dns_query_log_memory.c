@@ -1,49 +1,51 @@
-/* Synthetic, reproducible storage benchmark. Not a router RSS measurement.
- * From repo root: cc -O2 -Isrc/backend-c/include tools/bench/dns_query_log_memory.c \
- * src/backend-c/src/dns/query_log.c src/backend-c/src/dns/wire.c -o /tmp/dns-log-memory
- * /tmp/dns-log-memory
- */
+/* Compile with src/dns/query_log.c + src/dns/wire.c and -Iinclude.
+ * Production byte budget, no synthetic row quota. Counts vary within a page
+ * as the oldest pages are recycled. All raw timestamps/questions survive. */
 #include "magitrickle/dns_query_log.h"
-#include <assert.h>
 #include <stdio.h>
 #include <string.h>
 
-static void sample(size_t capacity, size_t domains, size_t clients, bool longest) {
-    mt_dns_query_log_t *log = mt_dns_query_log_create_sized(capacity);
-    assert(log);
-    for (size_t i = 0; i < capacity; i++) {
-        if (longest) {
-            uint8_t name[255]; size_t p = 0;
-            for (int n = 0; n < 4; n++) {
-                size_t len = n == 3 ? 61 : 63;
-                name[p++] = (uint8_t)len; memset(name + p, 200, len); p += len;
+static bool measure(const char *scenario, bool long_names, bool unique, bool unique_clients, bool ipv6) {
+    mt_dns_query_log_t *log = mt_dns_query_log_create();
+    if (!log || !mt_dns_query_log_set_enabled(log, true)) {
+        fprintf(stderr, "cannot allocate journal\n"); mt_dns_query_log_destroy(log); return false;
+    }
+    for (unsigned i = 0; i < 300000; i++) {
+        unsigned key = unique ? i : i % 200;
+        uint8_t name[255], ip[16] = {192, 0, 2, 1}; size_t at = 0;
+        if (long_names) {
+            for (size_t j = 0; j < 4; j++) {
+                size_t n = j == 3 ? 61 : 63;
+                name[at++] = (uint8_t)n; memset(name + at, 'x', n); at += n;
             }
-            name[p++] = 0;
-            size_t key = i % domains;
-            name[1] = (uint8_t)(key >> 8); name[2] = (uint8_t)key;
-            uint8_t addr[16] = {0x20, 1, 0x0d, 0xb8};
-            addr[14] = (uint8_t)((i % clients) >> 8); addr[15] = (uint8_t)(i % clients);
-            assert(mt_dns_query_log_append_wire(log, addr, sizeof(addr), name, p, 28, false, (int64_t)i));
         } else {
-            char domain[64], client[48];
-            snprintf(domain, sizeof(domain), "d%05zu.abcdefghijklmnop.example", i % domains);
-            snprintf(client, sizeof(client), "10.0.%zu.%zu", (i % clients) / 256, (i % clients) % 256);
-            mt_dns_query_log_append(log, client, domain, 1, false, (int64_t)i);
+            name[at++] = 27; memset(name + at, 'x', 27); at += 27;
+            name[at++] = 3; memcpy(name + at, "org", 3); at += 3;
+        }
+        name[1] = (uint8_t)key; name[2] = (uint8_t)(key >> 8);
+        name[3] = (uint8_t)(key >> 16); name[4] = (uint8_t)(key >> 24); name[at++] = 0;
+        unsigned client = unique_clients ? i : i % 20;
+        if (ipv6) { ip[0] = 0x20; ip[1] = 1; ip[2] = 0x0d; ip[3] = 0xb8; }
+        size_t end = ipv6 ? 16 : 4;
+        ip[end - 1] = (uint8_t)client; ip[end - 2] = (uint8_t)(client >> 8);
+        ip[end - 3] = (uint8_t)(client >> 16);
+        if (!mt_dns_query_log_append_wire(log, ip, end, name, at, i % 2 ? 28 : 1, i % 2 != 0, (int64_t)i)) {
+            fprintf(stderr, "append failed\n"); mt_dns_query_log_destroy(log); return false;
         }
     }
-    mt_dns_query_log_stats_t s;
-    mt_dns_query_log_stats(log, &s);
-    assert(s.count == capacity && s.domains == domains);
-    printf("%zu,%zu,%zu,%s,%zu,%zu,%zu,%zu\n", capacity, domains, clients, longest ? "wire255" : "text31",
-        s.entry_bytes, s.index_bytes, s.pool_bytes, s.allocated_bytes);
+    mt_dns_query_log_stats_t s; mt_dns_query_log_stats(log, &s);
+    printf("%s,%zu,%zu,%zu,%zu,%zu,%zu\n", scenario, s.count, s.allocated_bytes,
+           s.entry_bytes, s.index_bytes, s.pool_bytes, s.domains);
     mt_dns_query_log_destroy(log);
+    return true;
 }
 int main(void) {
-    puts("rows,domains,clients,names,ring_bytes,index_bytes,name_bytes,total_allocated_bytes");
-    sample(1000, 200, 20, false);
-    sample(1000, 1000, 20, false);
-    sample(1000, 1000, 1000, true);
-    sample(10000, 2000, 20, false);
-    sample(10000, 10000, 20, false);
-    return 0;
+    puts("scenario,retained,allocated,record_pages,index,slab_pages,domains");
+    bool ok = measure("200-short-domains-20-ipv4", false, false, false, false);
+    ok = measure("unique-short-domains-20-ipv4", false, true, false, false) && ok;
+    ok = measure("unique-max-domains-20-ipv4", true, true, false, false) && ok;
+    ok = measure("200-short-domains-20-ipv6", false, false, false, true) && ok;
+    ok = measure("200-short-domains-unique-ipv6", false, false, true, true) && ok;
+    ok = measure("unique-max-domains-unique-ipv6", true, true, true, true) && ok;
+    return ok ? 0 : 1;
 }

@@ -1,4 +1,5 @@
 import type { DnsQueryResponse } from "./dns-query-data";
+import { DNS_HISTORY_MEMORY_LIMIT, MAX_DNS_CAPACITY } from "./dns-query-limits";
 import { applyDnsEvent, type StreamEvent } from "./dns-query-stream";
 
 export type CaptureState = {
@@ -19,8 +20,9 @@ export function parseCaptureState(value: unknown): CaptureState {
     ) ||
     (state.dropped !== undefined && (!Number.isSafeInteger(state.dropped) || state.dropped < 0)) ||
     state.capacity < 1 ||
-    state.capacity > 60000 ||
+    state.capacity > MAX_DNS_CAPACITY ||
     state.count > state.capacity ||
+    state.memory_limit > DNS_HISTORY_MEMORY_LIMIT ||
     (state.memory_limit > 0 && state.memory_used > state.memory_limit)
   )
     throw new Error("Invalid capture state");

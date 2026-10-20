@@ -35,7 +35,8 @@
   const pageSize = 30;
   let queries = $state.raw<DnsQuery[]>([]);
   let clientNames = $state.raw<ReadonlyMap<string, string>>(new Map());
-  let capacity = $state(8192);
+  // Empty placeholder until the server advertises its byte-derived bound.
+  let capacity = $state(1);
   let capture = $state.raw<CaptureState | null>(null);
   let changing = $state(false);
   let captureFailed = $state(false);

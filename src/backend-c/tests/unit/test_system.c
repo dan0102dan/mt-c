@@ -253,7 +253,7 @@ TEST dns_journal_lists_and_clears_queries(void) {
     cJSON *result = NULL;
     ASSERT_EQ(200, do_request("GET", "/api/v1/system/dns/queries", NULL, &result));
     ASSERT(cJSON_IsObject(result));
-    ASSERT_EQ(MT_DNS_QUERY_LOG_CAPACITY, cJSON_GetObjectItemCaseSensitive(result, "capacity")->valueint);
+    ASSERT_EQ((int)mt_dns_query_log_capacity(h->query_log), cJSON_GetObjectItemCaseSensitive(result, "capacity")->valueint);
     const cJSON *queries = cJSON_GetObjectItemCaseSensitive(result, "queries");
     ASSERT(cJSON_IsArray(queries));
     ASSERT_EQ(2, cJSON_GetArraySize(queries));

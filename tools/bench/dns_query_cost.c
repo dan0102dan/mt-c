@@ -9,7 +9,7 @@
 #include <time.h>
 
 static double seconds(void) {
-    struct timespec ts; clock_gettime(CLOCK_MONOTONIC, &ts);
+    struct timespec ts; clock_gettime(CLOCK_PROCESS_CPUTIME_ID, &ts);
     return (double)ts.tv_sec + (double)ts.tv_nsec / 1e9;
 }
 static size_t name_for(uint8_t name[255], unsigned id, bool long_name) {
@@ -31,13 +31,20 @@ static size_t name_for(uint8_t name[255], unsigned id, bool long_name) {
     return p;
 }
 int main(int argc, char **argv) {
-    if (argc != 5) { fprintf(stderr, "usage: %s capacity long unique iterations\n", argv[0]); return 2; }
-    size_t cap = (size_t)strtoul(argv[1], NULL, 10);
+    if (argc != 5) { fprintf(stderr, "usage: %s byte-budget long unique iterations\n", argv[0]); return 2; }
+    size_t budget = (size_t)strtoul(argv[1], NULL, 10);
     bool long_name = atoi(argv[2]) != 0, unique = atoi(argv[3]) != 0;
     unsigned iterations = (unsigned)strtoul(argv[4], NULL, 10);
     if (!iterations) return 2;
-    mt_dns_query_log_t *log = mt_dns_query_log_create_sized(cap);
-    if (!log) return 2;
+#ifdef MT_DNS_QUERY_LOG_RECORD_BYTES
+    mt_dns_query_log_t *log = mt_dns_query_log_create_budget(budget);
+#else
+    /* Allows A/B compilation against the pre-packed, production 1 MiB journal. */
+    if (budget != MT_DNS_QUERY_LOG_MEMORY_LIMIT) return 2;
+    mt_dns_query_log_t *log = mt_dns_query_log_create();
+#endif
+    if (!log || !mt_dns_query_log_set_enabled(log, true)) return 2;
+    size_t cap = mt_dns_query_log_capacity(log) * 2;
     uint8_t name[255], addr[] = {192, 0, 2, 4};
     for (size_t i = 0; i < cap; i++) {
         size_t len = name_for(name, unique ? (unsigned)i : (unsigned)(i % 200), long_name);
@@ -50,8 +57,8 @@ int main(int argc, char **argv) {
     }
     double elapsed = seconds() - start;
     mt_dns_query_log_stats_t stats; mt_dns_query_log_stats(log, &stats);
-    printf("%zu,%u,%u,%u,%.3f,%zu\n", cap, long_name, unique, iterations,
-           elapsed * 1e9 / iterations, stats.allocated_bytes);
+    printf("%zu,%u,%u,%u,%.3f,%zu,%zu\n", budget, long_name, unique, iterations,
+           elapsed * 1e9 / iterations, stats.allocated_bytes, stats.count);
     mt_dns_query_log_destroy(log);
     return 0;
 }
