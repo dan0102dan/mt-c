@@ -1,0 +1,33 @@
+name: DNS review workspace
+on:
+  push:
+    branches: [feat/dns-query-log]
+    paths: [.github/workflows/dns-review-workspace.yml]
+permissions:
+  contents: read
+jobs:
+  workspace:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Package tracked source and public development headers
+        run: |
+          set -eu
+          sudo apt-get update -qq
+          sudo apt-get install -y libyaml-dev libcjson-dev libmnl-dev
+          mkdir -p /tmp/dns-review-workspace
+          git archive --format=tar.gz HEAD > /tmp/dns-review-workspace/head.tar.gz
+          git archive --format=tar.gz 7436bc90d4c29efcdead2477a3e211b81f56c422 > /tmp/dns-review-workspace/reviewed.tar.gz
+          git archive --format=tar.gz 05c9ff8c6e3b0df7435f250cba36dc5e5d73e818 > /tmp/dns-review-workspace/base.tar.gz
+          git rev-parse HEAD > /tmp/dns-review-workspace/head.txt
+          tar -czf /tmp/dns-review-workspace/headers.tar.gz -C /usr/include yaml.h cjson libmnl
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dns-review-workspace
+          path: /tmp/dns-review-workspace
+          retention-days: 1
+          if-no-files-found: error
