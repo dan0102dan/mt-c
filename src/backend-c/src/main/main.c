@@ -33,6 +33,7 @@
 #endif
 #include "magitrickle/auth.h"
 #include "magitrickle/dns_cache.h"
+#include "magitrickle/dns_query_log.h"
 #include "magitrickle/dnspipeline.h"
 #include "magitrickle/dnsproxy.h"
 #include "magitrickle/groups.h"
@@ -78,6 +79,8 @@ struct daemon {
 #endif
     mt_loop_t *loop;
     mt_dnsproxy_t *proxy;
+    mt_dns_query_log_t *query_log;
+    mt_dns_clients_t *dns_clients;
     mt_cache_t *cache;
     mt_dns_pipeline_t *pipeline;
     mt_ipt_t *ipt4;
@@ -132,6 +135,9 @@ static void daemon_teardown(struct daemon *d)
     d->http_tcp = NULL;
     mt_httpd_destroy(d->http_unix);
     d->http_unix = NULL;
+    /* Streams unsubscribe before their optional label cache is destroyed. */
+    mt_dns_clients_destroy(d->dns_clients);
+    d->dns_clients = NULL;
 
     if (d->route_reconcile_timer) {
         (void)mt_loop_del_timer(d->loop, d->route_reconcile_timer);
@@ -154,6 +160,8 @@ static void daemon_teardown(struct daemon *d)
     d->watcher = NULL;
     mt_dnsproxy_destroy(d->proxy);
     d->proxy = NULL;
+    mt_dns_query_log_destroy(d->query_log);
+    d->query_log = NULL;
     mt_dns_pipeline_destroy(d->pipeline);
     d->pipeline = NULL;
     mt_cache_destroy(d->cache);
@@ -183,6 +191,7 @@ static mt_ruleset_t *find_ruleset(struct daemon *d, mt_id_t id)
 static void reload_config(struct daemon *d)
 {
     mt_err_t err = mt_app_reload_config(d->app, d->config_path);
+    mt_httpd_revalidate_streams(d->http_tcp);
     if (d->proxy) {
         mt_dnsproxy_set_disable_flags(d->proxy,
             d->cfg->app.dns_proxy.disable_fake_ptr,
@@ -680,6 +689,11 @@ int main(int argc, char **argv)
         pcfg.timeout_ms = 5000;
     }
 
+    d.query_log = mt_dns_query_log_create();
+    if (!d.query_log) {
+        /* Optional diagnostics must not turn low RAM into a DNS outage. */
+        MT_WARN("DNS history unavailable (out of memory); DNS forwarding will continue");
+    }
     if (mt_dnsproxy_create(&pcfg, d.loop, on_response, &d, &d.proxy) !=
         MT_OK) {
         MT_ERROR("failed to create DNS proxy");
@@ -687,6 +701,7 @@ int main(int argc, char **argv)
         mt_config_clear(&cfg);
         return 1;
     }
+    mt_dnsproxy_set_query_log(d.proxy, d.query_log);
     err = mt_dnsproxy_start(d.proxy);
     if (err != MT_OK) {
         MT_ERROR("failed to start DNS proxy: %s", mt_err_str(err));
@@ -836,6 +851,12 @@ int main(int argc, char **argv)
         return 1;
     }
 
+    /* Signals are already blocked. Device discovery is optional, read-only,
+     * and off-loop; failure falls back to addresses instead of stopping DNS. */
+    if (mt_dns_clients_create(d.loop, NULL, NULL, &d.dns_clients) != MT_OK) {
+        MT_WARN("device names unavailable; DNS journal will use IP addresses");
+    }
+
     /* ---- HTTP API: Unix socket (always on) + TCP WebUI (config-gated) ------ */
 
     mt_groups_ctx_t groups_ctx = {
@@ -845,6 +866,8 @@ int main(int argc, char **argv)
     };
     mt_system_ctx_t system_ctx = {
         .app = d.app,
+        .query_log = d.query_log,
+        .dns_clients = d.dns_clients,
         .config_path = config_path,
         .config_version = MT_VERSION,
     };

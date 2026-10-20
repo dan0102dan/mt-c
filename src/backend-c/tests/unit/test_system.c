@@ -43,6 +43,7 @@ typedef struct harness {
     mt_httpd_t *tcp;
     mt_config_t cfg;
     mt_cache_t *cache;
+    mt_dns_query_log_t *query_log;
     mt_app_t *app;
     mt_system_ctx_t ctx;
     char config_path[64];
@@ -64,6 +65,8 @@ static harness_t *harness_start(bool with_config_path) {
     mt_app_deps_t deps = {.cfg = &h->cfg, .cache = h->cache};
     h->app = mt_app_create(&deps);
     h->ctx.app = h->app;
+    h->query_log = mt_dns_query_log_create();
+    h->ctx.query_log = h->query_log;
     if (with_config_path) {
         snprintf(h->config_path, sizeof(h->config_path), "/tmp/mt_system_test_XXXXXX");
         int fd = mkstemp(h->config_path);
@@ -88,6 +91,7 @@ static void harness_stop(harness_t *h) {
     mt_loop_destroy(h->loop);
     mt_app_destroy(h->app);
     mt_cache_destroy(h->cache);
+    mt_dns_query_log_destroy(h->query_log);
     mt_config_clear(&h->cfg);
     if (h->config_path[0]) { unlink(h->config_path); }
     free(h);
@@ -238,6 +242,125 @@ TEST interface_alias_failure_keeps_kernel_ids(void) {
     PASS();
 }
 #endif
+
+TEST dns_journal_lists_and_clears_queries(void) {
+    harness_t *h = harness_start(false);
+    ASSERT(h != NULL);
+    ASSERT_EQ(200, do_request("PUT", "/api/v1/system/dns/capture", "{\"enabled\":true}", NULL));
+    mt_dns_query_log_append(h->query_log, "192.168.1.11", "example.org", 1, false, 123456);
+    mt_dns_query_log_append(h->query_log, "2001:db8::2", "example.com", 28, true, 123457);
+
+    cJSON *result = NULL;
+    ASSERT_EQ(200, do_request("GET", "/api/v1/system/dns/queries", NULL, &result));
+    ASSERT(cJSON_IsObject(result));
+    ASSERT_EQ((int)mt_dns_query_log_capacity(h->query_log), cJSON_GetObjectItemCaseSensitive(result, "capacity")->valueint);
+    const cJSON *queries = cJSON_GetObjectItemCaseSensitive(result, "queries");
+    ASSERT(cJSON_IsArray(queries));
+    ASSERT_EQ(2, cJSON_GetArraySize(queries));
+    const cJSON *first = cJSON_GetArrayItem(queries, 0);
+    ASSERT_STR_EQ("2001:db8::2", cJSON_GetObjectItemCaseSensitive(first, "client")->valuestring);
+    ASSERT_STR_EQ("example.com", cJSON_GetObjectItemCaseSensitive(first, "domain")->valuestring);
+    ASSERT_EQ(28, cJSON_GetObjectItemCaseSensitive(first, "qtype")->valueint);
+    ASSERT_STR_EQ("tcp", cJSON_GetObjectItemCaseSensitive(first, "protocol")->valuestring);
+    cJSON_Delete(result);
+
+    ASSERT_EQ(200, do_request("DELETE", "/api/v1/system/dns/queries", NULL, &result));
+    ASSERT(cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(result, "cleared")));
+    cJSON_Delete(result);
+    ASSERT_EQ(200, do_request("GET", "/api/v1/system/dns/queries", NULL, &result));
+    queries = cJSON_GetObjectItemCaseSensitive(result, "queries");
+    ASSERT_EQ(0, cJSON_GetArraySize(queries));
+    cJSON_Delete(result);
+    harness_stop(h);
+    PASS();
+}
+
+static void fill_journal(mt_loop_t *loop, void *ud) {
+    (void)loop;
+    harness_t *h = ud;
+    for (unsigned i = 0; i < 300; i++) mt_dns_query_log_append(h->query_log, "10.0.0.1", "page.example", 1, false, i);
+}
+static void detach_journal(mt_loop_t *loop, void *ud) {
+    (void)loop;
+    ((harness_t *)ud)->ctx.query_log = NULL;
+}
+TEST journal_get_is_bounded_and_uses_stable_id_cursors(void) {
+    harness_t *h = harness_start(false); ASSERT(h);
+    ASSERT_EQ(200, do_request("PUT", "/api/v1/system/dns/capture", "{\"enabled\":true}", NULL));
+    ASSERT_EQ(MT_OK, mt_loop_post(h->loop, fill_journal, h));
+    cJSON *out = NULL;
+    /* The post is consumed before or independently of the HTTP read; wait
+     * for the explicit count, never mutate the loop-owned journal directly. */
+    for (unsigned tries = 0; tries < 100; tries++) {
+        ASSERT_EQ(200, do_request("GET", "/api/v1/system/dns/capture", NULL, &out));
+        bool ready = cJSON_GetObjectItemCaseSensitive(out, "count")->valueint == 300;
+        cJSON_Delete(out); out = NULL;
+        if (ready) break;
+        struct timespec wait = {.tv_nsec = 1000000}; nanosleep(&wait, NULL);
+    }
+    ASSERT_EQ(200, do_request("GET", "/api/v1/system/dns/queries", NULL, &out));
+    cJSON *rows = cJSON_GetObjectItemCaseSensitive(out, "queries");
+    ASSERT_EQ(128, cJSON_GetArraySize(rows));
+    ASSERT_EQ(300, cJSON_GetObjectItemCaseSensitive(cJSON_GetArrayItem(rows, 0), "id")->valueint);
+    ASSERT_EQ(173, cJSON_GetObjectItemCaseSensitive(out, "next_before")->valueint);
+    cJSON_Delete(out);
+    ASSERT_EQ(200, do_request("GET", "/api/v1/system/dns/queries?before=173&limit=2", NULL, &out));
+    rows = cJSON_GetObjectItemCaseSensitive(out, "queries");
+    ASSERT_EQ(2, cJSON_GetArraySize(rows));
+    ASSERT_EQ(172, cJSON_GetObjectItemCaseSensitive(cJSON_GetArrayItem(rows, 0), "id")->valueint);
+    ASSERT_EQ(171, cJSON_GetObjectItemCaseSensitive(out, "next_before")->valueint);
+    cJSON_Delete(out);
+    const char *bad[] = {"?limit=0", "?limit=129", "?limit=-1", "?before=0", "?before=abc", "?before=18446744073709551616"};
+    for (size_t i = 0; i < sizeof(bad) / sizeof(*bad); i++) {
+        char path[128]; snprintf(path, sizeof(path), "/api/v1/system/dns/queries%s", bad[i]);
+        ASSERT_EQ(400, do_request("GET", path, NULL, NULL));
+    }
+    harness_stop(h); PASS();
+}
+TEST unavailable_history_does_not_break_other_api_routes(void) {
+    harness_t *h = harness_start(false); ASSERT(h);
+    ASSERT_EQ(MT_OK, mt_loop_post(h->loop, detach_journal, h));
+    const char *paths[] = {"/api/v1/system/dns/capture", "/api/v1/system/dns/queries", "/api/v1/system/dns/stream"};
+    for (size_t i = 0; i < 3; i++) {
+        cJSON *out = NULL;
+        int status = do_request("GET", paths[i], NULL, &out);
+        /* The post runs through the wakeup watch before any later retry. */
+        if (status == 200) { cJSON_Delete(out); out = NULL; status = do_request("GET", paths[i], NULL, &out); }
+        ASSERT_EQ(503, status);
+        ASSERT_STR_EQ("DNS_LOG_UNAVAILABLE", cJSON_GetObjectItemCaseSensitive(out, "code")->valuestring);
+        cJSON_Delete(out);
+    }
+    ASSERT_EQ(200, do_request("GET", "/api/v1/system/interfaces", NULL, NULL));
+    harness_stop(h); PASS();
+}
+
+TEST capture_requires_explicit_valid_put_and_releases_storage(void) {
+    harness_t *h = harness_start(false); ASSERT(h != NULL);
+    cJSON *out = NULL;
+    ASSERT_EQ(200, do_request("GET", "/api/v1/system/dns/capture", NULL, &out));
+    ASSERT(cJSON_IsFalse(cJSON_GetObjectItemCaseSensitive(out, "enabled")));
+    ASSERT_EQ(1048576, cJSON_GetObjectItemCaseSensitive(out, "memory_limit")->valueint);
+    double initial_bytes = cJSON_GetObjectItemCaseSensitive(out, "memory_used")->valuedouble;
+    cJSON_Delete(out);
+    const char *invalid[] = {"{}", "true", "{\"enabled\":\"true\"}", "{\"enabled\":true}trailing", "{\"enabled\":true,\"extra\":1}"};
+    for (size_t i = 0; i < sizeof(invalid) / sizeof(*invalid); i++)
+        ASSERT_EQ(400, do_request("PUT", "/api/v1/system/dns/capture", invalid[i], NULL));
+    ASSERT(!mt_dns_query_log_enabled(h->query_log));
+    ASSERT_EQ(200, do_request("GET", "/api/v1/system/dns/queries", NULL, &out));
+    ASSERT_EQ(0, cJSON_GetArraySize(cJSON_GetObjectItemCaseSensitive(out, "queries")));
+    cJSON_Delete(out);
+    ASSERT_EQ(200, do_request("PUT", "/api/v1/system/dns/capture", "{\"enabled\":true}", &out));
+    ASSERT(cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(out, "enabled")));
+    ASSERT(cJSON_GetObjectItemCaseSensitive(out, "memory_used")->valuedouble <= 1048576);
+    cJSON_Delete(out);
+    ASSERT_EQ(200, do_request("DELETE", "/api/v1/system/dns/queries", NULL, NULL));
+    ASSERT(mt_dns_query_log_enabled(h->query_log));
+    ASSERT_EQ(200, do_request("PUT", "/api/v1/system/dns/capture", "{\"enabled\":false}", &out));
+    ASSERT(cJSON_IsFalse(cJSON_GetObjectItemCaseSensitive(out, "enabled")));
+    ASSERT_EQ(initial_bytes, cJSON_GetObjectItemCaseSensitive(out, "memory_used")->valuedouble);
+    ASSERT_EQ(0, cJSON_GetObjectItemCaseSensitive(out, "count")->valueint);
+    cJSON_Delete(out); harness_stop(h); PASS();
+}
 
 TEST save_config_writes_file(void) {
     harness_t *h = harness_start(true);
@@ -408,6 +531,10 @@ int main(int argc, char **argv) {
 #ifdef MT_ENTWARE_KN
     RUN_TEST(interface_alias_failure_keeps_kernel_ids);
 #endif
+    RUN_TEST(dns_journal_lists_and_clears_queries);
+    RUN_TEST(journal_get_is_bounded_and_uses_stable_id_cursors);
+    RUN_TEST(unavailable_history_does_not_break_other_api_routes);
+    RUN_TEST(capture_requires_explicit_valid_put_and_releases_storage);
     RUN_TEST(save_config_writes_file);
     RUN_TEST(config_snapshot_is_read_only_and_includes_live_settings);
     RUN_TEST(config_apply_rejects_stale_preview_and_commits_valid_settings);

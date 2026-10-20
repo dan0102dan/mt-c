@@ -85,6 +85,10 @@ mt_err_t mt_httpd_route(mt_httpd_t *h, const char *method, const char *pattern,
 
 /* Optional: called before route dispatch for every request on this
  * server instance. */
+/* Recheck already-open streams after live configuration changes. Password
+ * changes/expiry outside the API are also checked at bounded intervals. */
+void mt_httpd_revalidate_streams(mt_httpd_t *h);
+
 void mt_httpd_set_middleware(mt_httpd_t *h, mt_http_middleware_fn fn, void *ud);
 
 /* Optional: called when no route matches (e.g. static file serving on

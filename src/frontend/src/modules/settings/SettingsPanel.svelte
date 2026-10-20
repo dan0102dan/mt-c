@@ -4,6 +4,7 @@
 
   import PageControls from "../../components/layout/PageControls.svelte";
   import { t } from "../../data/locale.svelte";
+  import DnsQueryLog from "./DnsQueryLog.svelte";
   import ProfilesPanel from "./ProfilesPanel.svelte";
 
   import { toast } from "../../utils/events";
@@ -13,6 +14,8 @@
     type RegisterSection,
     type SettingsSection,
   } from "./section-controls";
+
+  let { active = true }: { active?: boolean } = $props();
 
   const transfer = getContext<ConfigTransferControls>(CONFIG_TRANSFER_CONTEXT);
   let page: HTMLDivElement;
@@ -72,12 +75,24 @@
         titleIndex = next;
       }
     };
-    // Geometry is measured only when layout changes, never on scroll.
-    // CSS sticky owns the toolbar; the observer only switches its title and actions.
+    // CSS sticky owns the toolbar. Measure only on resize/section crossings,
+    // not on every scroll event; header changes must not replace action nodes.
     const observeHeadings = () => {
       if (!page.getClientRects().length) return;
       intersection?.disconnect();
-      const inset = toolbar.getBoundingClientRect().height;
+      const title = toolbar.querySelector<HTMLElement>(".settings-title")!;
+      // Use a stable switching line even when the active title makes the
+      // toolbar shorter. Otherwise scroll anchoring can flip it back and forth.
+      const tallestTitle = Math.max(
+        ...Array.from(
+          toolbar.querySelectorAll<HTMLElement>(".title-layer"),
+          (layer) => layer.scrollHeight,
+        ),
+      );
+      const inset = Math.ceil(
+        toolbar.getBoundingClientRect().height +
+          Math.max(0, tallestTitle - title.getBoundingClientRect().height),
+      );
       passed.clear();
       const targets = new Map<Element, SettingsSection>();
       for (const section of sections) {
@@ -88,19 +103,22 @@
       }
       selectHeading();
       intersection = new IntersectionObserver(
-        (entries) => {
+        () => {
           if (!page.getClientRects().length) return;
-          for (const entry of entries) {
-            const section = targets.get(entry.target)!;
-            if (!entry.isIntersecting && entry.boundingClientRect.bottom <= inset)
-              passed.add(section);
+          for (const [anchor, section] of targets) {
+            if (anchor.getBoundingClientRect().bottom <= inset) passed.add(section);
             else passed.delete(section);
           }
           selectHeading();
         },
         { rootMargin: `-${inset}px 0px 0px 0px`, threshold: 0 },
       );
-      for (const anchor of targets.keys()) intersection.observe(anchor);
+      for (const [anchor, section] of targets) {
+        intersection.observe(anchor);
+        // A jump can skip a heading from below to above the viewport without
+        // changing its intersection state. The section still enters/leaves.
+        intersection.observe(section.element);
+      }
     };
     const resize = new ResizeObserver(observeHeadings);
     resize.observe(page);
@@ -145,6 +163,7 @@
   <div class="settings-sections">
     <ProfilesPanel />
     <PlatformSettings />
+    <DnsQueryLog {active} />
   </div>
 </div>
 
@@ -179,11 +198,15 @@
   }
   .title-layer {
     grid-area: 1 / 1;
+    /* Preserve title width and fading without reserving hidden titles' height. */
+    height: 0;
+    align-self: start;
     pointer-events: none;
     opacity: 0;
     transition: opacity var(--context-transition);
   }
   .title-layer.current {
+    height: auto;
     opacity: 1;
   }
   @media (prefers-reduced-motion: reduce) {

@@ -120,6 +120,65 @@ app.use(`${API_BASE}/*`, async (c, next) => {
   await next();
 });
 
+const dnsQueries: Array<{
+  id: number;
+  time_ms: number;
+  client: string;
+  domain: string;
+  qtype: number;
+  protocol: "udp" | "tcp";
+}> = [
+  { id: 4, time_ms: Date.now() - 2000, client: "192.168.1.101", domain: "github.com", qtype: 1, protocol: "udp" },
+  { id: 3, time_ms: Date.now() - 7000, client: "192.168.1.104", domain: "example.org", qtype: 28, protocol: "udp" },
+  { id: 2, time_ms: Date.now() - 12000, client: "192.168.1.101", domain: "github.com", qtype: 65, protocol: "tcp" },
+  { id: 1, time_ms: Date.now() - 17000, client: "192.168.1.103", domain: "example.net", qtype: 1, protocol: "udp" },
+];
+const dnsThrough = dnsQueries[0]?.id ?? 0;
+const dnsSubscribers = new Set<(event: string, data: unknown) => void>();
+app.get(`${API_BASE}/system/dns/queries`, (c) => c.json({ queries: dnsQueries, capacity: 1000 }));
+app.get(`${API_BASE}/system/dns/stream`, (c) => {
+  if (dnsSubscribers.size >= 8) return c.json({ error: "DNS stream subscriber limit reached" }, 503);
+  c.header("Cache-Control", "no-store, no-cache, no-transform");
+  c.header("X-Accel-Buffering", "no");
+  return streamSSE(c, async (stream) => {
+    let finish!: () => void;
+    const done = new Promise<void>((resolve) => (finish = resolve));
+    let ready = false;
+    let restart = false;
+    const emit = (event: string, data: unknown) => {
+      if (!ready) { restart = true; return; }
+      void stream.writeSSE({ event, data: JSON.stringify(data) }).catch(finish);
+    };
+    dnsSubscribers.add(emit);
+    stream.onAbort(finish);
+    // Keep-alive comments only; data is pushed by events, not sampled on a timer.
+    const heartbeat = setInterval(() => {
+      void stream.write(": heartbeat\n\n").catch(finish);
+    }, 15000);
+    try {
+      do {
+        restart = false;
+        const queries = [...dnsQueries].reverse();
+        await stream.writeSSE({ event: "snapshot_begin", data: JSON.stringify({ capacity: 1000, count: queries.length, through: dnsThrough }) });
+        for (let offset = 0; !restart && offset < queries.length; offset += 32) {
+          await stream.writeSSE({ event: "snapshot_chunk", data: JSON.stringify({ offset, queries: queries.slice(offset, offset + 32) }) });
+        }
+        if (!restart) await stream.writeSSE({ event: "snapshot_end", data: JSON.stringify({ through: dnsThrough }) });
+      } while (restart);
+      ready = true;
+      await done;
+    } finally {
+      clearInterval(heartbeat);
+      dnsSubscribers.delete(emit);
+    }
+  });
+});
+app.delete(`${API_BASE}/system/dns/queries`, (c) => {
+  dnsQueries.length = 0;
+  for (const emit of dnsSubscribers) emit("clear", {});
+  return c.json({ cleared: true });
+});
+
 app.get(`${API_BASE}/auth`, async (c) => {
   return c.json({ enabled: AUTH_ENABLED }, 200);
 });

@@ -84,6 +84,8 @@ CORE_SRCS := \
     src/logging/log.c \
     src/platform/loop.c \
     src/dns/wire.c \
+    src/dns/query_log.c \
+    src/interfaces/dns_clients.c \
     src/dns/proxy.c \
     src/dns_cache/cache.c \
     src/iptables/rule.c \
@@ -143,6 +145,7 @@ API_SRCS := \
     src/api/app.c \
     src/api/groups.c \
     src/api/system.c src/api/profiles_api.c \
+    src/platform/dns_clients_service.c \
     src/update/release.c src/platform/update.c \
     src/api/staticfiles.c \
     src/api/subscriptions_api.c \
@@ -163,6 +166,7 @@ KEENETIC_SRCS := \
     src/interfaces/keenetic_rci.c \
     src/netfilter/keenetic_policy.c \
     src/interfaces/keenetic_policy_rci.c \
+    src/interfaces/keenetic_dns_clients.c \
     src/api/keenetic_policy_api.c \
     src/interfaces/keenetic_ifstate.c \
     src/interfaces/keenetic_ifstate_rci.c \
@@ -275,6 +279,19 @@ $(BUILDDIR)/tests/%: tests/unit/%.c $(LIB_OBJS) $(TEST_SUPPORT_OBJS)
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -Itests/vendor -Itests/unit $(LDFLAGS) -o $@ $< $(LIB_OBJS) $(TEST_SUPPORT_OBJS) $(LDLIBS) $(DEP_LIBS)
 
+$(BUILDDIR)/tests/test_dns_stream_bounds: tests/unit/test_dns_stream_bounds.c src/api/system.c src/api/dns_stream.inc $(LIB_OBJS) $(TEST_SUPPORT_OBJS)
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) -Itests/vendor -Itests/unit $(LDFLAGS) -o $@ $< $(filter-out $(BUILDDIR)/src/api/system.o,$(LIB_OBJS)) $(TEST_SUPPORT_OBJS) $(LDLIBS) $(DEP_LIBS)
+
+# Operation-count and allocation-failure regressions, not timing gates.
+$(BUILDDIR)/tests/test_dns_stream: tests/unit/test_dns_stream.c $(LIB_OBJS) $(TEST_SUPPORT_OBJS)
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) -Itests/vendor -Itests/unit $(LDFLAGS) -Wl,--wrap=timerfd_create -Wl,--wrap=epoll_ctl -o $@ $< $(LIB_OBJS) $(TEST_SUPPORT_OBJS) $(LDLIBS) $(DEP_LIBS)
+
+$(BUILDDIR)/tests/test_dns_query_alloc: tests/unit/test_dns_query_alloc.c $(LIB_OBJS) $(TEST_SUPPORT_OBJS)
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) -Itests/vendor -Itests/unit $(LDFLAGS) -Wl,--wrap=malloc -Wl,--wrap=calloc -Wl,--wrap=memmove -Wl,--wrap=realloc -o $@ $< $(LIB_OBJS) $(TEST_SUPPORT_OBJS) $(LDLIBS) $(DEP_LIBS)
+
 # Exercise alias enrichment/failure via the real interface API without a router.
 ifeq ($(strip $(ENTWARE_KN)),1)
 $(BUILDDIR)/tests/test_system: tests/unit/test_system.c $(LIB_OBJS) $(TEST_SUPPORT_OBJS)
@@ -341,14 +358,24 @@ sanitize:
 	    OPT="-O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer" \
 	    LDFLAGS="-fsanitize=address,undefined" test
 
-# libFuzzer targets (host, clang). Each runs a short smoke by default in CI
-# via `make fuzz FUZZ_RUNS=...`; without args they run interactively.
+# libFuzzer targets (host, clang). Use the same platform definitions, source
+# closure and dependencies as the daemon, but not its main or normal objects.
+# Separate instrumented objects keep coverage/ASan/UBSan in the actual code
+# under test and avoid recompiling the whole backend for every harness.
 FUZZ_CC ?= clang
 FUZZ_RUNS ?= 100000
-$(BUILDDIR)/fuzz/%: tests/fuzz/%.c $(CORE_SRCS)
+FUZZ_CFLAGS := $(CFLAGS) -g -O1 -fno-omit-frame-pointer
+FUZZ_LIB_OBJS := $(LIB_SRCS:%.c=$(BUILDDIR)/fuzz/%.o)
+.PRECIOUS: $(BUILDDIR)/fuzz/%.o
+
+$(BUILDDIR)/fuzz/%.o: %.c $(BUILDDIR)/.update-build-info Makefile
 	@mkdir -p $(dir $@)
-	$(FUZZ_CC) -std=c11 -g -O1 -Iinclude -D_POSIX_C_SOURCE=200809L \
-	    -fsanitize=fuzzer,address,undefined -o $@ $< $(CORE_SRCS)
+	$(FUZZ_CC) $(FUZZ_CFLAGS) -fsanitize=fuzzer-no-link,address,undefined -c -o $@ $<
+
+$(BUILDDIR)/fuzz/%: tests/fuzz/%.c $(FUZZ_LIB_OBJS) $(BUILDDIR)/.update-build-info Makefile
+	@mkdir -p $(dir $@)
+	$(FUZZ_CC) $(FUZZ_CFLAGS) -MF $@.d -fsanitize=fuzzer,address,undefined \
+	    $(LDFLAGS) -o $@ $< $(FUZZ_LIB_OBJS) $(LDLIBS) $(DEP_LIBS)
 
 # corpus/ is a working directory (gitignored); it is seeded from the small
 # committed seeds/ set so a fresh checkout gets useful starting inputs.
@@ -359,8 +386,12 @@ fuzz: $(FUZZ_BINS)
 	    mkdir -p tests/fuzz/corpus/$$name; \
 	    [ -d tests/fuzz/seeds/$$name ] && \
 	        cp -n tests/fuzz/seeds/$$name/* tests/fuzz/corpus/$$name/ 2>/dev/null || true; \
-	    $$f -runs=$(FUZZ_RUNS) -max_len=1600 \
-	        tests/fuzz/corpus/$$name 2>&1 | tail -3 || exit 1; \
+	    if $$f -runs=$(FUZZ_RUNS) -max_len=1600 \
+	        tests/fuzz/corpus/$$name >"$$f.log" 2>&1; then \
+	        tail -3 "$$f.log"; \
+	    else \
+	        status=$$?; cat "$$f.log"; exit $$status; \
+	    fi; \
 	done
 
 # Reproducible CPU benchmark, intentionally not a wall-clock CI pass/fail gate.
@@ -402,3 +433,5 @@ $(BUILDDIR)/.update-build-info: update-build-info-force
 $(LIB_OBJS) $(MAIN_OBJ): $(BUILDDIR)/.update-build-info
 
 -include $(LIB_OBJS:.o=.d) $(MAIN_OBJ:.o=.d)
+
+-include $(FUZZ_LIB_OBJS:.o=.d) $(addsuffix .d,$(FUZZ_BINS))

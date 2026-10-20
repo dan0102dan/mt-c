@@ -16,6 +16,7 @@
 #include <sys/epoll.h>
 #include <sys/socket.h>
 #include <unistd.h>
+#include <time.h>
 
 #include "magitrickle/log.h"
 
@@ -36,6 +37,7 @@ struct mt_dnsproxy {
     mt_loop_t *loop;
     mt_dnsproxy_msg_cb cb;
     void *cb_ud;
+    mt_dns_query_log_t *query_log; /* borrowed; only touched by the loop */
 
     int udp_fd;
     int tcp_fd;
@@ -586,6 +588,27 @@ static request_disp_t handle_request_common(mt_dnsproxy_t *p, exchange_t *ex)
     if (mt_dns_msg_parse(ex->req, ex->req_len, &req_msg) != MT_OK) {
         return REQ_DROP;
     }
+    if (mt_dns_query_log_enabled(p->query_log) && req_msg->n_questions > 0) {
+        const uint8_t *addr = NULL;
+        size_t addr_len = 0;
+        if (ex->client.ss_family == AF_INET) {
+            const struct sockaddr_in *sa = (const struct sockaddr_in *)&ex->client;
+            addr = (const uint8_t *)&sa->sin_addr;
+            addr_len = 4;
+        } else if (ex->client.ss_family == AF_INET6) {
+            const struct sockaddr_in6 *sa = (const struct sockaddr_in6 *)&ex->client;
+            addr = (const uint8_t *)&sa->sin6_addr;
+            addr_len = 16;
+        }
+        struct timespec ts = {0};
+        (void)clock_gettime(CLOCK_REALTIME, &ts);
+        int64_t seen_ms = (int64_t)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
+        for (size_t i = 0; i < req_msg->n_questions; i++) {
+            const mt_dns_question_t *q = &req_msg->questions[i];
+            (void)mt_dns_query_log_append_wire(p->query_log, addr, addr_len,
+                q->name, q->name_len, q->qtype, ex->is_tcp, seen_ms);
+        }
+    }
     mt_dns_msg_free(req_msg);
 
     if (!p->cfg.disable_fake_ptr &&
@@ -806,7 +829,10 @@ static void on_tcp_accept(mt_loop_t *loop, int fd, uint32_t events, void *ud)
         return;
     }
     for (;;) {
-        int cfd = accept4(fd, NULL, NULL, SOCK_NONBLOCK | SOCK_CLOEXEC);
+        struct sockaddr_storage peer;
+        socklen_t peer_len = sizeof(peer);
+        int cfd = accept4(fd, (struct sockaddr *)&peer, &peer_len,
+                          SOCK_NONBLOCK | SOCK_CLOEXEC);
         if (cfd < 0) {
             if (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR) {
                 return;
@@ -828,6 +854,8 @@ static void on_tcp_accept(mt_loop_t *loop, int fd, uint32_t events, void *ud)
         ex->is_tcp = true;
         ex->upstream_fd = -1;
         ex->client_fd = cfd;
+        ex->client = peer;
+        ex->client_len = peer_len;
         ex->next = p->exchanges;
         p->exchanges = ex;
         atomic_fetch_add(&p->inflight, 1);
@@ -985,6 +1013,11 @@ mt_err_t mt_dnsproxy_start(mt_dnsproxy_t *p)
             p->cfg.listen_addr, p->cfg.listen_port, p->cfg.upstream_addr,
             p->cfg.upstream_port);
     return MT_OK;
+}
+
+void mt_dnsproxy_set_query_log(mt_dnsproxy_t *p, mt_dns_query_log_t *log)
+{
+    if (p) { p->query_log = log; }
 }
 
 void mt_dnsproxy_destroy(mt_dnsproxy_t *p)

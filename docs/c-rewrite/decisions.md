@@ -3817,3 +3817,34 @@ source synchronization, sparse consecutive edits and 50,000-rule exceptions.
 The opt-in `tools/bench/subscription-overrides.c` microbenchmark and
 `override-benchmark-raw/2026-10-18/host.txt` record the same host CPU workload
 before and after this change; they do not claim router or HTTP latency.
+
+## D-83 — DNS history diagnostics must not degrade forwarding (2026-10-20)
+
+Status: implemented for PR #20 at the user's request after review. The new
+opt-in RAM-only capture contract (explicit consent, 1 MiB requested storage,
+stop frees history, related questions grouped only in presentation) remains.
+A diagnostic allocation failure no longer aborts the daemon. Journal endpoints
+return an explicit 503/unavailable state; an individual failed append preserves
+retained history/IDs and increments a dropped counter. Routing is unchanged.
+
+Intern only wire-format domain names with exact-sized, reference-counted native
+allocations. Store binary client addresses inline. Remove moving-arena
+compaction and the binary→text→binary capture adapter from production's DNS
+path. Bound storage and pre-eviction allocation headroom explicitly. Native
+allocator overhead remains outside the advertised requested-allocation cap.
+
+SSE keeps one timer per connection, coalesces writable wakeups and revalidates
+existing access using the same middleware. Password/expiry/auth-enable changes
+can revoke an already open stream. Limit slow snapshot restarts and total
+snapshot age; labels are independent bounded metadata, not history replays.
+
+The PR's newly introduced finite DNS GET is intentionally finalized as a
+1..128-row ID-cursor page (`next_before`, `retained_from`), not an unbounded
+full snapshot. No released legacy endpoint or frozen golden is changed. SSE
+still provides complete initial history in bounded chunks. WebUI ingest uses
+a bounded ring and frame-batched immutable publication, without polling or
+loss of individual retained queries. Tests assert allocation-failure behavior,
+zero history movement on churn, bounded timer/wakeup operation counts, access
+revocation, metadata-only renames, pagination and slow-snapshot termination.
+Performance claims belong to the accompanying benchmark scripts/raw results,
+not to CI success or a router estimate inferred from a host run.
