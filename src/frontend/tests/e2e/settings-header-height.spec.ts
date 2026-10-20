@@ -121,6 +121,25 @@ async function expectNaturalHeight(toolbar: Locator) {
     .toBeLessThan(1);
 }
 
+async function expectButtonSpacing(toolbar: Locator, count: number) {
+  const buttons = toolbar.getByRole("button");
+  await expect(buttons).toHaveCount(count);
+  await expect
+    .poll(() =>
+      buttons.evaluateAll((nodes) => {
+        const rects = nodes.map((node) => node.getBoundingClientRect());
+        const gaps = rects.slice(1).map((rect, index) => rect.left - rects[index].right);
+        const actions = nodes[0].closest(".page-controls-actions")!.getBoundingClientRect();
+        // Check the rendered gaps and ensure collapsed Add leaves no trailing space.
+        return Math.max(
+          ...gaps.map((gap) => Math.abs(gap - 8)),
+          Math.abs(actions.right - rects[rects.length - 1].right),
+        );
+      }),
+    )
+    .toBeLessThan(1);
+}
+
 async function placeDnsBoundary(page: Page, offset: number) {
   await page.evaluate((offset) => {
     const toolbar = document.querySelector(".settings-toolbar")!;
@@ -142,7 +161,7 @@ async function placeDnsBoundary(page: Page, offset: number) {
 
 for (const width of [320, 390, 1280]) {
   for (const language of ["en", "ru"] as const) {
-    test(`settings header uses only current text height (${width}px, ${language})`, async ({
+    test(`settings header preserves natural height and button spacing (${width}px, ${language})`, async ({
       page,
       dnsUrl,
     }) => {
@@ -156,6 +175,7 @@ for (const width of [320, 390, 1280]) {
       const dns = language === "ru" ? "DNS-запросы" : "DNS queries";
       await expect(heading).toHaveAccessibleName(profiles);
       await expectNaturalHeight(toolbar);
+      await expectButtonSpacing(toolbar, 4);
       const tall = (await toolbar.boundingBox())!.height;
       const save = page.locator("#save-settings");
       const saveNode = await save.elementHandle();
@@ -168,6 +188,7 @@ for (const width of [320, 390, 1280]) {
       await placeDnsBoundary(page, -4);
       await expect(heading).toHaveAccessibleName(dns);
       await expectNaturalHeight(toolbar);
+      await expectButtonSpacing(toolbar, 3);
       if (width === 390) expect((await toolbar.boundingBox())!.height).toBeLessThan(tall - 5);
       await expect(save).toBeInViewport();
       expect(
@@ -205,10 +226,12 @@ for (const width of [320, 390, 1280]) {
       await placeDnsBoundary(page, -40);
       await expect(heading).toHaveAccessibleName(dns);
       await expectNaturalHeight(toolbar);
+      await expectButtonSpacing(toolbar, 3);
       await page.setViewportSize({ width, height: 844 });
       await page.evaluate(() => window.scrollTo(0, 0));
       await expect(heading).toHaveAccessibleName(profiles);
       await expectNaturalHeight(toolbar);
+      await expectButtonSpacing(toolbar, 4);
       await expect(name).toHaveValue("Unsaved header regression");
       await expect(save).toBeEnabled();
       expect(writes).toEqual([]);

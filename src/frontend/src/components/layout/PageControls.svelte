@@ -149,12 +149,9 @@
     gap: 0.5rem;
   }
 
-  .page-controls-actions.contextual {
-    gap: 0;
-  }
   .context-add {
     width: 0;
-    margin-left: 0;
+    margin-left: -0.5rem;
     overflow: clip;
     opacity: 0;
     transform: translateX(16px);
@@ -166,7 +163,7 @@
   }
   .context-add.present {
     width: calc(22px + 1.2rem + 2px);
-    margin-left: 0.5rem;
+    margin-left: 0;
     opacity: 1;
     transform: translateX(0);
   }
@@ -186,17 +183,6 @@
   }
 
   @media (max-width: 570px) {
-    /* Space persistent actions without leaving a gap for collapsed Add. */
-    .page-controls-actions.contextual {
-      gap: 0.5rem;
-    }
-    .page-controls-actions.contextual .context-add {
-      margin-left: -0.5rem;
-    }
-    .page-controls-actions.contextual .context-add.present {
-      margin-left: 0;
-    }
-
     .page-controls {
       display: block;
       padding: 0.3rem 0;
