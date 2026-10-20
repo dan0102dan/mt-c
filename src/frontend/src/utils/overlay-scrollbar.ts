@@ -8,12 +8,12 @@ type ScrollbarState = {
   targetElement: HTMLElement | null;
   boundsTop: number;
   boundsBottom: number;
-  offsetTop: number;
-  offsetBottom: number;
+  headerElement: HTMLElement | null;
 };
 
 type OverlayScrollbarOptions = {
   targetSelector?: string;
+  headerSelector?: string;
 };
 
 const HIDE_DELAY = 900;
@@ -35,17 +35,6 @@ const setVisible = (track: HTMLDivElement, state: ScrollbarState) => {
   }, HIDE_DELAY);
 };
 
-const updateTargetOffsets = (rect: DOMRect, target: HTMLElement, state: ScrollbarState) => {
-  const scrollHeight = document.documentElement.scrollHeight;
-  const scrollTop = getScrollTop();
-
-  const offsetTop = Math.max(rect.top + scrollTop, 0);
-  const offsetBottom = Math.max(scrollHeight - (offsetTop + target.offsetHeight), 0);
-
-  state.offsetTop = offsetTop;
-  state.offsetBottom = offsetBottom;
-};
-
 const updateBounds = (track: HTMLDivElement, state: ScrollbarState) => {
   const target = state.targetElement ?? document.documentElement;
   const rect = target.getBoundingClientRect();
@@ -59,7 +48,8 @@ const updateBounds = (track: HTMLDivElement, state: ScrollbarState) => {
 
   track.classList.remove("is-hidden");
 
-  const top = Math.max(rect.top, margin);
+  const headerBottom = state.headerElement?.getBoundingClientRect().bottom ?? 0;
+  const top = Math.max(rect.top, headerBottom, margin);
   const bottom = Math.max(viewportHeight - rect.bottom, margin);
 
   state.boundsTop = top;
@@ -67,8 +57,6 @@ const updateBounds = (track: HTMLDivElement, state: ScrollbarState) => {
 
   track.style.top = `${state.boundsTop}px`;
   track.style.bottom = `${state.boundsBottom}px`;
-
-  updateTargetOffsets(rect, target as HTMLElement, state);
 };
 
 const updateThumb = (track: HTMLDivElement, thumb: HTMLDivElement, state: ScrollbarState) => {
@@ -77,30 +65,12 @@ const updateThumb = (track: HTMLDivElement, thumb: HTMLDivElement, state: Scroll
   state.rafId = window.requestAnimationFrame(() => {
     state.rafId = null;
 
+    updateBounds(track, state);
+
     const scrollHeight = document.documentElement.scrollHeight;
     const clientHeight = document.documentElement.clientHeight;
     const scrollTop = getScrollTop();
-    const target = state.targetElement;
-
-    if (target) {
-      const estimatedDistance = scrollTop - state.offsetTop;
-      if (Math.abs(estimatedDistance) < 120) {
-        updateTargetOffsets(target.getBoundingClientRect(), target, state);
-      }
-
-      if (scrollTop < state.offsetTop + 40 || scrollTop < 200) {
-        updateTargetOffsets(target.getBoundingClientRect(), target, state);
-      }
-    }
-
-    const { offsetTop, offsetBottom } = state;
-
-    const boundedScrollTop = Math.min(
-      Math.max(scrollTop - offsetTop, 0),
-      Math.max(scrollHeight - clientHeight - offsetBottom, 0),
-    );
-
-    if (scrollHeight <= clientHeight) {
+    if (scrollHeight <= clientHeight || state.boundsTop + state.boundsBottom >= clientHeight) {
       track.classList.add("is-hidden");
       return;
     }
@@ -110,14 +80,14 @@ const updateThumb = (track: HTMLDivElement, thumb: HTMLDivElement, state: Scroll
     const trackHeight = track.clientHeight;
     const maxThumbHeight = trackHeight - 4;
 
-    const thumbHeight = Math.max(
-      Math.min((clientHeight / scrollHeight) * trackHeight, maxThumbHeight),
-      MIN_THUMB_HEIGHT,
+    const thumbHeight = Math.min(
+      Math.max((clientHeight / scrollHeight) * trackHeight, MIN_THUMB_HEIGHT),
+      maxThumbHeight,
     );
 
     const maxThumbTop = trackHeight - thumbHeight;
-    const scrollable = scrollHeight - clientHeight - offsetBottom - offsetTop;
-    const thumbTop = scrollable > 0 ? (boundedScrollTop / scrollable) * maxThumbTop : 0;
+    const scrollable = scrollHeight - clientHeight;
+    const thumbTop = scrollable > 0 ? (scrollTop / scrollable) * maxThumbTop : 0;
 
     thumb.style.height = `${thumbHeight}px`;
     thumb.style.transform = `translateY(${thumbTop}px)`;
@@ -147,9 +117,11 @@ export const initOverlayScrollbar = (options: OverlayScrollbarOptions = {}) => {
     targetElement: null,
     boundsTop: 0,
     boundsBottom: 0,
-    offsetTop: 0,
-    offsetBottom: 0,
+    headerElement: null,
   };
+
+  const resizeObserver = new ResizeObserver(() => update());
+  resizeObserver.observe(document.documentElement);
 
   const resolveTarget = () => {
     if (!options.targetSelector) return;
@@ -163,14 +135,16 @@ export const initOverlayScrollbar = (options: OverlayScrollbarOptions = {}) => {
         return rect.height > 0 && rect.width > 0;
       }) ?? null;
 
-    if (target && target !== state.targetElement) {
+    const header = options.headerSelector
+      ? document.querySelector<HTMLElement>(options.headerSelector)
+      : null;
+    if (target !== state.targetElement || header !== state.headerElement) {
+      if (state.targetElement) resizeObserver.unobserve(state.targetElement);
+      if (state.headerElement) resizeObserver.unobserve(state.headerElement);
       state.targetElement = target;
-      updateBounds(track, state);
-    }
-
-    if (!target && state.targetElement) {
-      state.targetElement = null;
-      updateBounds(track, state);
+      state.headerElement = header;
+      if (target) resizeObserver.observe(target);
+      if (header) resizeObserver.observe(header);
     }
   };
 
@@ -199,19 +173,18 @@ export const initOverlayScrollbar = (options: OverlayScrollbarOptions = {}) => {
 
   track.addEventListener("mouseenter", () => setVisible(track, state));
 
-  const resizeObserver = new ResizeObserver(() => {
-    updateBounds(track, state);
-    update();
-  });
-  resizeObserver.observe(document.documentElement);
-
   if (options.targetSelector) {
     const mutationObserver = new MutationObserver(() => {
       resolveTarget();
       updateBounds(track, state);
       update();
     });
-    mutationObserver.observe(document.body, { childList: true, subtree: true });
+    mutationObserver.observe(document.body, {
+      childList: true,
+      subtree: true,
+      attributes: true,
+      attributeFilter: ["data-state"],
+    });
   }
 
   thumb.addEventListener("pointerdown", (event) => {
@@ -222,20 +195,13 @@ export const initOverlayScrollbar = (options: OverlayScrollbarOptions = {}) => {
     const scrollHeight = document.documentElement.scrollHeight;
     const clientHeight = document.documentElement.clientHeight;
 
-    const { offsetTop, offsetBottom } = state;
-
     const trackHeight = track.clientHeight;
     const thumbHeight = thumb.offsetHeight;
 
     const maxThumbTop = trackHeight - thumbHeight;
-    const scrollable = scrollHeight - clientHeight - offsetBottom - offsetTop;
+    const scrollable = scrollHeight - clientHeight;
 
     state.scrollRatio = maxThumbTop > 0 && scrollable > 0 ? scrollable / maxThumbTop : 1;
-
-    state.scrollStart = Math.min(
-      Math.max(state.scrollStart - offsetTop, 0),
-      Math.max(scrollable, 0),
-    );
 
     thumb.setPointerCapture(event.pointerId);
     setVisible(track, state);
@@ -245,8 +211,7 @@ export const initOverlayScrollbar = (options: OverlayScrollbarOptions = {}) => {
     if (!state.dragging) return;
 
     const delta = event.clientY - state.dragStartY;
-    const { offsetTop } = state;
-    setScrollTop(offsetTop + state.scrollStart + delta * state.scrollRatio);
+    setScrollTop(state.scrollStart + delta * state.scrollRatio);
   });
 
   const stopDragging = (event: PointerEvent) => {
@@ -272,18 +237,16 @@ export const initOverlayScrollbar = (options: OverlayScrollbarOptions = {}) => {
     const scrollHeight = document.documentElement.scrollHeight;
     const clientHeight = document.documentElement.clientHeight;
 
-    const { offsetTop, offsetBottom } = state;
-
     const trackHeight = track.clientHeight;
     const thumbHeight = thumb.offsetHeight;
 
     const maxThumbTop = trackHeight - thumbHeight;
-    const scrollable = scrollHeight - clientHeight - offsetBottom - offsetTop;
+    const scrollable = scrollHeight - clientHeight;
 
     if (maxThumbTop <= 0) return;
 
     const targetThumbTop = Math.min(Math.max(offset - thumbHeight / 2, 0), maxThumbTop);
-    setScrollTop(offsetTop + (targetThumbTop / maxThumbTop) * scrollable);
+    setScrollTop((targetThumbTop / maxThumbTop) * scrollable);
 
     setVisible(track, state);
   });

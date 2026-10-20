@@ -11,7 +11,8 @@ const app = mount(App, { target: document.getElementById("app")! });
 
 initOverlayScrollbar({
   targetSelector:
-    "[data-tabs-content][data-state='active'] .group-list, [data-tabs-content][data-state='active'] .subscription-list",
+    "[data-tabs-content][data-state='active'] .group-list, [data-tabs-content][data-state='active'] .subscription-list, [data-tabs-content][data-state='active'] .settings-sections",
+  headerSelector: "[data-tabs-content][data-state='active'] .page-controls",
 });
 
 export default app;
