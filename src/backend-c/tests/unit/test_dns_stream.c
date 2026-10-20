@@ -89,7 +89,7 @@ static bool read_line(int fd, char *out, size_t cap) {
     }
     return false;
 }
-static int request(harness_t *h, const char *method, const char *path, bool auth) {
+static int request_body(harness_t *h, const char *method, const char *path, bool auth, const char *body) {
     int fd = socket(AF_UNIX, SOCK_STREAM, 0);
     if (fd < 0) return -1;
     struct timeval timeout = {.tv_sec = 5};
@@ -98,10 +98,13 @@ static int request(harness_t *h, const char *method, const char *path, bool auth
     snprintf(sa.sun_path, sizeof(sa.sun_path), "%s", h->path);
     if (connect(fd, (struct sockaddr *)&sa, sizeof(sa)) != 0) { close(fd); return -1; }
     char buffer[512];
-    int n = snprintf(buffer, sizeof(buffer), "%s %s HTTP/1.1\r\nHost: test\r\n%sContent-Length: 0\r\n\r\n",
-        method, path, auth ? "Authorization: Bearer test\r\n" : "");
-    if (n <= 0 || send(fd, buffer, (size_t)n, MSG_NOSIGNAL) != n) { close(fd); return -1; }
+    int n = snprintf(buffer, sizeof(buffer), "%s %s HTTP/1.1\r\nHost: test\r\n%sContent-Type: application/json\r\nContent-Length: %zu\r\n\r\n%s",
+        method, path, auth ? "Authorization: Bearer test\r\n" : "", strlen(body), body);
+    if (n <= 0 || (size_t)n >= sizeof(buffer) || send(fd, buffer, (size_t)n, MSG_NOSIGNAL) != n) { close(fd); return -1; }
     return fd;
+}
+static int request(harness_t *h, const char *method, const char *path, bool auth) {
+    return request_body(h, method, path, auth, "");
 }
 static bool headers(int fd, int status) {
     char line[512]; int actual = 0;
@@ -111,6 +114,13 @@ static bool headers(int fd, int status) {
 }
 static bool control(harness_t *h, const char *method, const char *path) {
     int fd = request(h, method, path, true);
+    bool ok = fd >= 0 && headers(fd, 200);
+    if (fd >= 0) close(fd);
+    return ok;
+}
+static bool capture(harness_t *h, bool enabled) {
+    int fd = request_body(h, "PUT", "/api/v1/system/dns/capture", true,
+        enabled ? "{\"enabled\":true}" : "{\"enabled\":false}");
     bool ok = fd >= 0 && headers(fd, 200);
     if (fd >= 0) close(fd);
     return ok;
@@ -144,6 +154,13 @@ static bool event_is(int fd, const char *expected) {
     bool ok = data && strcmp(kind, expected) == 0;
     cJSON_Delete(data); return ok;
 }
+static bool capture_event(int fd, bool enabled) {
+    char kind[32]; size_t bytes = 0;
+    cJSON *data = next_event(fd, kind, &bytes);
+    const cJSON *value = cJSON_GetObjectItemCaseSensitive(data, "enabled");
+    bool ok = data && strcmp(kind, "capture") == 0 && cJSON_IsBool(value) && cJSON_IsTrue(value) == enabled;
+    cJSON_Delete(data); return ok;
+}
 /* A control action after begin deterministically interrupts a large snapshot:
  * socket buffering cannot swallow its multi-megabyte remainder. */
 static bool snapshot(int fd, size_t expected_count, size_t capacity, size_t *bytes,
@@ -154,7 +171,9 @@ static bool snapshot(int fd, size_t expected_count, size_t capacity, size_t *byt
         char kind[32]; cJSON *data = next_event(fd, kind, bytes);
         if (!data) return false;
         bool ok = true, done = false;
-        if (strcmp(kind, "snapshot_begin") == 0) {
+        if (strcmp(kind, "capture") == 0) {
+            ok = cJSON_IsBool(cJSON_GetObjectItemCaseSensitive(data, "enabled"));
+        } else if (strcmp(kind, "snapshot_begin") == 0) {
             count = (size_t)number(data, "count"); through = (uint64_t)number(data, "through");
             received = 0; begun = true;
             ok = number(data, "capacity") == (double)capacity && count <= capacity;
@@ -211,6 +230,34 @@ TEST large_snapshot_is_bounded_and_restarts_on_clear_or_eviction(void) {
     }
     PASS();
 }
+TEST capture_changes_are_authorized_and_broadcast_to_all_viewers(void) {
+    harness_t h; ASSERT(start(&h, 1000, false));
+    ASSERT(capture(&h, false));
+    int denied = request_body(&h, "PUT", "/api/v1/system/dns/capture", false, "{\"enabled\":true}");
+    ASSERT(denied >= 0); ASSERT(headers(denied, 401)); close(denied);
+    int viewers[2]; size_t bytes = 0;
+    for (size_t i = 0; i < 2; i++) {
+        viewers[i] = request(&h, "GET", "/api/v1/system/dns/stream", true);
+        ASSERT(viewers[i] >= 0); ASSERT(headers(viewers[i], 200));
+        ASSERT(capture_event(viewers[i], false));
+        ASSERT(snapshot(viewers[i], 0, 1000, &bytes, NULL, NULL));
+    }
+    ASSERT(control(&h, "POST", "/test/append")); /* No stored row while off. */
+    ASSERT(capture(&h, true));
+    for (size_t i = 0; i < 2; i++) {
+        ASSERT(capture_event(viewers[i], true));
+        ASSERT(snapshot(viewers[i], 0, 1000, &bytes, NULL, NULL));
+    }
+    ASSERT(control(&h, "POST", "/test/append"));
+    for (size_t i = 0; i < 2; i++) ASSERT(event_is(viewers[i], "query"));
+    ASSERT(capture(&h, false));
+    for (size_t i = 0; i < 2; i++) {
+        ASSERT(capture_event(viewers[i], false));
+        ASSERT(snapshot(viewers[i], 0, 1000, &bytes, NULL, NULL));
+        close(viewers[i]);
+    }
+    finish(&h); PASS();
+}
 TEST disconnect_and_subscriber_limit(void) {
     harness_t h; ASSERT(start(&h, 1000, false));
     int sockets[MT_HTTP_STREAM_MAX_CLIENTS]; size_t bytes = 0;
@@ -231,6 +278,7 @@ int main(int argc, char **argv) {
     GREATEST_MAIN_BEGIN();
     RUN_TEST(snapshot_live_clear_and_authorization);
     RUN_TEST(large_snapshot_is_bounded_and_restarts_on_clear_or_eviction);
+    RUN_TEST(capture_changes_are_authorized_and_broadcast_to_all_viewers);
     RUN_TEST(disconnect_and_subscriber_limit);
     GREATEST_MAIN_END();
 }

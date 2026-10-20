@@ -246,13 +246,14 @@ TEST interface_alias_failure_keeps_kernel_ids(void) {
 TEST dns_journal_lists_and_clears_queries(void) {
     harness_t *h = harness_start(false);
     ASSERT(h != NULL);
+    ASSERT_EQ(200, do_request("PUT", "/api/v1/system/dns/capture", "{\"enabled\":true}", NULL));
     mt_dns_query_log_append(h->query_log, "192.168.1.11", "example.org", 1, false, 123456);
     mt_dns_query_log_append(h->query_log, "2001:db8::2", "example.com", 28, true, 123457);
 
     cJSON *result = NULL;
     ASSERT_EQ(200, do_request("GET", "/api/v1/system/dns/queries", NULL, &result));
     ASSERT(cJSON_IsObject(result));
-    ASSERT_EQ(1000, cJSON_GetObjectItemCaseSensitive(result, "capacity")->valueint);
+    ASSERT_EQ(MT_DNS_QUERY_LOG_CAPACITY, cJSON_GetObjectItemCaseSensitive(result, "capacity")->valueint);
     const cJSON *queries = cJSON_GetObjectItemCaseSensitive(result, "queries");
     ASSERT(cJSON_IsArray(queries));
     ASSERT_EQ(2, cJSON_GetArraySize(queries));
@@ -272,6 +273,34 @@ TEST dns_journal_lists_and_clears_queries(void) {
     cJSON_Delete(result);
     harness_stop(h);
     PASS();
+}
+
+TEST capture_requires_explicit_valid_put_and_releases_storage(void) {
+    harness_t *h = harness_start(false); ASSERT(h != NULL);
+    cJSON *out = NULL;
+    ASSERT_EQ(200, do_request("GET", "/api/v1/system/dns/capture", NULL, &out));
+    ASSERT(cJSON_IsFalse(cJSON_GetObjectItemCaseSensitive(out, "enabled")));
+    ASSERT_EQ(1048576, cJSON_GetObjectItemCaseSensitive(out, "memory_limit")->valueint);
+    double initial_bytes = cJSON_GetObjectItemCaseSensitive(out, "memory_used")->valuedouble;
+    cJSON_Delete(out);
+    const char *invalid[] = {"{}", "true", "{\"enabled\":\"true\"}", "{\"enabled\":true}trailing", "{\"enabled\":true,\"extra\":1}"};
+    for (size_t i = 0; i < sizeof(invalid) / sizeof(*invalid); i++)
+        ASSERT_EQ(400, do_request("PUT", "/api/v1/system/dns/capture", invalid[i], NULL));
+    ASSERT(!mt_dns_query_log_enabled(h->query_log));
+    ASSERT_EQ(200, do_request("GET", "/api/v1/system/dns/queries", NULL, &out));
+    ASSERT_EQ(0, cJSON_GetArraySize(cJSON_GetObjectItemCaseSensitive(out, "queries")));
+    cJSON_Delete(out);
+    ASSERT_EQ(200, do_request("PUT", "/api/v1/system/dns/capture", "{\"enabled\":true}", &out));
+    ASSERT(cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(out, "enabled")));
+    ASSERT(cJSON_GetObjectItemCaseSensitive(out, "memory_used")->valuedouble <= 1048576);
+    cJSON_Delete(out);
+    ASSERT_EQ(200, do_request("DELETE", "/api/v1/system/dns/queries", NULL, NULL));
+    ASSERT(mt_dns_query_log_enabled(h->query_log));
+    ASSERT_EQ(200, do_request("PUT", "/api/v1/system/dns/capture", "{\"enabled\":false}", &out));
+    ASSERT(cJSON_IsFalse(cJSON_GetObjectItemCaseSensitive(out, "enabled")));
+    ASSERT_EQ(initial_bytes, cJSON_GetObjectItemCaseSensitive(out, "memory_used")->valuedouble);
+    ASSERT_EQ(0, cJSON_GetObjectItemCaseSensitive(out, "count")->valueint);
+    cJSON_Delete(out); harness_stop(h); PASS();
 }
 
 TEST save_config_writes_file(void) {
@@ -444,6 +473,7 @@ int main(int argc, char **argv) {
     RUN_TEST(interface_alias_failure_keeps_kernel_ids);
 #endif
     RUN_TEST(dns_journal_lists_and_clears_queries);
+    RUN_TEST(capture_requires_explicit_valid_put_and_releases_storage);
     RUN_TEST(save_config_writes_file);
     RUN_TEST(config_snapshot_is_read_only_and_includes_live_settings);
     RUN_TEST(config_apply_rejects_stale_preview_and_commits_valid_settings);

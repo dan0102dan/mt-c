@@ -444,6 +444,7 @@ static cJSON *dns_snapshot(mt_dns_query_log_t *log, const mt_dns_clients_t *clie
 
 /* Both snapshot and stream run on the same event loop as append/clear.
  * There is no snapshot/subscribe race or per-subscriber event queue. */
+#include "dns_capture.inc"
 #include "dns_stream.inc"
 
 static void handle_dns_queries(mt_http_req_t *req, mt_http_res_t *res, void *ud) {
@@ -460,7 +461,7 @@ static void handle_dns_clear(mt_http_req_t *req, mt_http_res_t *res, void *ud)
     (void)req;
     mt_system_ctx_t *ctx = ud;
     mt_dns_query_log_clear(ctx->query_log);
-    cJSON *result = cJSON_CreateObject();
+    cJSON *result = dns_capture_json(ctx->query_log);
     if (!result) { mt_http_res_write_error(res, 500, "out of memory"); return; }
     cJSON_AddBoolToObject(result, "cleared", true);
     mt_http_res_set_header(res, "Cache-Control", "no-store");
@@ -468,6 +469,8 @@ static void handle_dns_clear(mt_http_req_t *req, mt_http_res_t *res, void *ud)
 }
 
 void mt_system_register_routes(mt_httpd_t *h, mt_system_ctx_t *ctx) {
+    must_route(h, "GET", "/api/v1/system/dns/capture", handle_dns_capture, ctx);
+    must_route(h, "PUT", "/api/v1/system/dns/capture", handle_dns_capture, ctx);
     mt_profiles_register_routes(h, ctx);
     mt_update_register_routes(h, ctx);
     must_route(h, "GET", "/api/v1/system/interfaces", handle_list_interfaces, ctx);

@@ -1,59 +1,93 @@
-# Compact DNS history and live SSE
+# Opt-in DNS history with a 1 MiB storage budget
 
-Settings → DNS queries displays validated incoming UDP/TCP DNS questions passing through mt-c's proxy. Rows contain `id`, `time_ms`, `client`, `domain`, numeric `qtype` and `protocol`. DNS metadata does not prove a page was visited; URLs, paths and response payloads are not recorded. Client caches, encrypted DNS bypassing this proxy, and addresses hidden by NAT/forwarders cannot be reconstructed.
+Settings → DNS queries displays questions passing through mt-c's DNS proxy.
+**Recording is disabled after every daemon/router start.** Reading the API,
+opening Settings or subscribing to SSE never enables it. Only an explicit
+Start recording action does. The WebUI asks for confirmation that history
+will increase RAM use (up to 1 MiB for storage plus streaming/UI overhead).
 
-## Bounded RAM storage
+Capture state is shared by all viewers and is not saved in YAML, configuration
+exports or localStorage. Enabled recording continues after closing the page.
+Stop recording disables collection, deletes history and frees the ring,
+dictionaries and string pools; a small control object remains. Existing viewers
+receive the state change. Pause only freezes the local view; it does not stop
+capture. Clear removes retained rows while leaving capture enabled.
 
-The default remains **1000 individual questions**. Closing/reloading the browser does not stop server-side collection. Restarting the daemon/router or explicit clearing discards history; nothing is written to flash or config exports.
+## Memory and eviction
 
-The ring uses **24-byte records**, not the public materialized `mt_dns_query_entry_t` structure. Records retain ID, full timestamp, query type and transport, referencing two bounded dictionaries. Exact decompressed DNS wire names (up to 255 bytes, including root) and binary IPs are stored once per distinct key. Case and binary label bytes are preserved; duplicate requests are NOT merged. IPv4 and IPv4-mapped IPv6 remain distinct.
+Production storage has a **1,048,576-byte requested-allocation budget** including
+24-byte ring records, dictionary metadata, hash buckets, reserved string pools
+and the control object. Pools share the remaining byte budget instead of each
+reserving a megabyte. Unused reserve is reclaimed before oldest records are
+evicted. No history buffers are allocated while off.
 
-Each dictionary has fixed-capacity handles/hash buckets and a lazily growing byte pool with length-prefixed, aligned records. Zero-reference keys are released on eviction. Pools compact in place and shrink under low utilization; clearing releases the pools. No per-repeat-key allocation, unbounded string cache, or second full-sized compaction arena is used. One spare key slot permits acquiring replacement keys before evicting a row. Allocation failure leaves existing rows and IDs intact. Access is loop-local; no packed/unaligned C structure loads are required on MIPS.
+This is not a cap on total daemon RSS: allocator bookkeeping, temporary realloc
+copies, JSON/network buffers, client-name discovery and browser memory are
+additional. The UI warns about this and displays history usage separately.
 
-`mt_dns_query_log_stats` reports requested allocation bytes including unused pool reserve, but **not allocator bookkeeping, RSS, temporary JSON/HTTP buffers or browser memory**. `tools/bench/dns_query_log_memory.c` reproduces these synthetic x86-64 measurements:
+The production ring has at most **8192 individual records**. The byte budget may
+evict earlier depending on unique domain lengths and clients. In a local
+synthetic maximum-length-name/IPv6 stress test, 1844 rows used 1,048,448 bytes;
+short repeated names retain more. This is not a traffic prediction or router
+RSS measurement. The explicitly enabled, row-bounded `create_sized` constructor
+remains available for tests/embedders; its `memory_limit=0` does not describe
+production behavior.
 
-| Rows | Unique names | Clients | Name length | Allocated bytes | KiB |
-|---:|---:|---:|---|---:|---:|
-| 1000 | 200 | 20 IPv4 | 31 text characters | 73,868 | 72.1 |
-| 1000 | 1000 | 20 IPv4 | 31 text characters | 109,406 | 106.8 |
-| 1000 | 1000 | 1000 IPv6 | 255 wire bytes | 348,892 | 340.7 |
-| 10000 | 2000 | 20 IPv4 | 31 text characters | 791,643 | 773.1 |
-| 10000 | 10000 | 20 IPv4 | 31 text characters | 1,196,441 | 1168.4 |
+Each raw question retains ID, timestamp, type, protocol and exact domain/client
+identity. Reference-counted dictionaries store decompressed wire names and
+binary IPs once. Eviction releases unused keys, and pools compact/shrink. Stop
+releases all history buffers. No compression dependency, flash logging or
+background persistent archive is added.
 
-The old 1000-row array alone required 1,096,000 bytes on x86-64. Actual traffic mix and ABI affect totals; the table is not a router RSS benchmark. No compression library or additional runtime dependency is needed.
+## Related questions in one display row
 
-The sized constructor accepts 1..60000 rows for embedding/tests; `MT_DNS_QUERY_LOG_CAPACITY` is a build-time default. This change does not add a YAML setting or silently increase the production retention limit.
+The default timeline combines A (IPv4), AAAA (IPv6) and HTTPS (type 65,
+**HTTPS parameters**) from the same client, case-insensitive domain and transport
+within one second of the first question. The window does not slide. Repeated
+questions of the same type begin another group, so retries are not swallowed.
+Other types and different clients/transports remain separate.
 
-## Authenticated HTTP API
+Rows appear immediately and expand as sibling questions arrive. Expanding a row
+shows every raw type and millisecond timestamp. Combining can be toggled off.
+This is presentation only: raw events remain separate in RAM and the stored
+request count is not the number of display groups. Global domain grouping,
+search, device filters, pagination and router-provided device names are retained.
 
-- `GET /api/v1/system/dns/stream`: one long-lived `text/event-stream` response.
-- `GET /api/v1/system/dns/queries`: finite JSON snapshot for explicit/manual reads; no periodic polling.
-- `DELETE /api/v1/system/dns/queries`: clear the shared journal and notify viewers.
+## Authenticated API and SSE
 
-The stream starts with **multiple bounded events**, not one giant JSON snapshot:
+- `GET /api/v1/system/dns/capture` reads runtime state.
+- `PUT /api/v1/system/dns/capture` accepts exactly `{"enabled":true}` or
+  `{"enabled":false}`. Invalid/trailing input and extra fields are rejected.
+- State contains `enabled`, `memory_limit`, `memory_used`, `count`, `capacity`.
+- `GET /api/v1/system/dns/stream` is one long-lived authenticated SSE response.
+- `GET /api/v1/system/dns/queries` is a finite snapshot for explicit consumers.
+- `DELETE /api/v1/system/dns/queries` clears retained history without changing
+  enabled state; the response includes updated capture state and `cleared`.
 
-```text
-event: snapshot_begin
-data: {"capacity":1000,"count":2,"through":12}
+Streams begin with a `capture` state event, then `snapshot_begin`, batches of at
+most 32 rows in `snapshot_chunk`, and `snapshot_end`. New queries are pushed
+immediately. Enable/disable changes are broadcast with `capture`; clearing uses
+`clear`. Live rows carry `retained_from` so the WebUI drops byte-budget evictions
+even below the ring's slot count, and `memory_used` updates the usage display.
 
-event: snapshot_chunk
-data: {"offset":0,"queries":[{"id":11,"time_ms":123,"client":"192.168.1.10","domain":"example.org","qtype":1,"protocol":"udp"},{"id":12,"time_ms":124,"client":"192.168.1.11","domain":"example.org","qtype":28,"protocol":"tcp"}]}
+Snapshots may exceed 2 MiB in total, but each event is bounded to 64 KiB. The
+browser stages chunks and atomically replaces history after complete validation.
+Reconnects, clearing or eviction during a snapshot restart staging. Bearer tokens
+remain in headers, never URLs. No polling or automatic capture-start fallback
+exists. Hidden/inactive/paused views close their local subscriptions; background
+capture continues if explicitly enabled. Read-only viewers do not start client
+inventory lookup while capture is off.
 
-event: snapshot_end
-data: {"through":12}
+The existing eight-subscriber limit, bounded writable-callback work, idle
+heartbeat and stalled-writer timeout remain. History is volatile DNS metadata,
+not visited URLs; cached queries and encrypted DNS bypassing the proxy are not
+captured. The address seen by the proxy may be a forwarding/NAT device.
 
-```
+## Tests
 
-Chunks contain at most 32 rows in ascending ID order. `through` is a fixed high-water mark; new requests follow the completed snapshot as `query` events. The browser validates count, capacity, offsets and contiguous IDs, stages at most the declared capacity, then replaces the displayed history atomically on `snapshot_end`. It does not serialize the completed history into another giant JSON string. Filters/grouping/pagination stay local and unchanged.
-
-Clearing during a snapshot or evicting its unread rows starts a new `snapshot_begin`, abandoning previous staging. Clearing during live streaming emits `clear` with `{}`. Reconnection always starts a fresh snapshot, and discards any unfinished old one. There is no `Last-Event-ID` replay archive; recovery is limited to retained history. A very slow reader may need a fresh snapshot rather than receiving every event.
-
-**The total history/connection is not limited to 2 MiB.** Each event has a 64 KiB safety limit on server and client, including escaped longest legal names. The C server materializes at most 32 rows for a snapshot event, not the full journal. Temporary event/HTTP buffers remain bounded independently of history length. The finite manual JSON endpoint still materializes its explicitly requested snapshot.
-
-At most eight subscribers share the same ring. Per-writable-callback work remains bounded to 64 KiB/32 events. Idle heartbeat comments every 15 seconds maintain connectivity; DNS events do not wait for a timer. Nonprogressing writers time out. Responses set `Cache-Control: no-store, no-cache, no-transform` and `X-Accel-Buffering: no`; reverse proxies must preserve streaming.
-
-The frontend uses fetch streaming with the existing Bearer header, never a token in the URL. Pause, leaving Settings, hidden tab, logout and unmount abort the subscription. Resume reconnects; transport failures use bounded exponential backoff. Unauthorized responses stop retries. The DNS toolbar has no Refresh action or manual GET path; error recovery reconnects SSE. Device labels and normalized client addresses are documented in [DNS client labels](dns-client-labels.md).
-
-## Verification
-
-Core tests cover reference-count reclamation, 20,000-row churn with model comparisons, pool compaction/shrink, clear, reused handles, case, maximum binary names, IPv4/IPv6 and invalid inputs. Real C HTTP tests exercise authorization, multi-viewer push/clear, a >2 MiB snapshot in bounded events, interrupted snapshots and subscriber teardown/limits. Frontend unit tests exercise framing/UTF-8, >2 MiB cumulative transfer, malformed/incomplete chunks and authenticated lifecycle. Browser tests use a genuinely open response, including partial-snapshot staging and reconnection without polling.
+Core tests cover disabled no-op behavior, explicit start, idempotent toggles,
+freed buffers, restart defaults, subscriber neutrality, and 24,000 maximum-name
+requests under the shared byte cap. HTTP tests cover strict authorized control
+and state broadcasts, in addition to existing chunking/auth/clear tests.
+Frontend tests cover anchored-window grouping, raw-event preservation, retention
+boundaries, RAM confirmation cancellation, page reload and multi-viewer stop.

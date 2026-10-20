@@ -1,15 +1,13 @@
-/* Bounded RAM-only history; all operations run on mt_loop's thread.
- * Public entries are materialized views, NOT the ring's storage layout.
- */
+/* Loop-local, RAM-only DNS history. Production capture starts disabled. */
 #ifndef MAGITRICKLE_DNS_QUERY_LOG_H
 #define MAGITRICKLE_DNS_QUERY_LOG_H
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
-
 #ifndef MT_DNS_QUERY_LOG_CAPACITY
-#define MT_DNS_QUERY_LOG_CAPACITY 1000
+#define MT_DNS_QUERY_LOG_CAPACITY 8192
 #endif
+#define MT_DNS_QUERY_LOG_MEMORY_LIMIT ((size_t)1024 * 1024)
 #define MT_DNS_QUERY_LOG_MAX_CAPACITY 60000
 #define MT_DNS_QUERY_LOG_DOMAIN_LEN 1024
 #define MT_DNS_QUERY_LOG_CLIENT_LEN 48
@@ -24,24 +22,23 @@ typedef struct mt_dns_query_entry {
     uint16_t qtype;
     bool tcp;
 } mt_dns_query_entry_t;
-
 typedef struct mt_dns_query_log_stats {
     size_t capacity, count;
     size_t entry_bytes, index_bytes, pool_bytes, allocated_bytes;
     size_t domains, clients;
 } mt_dns_query_log_stats_t;
-
+/* Allocates only the small control object, not the history or dictionaries. */
 mt_dns_query_log_t *mt_dns_query_log_create(void);
-/* 1..MAX_CAPACITY; sizing for embedders/tests, not a new YAML setting. */
+/* Explicit enabled, row-bounded constructor for tests/embedders. */
 mt_dns_query_log_t *mt_dns_query_log_create_sized(size_t capacity);
 void mt_dns_query_log_destroy(mt_dns_query_log_t *log);
-/* Presentation-form adapter used by existing capture call sites. Invalid
- * names are rejected, not truncated. IPs and names are stored in binary. */
+bool mt_dns_query_log_set_enabled(mt_dns_query_log_t *log, bool enabled);
+bool mt_dns_query_log_enabled(const mt_dns_query_log_t *log);
+size_t mt_dns_query_log_memory_limit(const mt_dns_query_log_t *log);
 void mt_dns_query_log_append(mt_dns_query_log_t *log, const char *client,
     const char *domain, uint16_t qtype, bool tcp, int64_t time_ms);
-/* addr_len is 0 (unknown), 4 (IPv4) or 16 (IPv6). name is a decompressed
- * DNS wire name including root, at most 255 bytes. Copies input. On OOM
- * or invalid input returns false without changing the retained history. */
+/* Valid decompressed wire name, including root; IP length 0/4/16. Disabled
+ * capture is a no-op. Memory pressure evicts oldest rows, never blocks DNS. */
 bool mt_dns_query_log_append_wire(mt_dns_query_log_t *log,
     const uint8_t *addr, size_t addr_len, const uint8_t *name, size_t name_len,
     uint16_t qtype, bool tcp, int64_t time_ms);
@@ -52,16 +49,11 @@ bool mt_dns_query_log_get(const mt_dns_query_log_t *log, size_t newest_index,
 bool mt_dns_query_log_get_id(const mt_dns_query_log_t *log, uint64_t id,
     mt_dns_query_entry_t *out);
 void mt_dns_query_log_clear(mt_dns_query_log_t *log);
-/* Exact bytes requested from the allocator, including unused pool space;
- * excludes allocator bookkeeping, HTTP buffers and caller-owned views. */
-void mt_dns_query_log_stats(const mt_dns_query_log_t *log,
-    mt_dns_query_log_stats_t *out);
-
+/* Requested allocation bytes including reserved pool/index space. Excludes
+ * allocator bookkeeping, temporary realloc/HTTP buffers and browser RAM. */
+void mt_dns_query_log_stats(const mt_dns_query_log_t *log, mt_dns_query_log_stats_t *out);
 typedef void (*mt_dns_query_log_notify_fn)(void *ud);
-/* Callbacks may unsubscribe themselves, but must not mutate the journal.
- * Stop subscribers before destroying the log. */
-int mt_dns_query_log_subscribe(mt_dns_query_log_t *log,
-    mt_dns_query_log_notify_fn notify, void *ud);
+int mt_dns_query_log_subscribe(mt_dns_query_log_t *log, mt_dns_query_log_notify_fn notify, void *ud);
 void mt_dns_query_log_unsubscribe(mt_dns_query_log_t *log, int subscription);
 uint64_t mt_dns_query_log_sequence(const mt_dns_query_log_t *log);
 uint64_t mt_dns_query_log_revision(const mt_dns_query_log_t *log);
