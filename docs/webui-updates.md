@@ -20,12 +20,21 @@ newer version/revision, exact build/firmware target, official download URL, size
 and SHA-256 over HTTPS. It saves the current configuration before preparation.
 No download or package-manager wait runs in the DNS/HTTP event loop.
 
-Once verified, a detached **system `/bin/sh` command** invokes the configured
-`opkg install` or `apk add --allow-untrusted`, restarts the existing init service
+Once verified, a detached **shell command** uses **`/opt/bin/sh` on Entware**
+and **`/bin/sh` on OpenWrt** to invoke the configured `opkg install` or
+`apk add --allow-untrusted`, restarts the existing init service
 on success, and removes its private temporary package. There is no `mt-c-updater`
 binary, alternate daemon mode, or second running `magitrickled`. Existing Entware
 `rc.func` and OpenWrt `procd` service scripts are unchanged. The shell command is
 fixed; URLs, commands and package paths cannot be supplied by the browser.
+
+Capability checks and execution use the same platform-selected `INSTALL_SHELL`.
+Entware deliberately has **no fallback to `/bin/sh`**: on the reported Keenetic,
+that firmware entry point loses the positional arguments after `-c`, including
+the paths needed for installation and cleanup. A missing/non-executable
+`/opt/bin/sh` makes installation unavailable; failure to exec it aborts the
+handoff rather than trying the firmware shell. This is the 2026-10-20 amendment
+to D-75, not a change to OpenWrt's shell or the installation/status protocol.
 
 The shell starts a package manager only after a startup handshake completes.
 Its stdin/stdout/stderr and inherited descriptors do not depend on the daemon.
@@ -42,6 +51,11 @@ conffile handling preserves settings. Package-manager output goes to the system
 console; the application does not promise persistent system logging. Detailed
 installation diagnostics and manual recovery are the administrator's CLI task.
 There is no automatic binary rollback or power-loss recovery transaction.
+
+For affected older Entware builds, see [Entware update recovery](entware-update-recovery.md).
+They need a one-time installation of a **fixed build** through the package
+manager; reinstalling the unpatched 0.8.5 release does not repair its updater.
+Do not replace the firmware's `/bin/sh` as a workaround.
 
 `<state-dir>/update/lock` is retained solely for `flock` serialization, including
 an upgrade launched by the former separate updater. Old result/backup files are
@@ -88,7 +102,12 @@ Unknown formats, unavailable exact targets, missing digests and downgrades fail 
 C release tests cover versions/channels/assets; subprocess tests use **synthetic**
 manager/init scripts to verify parent process-group death, inherited-fd isolation,
 exclusive locking, cleanup and no restart on manager failure. They never install a
-real package. Packaging tests assert absence of the old updater from IPK/APK payloads.
+real package. Separate Entware/OpenWrt variants verify platform-specific shell
+selection. The Entware variant rejects the firmware `/bin/sh` path and tests
+both an unavailable shell during capability checks and its disappearance before
+exec, without falling back. The synthetic handoff suite still checks argument
+passing, locking, daemon death, restart and cleanup for both platforms.
+Packaging tests assert absence of the old updater from IPK/APK payloads.
 Deno mock routes simulate preparation followed by an idle new daemon/version.
 Frontend unit/Playwright tests cover shared cache, Retry, volatile status after
 restart, per-tab intent, version-read failure and an unchanged version after handoff.

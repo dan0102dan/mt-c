@@ -3578,9 +3578,28 @@ Status: **accepted, intentional simplification of D-74 at the user's request**.
 Remove the separately packaged `mt-c-updater`, not replace it with another daemon
 mode/copy. The existing `magitrickled` prepares and verifies the exact GitHub
 package on a cancellable background thread, leaving the DNS/HTTP loop responsive.
-A short detached `/bin/sh` command runs `opkg`/`apk`, restarts the standard init
-service after success and removes the temporary download. No new service, PID-file
+A short detached shell command runs `opkg`/`apk`, restarts the standard init
+service after success and removes the temporary download. The shell is
+`/opt/bin/sh` for Entware and `/bin/sh` for OpenWrt. No new service, PID-file
 scheme or edits to Entware rc.func/OpenWrt procd behavior are introduced.
+
+**Entware shell amendment (2026-10-20, PR #21).** The original implementation
+used `/bin/sh` for every platform. On the reported Keenetic, that firmware
+entry point drops the positional arguments after `-c`, while `/opt/bin/sh`
+preserves them. Those arguments carry the package-manager, package, init-script
+and temporary-directory paths plus the package format; losing them prevents
+installation and cleanup. Entware must therefore use its own `/opt/bin/sh`.
+Capability checks and `execve` use the same compiled `INSTALL_SHELL` path.
+There is no fallback to the firmware `/bin/sh`: a missing/non-executable
+Entware shell makes the installer unavailable, and an exec failure aborts the
+handoff without starting a package transaction. OpenWrt keeps `/bin/sh`.
+This changes shell selection only; the fixed command, argument separation,
+lock ownership and volatile-status/diagnostic contract below remain unchanged.
+Separate Entware/OpenWrt process tests cover platform selection; the Entware
+variant also checks an unavailable shell during capability checks and at exec.
+Host tests do not replace an on-device upgrade. Affected older binaries need
+a one-time package-manager installation of a build containing this fix; see
+[Entware update recovery](../entware-update-recovery.md).
 
 The system shell owns the inherited update `flock`; package scripts and restarted
 daemons must not inherit it. A pre-command gate ensures a failed/expired startup
