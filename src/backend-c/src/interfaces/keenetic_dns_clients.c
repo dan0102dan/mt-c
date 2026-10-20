@@ -18,8 +18,13 @@ mt_err_t mt_dns_clients_parse_hotspot(const char *json, size_t len,
     if (!root || end != json + len) { cJSON_Delete(root); return MT_ERR_PROTO; }
     if (cJSON_GetObjectItemCaseSensitive(root, "status")) { cJSON_Delete(root); return MT_ERR_UPSTREAM; }
     const cJSON *hosts = cJSON_IsArray(root) ? root : cJSON_GetObjectItemCaseSensitive(root, "host");
-    /* Some firmware versions return {} when the host inventory is empty. */
-    if (!hosts && cJSON_IsObject(root) && cJSON_GetArraySize(root) == 0) { cJSON_Delete(root); return MT_OK; }
+    /* Some firmware versions return {} when the host inventory is empty.
+     * Reject any other response without 'host' before accessing its children. */
+    if (!hosts) {
+        bool empty = cJSON_IsObject(root) && cJSON_GetArraySize(root) == 0;
+        cJSON_Delete(root);
+        return empty ? MT_OK : MT_ERR_PROTO;
+    }
     bool single = cJSON_IsObject(hosts) && cJSON_GetObjectItemCaseSensitive(hosts, "ip");
     if (!cJSON_IsArray(hosts) && !single) { cJSON_Delete(root); return MT_ERR_PROTO; }
     if (!single && (unsigned)cJSON_GetArraySize(hosts) > MT_DNS_CLIENT_LIMIT) {
