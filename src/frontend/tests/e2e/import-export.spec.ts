@@ -1185,4 +1185,21 @@ test.describe("Import/Export", () => {
       expect(applied).toBe(0);
     });
   }
+  for (const width of [1280, 390]) {
+    test(`full subscription URL is shown below its name at ${width}px`, async ({ page }) => {
+      await page.setViewportSize({ width, height: width === 390 ? 844 : 900 });
+      const url = "https://services.should.be.blocked.com/" + "long-subscription-path/".repeat(6);
+      const dialog = await openTransfer(page, {
+        subscriptions: [{ ...makeSubscription("55667788", "Bad Bad Services"), url }],
+      });
+      await dialog.getByRole("tab", { name: "Subscriptions", exact: true }).click();
+      await expect(dialog.getByText(url, { exact: true })).toBeVisible();
+      const nameBounds = await dialog.getByText("Bad Bad Services", { exact: true }).boundingBox();
+      const urlBounds = await dialog.getByText(url, { exact: true }).boundingBox();
+      expect(urlBounds!.y).toBeGreaterThanOrEqual(nameBounds!.y + nameBounds!.height);
+      expect(
+        await dialog.evaluate((element) => element.scrollWidth - element.clientWidth),
+      ).toBeLessThanOrEqual(1);
+    });
+  }
 });

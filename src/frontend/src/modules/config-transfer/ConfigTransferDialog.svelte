@@ -291,7 +291,7 @@
     if (/token|password|secret|key|credential/i.test(field)) return "••••";
     let printed = typeof value === "string" ? value : JSON.stringify(value);
     printed = printed.replace(/([?&](?:token|key|password|secret)=)[^&#]+/gi, "$1•••");
-    return printed.length > 130 ? printed.slice(0, 130) + "…" : printed;
+    return printed;
   }
   function setChoice(key: string, choice: string) {
     choices = { ...choices, [key]: choice as Choice };
@@ -345,7 +345,10 @@
                           disabled={busy}
                           on:change={(event) => toggleEntry(entry.key, event.detail.checked)}
                         />
-                        <div class="group-info">
+                        <div
+                          class="group-info"
+                          class:subscription-info={section === "subscriptions"}
+                        >
                           <span class="group-name">{entry.name}</span>
                           {#if entry.meta}<span class="group-meta">{entry.meta}</span>{/if}
                         </div>
@@ -519,6 +522,16 @@
     max-width: 55%;
     min-width: 0;
     font-variant-numeric: tabular-nums;
+  }
+
+  .subscription-info {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 0.25rem;
+  }
+
+  .subscription-info .group-meta {
+    max-width: 100%;
   }
 
   .dialog-actions {
