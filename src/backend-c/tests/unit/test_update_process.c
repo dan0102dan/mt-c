@@ -1,6 +1,39 @@
 /* Exercise the real system-package handoff, never a real package manager. */
 #define _GNU_SOURCE
 #include <sys/stat.h>
+#include <assert.h>
+#include <errno.h>
+#include <stdbool.h>
+#include <string.h>
+#include <unistd.h>
+
+#if defined(MT_TEST_ENTWARE_SHELL)
+/* Keep the production Entware path selection, but execute a real host shell.
+ * A regression to the firmware /bin/sh must fail rather than silently pass
+ * because the CI host happens to have a fully functional POSIX /bin/sh. */
+static bool fixture_shell_available = true;
+static bool fixture_shell_checked;
+static int fixture_access(const char *path, int mode) {
+    if (strcmp(path, "/opt/bin/sh") == 0) {
+        fixture_shell_checked = true;
+        if (fixture_shell_available) { return 0; }
+        errno = ENOENT;
+        return -1;
+    }
+    if (strcmp(path, "/opt/bin/opkg") == 0) { return 0; }
+    return access(path, mode);
+}
+static uid_t fixture_geteuid(void) { return 0; }
+static int fixture_execve(const char *path, char *const args[], char *const env[]) {
+    if (strcmp(path, "/opt/bin/sh") != 0) { errno = ENOEXEC; return -1; }
+    if (!fixture_shell_available) { errno = ENOENT; return -1; }
+    return execve("/bin/sh", args, env);
+}
+#define access fixture_access
+#define geteuid fixture_geteuid
+#define execve fixture_execve
+#endif
+
 static int fixture_fstat(int fd, struct stat *st) {
     int result = fstat(fd, st);
     if (result == 0) { st->st_uid = 0; }
@@ -9,7 +42,11 @@ static int fixture_fstat(int fd, struct stat *st) {
 #define fstat fixture_fstat
 #include "../../src/platform/update.c"
 #undef fstat
-#include <assert.h>
+#if defined(MT_TEST_ENTWARE_SHELL)
+#undef access
+#undef geteuid
+#undef execve
+#endif
 
 static void script(const char *path, const char *text) {
     int fd = open(path, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0700);
@@ -105,6 +142,25 @@ static void handoff(bool apk, bool fail, unsigned closed_stdio) {
 }
 
 int main(void) {
+#if defined(MT_TEST_ENTWARE_SHELL)
+    char suffix[192];
+    assert(strcmp(INSTALL_SHELL, "/opt/bin/sh") == 0);
+    assert(capability(suffix, sizeof(suffix)) == NULL);
+    assert(fixture_shell_checked);
+    assert(strcmp(suffix, "entware_mipsel-3.4_kn.ipk") == 0);
+    fixture_shell_available = false;
+    assert(strcmp(capability(suffix, sizeof(suffix)), "Installer unavailable") == 0);
+    /* Also handle removal between capability preflight and exec: do not
+     * fall back to /bin/sh, and never start a package transaction. */
+    int unavailable_lock = open("/dev/null", O_RDONLY | O_CLOEXEC);
+    assert(unavailable_lock >= 0);
+    assert(!launch_install(unavailable_lock, "/nonexistent-manager", "/missing-package",
+                           "/missing-init", "/missing-temp", false, "/dev/null"));
+    close(unavailable_lock);
+    fixture_shell_available = true;
+#elif !defined(MT_PLATFORM_ENTWARE)
+    assert(strcmp(INSTALL_SHELL, "/bin/sh") == 0);
+#endif
     for (unsigned mask = 0; mask < 8; mask++) {
         handoff(false, false, mask);
         handoff(true, false, mask);
