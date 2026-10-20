@@ -4,7 +4,7 @@ on:
     branches: [feat/dns-query-log]
     paths: [.github/workflows/dns-review-workspace.yml]
 permissions:
-  contents: read
+  contents: write
 jobs:
   workspace:
     runs-on: ubuntu-latest
@@ -14,29 +14,95 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
-      - uses: actions/setup-node@v5
-        with:
-          node-version: 24
-      - uses: denoland/setup-deno@v2
-        with:
-          deno-version: v2.x
-      - name: Package tracked source and public development tooling
+      - name: Verify prepared source and create an unattached tree
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
-          set -eu
-          sudo apt-get update -qq
-          sudo apt-get install -y libyaml-dev libcjson-dev libmnl-dev
-          mkdir -p /tmp/dns-review-workspace
-          git archive --format=tar.gz HEAD > /tmp/dns-review-workspace/head.tar.gz
-          git archive --format=tar.gz 7436bc90d4c29efcdead2477a3e211b81f56c422 > /tmp/dns-review-workspace/reviewed.tar.gz
-          git archive --format=tar.gz 05c9ff8c6e3b0df7435f250cba36dc5e5d73e818 > /tmp/dns-review-workspace/base.tar.gz
-          git rev-parse HEAD > /tmp/dns-review-workspace/head.txt
-          tar -czf /tmp/dns-review-workspace/headers.tar.gz -C /usr/include yaml.h cjson libmnl
-          npm --prefix src/frontend ci
-          tar -czf /tmp/dns-review-workspace/node_modules.tar.gz -C src/frontend node_modules
-          cp "$(command -v deno)" /tmp/dns-review-workspace/deno
+          python3 - <<'PY'
+          import base64, gzip, hashlib, json, os, pathlib, subprocess, urllib.request
+          repo = 'dan0102dan/mt-c'
+          assert os.environ['GITHUB_REPOSITORY'] == repo
+          assert os.environ['GITHUB_REF'] == 'refs/heads/feat/dns-query-log'
+          def git(*args):
+              return subprocess.check_output(['git', *args], text=True).strip()
+          assert git('rev-parse', 'HEAD^') == '55c99ae085d51701b6a930158590dfd8dc6c186a', 'Concurrent branch change; stop without publishing'
+          resultdir = pathlib.Path('/tmp/dns-review-result'); resultdir.mkdir()
+          def api(path, data=None):
+              request = urllib.request.Request('https://api.github.com/repos/' + repo + path,
+                  data=None if data is None else json.dumps(data).encode(),
+                  headers={'Authorization': 'Bearer ' + os.environ['GH_TOKEN'], 'Accept': 'application/vnd.github+json', 'Content-Type': 'application/json'})
+              with urllib.request.urlopen(request, timeout=30) as response:
+                  return json.load(response)
+          def text_blob(sha):
+              obj = api('/git/blobs/' + sha)
+              assert obj['encoding'] == 'base64'
+              return ''.join(base64.b64decode(obj['content']).decode('ascii').split())
+          sources = [
+              '7cfd6b95ee8357895319729d6760faaf5533a925',
+              '66d7f8abb70e786febec561f05ec0b27366b4615',
+              '744238a2d244124c8b70e0768afad0c99755006e',
+              '10e8ba5264b95db48f6503c92d2502306889596b',
+              '22b17b3826da03efde3fa3cd4c1691e87302c6fd',
+              '42437fe36ac65ea1e2a5afb7602e697a95161ae6',
+              '8122a1148b8a8bced1a7a33efd731d803ce4d965',
+              'c8b70e6aaf782be99d0fae22479100eb4553a3b8',
+              None,
+              '1c162e4436495d89e0b1a2554cbb1266b7c9cd86',
+              'e9ec25bb5c99f557922fb3d99e281d7811139379',
+              '8235f9f49a423252d72e7cea031080171eae393a',
+              '72f8820a76a0e89fbc23785e17881318a0f034db',
+          ]
+          expected = ['a806cb9b42251d2867ec25e0d95693d2fc564c1f', 'f27f79a9d0ef425655cf4d26c967cd814ee0319f', '29bf5292dff40acef203795b0c76da4ff051caf0', '0735280a6c8de22210752e4f3d92cc4cdde9a36d', '493d554a59ee11aab39cc51fada36e265802b47f', '10c334c7ac6e375533e793b260a6b7539a830e80', '3bdea1a0149fe51eda9cdce10ed52678b25cb409', 'd5a726ed5c4ca5fa007ad9c53497f60cb877c99c', 'c58fef390c04686882403e0bb1dddea0dadd68ef', 'd6dbb28843ee4aa8d3bab54d645b96735cfc7a5d', 'f89de9f137a961380894933e34b5f888bc7357c8', 'a9546579a5ce8b1308e2b4377fd0c57e5b86bc83', 'e8508e4a73e4b6a736dc56dc0fcd83284f37430b']
+          texts = [text_blob(sha) if sha else '' for sha in sources]
+          texts[8] = (text_blob('61b26f46640662fcc8e907c64ca3ec95ee040dae')[:2000] +
+                      text_blob('067f39016858b7f15b4f7bf50cd1717df9ec70f6') +
+                      text_blob('315a6db28d187ee98fcadb3dd2caab3f61650518'))
+          # Repair the two known transcription errors, then verify every byte.
+          texts[0] = texts[0].replace('FopTTOL0RS', 'FopTOL0RS', 1)
+          texts[6] = texts[6].replace('7nb1ucC067', '7nb1ubC067', 1)
+          (resultdir / 'received.json').write_text(json.dumps(texts))
+          def blob_sha(data):
+              return hashlib.sha1(b'blob ' + str(len(data)).encode() + b'\0' + data).hexdigest()
+          parts = []
+          for i, text in enumerate(texts):
+              data = base64.b64decode(text, validate=True)
+              assert len(data) == (1131 if i == 12 else 4000), ('length', i, len(data))
+              assert blob_sha(data) == expected[i], ('checksum', i, blob_sha(data))
+              parts.append(data)
+          archive = b''.join(parts)
+          assert hashlib.sha256(archive).hexdigest() == '2e24114e6c74dde1f2eceba62176ed8cd97d0742ab6b850ab2b8120bc474e781'
+          payload = json.loads(gzip.decompress(archive))
+          assert len(payload['manifest']) == 32
+          patch = resultdir / 'verified.patch'; patch.write_text(payload['patch'])
+          subprocess.run(['git', 'apply', '--check', '--index', str(patch)], check=True)
+          subprocess.run(['git', 'apply', '--index', str(patch)], check=True)
+          changed = set(git('diff', '--cached', '--name-only').splitlines())
+          assert changed == set(payload['manifest']), 'Unexpected paths in patch'
+          for path, sha in payload['manifest'].items():
+              assert path.startswith(('src/backend-c/', 'src/frontend/', 'docs/', 'tools/bench/')) and '..' not in pathlib.PurePosixPath(path).parts
+              assert blob_sha(pathlib.Path(path).read_bytes()) == sha, path
+          helper = '.github/workflows/dns-review-workspace.yml'
+          subprocess.run(['git', 'rm', '--', helper], check=True)
+          subprocess.run(['git', 'diff', '--cached', '--check'], check=True)
+          entries = []
+          for path, sha in payload['manifest'].items():
+              content = base64.b64encode(pathlib.Path(path).read_bytes()).decode()
+              created = api('/git/blobs', {'content': content, 'encoding': 'base64'})
+              assert created['sha'] == sha
+              mode = git('ls-files', '--stage', '--', path).split()[0]
+              entries.append({'path': path, 'mode': mode, 'type': 'blob', 'sha': sha})
+          entries.append({'path': helper, 'mode': '100644', 'type': 'blob', 'sha': None})
+          tree = api('/git/trees', {'base_tree': git('rev-parse', 'HEAD^{tree}'), 'tree': entries})
+          assert tree['sha'] == git('write-tree'), 'Remote tree differs from validated local index'
+          result = {'parent': git('rev-parse', 'HEAD'), 'tree': tree['sha'], 'manifest': payload['manifest'], 'deleted': [helper]}
+          (resultdir / 'result.json').write_text(json.dumps(result, indent=2))
+          print(json.dumps({'parent': result['parent'], 'tree': result['tree'], 'files': len(entries)}))
+          # No branch writes: publication uses a separate lease-checked connector call.
+          PY
       - uses: actions/upload-artifact@v4
+        if: always()
         with:
-          name: dns-review-workspace
-          path: /tmp/dns-review-workspace
+          name: dns-review-result
+          path: /tmp/dns-review-result
           retention-days: 1
           if-no-files-found: error
