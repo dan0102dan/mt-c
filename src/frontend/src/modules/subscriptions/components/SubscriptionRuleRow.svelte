@@ -24,10 +24,15 @@
     throw new Error("SubscriptionsStore context is missing");
   }
 
-  const pattern = $derived(subscriptionRulePattern(rule.rule));
+  const pattern = $derived(subscriptionRulePattern(rule.rule, rule.type));
 
   function isPatternInvalid() {
-    return pattern.length === 0 || (VALIDATOP_MAP[rule.type] && !VALIDATOP_MAP[rule.type](pattern));
+    // Imported wildcard source is validated by the backend; the old UI
+    // validator deliberately does not allow every supported imported glob.
+    const typedWildcard = rule.type === "wildcard" &&
+      (rule.rule.startsWith("DOMAIN-KEYWORD,") || rule.rule.startsWith("DOMAIN-WILDCARD,"));
+    return pattern.length === 0 ||
+      (!typedWildcard && VALIDATOP_MAP[rule.type] && !VALIDATOP_MAP[rule.type](pattern));
   }
 
   async function handleTypeChange(value: string) {
