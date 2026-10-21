@@ -8,6 +8,14 @@ on:
       - '**.md'
       - '.github/**'
       - '!.github/workflows/build.yml'
+  pull_request:
+    paths:
+      - 'Makefile'
+      - 'config/**'
+      - 'files/**'
+      - 'src/**'
+      - 'tools/ci/**'
+      - '.github/workflows/build.yml'
   release:
     types: [published]
   workflow_dispatch:
@@ -35,6 +43,7 @@ jobs:
   # slow mirror costs a missing report, not a failed run. Mappings are
   # still applied by hand, from data instead of from memory.
   discover:
+    if: github.event_name != 'pull_request'
     name: Discover OpenWrt arch mappings
     runs-on: ubuntu-latest
     continue-on-error: true
@@ -142,6 +151,7 @@ jobs:
         run: |
           python3 - <<'PY' >> "$GITHUB_OUTPUT"
           import json
+          import os
           from pathlib import Path
 
           SNAPSHOT_ONLY_ARCHS = {"mips64_mips64r2", "mips64el_mips64r2"}
@@ -178,6 +188,17 @@ jobs:
                       })
               else:
                   matrix.append(item)
+
+          # PRs need one real-device-class package test, not the entire
+          # multi-platform release build. Push/release builds remain full.
+          if os.environ.get("GITHUB_EVENT_NAME") == "pull_request":
+              matrix = [
+                  item for item in matrix
+                  if item["config"] == "config/openwrt/aarch64_cortex-a53.config"
+                  and item["openwrt_version"] == "25.12.5"
+              ]
+              if len(matrix) != 1:
+                  raise SystemExit("Missing OpenWrt 25.12.5 A53 emulator test target")
 
           print(f"configs={json.dumps(matrix, separators=(',', ':'))}")
           PY
@@ -936,6 +957,55 @@ jobs:
             echo "package_1_path=$package" >> "$GITHUB_OUTPUT"
             echo "package_1_name=$(basename "$package")" >> "$GITHUB_OUTPUT"
           fi
+
+      # One real OpenWrt 25.12.5 boot per run. The APK is the exact
+      # cross-built SDK artifact above, not a host-repacked copy.
+      # Run before release uploads: a broken install/service must fail.
+      - name: Install and smoke-test APK in router emulator
+        if: matrix.name == 'aarch64_cortex-a53' && matrix.openwrt_version == '25.12.5' && steps.package_outputs.outputs.package_1_path != ''
+        env:
+          APK: ${{ steps.package_outputs.outputs.package_1_path }}
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends mtd-utils unzip
+
+          test_root="$GITHUB_WORKSPACE/.build/router-emulator-smoke"
+          mkdir -p "$test_root"
+          base="https://github.com/stavultras/router-emulator/releases/download/v3.7"
+          curl --fail --location --retry 5 --retry-delay 5 --connect-timeout 30 \
+            --output "$test_root/emulator.tar.gz" \
+            "$base/Router-Emulator-3.7-linux-x86_64.tar.gz"
+          curl --fail --location --retry 5 --retry-delay 5 --connect-timeout 30 \
+            --output "$test_root/presets.zip" \
+            "$base/Router-Emulator-3.7-presets.zip"
+
+          (
+            cd "$test_root"
+            printf '%s  %s\n' \
+              '32367c4a1e5aabffd20152d3336a949075be16af6a7d2b0a0ee98cae02a7b053' emulator.tar.gz |
+              sha256sum -c -
+            printf '%s  %s\n' \
+              '5852aa6ed5731e3a422b921e3cab2ef6b19d27308f425e4e0d096fcb99abdfc4' presets.zip |
+              sha256sum -c -
+            tar -xzf emulator.tar.gz
+            unzip -q presets.zip
+            cd Router-Emulator
+            tools/prepare-nand.sh cudy_wr3000p-v1 25.12.5
+          )
+
+          python3 tools/ci/router-emulator-smoke.py \
+            --emulator-dir "$test_root/Router-Emulator" \
+            --package "$APK"
+
+      - name: Upload router-emulator smoke logs
+        if: always() && matrix.name == 'aarch64_cortex-a53' && matrix.openwrt_version == '25.12.5'
+        uses: actions/upload-artifact@v6
+        with:
+          name: router-emulator-smoke-25.12.5-aarch64_cortex-a53
+          path: .build/router-emulator-smoke/Router-Emulator/work/
+          if-no-files-found: warn
+          retention-days: 7
 
       - name: Upload package artifact 1
         if: ${{ github.event_name != 'release' && github.event_name != 'workflow_dispatch' && steps.package_outputs.outputs.package_1_path != '' }}
