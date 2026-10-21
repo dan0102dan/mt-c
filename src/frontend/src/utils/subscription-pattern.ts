@@ -12,9 +12,11 @@ const TYPED_SOURCE_PREFIXES = new Set([
  * Its prefix distinguishes equal patterns of different types and survives
  * user type overrides, refresh, export/import and cache reload.
  */
-export function subscriptionRulePattern(source: string): string {
+export function subscriptionRulePattern(source: string, type?: string): string {
   const comma = source.indexOf(",");
-  return comma >= 0 && TYPED_SOURCE_PREFIXES.has(source.slice(0, comma))
-    ? source.slice(comma + 1)
-    : source;
+  if (comma < 0) return source;
+  const prefix = source.slice(0, comma);
+  if (!TYPED_SOURCE_PREFIXES.has(prefix)) return source;
+  const payload = source.slice(comma + 1);
+  return prefix === "DOMAIN-KEYWORD" && type === "wildcard" ? `*${payload}*` : payload;
 }
