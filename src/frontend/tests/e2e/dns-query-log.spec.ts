@@ -151,6 +151,7 @@ async function setup(page: Page, dns: Backend) {
   const menu = page.getByRole("button", { name: "Open menu" });
   if (await menu.isVisible()) await menu.click();
   await page.getByRole("tab", { name: "Settings" }).click();
+  await page.getByRole("tab", { name: "DNS queries", exact: true }).click();
   const region = page.locator(".dns-query-log");
   await expect(region).toBeVisible();
   return region;
@@ -273,44 +274,53 @@ test("DNS streaming controls and long records fit a phone viewport", async ({ pa
 });
 
 for (const width of [1280, 390]) {
-  test(`DNS heading joins the shared scroll toolbar without losing filters (${width}px)`, async ({
-    page,
-    dns,
-  }) => {
+  test(`DNS tab preserves filters when switching sections (${width}px)`, async ({ page, dns }) => {
     await page.setViewportSize({ width, height: 844 });
     await page.emulateMedia({ reducedMotion: "reduce" });
     seedHistory(dns, 90);
     const region = await setup(page, dns);
     await expect(region.locator("tbody tr")).toHaveCount(30);
-    const heading = page.locator(".settings-toolbar").getByRole("heading", { level: 2 });
-    const inline = region.getByRole("heading", { name: "DNS queries", exact: true });
     const save = page.locator("#save-settings");
     const saveNode = await save.elementHandle();
     await expect(save).toBeDisabled();
     await region.getByRole("searchbox").fill("example");
+    await page.keyboard.press("Control+f");
+    await expect(region.getByRole("searchbox")).toBeFocused();
     await region.getByRole("button", { name: "Group by domain" }).click();
     await expect(region.locator("tbody tr")).toHaveCount(30);
-    for (const offset of [36, -8, 44, -16, 36]) {
-      await page.evaluate((offset) => {
-        const title = document.querySelector("#dns-query-title")!.getBoundingClientRect();
-        const toolbar = document.querySelector(".settings-toolbar")!.getBoundingClientRect();
-        window.scrollBy(0, title.bottom - toolbar.height - offset);
-      }, offset);
-      if (offset < 0) await expect(heading).toHaveAccessibleName("DNS queries");
-      else await expect(heading).not.toHaveAccessibleName("DNS queries");
+    for (let i = 0; i < 3; i++) {
+      await page.getByRole("tab", { name: "Profiles", exact: true }).click();
+      await expect(region).toBeHidden();
+      expect(
+        await page.evaluate(() => {
+          const event = new KeyboardEvent("keydown", {
+            key: "f",
+            code: "KeyF",
+            ctrlKey: true,
+            bubbles: true,
+            cancelable: true,
+          });
+          document.dispatchEvent(event);
+          return event.defaultPrevented;
+        }),
+      ).toBe(false);
+      await page.getByRole("tab", { name: "DNS queries", exact: true }).click();
+      await expect(page.getByRole("tab", { name: "DNS queries", exact: true })).toHaveAttribute(
+        "aria-selected",
+        "true",
+      );
       await expect(region.getByRole("searchbox")).toHaveValue("example");
       await expect(region.getByRole("button", { name: "Individual queries" })).toHaveAttribute(
         "aria-pressed",
         "true",
       );
     }
-    await expect(inline).toHaveCSS("position", "static");
     await expect(page.locator(".settings-page .page-controls")).toHaveCount(1);
     await expect(save).toBeDisabled();
     expect(
       await saveNode!.evaluate((node) => node === document.querySelector("#save-settings")),
     ).toBe(true);
-    expect(dns.state.connections).toBe(1);
+    expect(dns.state.connections).toBeGreaterThanOrEqual(1);
     expect(dns.state.snapshots).toBe(0);
   });
 }

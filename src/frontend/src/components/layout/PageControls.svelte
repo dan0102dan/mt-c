@@ -1,10 +1,11 @@
 <script lang="ts">
-  import type { Snippet } from "svelte";
+  import { getContext, type Snippet } from "svelte";
 
   import Button from "../ui/Button.svelte";
   import Tooltip from "../ui/Tooltip.svelte";
 
   import { Add, Export, Import, Save } from "../ui/icons";
+  import { PAGE_CONTROLS_MOTION, type PageControlsMotion } from "./page-controls-motion";
 
   type Props = {
     search?: Snippet;
@@ -12,12 +13,13 @@
     canSave: boolean;
     canAdd?: boolean;
     controlsClass?: string;
-    contextual?: boolean;
+    active?: boolean;
     actionsClass?: string;
     onAdd?: () => void;
     onSave: () => void;
     saveButtonId?: string;
     saveLabel: string;
+    saveDescriptionId?: string;
     exportLabel?: string;
     importAccept?: string;
     importLabel?: string;
@@ -32,7 +34,7 @@
     canSave,
     canAdd = true,
     controlsClass = "",
-    contextual = false,
+    active = true,
     exportLabel,
     importAccept = ".mtrickle",
     importLabel,
@@ -42,13 +44,36 @@
     onSave,
     saveButtonId,
     saveLabel,
+    saveDescriptionId,
   }: Props = $props();
 
+  const motion = getContext<PageControlsMotion | undefined>(PAGE_CONTROLS_MOTION);
+  const hasAdd = $derived(Boolean(onAdd && addLabel));
+  let showAdd = $state(false);
+  let resetting = $state(false);
+
+  $effect(() => {
+    if (!active) return;
+    const next = hasAdd;
+    const previous = motion?.hasAdd ?? next;
+    if (motion) motion.hasAdd = next;
+    resetting = true;
+    showAdd = previous;
+
+    // Hidden tab panels keep their own controls mounted. Paint the previous
+    // visible row's geometry before animating this row to its new Add state.
+    let frame = requestAnimationFrame(() => {
+      frame = requestAnimationFrame(() => {
+        resetting = false;
+        showAdd = next;
+      });
+    });
+    return () => cancelAnimationFrame(frame);
+  });
+
   let importInputRef = $state<HTMLInputElement>();
-  // Keep the title width stable while contextual Add enters or leaves.
-  let actionsCount = $derived(
-    1 + (onAdd || contextual ? 1 : 0) + (onImport ? 1 : 0) + (onExport ? 1 : 0),
-  );
+  // Reserve enough mobile search space for the widest state of the actions.
+  let actionsCount = $derived(2 + (onImport ? 1 : 0) + (onExport ? 1 : 0));
   let actionsReserve = $derived(`${actionsCount * 48 + Math.max(0, actionsCount - 1) * 8 + 4}px`);
 </script>
 
@@ -62,12 +87,13 @@
     </div>
   {/if}
 
-  <div class={`page-controls-actions ${actionsClass}`} class:contextual>
+  <div class={`page-controls-actions ${actionsClass}`}>
     <Tooltip value={saveLabel}>
       <Button
         onclick={onSave}
         id={saveButtonId}
         aria-label={saveLabel}
+        aria-describedby={saveDescriptionId}
         class="accent"
         inactive={!canSave}
         disabled={!canSave}
@@ -99,19 +125,21 @@
       </Tooltip>
     {/if}
 
-    {#if contextual}
-      <div class="context-add" class:present={Boolean(onAdd)} inert={!onAdd} aria-hidden={!onAdd}>
+    <div
+      class="context-add"
+      class:resetting
+      class:present={showAdd}
+      inert={!onAdd}
+      aria-hidden={!onAdd}
+    >
+      <div class="context-add-motion">
         <Tooltip value={addLabel ?? ""}>
           <Button onclick={onAdd} aria-label={addLabel} disabled={!onAdd || !canAdd}>
             <Add size={22} />
           </Button>
         </Tooltip>
       </div>
-    {:else if onAdd && addLabel}
-      <Tooltip value={addLabel}>
-        <Button onclick={onAdd} aria-label={addLabel} disabled={!canAdd}><Add size={22} /></Button>
-      </Tooltip>
-    {/if}
+    </div>
   </div>
 </div>
 
@@ -153,25 +181,42 @@
     width: 0;
     margin-left: -0.5rem;
     overflow: clip;
-    opacity: 0;
-    transform: translateX(16px);
     transition:
-      width var(--context-transition, 220ms cubic-bezier(0.2, 0, 0.2, 1)),
-      margin-left var(--context-transition, 220ms cubic-bezier(0.2, 0, 0.2, 1)),
-      opacity var(--context-transition, 160ms ease),
-      transform var(--context-transition, 220ms cubic-bezier(0.2, 0, 0.2, 1));
+      width 220ms cubic-bezier(0.2, 0, 0.2, 1),
+      margin-left 220ms cubic-bezier(0.2, 0, 0.2, 1);
   }
   .context-add.present {
     width: calc(22px + 1.2rem + 2px);
     margin-left: 0;
+  }
+  .context-add-motion {
+    opacity: 0;
+    transform: translateX(16px);
+    visibility: hidden;
+    transition:
+      opacity 160ms ease,
+      transform 220ms cubic-bezier(0.2, 0, 0.2, 1),
+      visibility 0s 220ms;
+  }
+  .context-add.present .context-add-motion {
     opacity: 1;
     transform: translateX(0);
+    visibility: visible;
+    transition-delay: 0s;
+  }
+  .context-add.resetting,
+  .context-add.resetting .context-add-motion {
+    transition: none;
   }
   .context-add :global(button) {
     flex-shrink: 0;
   }
   @media (prefers-reduced-motion: reduce) {
     .context-add {
+      transition: none;
+      transform: none;
+    }
+    .context-add-motion {
       transition: none;
       transform: none;
     }

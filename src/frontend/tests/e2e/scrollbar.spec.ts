@@ -6,7 +6,7 @@ async function expectTrackBelowHeader(page: Page, content: string) {
       page.evaluate((selector) => {
         const track = document.querySelector<HTMLElement>(".overlay-scrollbar")!;
         const header = document.querySelector<HTMLElement>(
-          '[data-tabs-content][data-state="active"] .page-controls',
+          '.app-tab-content[data-state="active"] .settings-toolbar, .app-tab-content[data-state="active"] .page-controls',
         )!;
         const target = document.querySelector<HTMLElement>(selector)!;
         return Math.abs(
@@ -67,7 +67,7 @@ for (const viewport of [
           ? ".group-list"
           : tab === "Subscriptions"
             ? ".subscription-list"
-            : ".settings-sections";
+            : '.settings-page .settings-content[data-state="active"]';
       await expect(page.locator(content)).toBeVisible();
       await expectTrackBelowHeader(page, content);
       await page.evaluate(() => window.scrollTo(0, 300));
@@ -77,6 +77,14 @@ for (const viewport of [
         await search.focus();
         await expectTrackBelowHeader(page, content);
         await search.blur();
+      }
+      if (tab === "Settings") {
+        // A short subtab must not keep the hidden profiles panel as its target.
+        await page.getByRole("tab", { name: "DNS queries", exact: true }).click();
+        await expect(page.locator(".overlay-scrollbar")).toHaveClass(/is-hidden/);
+        await page.getByRole("tab", { name: "Profiles", exact: true }).click();
+        await expect(page.locator(content)).toBeVisible();
+        await expectTrackBelowHeader(page, content);
       }
       // The shortened track must still allow dragging to both document edges.
       await page.evaluate(() => window.scrollTo(0, 500));

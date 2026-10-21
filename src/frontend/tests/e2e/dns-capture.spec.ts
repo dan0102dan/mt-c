@@ -128,6 +128,7 @@ async function settings(page: Page) {
   const menu = page.getByRole("button", { name: "Open menu" });
   if (await menu.isVisible()) await menu.click();
   await page.getByRole("tab", { name: "Settings" }).click();
+  await page.getByRole("tab", { name: "DNS queries", exact: true }).click();
 }
 async function start(page: Page) {
   await page.getByRole("button", { name: "Start recording", exact: true }).click();

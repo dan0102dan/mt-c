@@ -1,9 +1,9 @@
 import { getContext } from "svelte";
 
 export type SectionControls = {
-  title: string;
   canSave: boolean;
   dirty: boolean;
+  validationMessage?: string;
   onSave: () => Promise<void>;
   addLabel?: string;
   canAdd?: boolean;

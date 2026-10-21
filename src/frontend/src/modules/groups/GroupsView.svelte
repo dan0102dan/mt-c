@@ -23,10 +23,11 @@
   import { CONFIG_TRANSFER_CONTEXT, type ConfigTransferControls } from "../config-transfer/context";
 
   type Props = {
+    active?: boolean;
     onRenderComplete?: () => void;
   };
 
-  let { onRenderComplete }: Props = $props();
+  let { active = true, onRenderComplete }: Props = $props();
 
   const store = new GroupsStore({ onRenderComplete: () => onRenderComplete?.() });
   setContext(GROUPS_STORE_CONTEXT, store);
@@ -124,6 +125,7 @@
 
 <div class="groups-page">
   <PageControls
+    {active}
     actionsClass="group-controls-actions"
     controlsClass="group-controls"
     addLabel={t("Add Group")}

@@ -102,12 +102,6 @@ async function openSettings(page: Page) {
 const panel = (page: Page) => page.locator(".policy-settings");
 const save = (page: Page) => page.locator("#save-settings");
 
-// Settings may also contain non-editor sections such as the DNS journal.
-async function expectInactiveTitlesHidden(page: Page) {
-  const inactive = page.locator(".title-layer:not(.current)");
-  for (const title of await inactive.all()) await expect(title).toHaveCSS("opacity", "0");
-}
-
 test("generic UI has no policy feature or policy requests", async ({ page }) => {
   test.skip(keenetic, "generic build only");
   const state = await backend(page);
@@ -126,6 +120,7 @@ test.describe("Keenetic policy settings", { tag: "@entware_kn" }, () => {
       await page.setViewportSize({ width, height: width === 390 ? 844 : 900 });
       const state = await backend(page);
       await openSettings(page);
+      await page.getByRole("tab", { name: "Keenetic", exact: true }).click();
       await panel(page)
         .getByRole("switch", { name: "Use policy based filter", exact: true })
         .click();
@@ -142,6 +137,7 @@ test.describe("Keenetic policy settings", { tag: "@entware_kn" }, () => {
       await page.keyboard.press("Escape");
       state.policies.push({ id: "Policy42", name: "mt", available: true });
       await page.reload();
+      await page.getByRole("tab", { name: "Keenetic", exact: true }).click();
       await panel(page)
         .getByRole("switch", { name: "Use policy based filter", exact: true })
         .click();
@@ -173,6 +169,7 @@ test.describe("Keenetic policy settings", { tag: "@entware_kn" }, () => {
       await expect(save(page)).toBeDisabled();
       expect(state.settings).toEqual({ enabled: true, policy_id: "Policy42", mode: "include" });
       await page.reload();
+      await page.getByRole("tab", { name: "Keenetic", exact: true }).click();
       await expect(picker).toHaveText("mt");
       expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(
         width,
@@ -182,6 +179,7 @@ test.describe("Keenetic policy settings", { tag: "@entware_kn" }, () => {
   test("off by default, explicit save, include/exclude and reload", async ({ page }) => {
     const state = await backend(page);
     await openSettings(page);
+    await page.getByRole("tab", { name: "Keenetic", exact: true }).click();
     const toggle = panel(page).getByRole("switch", {
       name: "Use policy based filter",
       exact: true,
@@ -201,6 +199,7 @@ test.describe("Keenetic policy settings", { tag: "@entware_kn" }, () => {
     await save(page).click();
     await expect.poll(() => state.settings.mode).toBe("exclude");
     await page.reload();
+    await page.getByRole("tab", { name: "Keenetic", exact: true }).click();
     await expect(
       panel(page).getByRole("switch", {
         name: "Processing mode",
@@ -219,6 +218,7 @@ test.describe("Keenetic policy settings", { tag: "@entware_kn" }, () => {
         state.settings.policy_id = policyId === "mt" ? "" : policyId;
         state.policies = [];
         await openSettings(page);
+        await page.getByRole("tab", { name: "Keenetic", exact: true }).click();
         if (policyId === "mt")
           await panel(page)
             .getByRole("switch", { name: "Use policy based filter", exact: true })
@@ -232,6 +232,7 @@ test.describe("Keenetic policy settings", { tag: "@entware_kn" }, () => {
         await expect(save(page)).toBeDisabled();
         expect(state.settings).toEqual({ enabled: true, policy_id: policyId, mode });
         await page.reload();
+        await page.getByRole("tab", { name: "Keenetic", exact: true }).click();
         await expect(
           panel(page).getByRole("switch", { name: "Use policy based filter", exact: true }),
         ).toBeChecked();
@@ -252,6 +253,7 @@ test.describe("Keenetic policy settings", { tag: "@entware_kn" }, () => {
     const state = await backend(page, true);
     state.policies = [];
     await openSettings(page);
+    await page.getByRole("tab", { name: "Keenetic", exact: true }).click();
     await expect(
       panel(page).getByRole("button", { name: "Router policy", exact: true }),
     ).toContainText("Policy0");
@@ -259,6 +261,7 @@ test.describe("Keenetic policy settings", { tag: "@entware_kn" }, () => {
     expect(state.settings.policy_id).toBe("Policy0");
     state.listFailure = true;
     await page.reload();
+    await page.getByRole("tab", { name: "Keenetic", exact: true }).click();
     await expect.poll(() => state.listReads).toBe(2);
     await panel(page).getByRole("switch", { name: "Use policy based filter", exact: true }).click();
     await expect(save(page)).toBeEnabled();
@@ -272,6 +275,7 @@ test.describe("Keenetic policy settings", { tag: "@entware_kn" }, () => {
   }) => {
     const state = await backend(page, true);
     await openSettings(page);
+    await page.getByRole("tab", { name: "Keenetic", exact: true }).click();
     await expect(
       panel(page).getByRole("switch", { name: "Use policy based filter", exact: true }),
     ).toBeChecked();
@@ -294,6 +298,7 @@ test.describe("Keenetic policy settings", { tag: "@entware_kn" }, () => {
   test("status polling preserves unsaved mode and ID", async ({ page }) => {
     const state = await backend(page, true);
     await openSettings(page);
+    await page.getByRole("tab", { name: "Keenetic", exact: true }).click();
     await panel(page).getByRole("switch", { name: "Processing mode", exact: true }).click();
     await panel(page).getByRole("button", { name: "Router policy", exact: true }).click();
     await page.getByRole("option", { name: "VPN", exact: true }).nth(1).click();
@@ -315,6 +320,7 @@ test.describe("Keenetic policy settings", { tag: "@entware_kn" }, () => {
     await page.setViewportSize({ width: 390, height: 844 });
     await backend(page, true);
     await openSettings(page);
+    await page.getByRole("tab", { name: "Keenetic", exact: true }).click();
     await expect(
       panel(page).getByRole("switch", { name: "Use policy based filter", exact: true }),
     ).toBeChecked();
@@ -333,139 +339,73 @@ test.describe("Keenetic policy settings", { tag: "@entware_kn" }, () => {
 });
 
 test.describe("Shared settings toolbar", { tag: "@entware_kn" }, () => {
-  test.skip(!keenetic, "Keenetic-only editor; generic keeps a single section");
+  test.skip(!keenetic, "Keenetic-only editor");
   for (const width of [1280, 390]) {
-    test(`scroll changes the heading and Add action, not drafts or the Save node (${width}px)`, async ({
+    test(`tabs change the Add action while preserving drafts and Save (${width}px)`, async ({
       page,
     }) => {
       await page.setViewportSize({ width, height: 900 });
       const state = await backend(page, true);
-      state.profiles = Array.from({ length: 8 }, (_, i) => ({
-        id: `profile${i}`,
-        name: `VPN ${i + 1}`,
-        interfaces: ["tun0"],
-        on_unavailable: "blackhole",
-      }));
+      state.profiles = [
+        { id: "one", name: "Original", interfaces: ["tun0"], on_unavailable: "blackhole" },
+      ];
       await openSettings(page);
-      const heading = page.locator(".settings-toolbar").getByRole("heading", { level: 2 });
-      const name = page.getByPlaceholder("Profile name", { exact: true }).first();
+      const name = page.getByPlaceholder("Profile name", { exact: true });
       await name.fill("Unsaved profile name");
-      await expect(save(page)).toBeEnabled();
       const button = await save(page).elementHandle();
-      await placeHeading(36);
-      // Observe this section boundary, not a footer that later sections can move.
-      await expect(heading).toHaveAccessibleName("Interface priority profiles");
-      await expect(panel(page).getByRole("heading", { name: "Keenetic policy" })).toBeInViewport();
-      await expect(page.getByRole("button", { name: "Add profile", exact: true })).toBeVisible();
-      // The compact policy section needs a shorter viewport to cross the toolbar.
-      await page.setViewportSize({ width, height: width > 700 ? 180 : 240 });
-      const inlineHeading = page.locator("#keenetic-policy-title");
-      const add = page.getByRole("button", { name: "Add profile", exact: true });
-      async function placeHeading(offset: number) {
-        await page.evaluate((offset) => {
-          const title = document.querySelector("#keenetic-policy-title")!.getBoundingClientRect();
-          const toolbar = document.querySelector(".settings-toolbar")!.getBoundingClientRect();
-          window.scrollBy(0, title.bottom - toolbar.height - offset);
-        }, offset);
-      }
-      await placeHeading(36);
-      await expect(heading).toHaveAccessibleName("Interface priority profiles");
-      await expect(inlineHeading).toBeInViewport();
-      await expect(add).toBeVisible();
-      await expect(page.locator(".context-add")).toHaveCSS("opacity", "1");
-
-      // Crossing the boundary starts the title fade and the Add transition, even if scrolling stops.
-      const titleNode = await inlineHeading.elementHandle();
-      await placeHeading(-4);
-      await expect(heading).toHaveAccessibleName("Keenetic policy");
-      const stoppedAt = await page.evaluate(() => window.scrollY);
-      await expect(page.locator(".context-add")).toHaveCSS("opacity", "0");
-      await expect(page.locator(".title-layer.current")).toHaveCSS("opacity", "1");
-      await expectInactiveTitlesHidden(page);
-      await expect(page.locator(".title-layer.current")).toHaveText("Keenetic policy");
-      expect(await page.evaluate(() => window.scrollY)).toBe(stoppedAt);
-      await expect(add).toHaveCount(0);
-      // The section heading stays in normal document flow; no floating copies or position updates.
-      await expect(inlineHeading).toHaveCSS("position", "static");
-      for (const offset of [36, -8, 44, -16, 36]) {
-        await placeHeading(offset);
-        await expect(heading).toHaveAccessibleName(
-          offset > 0 ? "Interface priority profiles" : "Keenetic policy",
+      for (let i = 0; i < 3; i++) {
+        await page.getByRole("tab", { name: "Keenetic", exact: true }).click();
+        await expect(page.getByRole("tab", { name: "Keenetic", exact: true })).toHaveAttribute(
+          "aria-selected",
+          "true",
         );
-        expect(
-          await titleNode!.evaluate(
-            (node) => node === document.querySelector("#keenetic-policy-title"),
-          ),
-        ).toBe(true);
+        await expect(page.getByRole("button", { name: "Add profile", exact: true })).toHaveCount(0);
+        await expect(name).toBeHidden();
+        await expect(save(page)).toBeEnabled();
+        await page.getByRole("tab", { name: "Profiles", exact: true }).click();
+        await expect(name).toHaveValue("Unsaved profile name");
+        await expect(page.getByRole("tab", { name: "Profiles", exact: true })).toHaveAttribute(
+          "aria-selected",
+          "true",
+        );
       }
-      await expect(page.locator(".title-layer.current")).toHaveCSS("opacity", "1");
-      await expectInactiveTitlesHidden(page);
-      await expect(page.locator(".title-layer.current")).toHaveText("Interface priority profiles");
-      await expect(heading).toHaveAccessibleName("Interface priority profiles");
-      await expect(add).toBeVisible();
-      await expect(page.locator(".context-add")).toHaveCSS("opacity", "1");
-      await placeHeading(-8);
-      await expect(heading).toHaveAccessibleName("Keenetic policy");
-      await expect(add).toHaveCount(0);
-      await expect(page.locator(".settings-page .page-controls")).toHaveCount(1);
-      await expect(save(page)).toHaveCount(1);
-      await expect(save(page)).toBeEnabled();
-      expect(state.writes).toBe(0);
-      expect(state.profileWrites).toBe(0);
-      // The common button survives the transition rather than being replaced
-      // by a second section-specific Save, even during rapid scroll changes.
+      await page.getByRole("tab", { name: "Keenetic", exact: true }).click();
+      await panel(page).getByRole("switch", { name: "Processing mode", exact: true }).click();
       expect(
         await button!.evaluate((node) => node === document.querySelector("#save-settings")),
       ).toBe(true);
-      await page.setViewportSize({ width, height: 900 });
-      // A later DNS section changes the page's bottom independently of this
-      // boundary. Restore the actual section boundary, not an assumed footer.
-      await placeHeading(36);
-      await expect(heading).toHaveAccessibleName("Interface priority profiles");
-      await expect(name).toHaveValue("Unsaved profile name");
-      await panel(page).getByRole("switch", { name: "Processing mode", exact: true }).click();
-      // Wait for both API writes: Save is disabled during the first request
-      // as well as after completion, so its disabled state is not an ack.
+      expect(state.writes).toBe(0);
+      expect(state.profileWrites).toBe(0);
       await save(page).click();
       await expect.poll(() => state.profileWrites).toBe(1);
       await expect.poll(() => state.writes).toBe(1);
       await expect(save(page)).toBeDisabled();
       expect(state.profiles[0].name).toBe("Unsaved profile name");
-      await page.setViewportSize({ width, height: 900 });
-      await page.evaluate(() => window.scrollTo(0, 0));
-      await expect(heading).toHaveAccessibleName("Interface priority profiles");
-      await expect(page.getByRole("button", { name: "Add profile", exact: true })).toBeVisible();
-      await expect(name).toHaveValue("Unsaved profile name");
-      await expect(save(page)).toBeDisabled();
       expect(state.settings.mode).toBe("exclude");
       expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(
         width,
       );
     });
   }
-  test("short pages select the editor by keyboard focus, also with reduced motion", async ({
-    page,
-  }) => {
+  test("subtabs support keyboard navigation with reduced motion", async ({ page }) => {
     await page.emulateMedia({ reducedMotion: "reduce" });
     const state = await backend(page);
     await openSettings(page);
-    const heading = page.locator(".settings-toolbar").getByRole("heading", { level: 2 });
+    const profilesTab = page.getByRole("tab", { name: "Profiles", exact: true });
+    await profilesTab.focus();
+    await profilesTab.press("ArrowRight");
+    await expect(page.getByRole("tab", { name: "Keenetic", exact: true })).toBeFocused();
     const toggle = panel(page).getByRole("switch", {
       name: "Use policy based filter",
       exact: true,
     });
     await toggle.focus();
-    await expect(heading).toHaveAccessibleName("Interface priority profiles");
-    await expect(panel(page).getByRole("heading", { name: "Keenetic policy" })).toBeInViewport();
-    await expect(page.getByRole("button", { name: "Add profile", exact: true })).toBeVisible();
-    await expect(save(page)).toBeDisabled();
     await toggle.press("Space");
     await expect(toggle).toBeChecked();
     expect(state.writes).toBe(0);
     await toggle.press("Space");
     await expect(save(page)).toBeDisabled();
-    await expect(page.locator(".settings-page .page-controls")).toHaveCount(1);
-    await expect(save(page)).toHaveCount(1);
+    await page.getByRole("tab", { name: "Profiles", exact: true }).click();
     await page.getByRole("button", { name: "Add profile", exact: true }).click();
     await expect(page.getByPlaceholder("Profile name", { exact: true })).toHaveCount(1);
     expect(state.profileWrites).toBe(0);
@@ -487,7 +427,7 @@ test.describe("Save applies to the entire Settings page", { tag: "@entware_kn" }
     ];
     await openSettings(page);
     await page.getByPlaceholder("Profile name", { exact: true }).fill("New name");
-    await page.evaluate(() => window.scrollTo(0, document.documentElement.scrollHeight));
+    await page.getByRole("tab", { name: "Keenetic", exact: true }).click();
     await expect(save(page)).toBeEnabled();
     await save(page).click();
     await expect.poll(() => state.profileWrites).toBe(1);
@@ -499,8 +439,9 @@ test.describe("Save applies to the entire Settings page", { tag: "@entware_kn" }
   test("a policy edit remains saveable while viewing profiles", async ({ page }) => {
     const state = await backend(page, true);
     await openSettings(page);
+    await page.getByRole("tab", { name: "Keenetic", exact: true }).click();
     await panel(page).getByRole("switch", { name: "Processing mode", exact: true }).click();
-    await page.evaluate(() => window.scrollTo(0, 0));
+    await page.getByRole("tab", { name: "Profiles", exact: true }).click();
     await expect(save(page)).toBeEnabled();
     await save(page).click();
     await expect.poll(() => state.writes).toBe(1);
@@ -522,13 +463,19 @@ test.describe("Save applies to the entire Settings page", { tag: "@entware_kn" }
     await openSettings(page);
     const name = page.getByPlaceholder("Profile name", { exact: true });
     await name.fill("");
+    await page.getByRole("tab", { name: "Keenetic", exact: true }).click();
     await panel(page).getByRole("switch", { name: "Processing mode", exact: true }).click();
     await expect(save(page)).toBeDisabled();
     await expect(save(page)).toHaveClass(/inactive/);
     await expect(save(page)).toHaveAccessibleName("Save Changes");
     expect(state.profileWrites).toBe(0);
     expect(state.writes).toBe(0);
+    const profilesTab = page.getByRole("tab", { name: "Profiles", exact: true });
+    await expect(profilesTab).not.toHaveAttribute("data-invalid");
+    await expect(save(page)).toHaveAccessibleDescription(/Profiles: Enter a profile name/);
+    await profilesTab.click();
     await name.fill("Repaired");
+    await expect(profilesTab).not.toHaveAttribute("aria-invalid");
     await expect(save(page)).toBeEnabled();
     await save(page).click();
     await expect.poll(() => state.profileWrites).toBe(1);
@@ -549,6 +496,7 @@ test.describe("Save applies to the entire Settings page", { tag: "@entware_kn" }
     ];
     await openSettings(page);
     await page.getByPlaceholder("Profile name", { exact: true }).fill("Saved once");
+    await page.getByRole("tab", { name: "Keenetic", exact: true }).click();
     await panel(page).getByRole("switch", { name: "Processing mode", exact: true }).click();
     state.diskFailure = true;
     await save(page).click();
