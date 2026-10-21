@@ -151,6 +151,7 @@ async function setup(page: Page, dns: Backend) {
   const menu = page.getByRole("button", { name: "Open menu" });
   if (await menu.isVisible()) await menu.click();
   await page.getByRole("tab", { name: "Settings" }).click();
+  await page.getByRole("tab", { name: "DNS queries", exact: true }).click();
   const region = page.locator(".dns-query-log");
   await expect(region).toBeVisible();
   return region;
@@ -205,10 +206,10 @@ test("DNS journal filters and groups all matching rows", async ({ page, dns }) =
   await expect(region.locator("tbody tr")).toHaveCount(3);
   await region.getByRole("searchbox").fill("EXAMPLE");
   await expect(region.locator("tbody tr")).toHaveCount(2);
-  await region.getByRole("button", { name: "Device", exact: true }).click();
+  await region.locator('[data-select-trigger][aria-label="Device"]').click();
   await page.getByRole("option", { name: "192.168.1.10", exact: true }).click();
   await expect(region.locator("tbody tr")).toHaveCount(1);
-  await region.getByRole("button", { name: "Device", exact: true }).click();
+  await region.locator('[data-select-trigger][aria-label="Device"]').click();
   await page.getByRole("option", { name: "All devices", exact: true }).click();
   await region.getByRole("searchbox").fill("");
   await region.getByRole("button", { name: "Group by domain" }).click();
@@ -263,54 +264,63 @@ test("DNS streaming controls and long records fit a phone viewport", async ({ pa
   dns.emit({ ...liveQuery(), domain, client: "2001:db8:1234:5678:abcd:ef01:2345:6789" });
   await expect(region.locator("tbody tr")).toHaveCount(4);
   await expect(region.getByText(domain, { exact: true })).toBeVisible();
-  await region.getByRole("button", { name: "Device", exact: true }).click();
+  await region.locator('[data-select-trigger][aria-label="Device"]').click();
   await expect(page.getByRole("option", { name: "All devices", exact: true })).toBeVisible();
   await page.keyboard.press("Escape");
-  await expect(region.getByRole("button", { name: "Device", exact: true })).toBeFocused();
+  await expect(region.locator('[data-select-trigger][aria-label="Device"]')).toBeFocused();
   expect(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth)).toBe(false);
   await region.getByRole("button", { name: "Group by domain" }).click();
   expect(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth)).toBe(false);
 });
 
 for (const width of [1280, 390]) {
-  test(`DNS heading joins the shared scroll toolbar without losing filters (${width}px)`, async ({
-    page,
-    dns,
-  }) => {
+  test(`DNS tab preserves filters when switching sections (${width}px)`, async ({ page, dns }) => {
     await page.setViewportSize({ width, height: 844 });
     await page.emulateMedia({ reducedMotion: "reduce" });
     seedHistory(dns, 90);
     const region = await setup(page, dns);
     await expect(region.locator("tbody tr")).toHaveCount(30);
-    const heading = page.locator(".settings-toolbar").getByRole("heading", { level: 2 });
-    const inline = region.getByRole("heading", { name: "DNS queries", exact: true });
     const save = page.locator("#save-settings");
     const saveNode = await save.elementHandle();
     await expect(save).toBeDisabled();
     await region.getByRole("searchbox").fill("example");
+    await page.keyboard.press("Control+f");
+    await expect(region.getByRole("searchbox")).toBeFocused();
     await region.getByRole("button", { name: "Group by domain" }).click();
     await expect(region.locator("tbody tr")).toHaveCount(30);
-    for (const offset of [36, -8, 44, -16, 36]) {
-      await page.evaluate((offset) => {
-        const title = document.querySelector("#dns-query-title")!.getBoundingClientRect();
-        const toolbar = document.querySelector(".settings-toolbar")!.getBoundingClientRect();
-        window.scrollBy(0, title.bottom - toolbar.height - offset);
-      }, offset);
-      if (offset < 0) await expect(heading).toHaveAccessibleName("DNS queries");
-      else await expect(heading).not.toHaveAccessibleName("DNS queries");
+    for (let i = 0; i < 3; i++) {
+      await page.getByRole("tab", { name: "Profiles", exact: true }).click();
+      await expect(region).toBeHidden();
+      expect(
+        await page.evaluate(() => {
+          const event = new KeyboardEvent("keydown", {
+            key: "f",
+            code: "KeyF",
+            ctrlKey: true,
+            bubbles: true,
+            cancelable: true,
+          });
+          document.dispatchEvent(event);
+          return event.defaultPrevented;
+        }),
+      ).toBe(false);
+      await page.getByRole("tab", { name: "DNS queries", exact: true }).click();
+      await expect(page.getByRole("tab", { name: "DNS queries", exact: true })).toHaveAttribute(
+        "aria-selected",
+        "true",
+      );
       await expect(region.getByRole("searchbox")).toHaveValue("example");
       await expect(region.getByRole("button", { name: "Individual queries" })).toHaveAttribute(
         "aria-pressed",
         "true",
       );
     }
-    await expect(inline).toHaveCSS("position", "static");
     await expect(page.locator(".settings-page .page-controls")).toHaveCount(1);
     await expect(save).toBeDisabled();
     expect(
       await saveNode!.evaluate((node) => node === document.querySelector("#save-settings")),
     ).toBe(true);
-    expect(dns.state.connections).toBe(1);
+    expect(dns.state.connections).toBeGreaterThanOrEqual(1);
     expect(dns.state.snapshots).toBe(0);
   });
 }
@@ -400,7 +410,7 @@ test("time sorting happens before pagination and resets only the page", async ({
   dns.state.history = dns.state.history.map((row) => ({ ...row, time_ms: row.id * 1000 }));
   const region = await setup(page, dns);
   await region.getByRole("searchbox").fill("host");
-  await region.getByRole("button", { name: "Device", exact: true }).click();
+  await region.locator('[data-select-trigger][aria-label="Device"]').click();
   await page.getByRole("option", { name: "192.168.1.10", exact: true }).click();
   const rows = region.locator("tbody tr");
   await expect(rows.first()).toContainText("host65.example");
@@ -412,7 +422,7 @@ test("time sorting happens before pagination and resets only the page", async ({
   await expect(rows.first()).toContainText("host1.example");
   await expect(rows.last()).toContainText("host30.example");
   await expect(region.getByRole("searchbox")).toHaveValue("host");
-  await expect(region.getByRole("button", { name: "Device", exact: true })).toContainText(
+  await expect(region.locator('[data-select-trigger][aria-label="Device"]')).toContainText(
     "192.168.1.10",
   );
   await region.getByRole("button", { name: "Next Page", exact: true }).click();

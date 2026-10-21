@@ -21,6 +21,7 @@
   import { CONFIG_TRANSFER_CONTEXT, type ConfigTransferControls } from "../config-transfer/context";
 
   type Props = {
+    active?: boolean;
     onRenderComplete?: () => void;
   };
 
@@ -32,7 +33,7 @@
     interval: number;
   };
 
-  let { onRenderComplete }: Props = $props();
+  let { active = true, onRenderComplete }: Props = $props();
 
   const store = new SubscriptionsStore({ onRenderComplete: () => onRenderComplete?.() });
   setContext(SUBSCRIPTIONS_STORE_CONTEXT, store);
@@ -78,6 +79,7 @@
 
 <div class="subscriptions-page">
   <PageControls
+    {active}
     actionsClass="subscription-controls-actions"
     controlsClass="subscription-controls"
     addLabel={t("Add Subscription")}

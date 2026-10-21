@@ -123,4 +123,5 @@ async function setup(page: Page, url: string) {
   });
   await page.goto("/");
   await page.getByRole("tab", { name: "Settings" }).click();
+  await page.getByRole("tab", { name: "DNS queries", exact: true }).click();
 }

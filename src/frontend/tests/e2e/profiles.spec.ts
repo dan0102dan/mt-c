@@ -145,7 +145,7 @@ async function dragInterface(page: Page, source: Locator, target: Locator, after
 async function create(page: Page, name = "VPN with fallback") {
   await openSettings(page);
   await page.getByRole("button", { name: "Add profile", exact: true }).click();
-  const card = page.locator(".profile").last();
+  const card = page.locator(".profile").first();
   await card.getByLabel("Profile name", { exact: true }).fill(name);
   for (const name of ["tun0", "tun1", "tun2"]) await addInterface(card, name);
   await page.locator("#save-settings").click();
@@ -230,7 +230,9 @@ test("draft survives tab navigation without a footer; invalid empty chain cannot
     await page.getByRole("button", { name: `Remove interface: ${name}`, exact: true }).click();
   await expect(page.locator("#save-settings")).toBeDisabled();
   expect(state.profiles[0].interfaces).toHaveLength(3);
-  await expect(page.getByText("Add at least one interface", { exact: true })).toHaveCount(0);
+  await expect(page.locator("#save-settings")).toHaveAccessibleDescription(
+    "Profiles: Add at least one interface",
+  );
   await expect(page.locator("#save-settings")).toHaveAccessibleName("Save Changes");
   await expect(page.locator("#save-settings")).toHaveClass(/inactive/);
   await addInterface(page.locator(".profile"), "tun1");
@@ -274,10 +276,13 @@ test("profile section uses a placeholder, plain interface rows and a fixed termi
   state.interfaces[1].name = "Keenetic VPN description";
   await page.goto("/");
   await create(page);
-  await expect(page.locator(".settings-page [role=tablist]")).toHaveCount(0);
-  await expect(page.locator(".settings-page [role=tab]")).toHaveCount(0);
+  await expect(page.locator(".settings-page [role=tablist]")).toHaveCount(1);
+  await expect(page.getByRole("tab", { name: "Profiles", exact: true })).toHaveAttribute(
+    "aria-selected",
+    "true",
+  );
   await expect(
-    page.getByRole("heading", { name: "Interface priority profiles", level: 2 }),
+    page.getByRole("heading", { name: "Profiles", level: 2, exact: true }),
   ).toBeVisible();
   const card = page.locator(".profile");
   await expect(card.getByPlaceholder("Profile name", { exact: true })).toHaveValue(
@@ -404,7 +409,9 @@ for (const width of [390, 320]) {
       expect(next.x - (previous.x + previous.width)).toBeGreaterThanOrEqual(6);
       expect(next.x + next.width).toBeLessThanOrEqual(width);
     }
-    expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(width);
+    expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(
+      width,
+    );
   });
 }
 
@@ -416,7 +423,12 @@ test("page controls and first cards stay aligned when switching tabs", async ({ 
   await page.setViewportSize({ width: 1280, height: 900 });
   await page.goto("/");
 
-  const positions: { toolbarTop: number; toolbarHeight: number; cardTop: number }[] = [];
+  const positions: {
+    toolbarTop: number;
+    toolbarHeight: number;
+    cardTop: number;
+    settings: boolean;
+  }[] = [];
   for (const [tab, cardSelector] of [
     ["Groups", ".group-wrapper:not(.is-hidden) .group"],
     ["Subscriptions", ".subscription-wrapper:not(.is-hidden) .subscription-panel"],
@@ -437,6 +449,7 @@ test("page controls and first cards stay aligned when switching tabs", async ({ 
       toolbarTop: toolbarBox.y,
       toolbarHeight: toolbarBox.height,
       cardTop: cardBox.y,
+      settings: tab === "Settings",
     });
   }
 
@@ -444,7 +457,11 @@ test("page controls and first cards stay aligned when switching tabs", async ({ 
   for (const current of positions.slice(1)) {
     expect(Math.abs(current.toolbarTop - initial.toolbarTop)).toBeLessThan(1);
     expect(Math.abs(current.toolbarHeight - initial.toolbarHeight)).toBeLessThan(1);
-    expect(Math.abs(current.cardTop - initial.cardTop)).toBeLessThan(2);
+    if (current.settings) {
+      expect(current.cardTop).toBeGreaterThan(current.toolbarTop + current.toolbarHeight);
+    } else {
+      expect(Math.abs(current.cardTop - initial.cardTop)).toBeLessThan(2);
+    }
   }
 });
 
@@ -696,4 +713,101 @@ for (const language of ["en", "ru"]) {
       await name.fill("Valid name");
     }
   });
+}
+
+for (const width of [390, 1280]) {
+  test(`new unfinished profiles appear first and receive focus on repeated Add (${width}px)`, async ({
+    page,
+  }) => {
+    await page.setViewportSize({ width, height: 844 });
+    const state = await backend(page);
+    state.profiles = [
+      { id: "existing", name: "Original", interfaces: ["tun0"], on_unavailable: "blackhole" },
+    ];
+    await page.goto("/");
+    await openSettings(page);
+    const cards = page.locator(".profile");
+    const ids = ["existing"];
+    for (const value of ["", "Second draft", "Third draft"]) {
+      await page.getByRole("button", { name: "Add profile", exact: true }).click();
+      await expect(cards).toHaveCount(ids.length + 1);
+      const id = await cards.first().getAttribute("data-profile-id");
+      expect(id).toBeTruthy();
+      expect(ids).not.toContain(id);
+      ids.unshift(id!);
+      expect(
+        await cards.evaluateAll((nodes) =>
+          nodes.map((node) => node.getAttribute("data-profile-id")),
+        ),
+      ).toEqual(ids);
+      const name = cards.first().getByLabel("Profile name", { exact: true });
+      await expect(name).toBeFocused();
+      await expect(name).toBeInViewport();
+      await expect(name).toHaveValue("");
+      if (value) await page.keyboard.insertText(value);
+      await expect(name).toHaveValue(value);
+    }
+    const names = page.getByLabel("Profile name", { exact: true });
+    for (const [index, value] of ["Third draft", "Second draft", "", "Original"].entries())
+      await expect(names.nth(index)).toHaveValue(value);
+  });
+
+  for (const language of ["en", "ru"] as const) {
+    test(`new profiles focus their required name without tab warnings (${width}px, ${language})`, async ({
+      page,
+    }) => {
+      await page.setViewportSize({ width, height: 844 });
+      const state = await backend(page);
+      state.profiles = [
+        { id: "existing", name: "Original", interfaces: ["tun0"], on_unavailable: "blackhole" },
+      ];
+      await page.goto("/");
+      await openSettings(page);
+      if (language === "ru") await page.locator(".locale button").click();
+      const ru = language === "ru";
+      const profilesTab = page.getByRole("tab", { name: ru ? "Профили" : "Profiles", exact: true });
+      const save = page.locator("#save-settings");
+      for (const value of ["First profile", "Second profile"]) {
+        await page
+          .getByRole("button", { name: ru ? "Добавить профиль" : "Add profile", exact: true })
+          .click();
+        const draft = page.locator(".profile").first();
+        const name = draft.getByLabel(ru ? "Название профиля" : "Profile name", { exact: true });
+        await expect(name).toBeFocused();
+        await expect(name).toBeInViewport();
+        await expect(name).toHaveValue("");
+        await page.keyboard.insertText(value);
+        await expect(name).toHaveValue(value);
+        await page
+          .getByRole("tab", { name: ru ? "DNS-запросы" : "DNS queries", exact: true })
+          .click();
+        await expect(draft).toBeHidden();
+        await expect(save).toBeDisabled();
+        await expect(profilesTab).not.toHaveAttribute("data-invalid");
+        await expect(profilesTab).not.toHaveAttribute("aria-invalid");
+        await expect(save).toHaveAccessibleDescription(
+          ru ? "Профили: Добавьте хотя бы один интерфейс" : "Profiles: Add at least one interface",
+        );
+        await profilesTab.click();
+        await expect(name).toHaveValue(value);
+        await expect(profilesTab).toBeFocused();
+        await draft
+          ..locator(`[data-select-trigger][aria-label="${ru ? "Добавить интерфейс" : "Add interface"}"]`)
+          .click();
+        await page.getByRole("option", { name: "tun1", exact: true }).click();
+        await expect(save).toBeEnabled();
+      }
+      expect(state.writes).toBe(0);
+      expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(
+        width,
+      );
+      await save.click();
+      await expect.poll(() => state.writes).toBe(1);
+      expect(state.profiles.map((profile) => profile.name)).toEqual([
+        "Second profile",
+        "First profile",
+        "Original",
+      ]);
+    });
+  }
 }

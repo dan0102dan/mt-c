@@ -63,3 +63,59 @@ test.describe("Accessibility", () => {
     await expect(deleteBtn).toBeFocused();
   });
 });
+
+for (const width of [390, 1280]) {
+  test.describe(`Focus after adding at ${width}px`, () => {
+    test.beforeEach(async ({ page }) => {
+      await page.setViewportSize({ width, height: 844 });
+      await page.route("**/api/v1/**", (route) => {
+        const path = new URL(route.request().url()).pathname.split("/").pop();
+        if (path === "rules") return route.fulfill({ json: { count: 1, types: { namespace: 1 } } });
+        const fixtures: Record<string, unknown> = {
+          auth: { enabled: false },
+          groups: { groups: [] },
+          subscriptions: { subscriptions: [] },
+          interfaces: { interfaces: [] },
+          profiles: { profiles: [] },
+          status: { stage: "idle" },
+        };
+        return route.fulfill({ json: fixtures[path ?? ""] ?? {} });
+      });
+      await page.goto("/");
+    });
+    test("new groups and rules focus the newly added item", async ({ page }) => {
+      const groups = new GroupsPage(page);
+      await groups.createGroup();
+      const group = page.locator(".group-wrapper").first();
+      await expect(group.locator("input.group-name")).toBeFocused();
+      await page.keyboard.insertText("Required fields");
+      await group.locator(".pattern input").fill("initial.example");
+      await group.locator('[data-value="Collapse Group"] button').click();
+      for (const name of ["First new rule", "Second new rule"]) {
+        if (width < 700) {
+          await group.locator(".group-actions [data-dropdown-menu-trigger]").click();
+          await page.getByRole("button", { name: "Add Rule", exact: true }).click();
+        } else {
+          await groups.addRuleToGroup(0);
+        }
+        const input = group.locator('.rule[data-index="0"] .name input');
+        await expect(input).toBeFocused();
+        await expect(input).toBeInViewport();
+        await page.keyboard.insertText(name);
+        await expect(input).toHaveValue(name);
+      }
+      await expect(group.locator('.rule[data-index="2"] .pattern input')).toHaveValue(
+        "initial.example",
+      );
+    });
+    test("adding a subscription focuses the required URL", async ({ page }) => {
+      if (width < 700) await page.locator(".mobile-dropdown-btn").click();
+      await page.getByRole("tab", { name: "Subscriptions", exact: true }).click();
+      await page.getByRole("button", { name: "Add Subscription", exact: true }).click();
+      const url = page.getByRole("dialog").locator("#sub-url");
+      await expect(url).toBeFocused();
+      await page.keyboard.insertText("https://example.com/list.txt");
+      await expect(url).toHaveValue("https://example.com/list.txt");
+    });
+  });
+}

@@ -334,5 +334,7 @@
   "No changes to import": "Нет изменений для импорта",
   "Failed to import configuration": "Не удалось импортировать конфигурацию",
   "Enable DNS recording?": "Включить запись DNS-запросов?",
-  "History storage will use up to 1 MiB of RAM, with additional memory for streaming and the interface. Recording continues after closing this page until stopped or the service restarts.": "Хранилище займёт до 1 МиБ оперативной памяти, дополнительно потребуется память для потока и интерфейса. Запись продолжится после закрытия страницы до её отключения или перезапуска сервиса."
+  "History storage will use up to 1 MiB of RAM, with additional memory for streaming and the interface. Recording continues after closing this page until stopped or the service restarts.": "Хранилище займёт до 1 МиБ оперативной памяти, дополнительно потребуется память для потока и интерфейса. Запись продолжится после закрытия страницы до её отключения или перезапуска сервиса.",
+  "Set the interface order for automatic failover. Assign profiles to groups or subscriptions.": "Задайте порядок интерфейсов для автоматического переключения при недоступности. Назначайте профили группам или подпискам.",
+  "Record and inspect DNS queries from your devices. Use search and filters to find requests.": "Записывайте и просматривайте DNS-запросы устройств. Находите нужные запросы с помощью поиска и фильтров."
 }

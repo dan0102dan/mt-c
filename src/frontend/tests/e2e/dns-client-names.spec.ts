@@ -124,6 +124,7 @@ async function setup(page: Page, dns: Backend) {
   const menu = page.getByRole("button", { name: "Open menu", exact: true });
   if (await menu.isVisible()) await menu.click();
   await page.getByRole("tab", { name: "Settings", exact: true }).click();
+  await page.getByRole("tab", { name: "DNS queries", exact: true }).click();
   const region = page.locator(".dns-query-log");
   await expect(region.locator("tbody tr")).toHaveCount(3);
   return region;
@@ -155,7 +156,7 @@ for (const width of [1280, 390]) {
     );
     await expect(region.locator("tbody tr").last()).toContainText("2001:db8::7");
     await expect(region).not.toContainText("::ffff:");
-    await region.getByRole("button", { name: "Device", exact: true }).click();
+    await region.locator('[data-select-trigger][aria-label="Device"]').click();
     await page.getByRole("option", { name: /Phone.*192\.168\.1\.42/ }).click();
     await expect(region.locator("tbody tr")).toHaveCount(1);
     await expect(region.locator("tbody")).not.toContainText("192.168.1.43");
@@ -163,14 +164,14 @@ for (const width of [1280, 390]) {
     dns.state.history[0].client_name = "Renamed phone";
     dns.updateLabels();
     await expect(region.locator("tbody tr").first()).toContainText("Renamed phone");
-    await expect(region.getByRole("button", { name: "Device", exact: true })).toContainText(
+    await expect(region.locator('[data-select-trigger][aria-label="Device"]')).toContainText(
       "Renamed phone",
     );
     await expect(region.locator("tbody tr")).toHaveCount(1);
     delete dns.state.history[0].client_name;
     dns.updateLabels();
     await expect(region.locator("tbody tr").first()).not.toContainText("Renamed phone");
-    await expect(region.getByRole("button", { name: "Device", exact: true })).toContainText(
+    await expect(region.locator('[data-select-trigger][aria-label="Device"]')).toContainText(
       "192.168.1.42",
     );
     await expect(region.locator("tbody tr")).toHaveCount(1);

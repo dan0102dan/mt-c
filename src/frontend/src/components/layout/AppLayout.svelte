@@ -49,6 +49,9 @@
   import { toast } from "../../utils/events";
   import { fetcher } from "../../utils/fetcher";
   import { LayoutList, Menu, RSS, Settings } from "../ui/icons";
+  import { PAGE_CONTROLS_MOTION, type PageControlsMotion } from "./page-controls-motion";
+
+  setContext<PageControlsMotion>(PAGE_CONTROLS_MOTION, {});
 
   const lastActiveTab = persistedState("active_tab", "groups");
   let active_tab = $state(lastActiveTab.current);
@@ -320,9 +323,11 @@
 
     if (document.querySelector('[data-dialog-content][data-state="open"]')) return;
 
-    const searchInput = document.querySelector<HTMLInputElement>(
-      '[data-tabs-content][data-state="active"] [data-page-search]',
-    );
+    const searchInput = Array.from(
+      document.querySelectorAll<HTMLInputElement>(
+        '[data-tabs-content][data-state="active"] [data-page-search]',
+      ),
+    ).find((input) => input.getClientRects().length > 0);
     if (!searchInput) return;
 
     event.preventDefault();
@@ -416,12 +421,20 @@
 
     <article>
       <Tabs.Content value="groups" class="app-tab-content">
-        <GroupsView onRenderComplete={() => (isRenderCompleteGroups = true)} />
+        <GroupsView
+          active={active_tab === "groups"}
+          onRenderComplete={() => (isRenderCompleteGroups = true)}
+        />
       </Tabs.Content>
       <Tabs.Content value="subscriptions" class="app-tab-content">
-        <SubscriptionsView onRenderComplete={() => (isRenderCompleteSubscriptions = true)} />
+        <SubscriptionsView
+          active={active_tab === "subscriptions"}
+          onRenderComplete={() => (isRenderCompleteSubscriptions = true)}
+        />
       </Tabs.Content>
-      <Tabs.Content value="settings" class="app-tab-content"><SettingsPanel active={active_tab === "settings"} /></Tabs.Content>
+      <Tabs.Content value="settings" class="app-tab-content"
+        ><SettingsPanel active={active_tab === "settings"} /></Tabs.Content
+      >
     </article>
   </Tabs.Root>
 </main>

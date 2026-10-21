@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount } from "svelte";
+  import { onMount, tick } from "svelte";
 
   import Button from "../../components/ui/Button.svelte";
   import Placeholder from "../../components/ui/Placeholder.svelte";
@@ -12,6 +12,7 @@
   import { settingsSection } from "./section-controls";
 
   const section = settingsSection();
+  let sectionElement: HTMLElement;
   const dirty = $derived(profilesDirty());
   const validation = $derived(profileError(profiles.draft));
   const busy = $derived(profiles.saving || profiles.loading);
@@ -20,13 +21,21 @@
     void fetchProfiles();
   });
 
-  function addProfile() {
-    profiles.draft.push({
-      id: newProfileId(),
+  async function addProfile() {
+    if (unavailable) return;
+    const id = newProfileId();
+    profiles.draft.unshift({
+      id,
       name: "",
       interfaces: [],
       on_unavailable: "blackhole",
     });
+    await tick();
+    // Focus only this new draft; switching away must not steal focus back.
+    if (sectionElement?.getClientRects().length)
+      sectionElement
+        .querySelector<HTMLInputElement>(`[data-profile-id="${id}"] .profile-name`)
+        ?.focus();
   }
 
   async function save() {
@@ -41,19 +50,27 @@
 </script>
 
 <section
+  id="profiles"
+  bind:this={sectionElement}
   class="profiles-settings"
-  aria-label={t("Interface priority profiles")}
+  aria-labelledby="profiles-title"
   aria-busy={busy}
   use:section={() => ({
-    title: t("Interface priority profiles"),
     addLabel: t("Add profile"),
     canAdd: !unavailable,
     dirty,
+    validationMessage: validation ? t(validation) : undefined,
     canSave: dirty && !unavailable && !validation,
     onAdd: addProfile,
     onSave: save,
   })}
 >
+  <h2 id="profiles-title" class="sr-only">{t("Profiles")}</h2>
+  <p class="settings-description">
+    {t(
+      "Set the interface order for automatic failover. Assign profiles to groups or subscriptions.",
+    )}
+  </p>
   {#if profiles.failed}
     <Placeholder variant="error" minHeight="auto">
       {t("Failed to load profiles")}

@@ -231,7 +231,7 @@ for (const choice of ["Keep current", "Use imported", "Create a copy"]) {
     await showPage(page, "Settings");
     const dialog = await upload(page, { profiles: [profile("Imported VPN")] });
     await dialog
-      .getByRole("button", { name: "Resolve conflict for Imported VPN", exact: true })
+      .locator('[data-select-trigger][aria-label="Resolve conflict for Imported VPN"]')
       .click();
     await page.getByRole("option", { name: choice, exact: true }).click();
     await dialog.getByRole("button", { name: "Import", exact: true }).click();
@@ -597,13 +597,15 @@ for (const width of [1280, 390]) {
         policyId: "ForeignPolicy73",
         mode: "exclude",
       });
+      await page.getByRole("tab", { name: "Keenetic", exact: true }).click();
       const panel = page.locator(".policy-settings");
       await panel.getByRole("switch", { name: "Processing mode", exact: true }).click();
       await expect(page.locator("#save-settings")).toBeEnabled();
       await page.locator("#save-settings").click();
       await expect(page.locator("#save-settings")).toBeDisabled();
       await page.reload();
-      await expect(panel.getByRole("button", { name: "Router policy", exact: true })).toContainText(
+      await page.getByRole("tab", { name: "Keenetic", exact: true }).click();
+      await expect(panel.locator('[data-select-trigger][aria-label="Router policy"]')).toContainText(
         "ForeignPolicy73",
       );
       expect((await backend.snapshot()).config.app.keeneticPolicy).toEqual({

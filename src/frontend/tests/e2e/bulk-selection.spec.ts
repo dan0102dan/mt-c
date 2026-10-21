@@ -127,7 +127,7 @@ for (const kind of ["groups", "subscriptions"] as const) {
       .toBe("0.example.com\n2.example.com");
     await expect(frames).toHaveCount(3);
     await expect(page.locator(".selection-frame.selected")).toHaveCount(2);
-    const interfaceButton = bar.getByRole("button", { name: "Interface", exact: true });
+    const interfaceButton = bar.locator('[data-select-trigger][aria-label="Interface"]');
     await expect(interfaceButton).toContainText("eth0");
     const initialHeight = await bar.evaluate((node) => node.getBoundingClientRect().height);
     const initialCardHeights = await frames.evaluateAll((nodes) =>
