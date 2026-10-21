@@ -260,11 +260,24 @@
   }
   const displayTime = (timestamp: number) =>
     new Date(timestamp).toLocaleTimeString(undefined, { hour12: false });
+  const displayDate = (timestamp: number) =>
+    new Date(timestamp).toLocaleDateString("ru-RU", {
+      day: "2-digit",
+      month: "2-digit",
+      year: "numeric",
+    });
   const exactTime = (timestamp: number) =>
     `${new Date(timestamp).toLocaleDateString()}, ${displayTime(timestamp)}.${String(new Date(timestamp).getMilliseconds()).padStart(3, "0")}`;
   const queryLabel = (qtype: number) =>
     qtype === 1 ? "IPv4" : qtype === 28 ? "IPv6" : qtype === 65 ? "HTTPS" : dnsQueryType(qtype);
 </script>
+
+{#snippet timestamp(value: number)}
+  <span class="cell-value timestamp-value" title={exactTime(value)}>
+    <span>{displayTime(value)}</span>
+    <span>{displayDate(value)}</span>
+  </span>
+{/snippet}
 
 {#snippet timeSortButton(label: string)}
   <Button small type="button" class="time-sort" title={t(timeSortAction)} onclick={sortByTime}>
@@ -281,10 +294,10 @@
 
 {#snippet clientIdentity(address: string)}
   <span class="client-identity">
-    {#if clientNames.get(address)}<span>{clientNames.get(address)}</span><span
-        class="client-address">{address}</span
-      >
-    {:else}<span>{address}</span>{/if}
+    {#if clientNames.get(address)}<span class="client-name" title={clientNames.get(address)}
+        >{clientNames.get(address)}</span
+      ><span class="client-address" title={address}>{address}</span>
+    {:else}<span class="client-name" title={address}>{address}</span>{/if}
   </span>
 {/snippet}
 
@@ -490,19 +503,15 @@
                     ></td
                   >
                   <td class="timestamp"
-                    ><span class="cell-label" aria-hidden="true">{t("Time")}</span><span
-                      class="cell-value"
-                      title={exactTime(item.lastTime)}>{displayTime(item.lastTime)}</span
-                    ></td
+                    ><span class="cell-label" aria-hidden="true">{t("Time")}</span
+                    >{@render timestamp(item.lastTime)}</td
                   >
                 </tr>{/each}
             {:else}
               {#each queryPage as row (row.id)}<tr>
                   <td class="timestamp"
-                    ><span class="cell-label" aria-hidden="true">{t("Time")}</span><span
-                      class="cell-value"
-                      title={exactTime(row.time_ms)}>{displayTime(row.time_ms)}</span
-                    ></td
+                    ><span class="cell-label" aria-hidden="true">{t("Time")}</span
+                    >{@render timestamp(row.time_ms)}</td
                   >
                   <td
                     ><span class="cell-label" aria-hidden="true">{t("Client")}</span><span
@@ -511,7 +520,8 @@
                   >
                   <td class="domain"
                     ><span class="cell-label" aria-hidden="true">{t("Domain")}</span><span
-                      class="cell-value">{row.domain}</span
+                      class="cell-value"
+                      title={row.domain}>{row.domain}</span
                     ></td
                   >
                   <td
@@ -603,6 +613,12 @@
   .client-address {
     color: var(--text-2);
     font-size: 0.8rem;
+  }
+  .client-name,
+  .client-address {
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
   }
   h2 {
     margin: 0 0 1rem;
@@ -758,6 +774,17 @@
     padding: 0.1rem 0.5rem;
     vertical-align: middle;
   }
+  .dns-table:not(.grouped) td {
+    height: 3rem;
+  }
+  .dns-table:not(.grouped) .domain .cell-value,
+  .dns-table:not(.grouped) :global(.query-details) {
+    display: -webkit-box;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+    line-clamp: 2;
+    overflow: hidden;
+  }
   tbody tr:nth-child(even) {
     background-color: var(--bg-light);
   }
@@ -767,6 +794,10 @@
   }
   .cell-label {
     display: none;
+  }
+  .timestamp-value {
+    display: inline-flex;
+    flex-direction: column;
   }
   .timestamp {
     color: var(--text-2);
@@ -879,7 +910,8 @@
       gap: 0.25rem;
       padding: 0.5rem 0.35rem 0.45rem;
     }
-    .dns-table td {
+    .dns-table td,
+    .dns-table:not(.grouped) td {
       display: grid;
       grid-template-columns: 5.6rem minmax(0, 1fr);
       align-items: baseline;
