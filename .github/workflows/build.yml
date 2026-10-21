@@ -1003,7 +1003,9 @@ jobs:
         uses: actions/upload-artifact@v6
         with:
           name: router-emulator-smoke-25.12.5-aarch64_cortex-a53
-          path: .build/router-emulator-smoke/Router-Emulator/work/
+          path: |
+            .build/router-emulator-smoke/Router-Emulator/work/*.log
+            .build/router-emulator-smoke/Router-Emulator/work/logs/
           if-no-files-found: warn
           retention-days: 7
 
