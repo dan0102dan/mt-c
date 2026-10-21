@@ -515,6 +515,64 @@ test("subscription rule overrides survive save, export, import and reload", asyn
 });
 
 for (const width of [1280, 390]) {
+  for (const [kind, policyId] of [
+    ["control character", "Foreign\x1f0"],
+    ["128 UTF-8 bytes", "я".repeat(64)],
+  ]) {
+    test(
+      `invalid foreign policy (${kind}) blocks atomic import until mapped (${width}px)`,
+      { tag: "@entware_kn" },
+      async ({ page, backend }) => {
+        test.skip(process.env.VITE_ENTWARE_KN !== "1", "Keenetic-only bundle");
+        await page.setViewportSize({ width, height: width === 390 ? 844 : 900 });
+        await page.goto("/");
+        const before = (await backend.snapshot()).config;
+        let applyRequests = 0;
+        page.on("request", (request) => {
+          if (new URL(request.url()).pathname === "/api/v1/system/config/apply") applyRequests++;
+        });
+        const dialog = await upload(page, {
+          groups: [group],
+          profiles: [profile()],
+          settings: { keeneticPolicy: { enabled: true, policyId, mode: "exclude" } },
+        });
+        await dialog.getByRole("tab", { name: "Settings", exact: true }).click();
+        await dialog.getByRole("button", { name: "All", exact: true }).click();
+        const button = dialog.getByRole("button", { name: "Import", exact: true });
+        await expect(button).toBeDisabled();
+        await expect(button).toHaveAccessibleDescription(
+          "Policy ID must be shorter than 128 UTF-8 bytes and contain no control characters",
+        );
+        expect(applyRequests).toBe(0);
+        expect((await backend.snapshot()).config).toEqual(before);
+
+        const policySelection = dialog.getByRole("checkbox", {
+          name: "Routing policy",
+          exact: true,
+        });
+        await policySelection.uncheck();
+        await expect(button).toBeEnabled();
+        await policySelection.check();
+        await expect(button).toBeDisabled();
+
+        const { policies } = await (await backend.api.get("/api/v1/keenetic/policies")).json();
+        const local = policies.find((policy: { id: string }) => policy.id === "Policy0");
+        await dialog.getByRole("button", { name: "Keenetic policy mapping", exact: true }).click();
+        await page.getByRole("option", { name: local.name, exact: true }).click();
+        await expect(button).toBeEnabled();
+        await button.click();
+        await expect(dialog).toHaveCount(0);
+        expect(applyRequests).toBe(1);
+        const applied = (await backend.snapshot()).config;
+        expect(applied.groups).toEqual([group]);
+        expect(applied.app.keeneticPolicy).toEqual({
+          enabled: true,
+          policyId: local.id,
+          mode: "exclude",
+        });
+      },
+    );
+  }
   test(
     `a foreign Keenetic policy can be imported and saved before it exists (${width}px)`,
     { tag: "@entware_kn" },

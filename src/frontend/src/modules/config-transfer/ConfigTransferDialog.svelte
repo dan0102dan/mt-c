@@ -250,6 +250,11 @@
       : []),
   ]);
   function problemMessage(problem: string) {
+    if (
+      problem === "Policy ID must be shorter than 128 UTF-8 bytes and contain no control characters"
+    ) {
+      return t(problem);
+    }
     const separator = problem.indexOf(": ");
     const reason = problem.slice(0, separator);
     const value = problem.slice(separator + 2);

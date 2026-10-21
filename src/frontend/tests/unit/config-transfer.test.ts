@@ -466,6 +466,39 @@ Deno.test("settings overlays reject prototype mutation keys", () => {
   assert.throws(() => planImport(snapshot(), input, opts()), /Invalid settings key/);
   assert.equal(({} as { polluted?: boolean }).polluted, undefined);
 });
+Deno.test("foreign policy IDs follow backend UTF-8 byte and control character limits", () => {
+  const state = snapshot();
+  const input = (policyId: string, enabled = true) => ({
+    settings: { keeneticPolicy: { enabled, policyId, mode: "include" } },
+  });
+  for (const id of ["Foreign0", "x".repeat(127), "я".repeat(63) + "x", "政策🙂", "space allowed"]) {
+    const plan = planImport(state, input(id), opts());
+    assert.deepEqual(plan.problems, [], id);
+    assertPlanCurrent(plan, state);
+  }
+  const invalidIds = ["x".repeat(128), "я".repeat(64), "🙂".repeat(32)];
+  for (let code = 0; code < 32; code++) invalidIds.push(`Foreign${String.fromCharCode(code)}0`);
+  invalidIds.push("Foreign\x7f0");
+  for (const id of invalidIds) {
+    for (const enabled of [true, false]) {
+      const plan = planImport(state, input(id, enabled), opts());
+      assert.deepEqual(plan.problems, [
+        "Policy ID must be shorter than 128 UTF-8 bytes and contain no control characters",
+      ]);
+      assert.throws(() => assertPlanCurrent(plan, state), /Policy ID/);
+    }
+    const mapped = planImport(state, input(id), opts({ policyId: "Local0" }));
+    assert.deepEqual(mapped.problems, []);
+    assert.deepEqual(mapped.next.settings.keeneticPolicy, {
+      enabled: true,
+      policyId: "Local0",
+      mode: "include",
+    });
+    const deselected = planImport(state, input(id), opts({ selected: new Set(["groups"]) }));
+    assert.deepEqual(deselected.problems, []);
+    assert.deepEqual(deselected.next.settings, state.settings);
+  }
+});
 Deno.test("preview is bound to draft values, not object property order", () => {
   const state = snapshot();
   const plan = planImport(state, { groups: [] }, opts());

@@ -405,6 +405,25 @@ export function planImport(
         policy.policyId = options.policyId;
       }
     }
+    const policy = next.settings.keeneticPolicy;
+    if (
+      incoming.settings?.keeneticPolicy !== undefined &&
+      policy &&
+      typeof policy === "object" &&
+      !Array.isArray(policy)
+    ) {
+      // Match yaml_load.c and mt_kn_policy_config_valid after applying the mapping.
+      const id = policy.policyId;
+      if (
+        typeof id !== "string" ||
+        new TextEncoder().encode(id).length >= 128 ||
+        /[\x00-\x1f\x7f]/.test(id)
+      ) {
+        problems.push(
+          "Policy ID must be shorter than 128 UTF-8 bytes and contain no control characters",
+        );
+      }
+    }
   }
 
   // Do not normalize unrelated drafts. Only a changed definition updates retained consumers.
