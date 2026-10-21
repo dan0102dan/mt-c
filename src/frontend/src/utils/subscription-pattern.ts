@@ -18,5 +18,9 @@ export function subscriptionRulePattern(source: string, type?: string): string {
   const prefix = source.slice(0, comma);
   if (!TYPED_SOURCE_PREFIXES.has(prefix)) return source;
   const payload = source.slice(comma + 1);
-  return prefix === "DOMAIN-KEYWORD" && type === "wildcard" ? `*${payload}*` : payload;
+  if (prefix === "DOMAIN-KEYWORD" && type === "wildcard") {
+    // Preserve literal '*' and '?' in a keyword's displayed wildcard pattern.
+    return `*${payload.replace(/[\\\\*?]/g, "\\\\  return prefix === "DOMAIN-KEYWORD" && type === "wildcard" ? `*${payload}*` : payload;")}*`;
+  }
+  return payload;
 }
