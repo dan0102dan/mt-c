@@ -231,8 +231,8 @@ test("draft survives tab navigation without a footer; invalid empty chain cannot
   await expect(page.locator("#save-settings")).toBeDisabled();
   expect(state.profiles[0].interfaces).toHaveLength(3);
   await expect(
-    page.getByRole("button", { name: "Profiles: Add at least one interface", exact: true }),
-  ).toBeVisible();
+    page.getByRole("tab", { name: "Profiles", exact: true }),
+  ).toHaveAccessibleDescription("Profiles: Add at least one interface");
   await expect(page.locator("#save-settings")).toHaveAccessibleName("Save Changes");
   await expect(page.locator("#save-settings")).toHaveClass(/inactive/);
   await addInterface(page.locator(".profile"), "tun1");
@@ -717,7 +717,7 @@ for (const language of ["en", "ru"]) {
 
 for (const width of [390, 1280]) {
   for (const language of ["en", "ru"] as const) {
-    test(`hidden profile validation explains shared Save and returns to the editor (${width}px, ${language})`, async ({
+    test(`invalid profile tab is orange without adding a toolbar message (${width}px, ${language})`, async ({
       page,
     }) => {
       await page.setViewportSize({ width, height: 844 });
@@ -736,7 +736,8 @@ for (const width of [390, 1280]) {
         : "Profiles: Add at least one interface";
       const toolbar = page.locator(".settings-toolbar");
       const save = page.locator("#save-settings");
-      await expect(page.locator("#settings-validation")).toHaveCount(0);
+      const toolbarHeight = (await toolbar.boundingBox())!.height;
+      await expect(page.locator(".validation-description")).toHaveCount(0);
       await page
         .getByRole("button", { name: ru ? "Добавить профиль" : "Add profile", exact: true })
         .click();
@@ -747,24 +748,30 @@ for (const width of [390, 1280]) {
       await expect(draft).toBeHidden();
       await expect(save).toBeDisabled();
       await expect(save).toHaveAccessibleDescription(new RegExp(nameError));
-      const reason = toolbar.getByRole("button", { name: nameError, exact: true });
-      await expect(reason).toBeVisible();
-      await reason.click();
+      await expect(profilesTab).toHaveAttribute("aria-invalid", "true");
+      await expect(profilesTab).toHaveCSS("color", "rgb(253, 151, 31)");
+      await expect(profilesTab).toHaveAccessibleDescription(nameError);
+      expect((await toolbar.boundingBox())!.height).toBe(toolbarHeight);
+      await profilesTab.hover();
+      await expect(page.locator("#global-tooltip")).toHaveText(nameError.split(": ")[1]);
+      await profilesTab.click();
       await expect(profilesTab).toHaveAttribute("aria-selected", "true");
       await expect(profilesTab).toBeFocused();
+      await expect(profilesTab).toHaveCSS("color", "rgb(253, 151, 31)");
       await draft
         .getByLabel(ru ? "Название профиля" : "Profile name", { exact: true })
         .fill("New profile");
-      await expect(
-        toolbar.getByRole("button", { name: interfaceError, exact: true }),
-      ).toBeVisible();
+      await expect(profilesTab).toHaveAccessibleDescription(interfaceError);
+      await expect(profilesTab).toHaveCSS("color", "rgb(253, 151, 31)");
       await expect(save).toBeDisabled();
       await draft
         .getByRole("button", { name: ru ? "Добавить интерфейс" : "Add interface", exact: true })
         .click();
       await page.getByRole("option", { name: "tun1", exact: true }).click();
-      await expect(page.locator("#settings-validation")).toHaveCount(0);
+      await expect(page.locator(".validation-description")).toHaveCount(0);
       await expect(save).not.toHaveAttribute("aria-describedby");
+      await expect(profilesTab).not.toHaveAttribute("aria-invalid");
+      await expect(profilesTab).not.toHaveAttribute("data-invalid");
       await expect(save).toBeEnabled();
       expect(state.writes).toBe(0);
       expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(

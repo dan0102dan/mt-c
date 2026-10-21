@@ -1,11 +1,11 @@
 <script lang="ts">
   import PlatformSettings from "#platform/settings";
   import { Tabs } from "bits-ui";
-  import { getContext, setContext, tick } from "svelte";
+  import { getContext, onDestroy, setContext } from "svelte";
 
   import PageControls from "../../components/layout/PageControls.svelte";
-  import Button from "../../components/ui/Button.svelte";
   import { t } from "../../data/locale.svelte";
+  import { hideFor, show } from "../../lib/tooltip/tooltip.svelte";
   import DnsQueryLog from "./DnsQueryLog.svelte";
   import ProfilesPanel from "./ProfilesPanel.svelte";
 
@@ -41,13 +41,25 @@
     }),
   );
 
-  async function showSection(section: SettingsSection) {
-    selected = section.element.id;
-    await tick();
-    section.element
-      .closest(".settings-page")
-      ?.querySelector<HTMLElement>('.settings-tabs [data-state="active"]')
-      ?.focus();
+  let validationAnchor: HTMLElement | undefined;
+  onDestroy(() => {
+    if (validationAnchor) hideFor(validationAnchor);
+  });
+
+  function showValidation(event: PointerEvent | FocusEvent, section: SettingsSection) {
+    const controls = section.controls();
+    if (
+      controls.dirty &&
+      controls.validationMessage &&
+      event.currentTarget instanceof HTMLElement
+    ) {
+      validationAnchor = event.currentTarget;
+      void show(validationAnchor, controls.validationMessage);
+    }
+  }
+
+  function hideValidation(event: PointerEvent | FocusEvent) {
+    if (event.currentTarget instanceof HTMLElement) hideFor(event.currentTarget);
   }
 
   const canSave = $derived(dirty && !saving && !invalid);
@@ -93,7 +105,9 @@
       onSave={() => void saveAll()}
       saveButtonId="save-settings"
       saveLabel={t("Save Changes")}
-      saveDescriptionId={validationSections.length ? "settings-validation" : undefined}
+      saveDescriptionId={validationSections.length
+        ? validationSections.map((section) => `settings-validation-${section.element.id}`).join(" ")
+        : undefined}
       exportLabel={t("Export Config")}
       importLabel={t("Import Config")}
       onExport={() => void transfer.exportConfig()}
@@ -105,21 +119,32 @@
       {#snippet search()}
         <Tabs.List class="settings-tabs" aria-label={t("Settings")}>
           {#each sections as section (section.element.id)}
-            <Tabs.Trigger value={section.element.id}>{tabLabels[section.element.id]}</Tabs.Trigger>
+            {@const message = section.controls().dirty
+              ? section.controls().validationMessage
+              : undefined}
+            <Tabs.Trigger
+              value={section.element.id}
+              data-invalid={message ? "true" : undefined}
+              aria-invalid={message ? "true" : undefined}
+              aria-describedby={message ? `settings-validation-${section.element.id}` : undefined}
+              onpointerenter={(event) => showValidation(event, section)}
+              onpointerleave={hideValidation}
+              onfocus={(event) => showValidation(event, section)}
+              onblur={hideValidation}>{tabLabels[section.element.id]}</Tabs.Trigger
+            >
           {/each}
         </Tabs.List>
       {/snippet}
     </PageControls>
-    {#if validationSections.length}
-      <div id="settings-validation" class="settings-validation" role="status">
-        <span>{t("Cannot save settings")}</span>
-        {#each validationSections as section (section.element.id)}
-          <Button small onclick={() => void showSection(section)}>
-            {tabLabels[section.element.id]}: {section.controls().validationMessage}
-          </Button>
-        {/each}
-      </div>
-    {/if}
+    {#each validationSections as section (section.element.id)}
+      <span
+        id={`settings-validation-${section.element.id}`}
+        class="validation-description"
+        role="status"
+      >
+        {tabLabels[section.element.id]}: {section.controls().validationMessage}
+      </span>
+    {/each}
   </div>
   <Tabs.Content value="profiles" class="settings-content"><ProfilesPanel /></Tabs.Content>
   <Tabs.Content value="keenetic" class="settings-content"><PlatformSettings /></Tabs.Content>
@@ -157,27 +182,6 @@
     flex-shrink: 0;
     margin-left: auto;
   }
-  .settings-validation {
-    display: flex;
-    flex-wrap: wrap;
-    align-items: baseline;
-    gap: 0.25rem 0.5rem;
-    padding: 0.25rem 0;
-    color: var(--text-2);
-    font: 400 0.9rem / 1.5 var(--font);
-  }
-  .settings-validation :global(button) {
-    min-width: 0;
-    padding: 0;
-    font: inherit;
-    text-align: left;
-    text-decoration: underline;
-    overflow-wrap: anywhere;
-  }
-  .settings-validation :global(button:focus-visible) {
-    outline: 2px solid var(--accent);
-    outline-offset: 2px;
-  }
   :global(.settings-content[data-state="inactive"]) {
     display: none;
   }
@@ -185,6 +189,7 @@
     min-width: 0;
     padding-top: 1rem;
   }
+  .validation-description,
   :global(.settings-content > section > .sr-only) {
     position: absolute;
     width: 1px;
@@ -222,6 +227,10 @@
   }
   :global(.settings-tabs [data-tabs-trigger]:hover) {
     color: var(--text);
+  }
+  :global(.settings-tabs [data-tabs-trigger][data-invalid="true"]) {
+    color: var(--orange);
+    border-bottom-color: var(--orange);
   }
   :global(.settings-tabs [data-tabs-trigger]:focus-visible) {
     outline: 2px solid var(--accent);
