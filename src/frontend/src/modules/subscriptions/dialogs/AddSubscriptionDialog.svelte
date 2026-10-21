@@ -22,6 +22,7 @@
 
   const dispatch = createEventDispatcher();
 
+  let urlInput = $state<HTMLInputElement>();
   let step = $state(1);
   let url = $state("");
   let name = $state("");
@@ -132,6 +133,7 @@
   title={step === 1 ? t("Add Subscription") : t("Confirm Subscription")}
   on:close={handleClose}
   maxWidth={400}
+  onOpenAutoFocus={() => urlInput?.focus()}
 >
   <div slot="body" class="subscription-dialog-content">
     {#if step === 1}
@@ -139,9 +141,9 @@
         <label for="sub-url">{t("URL")}</label>
         <div class="subscription-input-wrapper">
           <span class="icon"><Link size={18} /></span>
-          <!-- svelte-ignore a11y_autofocus -->
           <input
             id="sub-url"
+            bind:this={urlInput}
             type="text"
             bind:value={url}
             placeholder="https://example.com/list.txt"
@@ -151,7 +153,6 @@
               error = null;
               fetchError = false;
             }}
-            autofocus
           />
         </div>
       </div>

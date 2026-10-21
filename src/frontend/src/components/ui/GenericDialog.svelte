@@ -9,6 +9,7 @@
   export let textareaValue = "";
   export let textareaPlaceholder = "";
   export let maxWidth = 300;
+  export let onOpenAutoFocus: ((event: Event) => void) | undefined = undefined;
 
   let textArea: HTMLTextAreaElement;
 
@@ -28,6 +29,7 @@
     escapeKeydownBehavior="close"
     onOpenAutoFocus={(e) => {
       e.preventDefault();
+      onOpenAutoFocus?.(e);
     }}
     style={`--generic-dialog-max-width: ${maxWidth}px`}
   >

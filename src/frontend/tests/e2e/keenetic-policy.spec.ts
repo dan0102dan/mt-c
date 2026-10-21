@@ -471,10 +471,8 @@ test.describe("Save applies to the entire Settings page", { tag: "@entware_kn" }
     expect(state.profileWrites).toBe(0);
     expect(state.writes).toBe(0);
     const profilesTab = page.getByRole("tab", { name: "Profiles", exact: true });
-    await expect(profilesTab).toHaveCSS("color", "rgb(253, 151, 31)");
+    await expect(profilesTab).not.toHaveAttribute("data-invalid");
     await expect(save(page)).toHaveAccessibleDescription(/Profiles: Enter a profile name/);
-    await profilesTab.focus();
-    await expect(page.locator("#global-tooltip")).toHaveText("Enter a profile name");
     await profilesTab.click();
     await name.fill("Repaired");
     await expect(profilesTab).not.toHaveAttribute("aria-invalid");

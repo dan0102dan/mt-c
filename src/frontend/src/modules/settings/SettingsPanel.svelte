@@ -1,11 +1,10 @@
 <script lang="ts">
   import PlatformSettings from "#platform/settings";
   import { Tabs } from "bits-ui";
-  import { getContext, onDestroy, setContext } from "svelte";
+  import { getContext, setContext } from "svelte";
 
   import PageControls from "../../components/layout/PageControls.svelte";
   import { t } from "../../data/locale.svelte";
-  import { hideFor, show } from "../../lib/tooltip/tooltip.svelte";
   import DnsQueryLog from "./DnsQueryLog.svelte";
   import ProfilesPanel from "./ProfilesPanel.svelte";
 
@@ -40,27 +39,6 @@
       return controls.dirty && controls.validationMessage;
     }),
   );
-
-  let validationAnchor: HTMLElement | undefined;
-  onDestroy(() => {
-    if (validationAnchor) hideFor(validationAnchor);
-  });
-
-  function showValidation(event: PointerEvent | FocusEvent, section: SettingsSection) {
-    const controls = section.controls();
-    if (
-      controls.dirty &&
-      controls.validationMessage &&
-      event.currentTarget instanceof HTMLElement
-    ) {
-      validationAnchor = event.currentTarget;
-      void show(validationAnchor, controls.validationMessage);
-    }
-  }
-
-  function hideValidation(event: PointerEvent | FocusEvent) {
-    if (event.currentTarget instanceof HTMLElement) hideFor(event.currentTarget);
-  }
 
   const canSave = $derived(dirty && !saving && !invalid);
 
@@ -119,19 +97,7 @@
       {#snippet search()}
         <Tabs.List class="settings-tabs" aria-label={t("Settings")}>
           {#each sections as section (section.element.id)}
-            {@const message = section.controls().dirty
-              ? section.controls().validationMessage
-              : undefined}
-            <Tabs.Trigger
-              value={section.element.id}
-              data-invalid={message ? "true" : undefined}
-              aria-invalid={message ? "true" : undefined}
-              aria-describedby={message ? `settings-validation-${section.element.id}` : undefined}
-              onpointerenter={(event) => showValidation(event, section)}
-              onpointerleave={hideValidation}
-              onfocus={(event) => showValidation(event, section)}
-              onblur={hideValidation}>{tabLabels[section.element.id]}</Tabs.Trigger
-            >
+            <Tabs.Trigger value={section.element.id}>{tabLabels[section.element.id]}</Tabs.Trigger>
           {/each}
         </Tabs.List>
       {/snippet}
@@ -227,10 +193,6 @@
   }
   :global(.settings-tabs [data-tabs-trigger]:hover) {
     color: var(--text);
-  }
-  :global(.settings-tabs [data-tabs-trigger][data-invalid="true"]) {
-    color: var(--orange);
-    border-bottom-color: var(--orange);
   }
   :global(.settings-tabs [data-tabs-trigger]:focus-visible) {
     outline: 2px solid var(--accent);

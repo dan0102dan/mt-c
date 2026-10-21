@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount } from "svelte";
+  import { onMount, tick } from "svelte";
 
   import Button from "../../components/ui/Button.svelte";
   import Placeholder from "../../components/ui/Placeholder.svelte";
@@ -12,6 +12,7 @@
   import { settingsSection } from "./section-controls";
 
   const section = settingsSection();
+  let sectionElement: HTMLElement;
   const dirty = $derived(profilesDirty());
   const validation = $derived(profileError(profiles.draft));
   const busy = $derived(profiles.saving || profiles.loading);
@@ -20,13 +21,21 @@
     void fetchProfiles();
   });
 
-  function addProfile() {
+  async function addProfile() {
+    if (unavailable) return;
+    const id = newProfileId();
     profiles.draft.push({
-      id: newProfileId(),
+      id,
       name: "",
       interfaces: [],
       on_unavailable: "blackhole",
     });
+    await tick();
+    // Focus only this new draft; switching away must not steal focus back.
+    if (sectionElement?.getClientRects().length)
+      sectionElement
+        .querySelector<HTMLInputElement>(`[data-profile-id="${id}"] .profile-name`)
+        ?.focus();
   }
 
   async function save() {
@@ -42,6 +51,7 @@
 
 <section
   id="profiles"
+  bind:this={sectionElement}
   class="profiles-settings"
   aria-labelledby="profiles-title"
   aria-busy={busy}
