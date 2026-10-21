@@ -119,7 +119,7 @@ test("generic UI has no policy feature or policy requests", async ({ page }) => 
   await expect(save(page)).toHaveCount(1);
 });
 
-test.describe("Keenetic policy settings", () => {
+test.describe("Keenetic policy settings", { tag: "@entware_kn" }, () => {
   test.skip(!keenetic, "Keenetic-only bundle");
   for (const width of [1280, 390]) {
     test(`mt default follows the policy list and saves its ID (${width}px)`, async ({ page }) => {
@@ -332,7 +332,7 @@ test.describe("Keenetic policy settings", () => {
   });
 });
 
-test.describe("Shared settings toolbar", () => {
+test.describe("Shared settings toolbar", { tag: "@entware_kn" }, () => {
   test.skip(!keenetic, "Keenetic-only editor; generic keeps a single section");
   for (const width of [1280, 390]) {
     test(`scroll changes the heading and Add action, not drafts or the Save node (${width}px)`, async ({
@@ -472,7 +472,7 @@ test.describe("Shared settings toolbar", () => {
   });
 });
 
-test.describe("Save applies to the entire Settings page", () => {
+test.describe("Save applies to the entire Settings page", { tag: "@entware_kn" }, () => {
   test.skip(!keenetic, "Keenetic-only editor");
   test("a profile edit remains saveable while viewing policy", async ({ page }) => {
     await page.setViewportSize({ width: 390, height: 540 });

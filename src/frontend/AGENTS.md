@@ -269,6 +269,12 @@ npm run test:e2e -- profiles.spec.ts
 `format:check` охватывает `src`, `tests`, `dev`; корневые файлы проверяй отдельно,
 например `npx prettier --check AGENTS.md`. Наличие CI-gate проверяй в workflow.
 
+E2E, требующие сборки `entware_kn`, помечай тегом `@entware_kn` в параметрах
+`test` или `test.describe`. CI выбирает их автоматически через `--grep @entware_kn`
+с `VITE_ENTWARE_KN=1`; обычный запуск CI исключает этот тег через `--grep-invert`.
+Не добавляй списки файлов Keenetic-тестов в workflow. Для локального запуска:
+`VITE_ENTWARE_KN=1 npm run test:e2e -- --grep @entware_kn`.
+
 Для ручной разработки смотри `README.md` и `dev/`; пользовательскую конфигурацию
 не коммить как fixture.
 

@@ -57,8 +57,8 @@ jobs:
 
       - name: Frontend e2e tests
         working-directory: ./src/frontend
-        run: npm run test:e2e
+        run: npm run test:e2e -- --grep-invert @entware_kn
 
-      - name: Keenetic policy e2e tests
+      - name: Keenetic e2e tests
         working-directory: ./src/frontend
-        run: VITE_ENTWARE_KN=1 npm run test:e2e -- keenetic-policy.spec.ts
+        run: VITE_ENTWARE_KN=1 npm run test:e2e -- --grep @entware_kn
