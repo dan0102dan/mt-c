@@ -5,9 +5,9 @@
  *   wildcard   IGLOU-EU/go-wildcard v2 Match port: '*' any run, '?' exactly
  *              one byte, '.' IN THE PATTERN MATCHES ANY SINGLE BYTE (quirk
  *              of the library the Go backend uses) — case-sensitive
- *   keyword    literal, ASCII case-insensitive substring; no PCRE2
- *   domain-wildcard  ASCII case-insensitive '*'/'?' glob, literal '.';
- *              separate from wildcard so old configs retain Go semantics
+ *   imported keyword/domain glob records use the existing wildcard type
+ *              and an internal case-insensitive, literal-dot runtime mode;
+ *              no new rule type and no PCRE2 on the imported path.
  *   regex      PCRE2, CASELESS|UTF|UCP, unanchored, match/depth limits;
  *              a pattern that fails to compile never matches (like Go's
  *              invalid-regex behaviour) and reports the error once
@@ -32,7 +32,7 @@ typedef struct mt_rule_matcher mt_rule_matcher_t;
 
 /* Compiles one rule (regex is compiled eagerly here, unlike Go's lazy
  * sync.Once — observable behaviour is the same). Invalid regex or empty
- * keyword/domain-wildcard yields a matcher that never matches
+ * imported runtime glob yields a matcher that never matches
  * (with compile_ok=false observable for diagnostics). Allocation can fail. */
 mt_rule_matcher_t *mt_rule_matcher_new(const char *type, const char *rule);
 void mt_rule_matcher_free(mt_rule_matcher_t *m);
