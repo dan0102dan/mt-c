@@ -4,7 +4,6 @@
 #include "magitrickle/id_pool.h"
 
 #include "magitrickle/lookup.h"
-#include "magitrickle/log.h"
 #include "magitrickle/rand.h"
 
 #include <arpa/inet.h>
@@ -313,12 +312,12 @@ static bool canceled(const atomic_bool *cancel) {
 
 /* Reserve explicit rule records, not comma-separated legacy host lists.
  * Unsupported records must never become e.g. a namespace named PROCESS-NAME.
- * A recognized typed record makes the entire source a strict rule-set. */
+ * A recognized typed record selects whole-line parsing for the entire source. */
 static bool looks_typed(const char *s, size_t len)
 {
     if (typed_rule(s, len)) { return true; }
     /* Complete remaining names from Mihomo rules/parser.go (2026-10-21).
-     * Recognition selects strict parsing; it does NOT implement these rules.
+     * Recognition prevents legacy tokenization; it does NOT implement these rules.
      * Keep the independent coverage table in test_mihomo_rule_types.c in sync. */
     static const char *const unsupported[] = {
         "GEOSITE", "GEOIP", "SRC-GEOIP", "IP-ASN", "SRC-IP-ASN",
@@ -336,8 +335,8 @@ static bool looks_typed(const char *s, size_t len)
         if (ascii_equal(s, len, unsupported[i])) { return true; }
     }
     /* Uppercase hyphenated names (e.g. MY-SITE) are valid legacy entries.
-     * Only explicit record names may select strict typed parsing. Unknown
-     * names are still rejected if another record already selects that mode. */
+     * Only explicit record names may select typed parsing. Unknown names
+     * are skipped whole if another record already selects that mode. */
     return false;
 }
 
@@ -405,15 +404,14 @@ static bool typed_ip_family(const char *value, bool *ipv6)
  * whole, including commas (quantifiers, classes and literal commas): the
  * supported regex form is TYPE,expression, not an inline policy rule. */
 static mt_err_t canonical_typed_record(char *line, char *out, size_t out_size,
-                                       const char **type, const char **reason)
+                                       const char **type)
 {
-    *reason = "invalid typed rule";
     char *comma = strchr(line, ',');
-    if (!comma) { *reason = "expected TYPE,value in rule-set"; return MT_ERR_INVAL; }
+    if (!comma) { return MT_ERR_INVAL; }
     *comma = '\0';
     const char *name = trim(line);
     const typed_rule_t *spec = typed_rule(name, strlen(name));
-    if (!spec) { *reason = "unsupported rule type in rule-set"; return MT_ERR_INVAL; }
+    if (!spec) { return MT_ERR_INVAL; }
     char *value = trim(comma + 1);
     bool ip = strcmp(spec->type, MT_RULE_SUBNET) == 0 || strcmp(spec->type, MT_RULE_SUBNET6) == 0;
     bool regex = strcmp(spec->type, MT_RULE_REGEX) == 0;
@@ -431,41 +429,41 @@ static mt_err_t canonical_typed_record(char *line, char *out, size_t out_size,
             char *field = trim(extra);
             size_t n = strlen(field);
             if (!n || ascii_equal(field, n, "src")) {
-                *reason = "empty or unsupported rule modifier"; return MT_ERR_INVAL;
+                return MT_ERR_INVAL;
             }
             if (ascii_equal(field, n, "no-resolve")) {
                 if (!ip || no_resolve_seen || next) {
-                    *reason = "invalid no-resolve modifier"; return MT_ERR_INVAL;
+                    return MT_ERR_INVAL;
                 }
                 no_resolve_seen = true;
             } else if (policy_seen || no_resolve_seen) {
-                *reason = "unsupported rule modifiers"; return MT_ERR_INVAL;
+                return MT_ERR_INVAL;
             } else {
                 policy_seen = true;
             }
             extra = next;
         }
     }
-    if (!*value) { *reason = "empty rule value"; return MT_ERR_INVAL; }
+    if (!*value) { return MT_ERR_INVAL; }
     const char *canonical = spec->canonical;
     *type = spec->type;
     if (ip) {
         bool ipv6;
-        if (!typed_ip_family(value, &ipv6)) { *reason = "invalid IP/CIDR"; return MT_ERR_INVAL; }
+        if (!typed_ip_family(value, &ipv6)) { return MT_ERR_INVAL; }
         canonical = ipv6 ? "IP-CIDR6" : "IP-CIDR";
         *type = ipv6 ? MT_RULE_SUBNET6 : MT_RULE_SUBNET;
     } else if (strcmp(*type, MT_RULE_DOMAIN) == 0 || strcmp(*type, MT_RULE_NAMESPACE) == 0) {
         size_t n = strlen(value);
         if (value[n - 1] == '.') { value[n - 1] = '\0'; }
-        if (!valid_typed_domain(value)) { *reason = "invalid domain"; return MT_ERR_INVAL; }
+        if (!valid_typed_domain(value)) { return MT_ERR_INVAL; }
     } else if (strcmp(canonical, "DOMAIN-KEYWORD") == 0) {
-        if (!valid_literal_keyword(value)) { *reason = "invalid keyword"; return MT_ERR_INVAL; }
+        if (!valid_literal_keyword(value)) { return MT_ERR_INVAL; }
     } else if (strcmp(canonical, "DOMAIN-WILDCARD") == 0) {
         if (!all_chars_in(value, "_*?")) {
-            *reason = "wildcard supports only literal DNS characters, * and ?"; return MT_ERR_INVAL;
+            return MT_ERR_INVAL;
         }
     } else if (!is_valid_regex(value)) {
-        *reason = "invalid DOMAIN-REGEX expression"; return MT_ERR_INVAL;
+        return MT_ERR_INVAL;
     }
     size_t name_len = strlen(canonical), value_len = strlen(value);
     if (name_len + 1 + value_len >= out_size) { return MT_ERR_LIMIT; }
@@ -537,7 +535,6 @@ mt_err_t mt_sub_parse_rules_cancel(const char *list, mt_sub_rule_t ***out_rules,
         }
     } else {
         char canonical[MT_SUB_MAX_LINE_BYTES + 1];
-        size_t line_number = 0;
         for (char *line = copy; line && *line;) {
             if (canceled(cancel)) { err = MT_ERR_CANCELED; break; }
             char *end = strpbrk(line, "\r\n"), *next = NULL;
@@ -546,18 +543,21 @@ mt_err_t mt_sub_parse_rules_cancel(const char *list, mt_sub_rule_t ***out_rules,
                 if (*end == '\r' && *next == '\n') { next++; }
                 *end = '\0';
             }
-            line_number++;
             char *text = trim(line);
             if (*text && !line_comment(text)) {
                 if (strlen(text) > MT_SUB_MAX_LINE_BYTES) { err = MT_ERR_LIMIT; break; }
-                const char *type = NULL, *reason = NULL;
-                err = canonical_typed_record(text, canonical, sizeof(canonical), &type, &reason);
-                if (err == MT_OK) { err = append_parsed_rule(&state, canonical, type); }
-                if (err != MT_OK) {
-                    MT_WARN("subscription rule-set line %zu: %s", line_number,
-                            reason ? reason : "unable to import rule");
-                    break;
+                const char *type = NULL;
+                err = canonical_typed_record(text, canonical, sizeof(canonical), &type);
+                if (err == MT_ERR_INVAL) {
+                    /* Unsupported or malformed record: silently skip the WHOLE
+                     * line, never reinterpret its payload through legacy parsing.
+                     * Resource limits, allocation failure and cancellation still
+                     * abort without publishing an incomplete working result. */
+                    err = MT_OK;
+                } else if (err == MT_OK) {
+                    err = append_parsed_rule(&state, canonical, type);
                 }
+                if (err != MT_OK) { break; }
             }
             line = next;
         }

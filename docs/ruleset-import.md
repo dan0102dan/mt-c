@@ -58,26 +58,43 @@ empty lines and whole-line `#`, `;`, `//` comments are skipped.
 `DOMAIN-REGEX` expressions retain all text after the first comma,
 including quantifier commas. Optional upstream policy labels are ignored:
 the interface/profile/priority from the mt-c subscription take precedence.
-`no-resolve` is accepted only as a final IP modifier; `src` is rejected.
+`no-resolve` is accepted only as a final IP modifier; `src` is unsupported.
 
-Unknown/unsupported types, malformed records, unsupported flags and mixing
-plain domains with typed records cause an atomic refresh failure. Previously
-loaded subscription rules are retained. This imports a common **text rule-set
-subset**, not full client configs, YAML/JSON, MRS/SRS or nested rule providers.
-`GEOIP`, `GEOSITE`, process rules, ASN rules and logical rules are not
-approximated.
+**Import is best-effort and silent.** Unsupported types, unknown names in a
+recognized typed source, malformed records (including empty wildcard/keyword
+patterns), unsupported flags and non-record lines are skipped **as whole
+lines**. Their payloads and nested conditions never fall back to legacy
+comma tokenization. Compatible records before and after them are imported;
+there are no per-record warnings, UI notices, counters or error responses.
+
+A source containing only skipped records successfully produces an empty list.
+Refresh publishes the successfully parsed subset, including an empty subset;
+it does not keep stale downloaded rules merely because some records were
+skipped. IDs and overrides for surviving compatible rules remain stable.
+
+Allocation failures, cancellation, download errors and resource-limit failures
+are still genuine operation failures. No incomplete candidate is published
+on these failures. Existing limits remain (8 MiB fetch, 100k accepted rules,
+4096 bytes per record). Skipping a malformed record is not a reason to hide
+network or resource failures.
+
+This imports a common **text rule-set subset**, not full client configs,
+YAML/JSON, MRS/SRS or nested rule providers. `GEOIP`, `GEOSITE`, process rules,
+ASN rules and logical rules are skipped, not approximated or executed.
+See [mihomo-rule-coverage.md](mihomo-rule-coverage.md).
 
 Legacy plain-domain subscriptions retain their original comma/newline
 tokenization and type inference, and old wildcard rules retain their matching
-semantics. Original size limits remain (8 MiB fetch, 100k rules, 4096 bytes
-per record).
+semantics. Auto-detection recognizes explicit rule names, not arbitrary
+uppercase or hyphenated hostnames.
 
 ## Tests
 
 C regression tests cover the typed parser, literal-dot keywords, case folding,
 literal keyword metacharacters, imported glob semantics, legacy behavior,
-cache restore, override persistence and runtime projection. A dedicated
-executable intercepts PCRE2 and asserts zero compile/match calls for typed
-keyword and source wildcard rules. Frontend tests assert the absence of new
-configurable rule types. Router throughput improvement is not claimed without
-benchmark measurements.
+cache restore, override persistence and runtime projection. Coverage includes
+all known Mihomo names, malformed records between valid ones, successful empty
+refreshes, and atomic cancellation/size-limit failures. A dedicated executable
+intercepts PCRE2 and asserts zero compile/match calls for typed keyword and
+source wildcard rules. Frontend tests assert the absence of new configurable
+rule types. Router throughput improvement is not claimed without benchmarks.

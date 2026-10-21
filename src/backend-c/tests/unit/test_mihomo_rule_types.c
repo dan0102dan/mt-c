@@ -1,7 +1,7 @@
 /* Independent inventory of every case in MetaCubeX/mihomo rules/parser.go,
  * audited 2026-10-21, blob 474d01ef42a6870fcc349e4bf8f8b5836406e1d4.
  * Do not derive this table from subparse.c: missing recognition must fail a test.
- * Recognition is not execution support; unsupported semantics fail atomically. */
+ * Recognition is not execution support; unsupported records are skipped whole. */
 #include "greatest.h"
 #include "magitrickle/subparse.h"
 
@@ -75,13 +75,13 @@ static void variant_name(char *out, const char *name, unsigned variant)
     out[i] = '\0';
 }
 
-static bool rejects_atomically(const char *text)
+static bool imports_empty(const char *text)
 {
     mt_sub_rule_t **rules = NULL;
     size_t n = 123;
     mt_err_t err = mt_sub_parse_rules(text, &rules, &n);
-    bool ok = err == MT_ERR_INVAL && rules == NULL && n == 0;
-    if (!ok) { fprintf(stderr, "expected atomic rejection: %s\n", text); }
+    bool ok = err == MT_OK && rules == NULL && n == 0;
+    if (!ok) { fprintf(stderr, "expected successful empty import: %s\n", text); }
     if (rules) { mt_sub_rules_free(rules, n); }
     return ok;
 }
@@ -112,28 +112,28 @@ TEST mihomo_unsupported_inventory_standalone(void)
         for (unsigned variant = 0; variant < 3; variant++) {
             char name[64], text[512];
             variant_name(name, unsupported[i].name, variant);
-            /* No supported record may help detection here: this is the bug. */
+            /* No supported record may help detection here: payloads must not
+             * become unrelated namespaces, CIDRs, or nested rule fragments. */
             snprintf(text, sizeof(text), "%s,%s", name, unsupported[i].payload);
-            ASSERT(rejects_atomically(text));
+            ASSERT(imports_empty(text));
             snprintf(text, sizeof(text), "\xef\xbb\xbf# source\r\n; comment\r\n// comment\r\n"
                      " \t%s \t, %s\r\n", name, unsupported[i].payload);
-            ASSERT(rejects_atomically(text));
+            ASSERT(imports_empty(text));
         }
     }
     PASS();
 }
 
-TEST mihomo_unsupported_refresh_keeps_previous_rules(void)
+TEST mihomo_unsupported_refresh_keeps_compatible_rules(void)
 {
     mt_sub_rule_t **old = NULL;
     size_t n_old = 0;
-    ASSERT_EQ(MT_OK, mt_sub_parse_rules("keep.example.com", &old, &n_old));
+    ASSERT_EQ(MT_OK, mt_sub_parse_rules("DOMAIN,before.example.com\n", &old, &n_old));
     old[0]->enable = false;
-    ASSERT_EQ(MT_OK, mt_strset(&old[0]->type, MT_RULE_DOMAIN));
+    ASSERT_EQ(MT_OK, mt_strset(&old[0]->type, MT_RULE_NAMESPACE));
     mt_id_t id = old[0]->id;
-    bool ok = true;
-    for (size_t i = 0; i < COUNT(unsupported) && ok; i++) {
-        for (unsigned position = 0; position < 3 && ok; position++) {
+    for (size_t i = 0; i < COUNT(unsupported); i++) {
+        for (unsigned position = 0; position < 3; position++) {
             char text[512];
             snprintf(text, sizeof(text), "%s%s,%s%s",
                      position == 0 ? "" : "DOMAIN,before.example.com\n",
@@ -141,17 +141,26 @@ TEST mihomo_unsupported_refresh_keeps_previous_rules(void)
                      position == 2 ? "" : "\nIP-CIDR,192.0.2.0/24\n");
             mt_sub_rule_t **fresh = NULL;
             size_t n_fresh = 123;
-            mt_err_t err = mt_sub_refresh_rules(text, old, n_old, &fresh, &n_fresh);
-            ok = err == MT_ERR_INVAL && fresh == NULL && n_fresh == 0 &&
-                 n_old == 1 && mt_id_equal(id, old[0]->id) && !old[0]->enable &&
-                 strcmp(old[0]->rule, "keep.example.com") == 0 &&
-                 strcmp(old[0]->type, MT_RULE_DOMAIN) == 0;
-            if (!ok) { fprintf(stderr, "refresh mutated state for %s\n", unsupported[i].name); }
-            if (fresh) { mt_sub_rules_free(fresh, n_fresh); }
+            ASSERT_EQ(MT_OK, mt_sub_refresh_rules(text, old, n_old, &fresh, &n_fresh));
+            ASSERT_EQ(position == 1 ? 2u : 1u, (unsigned)n_fresh);
+            if (position != 0) {
+                ASSERT_STR_EQ("DOMAIN,before.example.com", fresh[0]->rule);
+                ASSERT_STR_EQ(MT_RULE_NAMESPACE, fresh[0]->type);
+                ASSERT(mt_id_equal(id, fresh[0]->id));
+                ASSERT_FALSE(fresh[0]->enable);
+            }
+            if (position != 2) {
+                ASSERT_STR_EQ("IP-CIDR,192.0.2.0/24", fresh[n_fresh - 1]->rule);
+                ASSERT_STR_EQ(MT_RULE_SUBNET, fresh[n_fresh - 1]->type);
+            }
+            /* The parser returns a detached replacement, not a mutated input. */
+            ASSERT(mt_id_equal(id, old[0]->id));
+            ASSERT_FALSE(old[0]->enable);
+            ASSERT_STR_EQ(MT_RULE_NAMESPACE, old[0]->type);
+            mt_sub_rules_free(fresh, n_fresh);
         }
     }
     mt_sub_rules_free(old, n_old);
-    ASSERT(ok);
     PASS();
 }
 
@@ -173,7 +182,12 @@ TEST mihomo_names_do_not_reserve_entire_prefixes(void)
         ASSERT_STR_EQ("example.com", rules[1]->rule);
         mt_sub_rules_free(rules, n);
     }
-    ASSERT(rejects_atomically("DOMAIN,example.com\nUNKNOWN-TYPE,8.8.8.8/24"));
+    mt_sub_rule_t **rules = NULL;
+    size_t n = 0;
+    ASSERT_EQ(MT_OK, mt_sub_parse_rules("DOMAIN,example.com\nUNKNOWN-TYPE,8.8.8.8/24", &rules, &n));
+    ASSERT_EQ(1u, (unsigned)n);
+    ASSERT_STR_EQ("DOMAIN,example.com", rules[0]->rule);
+    mt_sub_rules_free(rules, n);
     PASS();
 }
 
@@ -188,8 +202,8 @@ TEST other_text_dialect_aliases_retained(void)
     const char *types[] = {MT_RULE_DOMAIN, MT_RULE_NAMESPACE, MT_RULE_WILDCARD, MT_RULE_SUBNET6};
     for (size_t i = 0; i < n; i++) { ASSERT_STR_EQ(types[i], rules[i]->type); }
     mt_sub_rules_free(rules, n);
-    ASSERT(rejects_atomically("FINAL,DIRECT"));
-    ASSERT(rejects_atomically("INCLUDE,example.list"));
+    ASSERT(imports_empty("FINAL,DIRECT"));
+    ASSERT(imports_empty("INCLUDE,example.list"));
     PASS();
 }
 
@@ -199,7 +213,7 @@ int main(int argc, char **argv)
     GREATEST_MAIN_BEGIN();
     RUN_TEST(mihomo_supported_inventory);
     RUN_TEST(mihomo_unsupported_inventory_standalone);
-    RUN_TEST(mihomo_unsupported_refresh_keeps_previous_rules);
+    RUN_TEST(mihomo_unsupported_refresh_keeps_compatible_rules);
     RUN_TEST(mihomo_names_do_not_reserve_entire_prefixes);
     RUN_TEST(other_text_dialect_aliases_retained);
     GREATEST_MAIN_END();

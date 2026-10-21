@@ -15,7 +15,9 @@
  * Typed text rule-sets (Meta/Surge and HOST aliases) are parsed by physical
  * line; canonical TYPE,value records are stable identities. This preserves
  * source types through cache reload and distinguishes equal payloads of
- * different types. Unsupported/invalid records reject the whole refresh.
+ * different types. Unsupported/invalid records are silently skipped whole.
+ * No compatible records is a successful empty result. Resource failures and
+ * cancellation remain atomic errors, not a partial successful update.
  * Only explicit DOMAIN-REGEX records use regex validation in typed lists.
  */
 #ifndef MAGITRICKLE_SUBPARSE_H

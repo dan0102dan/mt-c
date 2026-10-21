@@ -2,6 +2,7 @@
  * unchanged. Exercise the real parser, match index and subscription models. */
 #include "greatest.h"
 
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -44,8 +45,9 @@ TEST imported_keyword_uses_existing_wildcard(void)
     ASSERT_FALSE(imported_matches("DOMAIN-KEYWORD,openai", ""));
     mt_sub_rule_t **rules = NULL;
     size_t n = 0;
-    ASSERT_EQ(MT_ERR_INVAL, mt_sub_parse_rules("DOMAIN-KEYWORD,", &rules, &n));
+    ASSERT_EQ(MT_OK, mt_sub_parse_rules("DOMAIN-KEYWORD,", &rules, &n));
     ASSERT(rules == NULL);
+    ASSERT_EQ(0u, (unsigned)n);
     PASS();
 }
 
@@ -120,8 +122,8 @@ TEST typed_import_canonical_identity(void)
                            "subnet", "subnet6", "subnet6", "regex"};
     for (size_t i = 0; i < n; i++) {
         ASSERT_STR_EQ(expected[i], rules[i]->rule);
-        ASSERT_STR_EQ(types[i], rules[i]->type);
         ASSERT_STR_EQ(types[i], mt_sub_detect_type(rules[i]->rule));
+        ASSERT_STR_EQ(types[i], rules[i]->type);
         ASSERT_FALSE(mt_id_is_zero(rules[i]->id));
         ASSERT(rules[i]->enable);
         for (size_t j = 0; j < i; j++) { ASSERT_FALSE(mt_id_equal(rules[i]->id, rules[j]->id)); }
@@ -131,10 +133,9 @@ TEST typed_import_canonical_identity(void)
     PASS();
 }
 
-TEST typed_import_rejects_atomically(void)
+TEST typed_import_skips_invalid_records(void)
 {
     const char *bad[] = {
-        "DOMAIN-KEYWORD,ok\nPROCESS-NAME,app.exe\n",
         "process-name,app.exe\n", "GEOIP,CN\n", "RULE-SET,another.list\n",
         "DOMAIN-KEYWORD,\n", "DOMAIN-WILDCARD,[ab].example.com\n",
         "DOMAIN,example..com\n", "DOMAIN-REGEX,[invalid\n",
@@ -143,15 +144,26 @@ TEST typed_import_rejects_atomically(void)
         "IP-CIDR,192.0.2.0/24,proxy,no-resolve,src\n",
         "DOMAIN,example.com,no-resolve\n", "DOMAIN,example.com,,\n",
         "DOMAIN,example.com,proxy,unknown-flag\n",
-        "DOMAIN-KEYWORD,ok\nlegacy.example.com\n",
     };
     for (size_t i = 0; i < sizeof(bad) / sizeof(bad[0]); i++) {
         mt_sub_rule_t **rules = NULL;
         size_t n = 99;
-        ASSERT_EQ(MT_ERR_INVAL, mt_sub_parse_rules(bad[i], &rules, &n));
+        ASSERT_EQ(MT_OK, mt_sub_parse_rules(bad[i], &rules, &n));
         ASSERT(rules == NULL);
         ASSERT_EQ(0u, (unsigned)n);
+        char source[512];
+        snprintf(source, sizeof(source), "DOMAIN-KEYWORD,ok\n%sDOMAIN,after.example\n", bad[i]);
+        ASSERT_EQ(MT_OK, mt_sub_parse_rules(source, &rules, &n));
+        ASSERT_EQ(2u, (unsigned)n);
+        ASSERT_STR_EQ("DOMAIN-KEYWORD,ok", rules[0]->rule);
+        ASSERT_STR_EQ("DOMAIN,after.example", rules[1]->rule);
+        mt_sub_rules_free(rules, n);
     }
+    PASS();
+}
+
+TEST typed_import_keeps_operational_errors_atomic(void)
+{
     atomic_bool cancel = ATOMIC_VAR_INIT(true);
     mt_sub_rule_t **rules = NULL;
     size_t n = 99;
@@ -159,15 +171,20 @@ TEST typed_import_rejects_atomically(void)
               mt_sub_parse_rules_cancel("DOMAIN-KEYWORD,openai", &rules, &n, &cancel));
     ASSERT(rules == NULL);
     ASSERT_EQ(0u, (unsigned)n);
-    char *large = malloc(MT_SUB_MAX_LINE_BYTES + 32);
+    char *large = malloc(MT_SUB_MAX_LINE_BYTES + 128);
     ASSERT(large != NULL);
-    strcpy(large, "DOMAIN-KEYWORD,");
-    memset(large + 15, 'x', MT_SUB_MAX_LINE_BYTES);
-    large[15 + MT_SUB_MAX_LINE_BYTES] = '\0';
+    const char *prefix = "DOMAIN,kept.example\nGEOIP,CN\nDOMAIN-KEYWORD,";
+    size_t offset = strlen(prefix);
+    memcpy(large, prefix, offset);
+    memset(large + offset, 'x', MT_SUB_MAX_LINE_BYTES);
+    large[offset + MT_SUB_MAX_LINE_BYTES] = '\0';
     ASSERT_EQ(MT_ERR_LIMIT, mt_sub_parse_rules(large, &rules, &n));
     ASSERT(rules == NULL);
     ASSERT_EQ(0u, (unsigned)n);
     free(large);
+    ASSERT_EQ(MT_ERR_INVAL, mt_sub_parse_rules(NULL, &rules, &n));
+    ASSERT(rules == NULL);
+    ASSERT_EQ(0u, (unsigned)n);
     PASS();
 }
 
@@ -209,7 +226,7 @@ TEST typed_cache_restore_and_runtime(void)
     PASS();
 }
 
-TEST typed_refresh_stable_ids_and_failure(void)
+TEST typed_refresh_stable_ids_with_skipped_records(void)
 {
     mt_sub_rule_t **old = NULL, **fresh = NULL;
     size_t n_old = 0, n_fresh = 0;
@@ -223,12 +240,20 @@ TEST typed_refresh_stable_ids_and_failure(void)
     ASSERT_STR_EQ("wildcard", fresh[0]->type);
     mt_sub_rules_free(fresh, n_fresh);
     fresh = NULL;
-    ASSERT_EQ(MT_ERR_INVAL, mt_sub_refresh_rules("DOMAIN-KEYWORD,openai\nGEOIP,CN",
-                                                 old, n_old, &fresh, &n_fresh));
-    ASSERT(fresh == NULL);
-    ASSERT_EQ(0u, (unsigned)n_fresh);
+    ASSERT_EQ(MT_OK, mt_sub_refresh_rules("DOMAIN-KEYWORD,openai\nGEOIP,CN",
+                                          old, n_old, &fresh, &n_fresh));
+    ASSERT_EQ(1u, (unsigned)n_fresh);
+    ASSERT(mt_id_equal(old[0]->id, fresh[0]->id));
+    ASSERT_FALSE(fresh[0]->enable);
+    ASSERT_STR_EQ("wildcard", fresh[0]->type);
     ASSERT_FALSE(old[0]->enable);
     ASSERT_STR_EQ("DOMAIN-KEYWORD,openai", old[0]->rule);
+    mt_sub_rules_free(fresh, n_fresh);
+    fresh = NULL;
+    ASSERT_EQ(MT_OK, mt_sub_refresh_rules("GEOIP,CN\nDOMAIN-WILDCARD,",
+                                          old, n_old, &fresh, &n_fresh));
+    ASSERT(fresh == NULL);
+    ASSERT_EQ(0u, (unsigned)n_fresh);
     mt_sub_rules_free(old, n_old);
     PASS();
 }
@@ -258,9 +283,10 @@ int main(int argc, char **argv)
     RUN_TEST(imported_domain_wildcard_uses_existing_type);
     RUN_TEST(indexed_imported_rules);
     RUN_TEST(typed_import_canonical_identity);
-    RUN_TEST(typed_import_rejects_atomically);
+    RUN_TEST(typed_import_skips_invalid_records);
+    RUN_TEST(typed_import_keeps_operational_errors_atomic);
     RUN_TEST(typed_cache_restore_and_runtime);
-    RUN_TEST(typed_refresh_stable_ids_and_failure);
+    RUN_TEST(typed_refresh_stable_ids_with_skipped_records);
     RUN_TEST(legacy_list_unchanged);
     GREATEST_MAIN_END();
 }

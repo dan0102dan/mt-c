@@ -56,7 +56,7 @@ TEST legacy_hyphenated_refresh_preserves_user_state(void)
     PASS();
 }
 
-TEST explicit_typed_names_remain_strict(void)
+TEST explicit_typed_names_are_skipped_whole(void)
 {
     const char *unsupported[] = {
         "GEOIP", "GEOSITE", "AND", "OR", "NOT", "MATCH", "FINAL",
@@ -71,24 +71,25 @@ TEST explicit_typed_names_remain_strict(void)
         ASSERT(len > 0 && (size_t)len < sizeof(source));
         mt_sub_rule_t **rules = NULL;
         size_t n = 99;
-        ASSERT_EQ(MT_ERR_INVAL, mt_sub_parse_rules(source, &rules, &n));
+        ASSERT_EQ(MT_OK, mt_sub_parse_rules(source, &rules, &n));
         ASSERT(rules == NULL);
         ASSERT_EQ(0u, (unsigned)n);
     }
-    /* Unknown names are still errors once an explicit record selects typed mode. */
+    /* Unknown typed lines cannot leak their values into the legacy parser. */
     const char *mixed[] = {"DOMAIN,example.com\nMY-SITE,other.example\n",
                            "MY-SITE,other.example\nDOMAIN,example.com\n"};
     for (size_t i = 0; i < sizeof(mixed) / sizeof(mixed[0]); i++) {
         mt_sub_rule_t **rules = NULL;
         size_t n = 99;
-        ASSERT_EQ(MT_ERR_INVAL, mt_sub_parse_rules(mixed[i], &rules, &n));
-        ASSERT(rules == NULL);
-        ASSERT_EQ(0u, (unsigned)n);
+        ASSERT_EQ(MT_OK, mt_sub_parse_rules(mixed[i], &rules, &n));
+        ASSERT_EQ(1u, (unsigned)n);
+        ASSERT_STR_EQ("DOMAIN,example.com", rules[0]->rule);
+        mt_sub_rules_free(rules, n);
     }
     PASS();
 }
 
-TEST empty_wildcards_reject_refresh_atomically(void)
+TEST empty_wildcards_are_skipped_during_refresh(void)
 {
     const char *empty[] = {
         "DOMAIN-WILDCARD,", "DOMAIN-WILDCARD,,",
@@ -106,15 +107,21 @@ TEST empty_wildcards_reject_refresh_atomically(void)
     ASSERT_EQ(MT_OK, mt_strset(&old[0]->type, MT_RULE_DOMAIN));
     mt_id_t old_id = old[0]->id;
     for (size_t i = 0; i < sizeof(empty) / sizeof(empty[0]); i++) {
+        const size_t expected = strstr(empty[i], "DOMAIN,example.com") ? 1u : 0u;
         mt_sub_rule_t **parsed = NULL;
         size_t n = 99;
-        ASSERT_EQ(MT_ERR_INVAL, mt_sub_parse_rules(empty[i], &parsed, &n));
-        ASSERT(parsed == NULL);
-        ASSERT_EQ(0u, (unsigned)n);
+        ASSERT_EQ(MT_OK, mt_sub_parse_rules(empty[i], &parsed, &n));
+        ASSERT_EQ(expected, n);
+        if (n) { ASSERT_STR_EQ("DOMAIN,example.com", parsed[0]->rule); }
+        else { ASSERT(parsed == NULL); }
+        mt_sub_rules_free(parsed, n);
+        parsed = NULL;
         n = 99;
-        ASSERT_EQ(MT_ERR_INVAL, mt_sub_refresh_rules(empty[i], old, n_old, &parsed, &n));
-        ASSERT(parsed == NULL);
-        ASSERT_EQ(0u, (unsigned)n);
+        ASSERT_EQ(MT_OK, mt_sub_refresh_rules(empty[i], old, n_old, &parsed, &n));
+        ASSERT_EQ(expected, n);
+        if (n) { ASSERT_STR_EQ("DOMAIN,example.com", parsed[0]->rule); }
+        else { ASSERT(parsed == NULL); }
+        mt_sub_rules_free(parsed, n);
         ASSERT(mt_id_equal(old_id, old[0]->id));
         ASSERT_FALSE(old[0]->enable);
         ASSERT_STR_EQ(MT_RULE_DOMAIN, old[0]->type);
@@ -146,8 +153,8 @@ int main(int argc, char **argv)
     GREATEST_MAIN_BEGIN();
     RUN_TEST(legacy_hyphenated_entries_keep_plain_list_parsing);
     RUN_TEST(legacy_hyphenated_refresh_preserves_user_state);
-    RUN_TEST(explicit_typed_names_remain_strict);
-    RUN_TEST(empty_wildcards_reject_refresh_atomically);
+    RUN_TEST(explicit_typed_names_are_skipped_whole);
+    RUN_TEST(empty_wildcards_are_skipped_during_refresh);
     RUN_TEST(nonempty_wildcards_keep_existing_rule_type);
     GREATEST_MAIN_END();
 }
