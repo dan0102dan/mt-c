@@ -1,7 +1,8 @@
-/* Executable-local PCRE2 seams: importing and matching native rules must not
- * enter either PCRE2 compiler or matcher. Other tests cover actual regexes. */
+/* Imported keywords and globs run through the existing wildcard rule type,
+ * without compiling or matching PCRE2. */
 #define PCRE2_CODE_UNIT_WIDTH 8
 #include <pcre2.h>
+#include <stdlib.h>
 #include "greatest.h"
 #include "magitrickle/match.h"
 #include "magitrickle/subparse.h"
@@ -29,7 +30,7 @@ int pcre2_match(const pcre2_code *code, PCRE2_SPTR subject, PCRE2_SIZE length,
     return PCRE2_ERROR_NOMATCH;
 }
 
-TEST native_import_and_match_never_enter_pcre2(void)
+TEST imported_wildcards_never_enter_pcre2(void)
 {
     mt_sub_rule_t **rules = NULL;
     size_t n = 0;
@@ -40,8 +41,11 @@ TEST native_import_and_match_never_enter_pcre2(void)
     mt_matcher_t *matcher = mt_matcher_new();
     ASSERT(matcher != NULL);
     for (size_t i = 0; i < n; i++) {
-        ASSERT_EQ(MT_OK, mt_matcher_add(matcher, rules[i]->type,
-                                        mt_sub_rule_pattern(rules[i]->rule)));
+        ASSERT_STR_EQ("wildcard", rules[i]->type);
+        char *pattern = mt_sub_rule_runtime_pattern(rules[i]->rule, rules[i]->type);
+        ASSERT(pattern != NULL);
+        ASSERT_EQ(MT_OK, mt_matcher_add(matcher, rules[i]->type, pattern));
+        free(pattern);
     }
     ASSERT(mt_matcher_match(matcher, "X.LABS.GOOGLE.NET"));
     ASSERT(mt_matcher_match(matcher, "API1.EXAMPLE.COM"));
@@ -57,6 +61,6 @@ GREATEST_MAIN_DEFS();
 int main(int argc, char **argv)
 {
     GREATEST_MAIN_BEGIN();
-    RUN_TEST(native_import_and_match_never_enter_pcre2);
+    RUN_TEST(imported_wildcards_never_enter_pcre2);
     GREATEST_MAIN_END();
 }
