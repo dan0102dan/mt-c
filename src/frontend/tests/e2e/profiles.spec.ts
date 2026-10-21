@@ -145,7 +145,7 @@ async function dragInterface(page: Page, source: Locator, target: Locator, after
 async function create(page: Page, name = "VPN with fallback") {
   await openSettings(page);
   await page.getByRole("button", { name: "Add profile", exact: true }).click();
-  const card = page.locator(".profile").last();
+  const card = page.locator(".profile").first();
   await card.getByLabel("Profile name", { exact: true }).fill(name);
   for (const name of ["tun0", "tun1", "tun2"]) await addInterface(card, name);
   await page.locator("#save-settings").click();
@@ -716,6 +716,42 @@ for (const language of ["en", "ru"]) {
 }
 
 for (const width of [390, 1280]) {
+  test(`new unfinished profiles appear first and receive focus on repeated Add (${width}px)`, async ({
+    page,
+  }) => {
+    await page.setViewportSize({ width, height: 844 });
+    const state = await backend(page);
+    state.profiles = [
+      { id: "existing", name: "Original", interfaces: ["tun0"], on_unavailable: "blackhole" },
+    ];
+    await page.goto("/");
+    await openSettings(page);
+    const cards = page.locator(".profile");
+    const ids = ["existing"];
+    for (const value of ["", "Second draft", "Third draft"]) {
+      await page.getByRole("button", { name: "Add profile", exact: true }).click();
+      await expect(cards).toHaveCount(ids.length + 1);
+      const id = await cards.first().getAttribute("data-profile-id");
+      expect(id).toBeTruthy();
+      expect(ids).not.toContain(id);
+      ids.unshift(id!);
+      expect(
+        await cards.evaluateAll((nodes) =>
+          nodes.map((node) => node.getAttribute("data-profile-id")),
+        ),
+      ).toEqual(ids);
+      const name = cards.first().getByLabel("Profile name", { exact: true });
+      await expect(name).toBeFocused();
+      await expect(name).toBeInViewport();
+      await expect(name).toHaveValue("");
+      if (value) await page.keyboard.insertText(value);
+      await expect(name).toHaveValue(value);
+    }
+    const names = page.getByLabel("Profile name", { exact: true });
+    for (const [index, value] of ["Third draft", "Second draft", "", "Original"].entries())
+      await expect(names.nth(index)).toHaveValue(value);
+  });
+
   for (const language of ["en", "ru"] as const) {
     test(`new profiles focus their required name without tab warnings (${width}px, ${language})`, async ({
       page,
@@ -735,7 +771,7 @@ for (const width of [390, 1280]) {
         await page
           .getByRole("button", { name: ru ? "Добавить профиль" : "Add profile", exact: true })
           .click();
-        const draft = page.locator(".profile").last();
+        const draft = page.locator(".profile").first();
         const name = draft.getByLabel(ru ? "Название профиля" : "Profile name", { exact: true });
         await expect(name).toBeFocused();
         await expect(name).toBeInViewport();
@@ -768,9 +804,9 @@ for (const width of [390, 1280]) {
       await save.click();
       await expect.poll(() => state.writes).toBe(1);
       expect(state.profiles.map((profile) => profile.name)).toEqual([
-        "Original",
-        "First profile",
         "Second profile",
+        "First profile",
+        "Original",
       ]);
     });
   }

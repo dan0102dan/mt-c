@@ -24,7 +24,7 @@
   async function addProfile() {
     if (unavailable) return;
     const id = newProfileId();
-    profiles.draft.push({
+    profiles.draft.unshift({
       id,
       name: "",
       interfaces: [],
