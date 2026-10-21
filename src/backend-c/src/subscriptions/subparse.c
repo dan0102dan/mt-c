@@ -326,14 +326,10 @@ static bool looks_typed(const char *s, size_t len)
     for (size_t i = 0; i < sizeof(unsupported) / sizeof(unsupported[0]); i++) {
         if (ascii_equal(s, len, unsupported[i])) { return true; }
     }
-    bool hyphen = false;
-    for (size_t i = 0; i < len; i++) {
-        if (s[i] == '-') { hyphen = true; }
-        else if (!(s[i] >= 'A' && s[i] <= 'Z') && !(s[i] >= '0' && s[i] <= '9')) {
-            return false;
-        }
-    }
-    return hyphen;
+    /* Uppercase hyphenated names (e.g. MY-SITE) are valid legacy entries.
+     * Only explicit record names may select strict typed parsing. Unknown
+     * names are still rejected if another record already selects that mode. */
+    return false;
 }
 
 static bool line_comment(const char *line)
