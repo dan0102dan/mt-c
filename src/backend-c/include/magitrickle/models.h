@@ -7,8 +7,8 @@
  *
  * Contract notes (compatibility-contract.md §1):
  * - absent `enable` in YAML unmarshals to false (plain Go bool);
- * - legacy rule types: domain | namespace | wildcard | regex | subnet | subnet6;
- *   additive native types: keyword | domain-wildcard;
+ * - rule types: domain | namespace | wildcard | regex | subnet | subnet6;
+ *   imported keyword/glob entries map to existing wildcard.
  * - group color is normalized at load: invalid -> "#ffffff", valid ->
  *   lowercased.
  */
@@ -29,8 +29,6 @@
 #define MT_RULE_DOMAIN    "domain"
 #define MT_RULE_NAMESPACE "namespace"
 #define MT_RULE_WILDCARD  "wildcard"
-#define MT_RULE_KEYWORD   "keyword"
-#define MT_RULE_DOMAIN_WILDCARD "domain-wildcard"
 #define MT_RULE_REGEX     "regex"
 #define MT_RULE_SUBNET    "subnet"
 #define MT_RULE_SUBNET6   "subnet6"
