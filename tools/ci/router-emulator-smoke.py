@@ -213,7 +213,7 @@ def run_test(emulator, package, preset, log_dir):
             serial.wait_for_shell()
             print("OpenWrt root shell is ready", flush=True)
             serial.run("command -v apk && grep -q '25.12.5' /etc/openwrt_release")
-            serial.run("for i in $(seq 1 30); do ip -4 route show default | grep -q '^default ' && exit 0; sleep 2; done; exit 1", timeout=75)
+            serial.run("for i in $(seq 1 30); do ip -4 route show default | grep -q '^default ' && break; sleep 2; done; ip -4 route show default | grep -q '^default '", timeout=75)
             serial.run(f"wget -T 30 -O {GUEST_PACKAGE} http://10.0.2.2:{http_port}/mt-c.apk", timeout=120)
             serial.run(f"test \"$(wc -c < {GUEST_PACKAGE})\" -eq {package.stat().st_size}")
             serial.run("apk update", timeout=180)
