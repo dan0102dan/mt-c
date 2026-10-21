@@ -124,6 +124,7 @@ async function setup(page: Page, dns: Backend) {
   const menu = page.getByRole("button", { name: "Open menu", exact: true });
   if (await menu.isVisible()) await menu.click();
   await page.getByRole("tab", { name: "Settings", exact: true }).click();
+  await page.getByRole("tab", { name: "DNS queries", exact: true }).click();
   const region = page.locator(".dns-query-log");
   await expect(region.locator("tbody tr")).toHaveCount(3);
   return region;

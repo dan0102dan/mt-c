@@ -70,17 +70,20 @@
 </script>
 
 <section
+  id="keenetic"
   class="policy-settings"
   aria-labelledby="keenetic-policy-title"
   aria-busy={policy.saving}
   use:section={() => ({
-    title: t("Keenetic policy"),
     dirty,
     canSave: dirty && policy.loaded && !policy.saving && valid,
     onSave: save,
   })}
 >
-  <h2 id="keenetic-policy-title">{t("Keenetic policy")}</h2>
+  <h2 id="keenetic-policy-title" class="sr-only">{t("Keenetic")}</h2>
+  <p class="settings-description">
+    {t("Choose which devices mt-c processes using a Keenetic router policy.")}
+  </p>
 
   {#if !policy.loaded}
     <Placeholder variant={policy.failed ? "error" : "loading"} minHeight="auto">
@@ -157,11 +160,6 @@
 </section>
 
 <style>
-  h2 {
-    margin: 0 0 1rem;
-    color: var(--text-2);
-    font: 600 1.3rem / 1.4 var(--font);
-  }
   fieldset {
     min-width: 0;
     border: 0;

@@ -41,11 +41,11 @@
 </script>
 
 <section
+  id="profiles"
   class="profiles-settings"
-  aria-label={t("Interface priority profiles")}
+  aria-labelledby="profiles-title"
   aria-busy={busy}
   use:section={() => ({
-    title: t("Interface priority profiles"),
     addLabel: t("Add profile"),
     canAdd: !unavailable,
     dirty,
@@ -54,6 +54,12 @@
     onSave: save,
   })}
 >
+  <h2 id="profiles-title" class="sr-only">{t("Profiles")}</h2>
+  <p class="settings-description">
+    {t(
+      "Set the interface order for automatic failover. Assign profiles to groups or subscriptions.",
+    )}
+  </p>
   {#if profiles.failed}
     <Placeholder variant="error" minHeight="auto">
       {t("Failed to load profiles")}

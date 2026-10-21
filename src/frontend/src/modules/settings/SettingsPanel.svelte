@@ -1,6 +1,7 @@
 <script lang="ts">
   import PlatformSettings from "#platform/settings";
-  import { getContext, onMount, setContext } from "svelte";
+  import { Tabs } from "bits-ui";
+  import { getContext, setContext } from "svelte";
 
   import PageControls from "../../components/layout/PageControls.svelte";
   import { t } from "../../data/locale.svelte";
@@ -18,12 +19,15 @@
   let { active = true }: { active?: boolean } = $props();
 
   const transfer = getContext<ConfigTransferControls>(CONFIG_TRANSFER_CONTEXT);
-  let page: HTMLDivElement;
-  let toolbar: HTMLDivElement;
   let sections = $state.raw<SettingsSection[]>([]);
   let saving = $state(false);
-  let titleIndex = $state(0);
-  const visibleSection = $derived(sections[titleIndex]);
+  let selected = $state("profiles");
+  const visibleSection = $derived(sections.find((section) => section.element.id === selected));
+  const tabLabels = $derived<Record<string, string>>({
+    profiles: t("Profiles"),
+    keenetic: "Keenetic",
+    dns: t("DNS queries"),
+  });
   const visibleControls = $derived(visibleSection?.controls());
   const dirty = $derived(sections.some((section) => section.controls().dirty));
   const invalid = $derived(
@@ -59,82 +63,16 @@
     sections = [...sections, section];
     return () => {
       sections = sections.filter((s) => s !== section);
-      titleIndex = Math.min(titleIndex, Math.max(0, sections.length - 1));
-    };
-  });
-
-  onMount(() => {
-    let intersection: IntersectionObserver | undefined;
-    const passed = new Set<SettingsSection>();
-    const selectHeading = () => {
-      let next = 0;
-      sections.forEach((section, index) => {
-        if (passed.has(section)) next = index;
-      });
-      if (next !== titleIndex) {
-        titleIndex = next;
-      }
-    };
-    // CSS sticky owns the toolbar. Measure only on resize/section crossings,
-    // not on every scroll event; header changes must not replace action nodes.
-    const observeHeadings = () => {
-      if (!page.getClientRects().length) return;
-      intersection?.disconnect();
-      const title = toolbar.querySelector<HTMLElement>(".settings-title")!;
-      // Use a stable switching line even when the active title makes the
-      // toolbar shorter. Otherwise scroll anchoring can flip it back and forth.
-      const tallestTitle = Math.max(
-        ...Array.from(
-          toolbar.querySelectorAll<HTMLElement>(".title-layer"),
-          (layer) => layer.scrollHeight,
-        ),
-      );
-      const inset = Math.ceil(
-        toolbar.getBoundingClientRect().height +
-          Math.max(0, tallestTitle - title.getBoundingClientRect().height),
-      );
-      passed.clear();
-      const targets = new Map<Element, SettingsSection>();
-      for (const section of sections) {
-        const anchor = section.element.querySelector(":scope > h2");
-        if (!anchor) continue;
-        targets.set(anchor, section);
-        if (anchor.getBoundingClientRect().bottom <= inset) passed.add(section);
-      }
-      selectHeading();
-      intersection = new IntersectionObserver(
-        () => {
-          if (!page.getClientRects().length) return;
-          for (const [anchor, section] of targets) {
-            if (anchor.getBoundingClientRect().bottom <= inset) passed.add(section);
-            else passed.delete(section);
-          }
-          selectHeading();
-        },
-        { rootMargin: `-${inset}px 0px 0px 0px`, threshold: 0 },
-      );
-      for (const [anchor, section] of targets) {
-        intersection.observe(anchor);
-        // A jump can skip a heading from below to above the viewport without
-        // changing its intersection state. The section still enters/leaves.
-        intersection.observe(section.element);
-      }
-    };
-    const resize = new ResizeObserver(observeHeadings);
-    resize.observe(page);
-    resize.observe(toolbar);
-    observeHeadings();
-    return () => {
-      resize.disconnect();
-      intersection?.disconnect();
     };
   });
 </script>
 
-<div class="settings-page" bind:this={page}>
-  <div class="settings-toolbar" bind:this={toolbar}>
+<Tabs.Root bind:value={selected} class="settings-page">
+  <div class="settings-toolbar">
     <PageControls
       {canSave}
+      controlsClass="settings-controls"
+      {active}
       onSave={() => void saveAll()}
       saveButtonId="save-settings"
       saveLabel={t("Save Changes")}
@@ -145,74 +83,104 @@
       addLabel={visibleControls?.addLabel}
       canAdd={visibleControls?.canAdd ?? false}
       onAdd={visibleControls?.onAdd}
-      contextual={sections.length > 1}
     >
       {#snippet search()}
-        <h2 class="settings-title" aria-label={visibleControls?.title}>
-          <span class="settings-title-viewport" aria-hidden="true">
-            {#each sections as section, index (section)}
-              <span class="title-layer" class:current={index === titleIndex}>
-                {section.controls().title}
-              </span>
-            {/each}
-          </span>
-        </h2>
+        <Tabs.List class="settings-tabs" aria-label={t("Settings")}>
+          {#each sections as section (section.element.id)}
+            <Tabs.Trigger value={section.element.id}>{tabLabels[section.element.id]}</Tabs.Trigger>
+          {/each}
+        </Tabs.List>
       {/snippet}
     </PageControls>
   </div>
-  <div class="settings-sections">
-    <ProfilesPanel />
-    <PlatformSettings />
-    <DnsQueryLog {active} />
-  </div>
-</div>
+  <Tabs.Content value="profiles" class="settings-content"><ProfilesPanel /></Tabs.Content>
+  <Tabs.Content value="keenetic" class="settings-content"><PlatformSettings /></Tabs.Content>
+  <Tabs.Content value="dns" class="settings-content"
+    ><DnsQueryLog active={active && selected === "dns"} /></Tabs.Content
+  >
+</Tabs.Root>
 
 <style>
-  .settings-page {
+  :global(.settings-page) {
     min-width: 0;
   }
   .settings-toolbar {
     position: sticky;
     top: 0;
     z-index: 5;
+    background: var(--bg-dark);
+    border-bottom: 1px solid var(--bg-light-extra);
+    padding-bottom: 0.45rem;
     --page-controls-background: var(--bg-dark);
-    --context-transition: 220ms cubic-bezier(0.2, 0, 0.2, 1);
   }
-  .settings-sections {
+  .settings-toolbar :global(.settings-controls) {
     display: flex;
-    flex-direction: column;
-    gap: 2rem;
+    flex-wrap: wrap;
+    margin-bottom: 0;
+    padding: 0.3rem 0;
   }
-  .settings-title {
-    display: grid;
-    align-items: center;
-    margin: 0;
-    min-height: var(--row-h);
-    color: var(--text-2);
-    font: 600 1.3rem / 1.4 var(--font);
+  .settings-toolbar :global(.page-controls-search) {
+    padding-right: 0;
+    transition: none;
   }
-  .settings-title-viewport {
-    display: grid;
-    position: relative;
-    overflow: hidden;
-  }
-  .title-layer {
-    grid-area: 1 / 1;
-    /* Preserve title width and fading without reserving hidden titles' height. */
-    height: 0;
-    align-self: start;
-    pointer-events: none;
-    opacity: 0;
-    transition: opacity var(--context-transition);
-  }
-  .title-layer.current {
+  .settings-toolbar :global(.page-controls-actions) {
+    position: static;
     height: auto;
-    opacity: 1;
+    flex-shrink: 0;
+    margin-left: auto;
   }
-  @media (prefers-reduced-motion: reduce) {
-    .title-layer,
-    .title-layer.current {
-      transition: none;
+  :global(.settings-content[data-state="inactive"]) {
+    display: none;
+  }
+  :global(.settings-content) {
+    min-width: 0;
+    padding-top: 1rem;
+  }
+  :global(.settings-content > section > .sr-only) {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+    border: 0;
+  }
+  :global(.settings-content .settings-description) {
+    margin: 0 0 1.25rem;
+    color: var(--text-2);
+    font: 400 0.95rem / 1.5 var(--font);
+  }
+  :global(.settings-tabs) {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+  }
+  :global(.settings-tabs [data-tabs-trigger]) {
+    border: 0;
+    border-bottom: 2px solid transparent;
+    border-radius: 0;
+    padding: 0.5rem;
+    background: transparent;
+    color: var(--text-2);
+    font: 400 1.1rem / 1.4 var(--font);
+    cursor: pointer;
+  }
+  :global(.settings-tabs [data-tabs-trigger][data-state="active"]) {
+    color: var(--blue-light-extra);
+    border-bottom-color: var(--blue-light-extra);
+  }
+  :global(.settings-tabs [data-tabs-trigger]:hover) {
+    color: var(--text);
+  }
+  :global(.settings-tabs [data-tabs-trigger]:focus-visible) {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+  }
+  @media (max-width: 700px) {
+    .settings-toolbar :global(.page-controls-search) {
+      width: 100%;
     }
   }
 </style>

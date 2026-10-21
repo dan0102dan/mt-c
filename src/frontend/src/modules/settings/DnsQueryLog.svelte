@@ -320,18 +320,23 @@
 </GenericDialog>
 
 <section
+  id="dns"
   class="dns-query-log"
   aria-labelledby="dns-query-title"
   aria-busy={loading || clearing || changing}
   use:section={() => ({
-    title: t("DNS queries"),
     dirty: false,
     canSave: false,
     onSave: async () => {},
     saveLabel: t("Save Changes"),
   })}
 >
-  <h2 id="dns-query-title">{t("DNS queries")}</h2>
+  <h2 id="dns-query-title" class="sr-only">{t("DNS queries")}</h2>
+  <p class="settings-description">
+    {t(
+      "Record and inspect DNS queries from your devices. Use search and filters to find requests.",
+    )}
+  </p>
   <div class="dns-panel">
     <div class="capture-toolbar">
       <Button
@@ -357,10 +362,12 @@
     {/if}
     {#if capture && !capture.enabled}
       <div class="dns-message">
-        <Placeholder variant="empty" compact minHeight="auto">
-          <strong>{t("DNS recording is off")}</strong><br />{t(
-            "No DNS history is collected until you start recording.",
-          )}
+        <Placeholder
+          variant="empty"
+          minHeight="auto"
+          subtitle={t("No DNS history is collected until you start recording.")}
+        >
+          {t("DNS recording is off")}
         </Placeholder>
       </div>
     {:else}
@@ -619,11 +626,6 @@
     overflow: hidden;
     white-space: nowrap;
     text-overflow: ellipsis;
-  }
-  h2 {
-    margin: 0 0 1rem;
-    color: var(--text-2);
-    font: 600 1.3rem / 1.4 var(--font);
   }
   .dns-panel {
     min-width: 0;

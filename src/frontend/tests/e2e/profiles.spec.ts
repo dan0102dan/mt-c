@@ -274,10 +274,13 @@ test("profile section uses a placeholder, plain interface rows and a fixed termi
   state.interfaces[1].name = "Keenetic VPN description";
   await page.goto("/");
   await create(page);
-  await expect(page.locator(".settings-page [role=tablist]")).toHaveCount(0);
-  await expect(page.locator(".settings-page [role=tab]")).toHaveCount(0);
+  await expect(page.locator(".settings-page [role=tablist]")).toHaveCount(1);
+  await expect(page.getByRole("tab", { name: "Profiles", exact: true })).toHaveAttribute(
+    "aria-selected",
+    "true",
+  );
   await expect(
-    page.getByRole("heading", { name: "Interface priority profiles", level: 2 }),
+    page.getByRole("heading", { name: "Profiles", level: 2, exact: true }),
   ).toBeVisible();
   const card = page.locator(".profile");
   await expect(card.getByPlaceholder("Profile name", { exact: true })).toHaveValue(
@@ -404,7 +407,9 @@ for (const width of [390, 320]) {
       expect(next.x - (previous.x + previous.width)).toBeGreaterThanOrEqual(6);
       expect(next.x + next.width).toBeLessThanOrEqual(width);
     }
-    expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(width);
+    expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(
+      width,
+    );
   });
 }
 
@@ -416,7 +421,12 @@ test("page controls and first cards stay aligned when switching tabs", async ({ 
   await page.setViewportSize({ width: 1280, height: 900 });
   await page.goto("/");
 
-  const positions: { toolbarTop: number; toolbarHeight: number; cardTop: number }[] = [];
+  const positions: {
+    toolbarTop: number;
+    toolbarHeight: number;
+    cardTop: number;
+    settings: boolean;
+  }[] = [];
   for (const [tab, cardSelector] of [
     ["Groups", ".group-wrapper:not(.is-hidden) .group"],
     ["Subscriptions", ".subscription-wrapper:not(.is-hidden) .subscription-panel"],
@@ -437,6 +447,7 @@ test("page controls and first cards stay aligned when switching tabs", async ({ 
       toolbarTop: toolbarBox.y,
       toolbarHeight: toolbarBox.height,
       cardTop: cardBox.y,
+      settings: tab === "Settings",
     });
   }
 
@@ -444,7 +455,11 @@ test("page controls and first cards stay aligned when switching tabs", async ({ 
   for (const current of positions.slice(1)) {
     expect(Math.abs(current.toolbarTop - initial.toolbarTop)).toBeLessThan(1);
     expect(Math.abs(current.toolbarHeight - initial.toolbarHeight)).toBeLessThan(1);
-    expect(Math.abs(current.cardTop - initial.cardTop)).toBeLessThan(2);
+    if (current.settings) {
+      expect(current.cardTop).toBeGreaterThan(current.toolbarTop + current.toolbarHeight);
+    } else {
+      expect(Math.abs(current.cardTop - initial.cardTop)).toBeLessThan(2);
+    }
   }
 });
 

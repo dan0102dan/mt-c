@@ -597,12 +597,14 @@ for (const width of [1280, 390]) {
         policyId: "ForeignPolicy73",
         mode: "exclude",
       });
+      await page.getByRole("tab", { name: "Keenetic", exact: true }).click();
       const panel = page.locator(".policy-settings");
       await panel.getByRole("switch", { name: "Processing mode", exact: true }).click();
       await expect(page.locator("#save-settings")).toBeEnabled();
       await page.locator("#save-settings").click();
       await expect(page.locator("#save-settings")).toBeDisabled();
       await page.reload();
+      await page.getByRole("tab", { name: "Keenetic", exact: true }).click();
       await expect(panel.getByRole("button", { name: "Router policy", exact: true })).toContainText(
         "ForeignPolicy73",
       );

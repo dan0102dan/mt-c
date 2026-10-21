@@ -1,6 +1,6 @@
 import { createServer, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
-import { test as base, expect, type Locator, type Page } from "@playwright/test";
+import { test as base, expect, type Page } from "@playwright/test";
 
 const frame = (event: string, data: unknown) =>
   `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
@@ -91,77 +91,12 @@ async function setup(page: Page, dnsUrl: string, language: "en" | "ru") {
   await page
     .getByRole("tab", { name: language === "ru" ? "Настройки" : "Settings", exact: true })
     .click();
-  await expect(page.locator(".dns-query-log tbody tr")).toHaveCount(30);
   return writes;
-}
-
-async function expectNaturalHeight(toolbar: Locator) {
-  await expect(toolbar.locator(".title-layer.current")).toHaveCSS("opacity", "1");
-  await expect
-    .poll(() =>
-      toolbar.evaluate((node) => {
-        const title = node.querySelector<HTMLElement>(".settings-title")!;
-        const active = node.querySelector<HTMLElement>(".title-layer.current")!;
-        const actions = node.querySelector<HTMLElement>(".page-controls-actions")!;
-        const text = document.createRange();
-        text.selectNodeContents(active);
-        const lineCount = new Set(Array.from(text.getClientRects(), (rect) => Math.round(rect.top)))
-          .size;
-        const lineHeight = parseFloat(getComputedStyle(title).lineHeight);
-        // Check painted text lines, not the height of a stretched grid item:
-        // the old hidden multiline title incorrectly enlarged that item as well.
-        const expected = Math.max(
-          lineCount * lineHeight,
-          parseFloat(getComputedStyle(title).minHeight) || 0,
-          actions.getBoundingClientRect().height,
-        );
-        return Math.abs(title.getBoundingClientRect().height - expected);
-      }),
-    )
-    .toBeLessThan(1);
-}
-
-async function expectButtonSpacing(toolbar: Locator, count: number) {
-  const buttons = toolbar.getByRole("button");
-  await expect(buttons).toHaveCount(count);
-  await expect
-    .poll(() =>
-      buttons.evaluateAll((nodes) => {
-        const rects = nodes.map((node) => node.getBoundingClientRect());
-        const gaps = rects.slice(1).map((rect, index) => rect.left - rects[index].right);
-        const actions = nodes[0].closest(".page-controls-actions")!.getBoundingClientRect();
-        // Check the rendered gaps and ensure collapsed Add leaves no trailing space.
-        return Math.max(
-          ...gaps.map((gap) => Math.abs(gap - 8)),
-          Math.abs(actions.right - rects[rects.length - 1].right),
-        );
-      }),
-    )
-    .toBeLessThan(1);
-}
-
-async function placeDnsBoundary(page: Page, offset: number) {
-  await page.evaluate((offset) => {
-    const toolbar = document.querySelector(".settings-toolbar")!;
-    const title = toolbar.querySelector(".settings-title")!;
-    const tallest = Math.max(
-      ...Array.from(
-        toolbar.querySelectorAll<HTMLElement>(".title-layer"),
-        (layer) => layer.scrollHeight,
-      ),
-    );
-    const line = Math.ceil(
-      toolbar.getBoundingClientRect().height +
-        Math.max(0, tallest - title.getBoundingClientRect().height),
-    );
-    const anchor = document.querySelector("#dns-query-title")!.getBoundingClientRect();
-    window.scrollBy(0, anchor.bottom - line - offset);
-  }, offset);
 }
 
 for (const width of [320, 390, 1280]) {
   for (const language of ["en", "ru"] as const) {
-    test(`settings header preserves natural height and button spacing (${width}px, ${language})`, async ({
+    test(`settings tabs move actions together (${width}px, ${language})`, async ({
       page,
       dnsUrl,
     }) => {
@@ -169,74 +104,181 @@ for (const width of [320, 390, 1280]) {
       if (language === "ru") await page.emulateMedia({ reducedMotion: "reduce" });
       const writes = await setup(page, dnsUrl, language);
       const toolbar = page.locator(".settings-toolbar");
-      const heading = toolbar.getByRole("heading", { level: 2 });
-      const profiles =
-        language === "ru" ? "Профили приоритета интерфейсов" : "Interface priority profiles";
+      await expect(toolbar.getByRole("heading")).toHaveCount(0);
+      const profiles = language === "ru" ? "Профили" : "Profiles";
       const dns = language === "ru" ? "DNS-запросы" : "DNS queries";
-      await expect(heading).toHaveAccessibleName(profiles);
-      await expectNaturalHeight(toolbar);
-      await expectButtonSpacing(toolbar, 4);
-      const tall = (await toolbar.boundingBox())!.height;
-      const save = page.locator("#save-settings");
-      const saveNode = await save.elementHandle();
+      const labels = [
+        profiles,
+        ...(process.env.VITE_ENTWARE_KN === "1" ? ["Keenetic"] : []),
+        dns,
+        profiles,
+      ];
       const name = page
         .getByPlaceholder(language === "ru" ? "Название профиля" : "Profile name", { exact: true })
         .first();
       await name.fill("Unsaved header regression");
-      await expect(save).toBeEnabled();
-
-      await placeDnsBoundary(page, -4);
-      await expect(heading).toHaveAccessibleName(dns);
-      await expectNaturalHeight(toolbar);
-      await expectButtonSpacing(toolbar, 3);
-      if (width === 390) expect((await toolbar.boundingBox())!.height).toBeLessThan(tall - 5);
-      await expect(save).toBeInViewport();
+      const save = page.locator("#save-settings");
+      const saveNode = await save.elementHandle();
+      const actions = toolbar.locator(".page-controls-actions");
+      const positions = await actions.getByRole("button").evaluateAll((nodes) =>
+        nodes.slice(0, 3).map((node) => {
+          const { x, y } = node.getBoundingClientRect();
+          return { x, y };
+        }),
+      );
+      const shift = await toolbar
+        .locator(".context-add")
+        .evaluate(
+          (node) =>
+            node.getBoundingClientRect().width +
+            parseFloat(getComputedStyle(node.parentElement!).gap),
+        );
+      const initialHeight = (await toolbar.boundingBox())!.height;
+      for (const label of labels) {
+        await page.getByRole("tab", { name: label, exact: true }).click();
+        await expect(page.getByRole("tab", { name: label, exact: true })).toHaveAttribute(
+          "aria-selected",
+          "true",
+        );
+        await expect(actions.getByRole("button")).toHaveCount(label === profiles ? 4 : 3);
+        await expect(save).toBeEnabled();
+        await expect(save).toBeInViewport();
+        const offset = label === profiles ? 0 : shift;
+        await expect
+          .poll(async () => Math.abs((await save.boundingBox())!.x - positions[0].x - offset))
+          .toBeLessThan(1);
+        const current = await actions.getByRole("button").evaluateAll((nodes) =>
+          nodes.slice(0, 3).map((node) => {
+            const { x, y } = node.getBoundingClientRect();
+            return { x, y };
+          }),
+        );
+        current.forEach((position, i) => {
+          expect(Math.abs(position.x - positions[i].x - offset)).toBeLessThan(1);
+          expect(Math.abs(position.y - positions[i].y)).toBeLessThan(1);
+        });
+        expect(Math.abs((await toolbar.boundingBox())!.height - initialHeight)).toBeLessThan(1);
+        const description = page.locator(
+          '.settings-content[data-state="active"] .settings-description',
+        );
+        await expect(description).toBeVisible();
+        expect((await description.innerText()).length).toBeGreaterThan(30);
+        expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(
+          width,
+        );
+      }
+      await expect(name).toHaveValue("Unsaved header regression");
       expect(
         await saveNode!.evaluate((node) => node === document.querySelector("#save-settings")),
       ).toBe(true);
-
-      // Sample two fade durations at rest: a ResizeObserver/scroll-anchor
-      // feedback loop must not alternate the active header without scrolling.
-      const labels = await heading.evaluate(async (node) => {
-        const labels: (string | null)[] = [];
-        const until = performance.now() + 500;
-        while (performance.now() < until) {
-          await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
-          labels.push(node.getAttribute("aria-label"));
-        }
-        return [...new Set(labels)];
-      });
-      expect(labels).toEqual([dns]);
-      for (const offset of [36, -4, 36, -4]) {
-        await placeDnsBoundary(page, offset);
-        // Generic has profiles -> DNS. Keenetic's intermediate policy section
-        // is covered by its existing dedicated scroll-transition tests.
-        await expect(heading).toHaveAccessibleName(
-          offset < 0
-            ? dns
-            : process.env.VITE_ENTWARE_KN === "1"
-              ? language === "ru"
-                ? "Политика Keenetic"
-                : "Keenetic policy"
-              : profiles,
-        );
-        await expectNaturalHeight(toolbar);
-      }
-      await page.setViewportSize({ width: width === 1280 ? 390 : 1280, height: 844 });
-      await placeDnsBoundary(page, -40);
-      await expect(heading).toHaveAccessibleName(dns);
-      await expectNaturalHeight(toolbar);
-      await expectButtonSpacing(toolbar, 3);
-      await page.setViewportSize({ width, height: 844 });
-      await page.evaluate(() => window.scrollTo(0, 0));
-      await expect(heading).toHaveAccessibleName(profiles);
-      await expectNaturalHeight(toolbar);
-      await expectButtonSpacing(toolbar, 4);
-      await expect(name).toHaveValue("Unsaved header regression");
-      await expect(save).toBeEnabled();
       expect(writes).toEqual([]);
-      expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(
-        width,
+    });
+  }
+}
+
+test("Add slides right and fades while the other actions move with it", async ({
+  page,
+  dnsUrl,
+}) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.emulateMedia({ reducedMotion: "no-preference" });
+  await setup(page, dnsUrl, "en");
+  await expect(page.getByRole("button", { name: "Add profile", exact: true })).toBeVisible();
+  const [frames] = await Promise.all([
+    page.evaluate(async () => {
+      const add = document.querySelector<HTMLElement>(
+        '.app-tab-content[data-state="active"] .context-add-motion',
+      )!;
+      const save = document.querySelector("#save-settings")!;
+      const frames: { opacity: number; x: number; saveX: number; width: number }[] = [];
+      const until = performance.now() + 450;
+      while (performance.now() < until) {
+        await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+        frames.push({
+          opacity: Number(getComputedStyle(add).opacity),
+          x: add.getBoundingClientRect().x,
+          saveX: save.getBoundingClientRect().x,
+          width: document.documentElement.scrollWidth,
+        });
+      }
+      return frames;
+    }),
+    page.getByRole("tab", { name: "DNS queries", exact: true }).click(),
+  ]);
+  expect(frames.some((frame) => frame.opacity > 0 && frame.opacity < 1)).toBe(true);
+  expect(frames.at(-1)!.opacity).toBe(0);
+  expect(frames.at(-1)!.x - frames[0].x).toBeGreaterThan(10);
+  expect(frames.at(-1)!.saveX - frames[0].saveX).toBeGreaterThan(40);
+  expect(
+    frames.some(
+      (frame) => frame.saveX > frames[0].saveX + 2 && frame.saveX < frames.at(-1)!.saveX - 2,
+    ),
+  ).toBe(true);
+  for (const frame of frames) {
+    expect(frame.saveX).toBeGreaterThanOrEqual(frames[0].saveX - 1);
+    expect(frame.width).toBeLessThanOrEqual(390);
+  }
+});
+
+for (const width of [390, 1280]) {
+  for (const section of ["Groups", "Subscriptions"]) {
+    test(`Add transition follows ${section} and Settings (${width}px)`, async ({
+      page,
+      dnsUrl,
+    }) => {
+      await page.setViewportSize({ width, height: 844 });
+      await page.emulateMedia({ reducedMotion: "no-preference" });
+      await setup(page, dnsUrl, "en");
+      await page.getByRole("tab", { name: "DNS queries", exact: true }).click();
+      const activeRow = page.locator(
+        '.app-tab-content[data-state="active"] .page-controls-actions',
+      );
+      await expect(activeRow.locator(".context-add-motion")).toHaveCSS("opacity", "0");
+
+      async function switchSection(name: string) {
+        const menu = page.getByRole("button", { name: "Open menu", exact: true });
+        if (await menu.isVisible()) await menu.click();
+        const [frames] = await Promise.all([
+          page.evaluate(async () => {
+            const frames: { x: number; opacity: number; width: number }[] = [];
+            const until = performance.now() + 450;
+            while (performance.now() < until) {
+              await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+              const row = document.querySelector(
+                '.app-tab-content[data-state="active"] .page-controls-actions',
+              )!;
+              frames.push({
+                x: row.querySelector("button")!.getBoundingClientRect().x,
+                opacity: Number(
+                  getComputedStyle(row.querySelector(".context-add-motion")!).opacity,
+                ),
+                width: document.documentElement.scrollWidth,
+              });
+            }
+            return frames;
+          }),
+          page.getByRole("tab", { name, exact: true }).click(),
+        ]);
+        expect(frames.some((frame) => frame.opacity > 0 && frame.opacity < 1)).toBe(true);
+        expect(
+          frames.some(
+            (frame) =>
+              Math.abs(frame.x - frames[0].x) > 2 && Math.abs(frame.x - frames.at(-1)!.x) > 2,
+          ),
+        ).toBe(true);
+        for (const frame of frames) expect(frame.width).toBeLessThanOrEqual(width);
+        return frames;
+      }
+
+      const entering = await switchSection(section);
+      expect(entering.at(-1)!.opacity).toBe(1);
+      expect(entering.at(-1)!.x - entering[0].x).toBeLessThan(-40);
+      const leaving = await switchSection("Settings");
+      expect(leaving.at(-1)!.opacity).toBe(0);
+      expect(leaving.at(-1)!.x - leaving[0].x).toBeGreaterThan(40);
+      await expect(page.getByRole("tab", { name: "DNS queries", exact: true })).toHaveAttribute(
+        "aria-selected",
+        "true",
       );
     });
   }
