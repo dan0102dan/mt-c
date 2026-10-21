@@ -17,8 +17,6 @@ typedef enum rule_kind {
     RK_DOMAIN,
     RK_NAMESPACE,
     RK_WILDCARD,
-    RK_KEYWORD,
-    RK_DOMAIN_WILDCARD,
     RK_REGEX,
     RK_NEVER, /* subnet/subnet6/unknown: IsMatch == false */
 } rule_kind_t;
@@ -44,12 +42,6 @@ static rule_kind_t kind_of(const char *type)
     if (strcmp(type, MT_RULE_WILDCARD) == 0) {
         return RK_WILDCARD;
     }
-    if (strcmp(type, MT_RULE_KEYWORD) == 0) {
-        return RK_KEYWORD;
-    }
-    if (strcmp(type, MT_RULE_DOMAIN_WILDCARD) == 0) {
-        return RK_DOMAIN_WILDCARD;
-    }
     if (strcmp(type, MT_RULE_REGEX) == 0) {
         return RK_REGEX;
     }
@@ -63,25 +55,10 @@ static unsigned char fold_ascii(unsigned char c)
     return c >= 'A' && c <= 'Z' ? (unsigned char)(c + ('a' - 'A')) : c;
 }
 
-/* The pattern is folded once at construction; every byte is literal. */
-static bool keyword_match(const char *keyword, size_t keyword_len,
-                           const char *domain, size_t domain_len)
-{
-    if (keyword_len == 0 || keyword_len > domain_len) { return false; }
-    for (size_t i = 0; i <= domain_len - keyword_len; i++) {
-        size_t j = 0;
-        while (j < keyword_len &&
-               (unsigned char)keyword[j] == fold_ascii((unsigned char)domain[i + j])) {
-            j++;
-        }
-        if (j == keyword_len) { return true; }
-    }
-    return false;
-}
-
-/* DOMAIN-WILDCARD, not the legacy go-wildcard dialect: literal '.', '*' may
- * cross dots and match nothing, '?' consumes exactly one byte. Iterative,
- * constant-space backtracking to the last star; no regex compilation. */
+/* Imported wildcard dialect: literal dots, ASCII case folding and '*'/'?'
+ * operators; backslash escapes literal metacharacters in source keywords.
+ * The internal @mtc: marker selects this path. Legacy go-wildcard remains
+ * unchanged and no new configured rule type is introduced. */
 static bool domain_wildcard_match(const char *pattern, const char *domain)
 {
     const char *star = NULL, *retry = NULL;
@@ -92,6 +69,10 @@ static bool domain_wildcard_match(const char *pattern, const char *domain)
         } else if (*pattern == '?' ||
                    (unsigned char)*pattern == fold_ascii((unsigned char)*domain)) {
             pattern++;
+            domain++;
+        } else if (*pattern == '\\' && pattern[1] != '\0' &&
+                   (unsigned char)pattern[1] == fold_ascii((unsigned char)*domain)) {
+            pattern += 2;
             domain++;
         } else if (star) {
             pattern = star + 1;
@@ -118,9 +99,9 @@ mt_rule_matcher_t *mt_rule_matcher_new(const char *type, const char *rule)
     }
     m->rule_len = strlen(m->rule);
     m->compile_ok = true;
-    if (m->kind == RK_KEYWORD || m->kind == RK_DOMAIN_WILDCARD) {
-        m->compile_ok = m->rule_len != 0;
-        for (size_t i = 0; i < m->rule_len; i++) {
+    if (m->kind == RK_WILDCARD && strncmp(m->rule, "@mtc:", 5) == 0) {
+        m->compile_ok = m->rule_len > 5;
+        for (size_t i = 5; i < m->rule_len; i++) {
             m->rule[i] = (char)fold_ascii((unsigned char)m->rule[i]);
         }
     }
@@ -199,11 +180,10 @@ bool mt_rule_matcher_match(mt_rule_matcher_t *m, const char *domain)
     case RK_NAMESPACE:
         return namespace_match(m->rule, m->rule_len, domain, domain_len);
     case RK_WILDCARD:
+        if (strncmp(m->rule, "@mtc:", 5) == 0) {
+            return m->compile_ok && domain_wildcard_match(m->rule + 5, domain);
+        }
         return mt_wildcard_match(m->rule, domain);
-    case RK_KEYWORD:
-        return keyword_match(m->rule, m->rule_len, domain, domain_len);
-    case RK_DOMAIN_WILDCARD:
-        return m->compile_ok && domain_wildcard_match(m->rule, domain);
     case RK_REGEX: {
         if (m->re == NULL) {
             return false;
@@ -494,8 +474,6 @@ mt_err_t mt_matcher_add(mt_matcher_t *m, const char *type, const char *rule)
     case RK_NAMESPACE:
         return ns_trie_insert(&m->ns, rule);
     case RK_WILDCARD:
-    case RK_KEYWORD:
-    case RK_DOMAIN_WILDCARD:
     case RK_REGEX: {
         mt_rule_matcher_t *rm = mt_rule_matcher_new(type, rule);
         if (rm == NULL) {
