@@ -191,15 +191,15 @@ typedef struct typed_rule {
 static const typed_rule_t typed_rules[] = {
     {"DOMAIN", "DOMAIN", MT_RULE_DOMAIN},
     {"DOMAIN-SUFFIX", "DOMAIN-SUFFIX", MT_RULE_NAMESPACE},
-    {"DOMAIN-KEYWORD", "DOMAIN-KEYWORD", MT_RULE_KEYWORD},
-    {"DOMAIN-WILDCARD", "DOMAIN-WILDCARD", MT_RULE_DOMAIN_WILDCARD},
+    {"DOMAIN-KEYWORD", "DOMAIN-KEYWORD", MT_RULE_WILDCARD},
+    {"DOMAIN-WILDCARD", "DOMAIN-WILDCARD", MT_RULE_WILDCARD},
     {"DOMAIN-REGEX", "DOMAIN-REGEX", MT_RULE_REGEX},
     {"IP-CIDR", "IP-CIDR", MT_RULE_SUBNET},
     {"IP-CIDR6", "IP-CIDR6", MT_RULE_SUBNET6},
     {"IP6-CIDR", "IP-CIDR6", MT_RULE_SUBNET6},
     {"HOST", "DOMAIN", MT_RULE_DOMAIN},
     {"HOST-SUFFIX", "DOMAIN-SUFFIX", MT_RULE_NAMESPACE},
-    {"HOST-KEYWORD", "DOMAIN-KEYWORD", MT_RULE_KEYWORD},
+    {"HOST-KEYWORD", "DOMAIN-KEYWORD", MT_RULE_WILDCARD},
 };
 
 static char ascii_lower(char c)
@@ -230,6 +230,41 @@ const char *mt_sub_rule_pattern(const char *rule)
     const char *comma = strchr(rule, ',');
     if (comma && typed_rule(rule, (size_t)(comma - rule))) { return comma + 1; }
     return rule;
+}
+
+/* Project canonical typed records into an existing wildcard rule, without
+ * changing legacy wildcard matching or persisting any additional type.
+ * @mtc: is private to the runtime matcher; the saved source ID is untouched.
+ * Overrides to another rule type use the raw payload instead. */
+char *mt_sub_rule_runtime_pattern(const char *rule, const char *type)
+{
+    const char *pattern = mt_sub_rule_pattern(rule);
+    if (!pattern) { return NULL; }
+    if (!type || strcmp(type, MT_RULE_WILDCARD) != 0) { return strdup(pattern); }
+    size_t len = strlen(pattern);
+    if (strncmp(rule, "DOMAIN-WILDCARD,", 16) == 0) {
+        char *out = malloc(len + 6);
+        if (!out) { return NULL; }
+        memcpy(out, "@mtc:", 5);
+        memcpy(out + 5, pattern, len + 1);
+        return out;
+    }
+    if (strncmp(rule, "DOMAIN-KEYWORD,", 15) == 0) {
+        if (len > (SIZE_MAX - 8) / 2) { return NULL; }
+        char *out = malloc(8 + len * 2);
+        if (!out) { return NULL; }
+        char *dst = out;
+        memcpy(dst, "@mtc:*", 6);
+        dst += 6;
+        for (const char *src = pattern; *src; src++) {
+            if (*src == '*' || *src == '?' || *src == '\\') { *dst++ = '\\'; }
+            *dst++ = *src;
+        }
+        *dst++ = '*';
+        *dst = '\0';
+        return out;
+    }
+    return strdup(pattern);
 }
 
 const char *mt_sub_detect_type(const char *pattern)
@@ -418,9 +453,9 @@ static mt_err_t canonical_typed_record(char *line, char *out, size_t out_size,
         size_t n = strlen(value);
         if (value[n - 1] == '.') { value[n - 1] = '\0'; }
         if (!valid_typed_domain(value)) { *reason = "invalid domain"; return MT_ERR_INVAL; }
-    } else if (strcmp(*type, MT_RULE_KEYWORD) == 0) {
+    } else if (strcmp(canonical, "DOMAIN-KEYWORD") == 0) {
         if (!valid_literal_keyword(value)) { *reason = "invalid keyword"; return MT_ERR_INVAL; }
-    } else if (strcmp(*type, MT_RULE_DOMAIN_WILDCARD) == 0) {
+    } else if (strcmp(canonical, "DOMAIN-WILDCARD") == 0) {
         if (!all_chars_in(value, "_*?")) {
             *reason = "wildcard supports only literal DNS characters, * and ?"; return MT_ERR_INVAL;
         }
