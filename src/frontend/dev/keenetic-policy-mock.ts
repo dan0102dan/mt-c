@@ -25,7 +25,17 @@ export function registerMockPolicyRoutes(
   let settings: PolicySettings = { enabled: false, policy_id: "", mode: "include" };
   function status(): Status {
     const current = source?.get() ?? settings;
-    return { settings: current, runtime: { state: current.enabled ? "ready" : "disabled" } };
+    const selected =
+      POLICIES.find((p) => p.id === current.policy_id) ??
+      (current.policy_id === "mt" ? POLICIES.find((p) => p.name === "mt") : undefined);
+    return {
+      settings: current,
+      runtime: !current.enabled
+        ? { state: "disabled" }
+        : selected?.available
+          ? { state: "ready" }
+          : { state: "unavailable", reason: selected ? "POLICY_UNAVAILABLE" : "POLICY_NOT_FOUND" },
+    };
   }
 
   app.get(`${BASE}/policies`, (c) => c.json({ policies: POLICIES }));
@@ -53,18 +63,6 @@ export function registerMockPolicyRoutes(
         { error: "Expected enabled (boolean), policy_id (string) and mode (include or exclude)" },
         400,
       );
-    }
-    // Like the router, disabling never requires the selected policy to exist.
-    if (body.enabled) {
-      const selected = POLICIES.find((policy) => policy.id === body.policy_id);
-      if (!selected?.available)
-        return c.json(
-          {
-            code: selected ? "POLICY_UNAVAILABLE" : "POLICY_NOT_FOUND",
-            error: "The selected Keenetic policy is missing or has no usable mark",
-          },
-          409,
-        );
     }
     settings = { enabled: body.enabled, policy_id: body.policy_id, mode: body.mode };
     source?.set(settings);

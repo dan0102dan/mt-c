@@ -313,6 +313,7 @@
   "Original policy": "Исходная политика",
   "Not specified": "Не указана",
   "Select policy": "Выберите политику",
+  "Policy ID must be shorter than 128 UTF-8 bytes and contain no control characters": "ID политики должен занимать менее 128 байт в UTF-8 и не содержать управляющих символов",
   "Keenetic policy mapping": "Сопоставление политики Keenetic",
   "Conflicts": "Конфликты",
   "Objects already exist": "Объекты уже существуют",

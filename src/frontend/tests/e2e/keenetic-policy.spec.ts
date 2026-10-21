@@ -36,9 +36,20 @@ async function backend(page: Page, enabled = false) {
         state.writes++;
         state.settings = req.postDataJSON();
       }
+      const selected =
+        state.policies.find((p) => p.id === state.settings.policy_id) ??
+        (state.settings.policy_id === "mt"
+          ? state.policies.find((p) => p.name === "mt")
+          : undefined);
       const value = {
         settings: state.settings,
-        runtime: { state: state.settings.enabled ? "ready" : "disabled" },
+        runtime: {
+          state: !state.settings.enabled
+            ? "disabled"
+            : selected?.available
+              ? "ready"
+              : "unavailable",
+        },
       };
       await route.fulfill({
         status: req.method() === "PUT" && state.diskFailure ? 500 : 200,
@@ -108,7 +119,7 @@ test("generic UI has no policy feature or policy requests", async ({ page }) => 
   await expect(save(page)).toHaveCount(1);
 });
 
-test.describe("Keenetic policy settings", () => {
+test.describe("Keenetic policy settings", { tag: "@entware_kn" }, () => {
   test.skip(!keenetic, "Keenetic-only bundle");
   for (const width of [1280, 390]) {
     test(`mt default follows the policy list and saves its ID (${width}px)`, async ({ page }) => {
@@ -120,11 +131,10 @@ test.describe("Keenetic policy settings", () => {
         .click();
       const picker = panel(page).getByRole("button", { name: "Router policy", exact: true });
       await expect(picker).toHaveText("mt");
-      await expect(save(page)).toBeDisabled();
-      await expect(save(page)).toHaveClass(/inactive/);
+      await expect(save(page)).toBeEnabled();
       await expect(save(page)).toHaveAccessibleName("Save Changes");
       await expect(
-        panel(page).getByText('Create the "mt" policy in Keenetic, then reload this page.'),
+        panel(page).getByText("The filter will become active when the policy is available."),
       ).toBeVisible();
       await expect(panel(page).getByRole("button", { name: "Refresh policies" })).toHaveCount(0);
       await picker.click();
@@ -180,7 +190,7 @@ test.describe("Keenetic policy settings", () => {
     await expect.poll(() => state.listReads).toBe(1);
     await toggle.click();
     await expect(panel(page).getByRole("switch")).toHaveCount(2);
-    await expect(save(page)).toBeDisabled();
+    await expect(save(page)).toBeEnabled();
     await panel(page).getByRole("button", { name: "Router policy", exact: true }).click();
     await page.getByRole("option", { name: "VPN", exact: true }).nth(0).click();
     expect(state.writes).toBe(0);
@@ -199,6 +209,45 @@ test.describe("Keenetic policy settings", () => {
     ).toBeChecked();
     await expect(toggle).toBeChecked();
   });
+  for (const width of [1280, 390])
+    for (const policyId of ["mt", "Policy42"]) {
+      test(`missing ${policyId} settings save and survive reload (${width}px)`, async ({
+        page,
+      }) => {
+        await page.setViewportSize({ width, height: width === 390 ? 844 : 900 });
+        const state = await backend(page, policyId !== "mt");
+        state.settings.policy_id = policyId === "mt" ? "" : policyId;
+        state.policies = [];
+        await openSettings(page);
+        if (policyId === "mt")
+          await panel(page)
+            .getByRole("switch", { name: "Use policy based filter", exact: true })
+            .click();
+        else
+          await panel(page).getByRole("switch", { name: "Processing mode", exact: true }).click();
+        const mode = policyId === "mt" ? "include" : "exclude";
+        await expect(save(page)).toBeEnabled();
+        await save(page).click();
+        await expect.poll(() => state.writes).toBe(1);
+        await expect(save(page)).toBeDisabled();
+        expect(state.settings).toEqual({ enabled: true, policy_id: policyId, mode });
+        await page.reload();
+        await expect(
+          panel(page).getByRole("switch", { name: "Use policy based filter", exact: true }),
+        ).toBeChecked();
+        await expect(
+          panel(page).getByRole("button", { name: "Router policy", exact: true }),
+        ).toContainText(policyId);
+        await panel(page).getByRole("switch", { name: "Processing mode", exact: true }).click();
+        await save(page).click();
+        await expect.poll(() => state.writes).toBe(2);
+        expect(state.settings.policy_id).toBe(policyId);
+        expect(state.settings.mode).toBe(mode === "include" ? "exclude" : "include");
+        expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(
+          width,
+        );
+      });
+    }
   test("missing policy is retained; RCI failure never blocks disabling", async ({ page }) => {
     const state = await backend(page, true);
     state.policies = [];
@@ -283,7 +332,7 @@ test.describe("Keenetic policy settings", () => {
   });
 });
 
-test.describe("Shared settings toolbar", () => {
+test.describe("Shared settings toolbar", { tag: "@entware_kn" }, () => {
   test.skip(!keenetic, "Keenetic-only editor; generic keeps a single section");
   for (const width of [1280, 390]) {
     test(`scroll changes the heading and Add action, not drafts or the Save node (${width}px)`, async ({
@@ -423,7 +472,7 @@ test.describe("Shared settings toolbar", () => {
   });
 });
 
-test.describe("Save applies to the entire Settings page", () => {
+test.describe("Save applies to the entire Settings page", { tag: "@entware_kn" }, () => {
   test.skip(!keenetic, "Keenetic-only editor");
   test("a profile edit remains saveable while viewing policy", async ({ page }) => {
     await page.setViewportSize({ width: 390, height: 540 });

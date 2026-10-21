@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { Popover } from "bits-ui";
   import { onMount, untrack } from "svelte";
 
   import Pagination from "../../components/Pagination.svelte";
@@ -14,9 +15,14 @@
     Clear,
     LayoutList,
     ListOrdered,
+    Pause,
+    Play,
     Search,
     SortAsc,
+    SortCountAsc,
+    SortCountDesc,
     SortDesc,
+    SortNeutral,
   } from "../../components/ui/icons";
   import { API_BASE, fetcher } from "../../utils/fetcher";
   import { parseCaptureState, type CaptureState } from "./dns-capture";
@@ -24,7 +30,12 @@
   import { createDnsHistory } from "./dns-history";
   import { groupDnsBursts } from "./dns-query-bursts";
   import { dnsQueryType, filterDnsQueries, groupDnsQueries, type DnsQuery } from "./dns-query-data";
-  import { nextDnsTimeSort, sortDnsByTime, type DnsTimeSort } from "./dns-query-sort";
+  import {
+    nextDnsTimeSort,
+    sortDnsByCount,
+    sortDnsByTime,
+    type DnsTimeSort,
+  } from "./dns-query-sort";
   import { subscribeDnsQueries, type StreamState } from "./dns-query-stream";
   import streamTranslations from "./dns-query-stream.ru.json";
   import { settingsSection } from "./section-controls";
@@ -51,7 +62,7 @@
     confirmation === "clear"
       ? t("Clear DNS query history?")
       : confirmation === "stop"
-        ? t("Stop recording and delete the DNS history? Its buffers will be freed for all viewers.")
+        ? t("DNS query history will be deleted for all viewers, and its memory will be freed.")
         : t(
             "History storage will use up to 1 MiB of RAM, with additional memory for streaming and the interface. Recording continues after closing this page until stopped or the service restarts.",
           ),
@@ -74,6 +85,8 @@
   let streamState = $state<StreamState>("connecting");
   let grouped = $state(false);
   let timeSort = $state<DnsTimeSort>("desc");
+  let groupedSort = $state<"time" | "count">("time");
+  let countSort = $state<DnsTimeSort>("desc");
   let search = $state("");
   let device = $state("");
   let page = $state(1);
@@ -92,7 +105,9 @@
   ]);
   const filtered = $derived(filterDnsQueries(queries, search, device));
   const groupedRows = $derived(
-    sortDnsByTime(groupDnsQueries(filtered), timeSort, (row) => row.lastTime),
+    groupedSort === "count"
+      ? sortDnsByCount(groupDnsQueries(filtered), countSort)
+      : sortDnsByTime(groupDnsQueries(filtered), timeSort, (row) => row.lastTime),
   );
   const timeline = $derived(
     sortDnsByTime(groupDnsBursts(filtered), timeSort, (row) => row.time_ms),
@@ -102,9 +117,32 @@
   const safePage = $derived(Math.min(page, pages));
   const groupedPage = $derived(groupedRows.slice((safePage - 1) * pageSize, safePage * pageSize));
   const queryPage = $derived(timeline.slice((safePage - 1) * pageSize, safePage * pageSize));
-  const filtersKey = $derived(`${search}\u0000${device}\u0000${grouped}\u0000${timeSort}`);
-  const timeSortAria = $derived(timeSort === "asc" ? "ascending" : "descending");
-  const timeSortAction = $derived(timeSort === "desc" ? "Oldest first" : "Newest first");
+  const filtersKey = $derived(
+    `${search}\u0000${device}\u0000${grouped}\u0000${timeSort}\u0000${groupedSort}\u0000${countSort}`,
+  );
+  const timeSortActive = $derived(!grouped || groupedSort === "time");
+  const timeSortAria = $derived(
+    timeSortActive ? (timeSort === "asc" ? "ascending" : "descending") : "none",
+  );
+  const countSortAria = $derived(
+    groupedSort === "count" ? (countSort === "asc" ? "ascending" : "descending") : "none",
+  );
+  const countSortAction = $derived(
+    groupedSort !== "count" || countSort === "asc"
+      ? "Most requests first"
+      : "Fewest requests first",
+  );
+  function sortByTime() {
+    if (timeSortActive) timeSort = nextDnsTimeSort(timeSort);
+    groupedSort = "time";
+  }
+  function sortByCount() {
+    countSort = groupedSort === "count" ? nextDnsTimeSort(countSort) : "desc";
+    groupedSort = "count";
+  }
+  const timeSortAction = $derived(
+    (timeSort === "desc") === timeSortActive ? "Oldest first" : "Newest first",
+  );
   const statusLabel = $derived(
     paused
       ? t("Viewing is paused; recording continues.")
@@ -220,30 +258,32 @@
       if (mounted) clearing = false;
     }
   }
-  const displayTime = (timestamp: number) => new Date(timestamp).toLocaleString();
+  const displayTime = (timestamp: number) =>
+    new Date(timestamp).toLocaleTimeString(undefined, { hour12: false });
+  const displayDate = (timestamp: number) =>
+    new Date(timestamp).toLocaleDateString("ru-RU", {
+      day: "2-digit",
+      month: "2-digit",
+      year: "numeric",
+    });
   const exactTime = (timestamp: number) =>
-    `${displayTime(timestamp)}.${String(new Date(timestamp).getMilliseconds()).padStart(3, "0")}`;
+    `${new Date(timestamp).toLocaleDateString()}, ${displayTime(timestamp)}.${String(new Date(timestamp).getMilliseconds()).padStart(3, "0")}`;
   const queryLabel = (qtype: number) =>
-    qtype === 1
-      ? "IPv4"
-      : qtype === 28
-        ? "IPv6"
-        : qtype === 65
-          ? t("HTTPS parameters")
-          : dnsQueryType(qtype);
+    qtype === 1 ? "IPv4" : qtype === 28 ? "IPv6" : qtype === 65 ? "HTTPS" : dnsQueryType(qtype);
 </script>
 
+{#snippet timestamp(value: number)}
+  <span class="cell-value timestamp-value" title={exactTime(value)}>
+    <span>{displayTime(value)}</span>
+    <span>{displayDate(value)}</span>
+  </span>
+{/snippet}
+
 {#snippet timeSortButton(label: string)}
-  <Button
-    small
-    type="button"
-    class="time-sort"
-    title={t(timeSortAction)}
-    onclick={() => (timeSort = nextDnsTimeSort(timeSort))}
-  >
+  <Button small type="button" class="time-sort" title={t(timeSortAction)} onclick={sortByTime}>
     {t(label)}
     <span class="sort-icon" aria-hidden="true">
-      {#if timeSort === "desc"}
+      {#if !timeSortActive}<SortNeutral size={16} />{:else if timeSort === "desc"}
         <SortAsc size={16} />
       {:else}
         <SortDesc size={16} />
@@ -254,16 +294,20 @@
 
 {#snippet clientIdentity(address: string)}
   <span class="client-identity">
-    {#if clientNames.get(address)}<span>{clientNames.get(address)}</span><span
-        class="client-address">{address}</span
-      >
-    {:else}<span>{address}</span>{/if}
+    {#if clientNames.get(address)}<span class="client-name" title={clientNames.get(address)}
+        >{clientNames.get(address)}</span
+      ><span class="client-address" title={address}>{address}</span>
+    {:else}<span class="client-name" title={address}>{address}</span>{/if}
   </span>
 {/snippet}
 
 <GenericDialog
   open={confirmation !== null}
-  title={confirmation === "start" ? t("Enable DNS recording?") : confirmationLabel}
+  title={confirmation === "start"
+    ? t("Enable DNS recording?")
+    : confirmation === "stop"
+      ? `${t("Stop recording")}?`
+      : confirmationLabel}
   maxWidth={480}
   on:close={() => (confirmation = null)}
   on:submit={confirmAction}
@@ -347,9 +391,20 @@
               {#if grouped}<LayoutList size={20} />{:else}<ListOrdered size={20} />{/if}
             </Button>
           </Tooltip>
-          <Button small type="button" aria-pressed={paused} onclick={() => (paused = !paused)}
-            >{paused ? t("Resume") : t("Pause")}</Button
-          >
+          <Tooltip value={paused ? t("Resume") : t("Pause")}>
+            <Button
+              small
+              type="button"
+              aria-label={paused ? t("Resume") : t("Pause")}
+              aria-pressed={paused}
+              onclick={() => (paused = !paused)}
+            >
+              {#if paused}<Play size={20} aria-hidden="true" />{:else}<Pause
+                  size={20}
+                  aria-hidden="true"
+                />{/if}
+            </Button>
+          </Tooltip>
           <Tooltip value={t("Clear history")}>
             <Button
               small
@@ -393,10 +448,29 @@
           </colgroup>
           <thead
             >{#if grouped}<tr
-                ><th scope="col">{t("Domain")}</th><th scope="col">{t("Requests")}</th><th
-                  scope="col">{t("Clients")}</th
-                ><th scope="col" class="time-sort-header" aria-sort={timeSortAria}
-                  >{@render timeSortButton("Last request")}</th
+                ><th scope="col">{t("Domain")}</th><th
+                  scope="col"
+                  class="count-sort-header"
+                  aria-sort={countSortAria}
+                >
+                  <Button
+                    small
+                    type="button"
+                    class="time-sort"
+                    title={t(countSortAction)}
+                    onclick={sortByCount}
+                  >
+                    {t("Requests")}
+                    <span class="sort-icon" aria-hidden="true">
+                      {#if groupedSort !== "count"}<SortNeutral size={16} />
+                      {:else if countSort === "desc"}<SortCountDesc size={16} />
+                      {:else}<SortCountAsc size={16} />{/if}
+                    </span>
+                  </Button>
+                </th><th scope="col">{t("Clients")}</th><th
+                  scope="col"
+                  class="time-sort-header"
+                  aria-sort={timeSortAria}>{@render timeSortButton("Time")}</th
                 ></tr
               >
             {:else}<tr
@@ -429,17 +503,15 @@
                     ></td
                   >
                   <td class="timestamp"
-                    ><span class="cell-label" aria-hidden="true">{t("Last request")}</span><span
-                      class="cell-value">{displayTime(item.lastTime)}</span
-                    ></td
+                    ><span class="cell-label" aria-hidden="true">{t("Time")}</span
+                    >{@render timestamp(item.lastTime)}</td
                   >
                 </tr>{/each}
             {:else}
               {#each queryPage as row (row.id)}<tr>
                   <td class="timestamp"
-                    ><span class="cell-label" aria-hidden="true">{t("Time")}</span><span
-                      class="cell-value">{displayTime(row.time_ms)}</span
-                    ></td
+                    ><span class="cell-label" aria-hidden="true">{t("Time")}</span
+                    >{@render timestamp(row.time_ms)}</td
                   >
                   <td
                     ><span class="cell-label" aria-hidden="true">{t("Client")}</span><span
@@ -448,23 +520,35 @@
                   >
                   <td class="domain"
                     ><span class="cell-label" aria-hidden="true">{t("Domain")}</span><span
-                      class="cell-value">{row.domain}</span
+                      class="cell-value"
+                      title={row.domain}>{row.domain}</span
                     ></td
                   >
                   <td
                     ><span class="cell-label" aria-hidden="true">{t("Type")}</span>
                     <div class="cell-value">
-                      <details class="query-details">
-                        <summary
+                      <Popover.Root>
+                        <Popover.Trigger class="query-details"
                           >{row.queries
                             .map((query) => queryLabel(query.qtype))
                             .join(" · ")}{#if row.queries.length > 1}
-                            <span class="number">({row.queries.length})</span>{/if}</summary
+                            {" "}
+                            <span class="number">({row.queries.length})</span>{/if}</Popover.Trigger
                         >
-                        {#each row.queries as query (query.id)}<span class="raw-query"
-                            >{exactTime(query.time_ms)} — {dnsQueryType(query.qtype)} (TYPE {query.qtype})</span
-                          >{/each}
-                      </details>
+                        <Popover.Portal>
+                          <Popover.Content
+                            role="dialog"
+                            class="dns-query-popover"
+                            sideOffset={6}
+                            collisionPadding={12}
+                            aria-label={t("DNS query details")}
+                          >
+                            {#each row.queries as query (query.id)}<span class="raw-query"
+                                >{exactTime(query.time_ms)} — {dnsQueryType(query.qtype)} (TYPE {query.qtype})</span
+                              >{/each}
+                          </Popover.Content>
+                        </Popover.Portal>
+                      </Popover.Root>
                     </div></td
                   >
                   <td
@@ -529,6 +613,12 @@
   .client-address {
     color: var(--text-2);
     font-size: 0.8rem;
+  }
+  .client-name,
+  .client-address {
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
   }
   h2 {
     margin: 0 0 1rem;
@@ -615,7 +705,7 @@
     border-color: var(--bg-light-extra);
   }
   .dns-panel :global(button:focus-visible),
-  summary:focus-visible {
+  :global(.query-details:focus-visible) {
     outline: 2px solid var(--accent);
     outline-offset: 2px;
   }
@@ -630,18 +720,20 @@
     color: var(--text);
     font: 400 1rem / 1.5 var(--font);
   }
-  .time-column,
+  .time-column {
+    width: 5.5rem;
+  }
   .client-column {
-    width: 19%;
+    width: 24%;
   }
   .type-column {
-    width: 22%;
+    width: 8.5rem;
   }
   .protocol-column {
-    width: 9%;
+    width: 5.5rem;
   }
   .number-column {
-    width: 12%;
+    width: 7rem;
   }
   .clients-column {
     width: 31%;
@@ -682,6 +774,17 @@
     padding: 0.1rem 0.5rem;
     vertical-align: middle;
   }
+  .dns-table:not(.grouped) td {
+    height: 3rem;
+  }
+  .dns-table:not(.grouped) .domain .cell-value,
+  .dns-table:not(.grouped) :global(.query-details) {
+    display: -webkit-box;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+    line-clamp: 2;
+    overflow: hidden;
+  }
   tbody tr:nth-child(even) {
     background-color: var(--bg-light);
   }
@@ -692,24 +795,50 @@
   .cell-label {
     display: none;
   }
-  .timestamp,
+  .timestamp-value {
+    display: inline-flex;
+    flex-direction: column;
+  }
+  .timestamp {
+    color: var(--text-2);
+    font-size: 0.8rem;
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+  }
   .number {
     color: var(--text-2);
     font-size: 0.9rem;
     font-variant-numeric: tabular-nums;
   }
-  .query-details {
-    min-width: 0;
-    font-size: 0.9rem;
-  }
-  summary {
-    cursor: pointer;
-  }
-  .raw-query {
+  :global(.query-details) {
     display: block;
-    margin-top: 0.3rem;
+    min-width: 0;
+    padding: 0;
+    border: 0;
+    background: transparent;
+    color: inherit;
+    font: 400 0.85rem / 1.5 var(--font);
+    text-align: left;
+    overflow-wrap: anywhere;
+    cursor: pointer;
+    text-decoration: underline dotted;
+    text-underline-offset: 0.2rem;
+  }
+  :global(.dns-query-popover) {
+    z-index: 20;
+    box-sizing: border-box;
+    max-width: min(26rem, calc(100vw - 24px));
+    padding: 0.65rem;
+    border: 1px solid var(--bg-light-extra);
+    border-radius: 0.5rem;
+    background: var(--bg-dark-extra);
     color: var(--text-2);
-    font-size: 0.8rem;
+    font: 400 0.8rem / 1.5 var(--font);
+    box-shadow: var(--shadow-popover);
+    overflow-wrap: anywhere;
+  }
+  :global(.dns-query-popover .raw-query) {
+    display: block;
   }
   .dns-summary {
     display: flex;
@@ -755,16 +884,19 @@
     .dns-table colgroup {
       display: none;
     }
-    /* Keep the same sort control reachable when rows become mobile cards. */
+    /* Keep both sort controls reachable when rows become mobile cards. */
     .dns-table thead,
     .dns-table thead tr {
-      display: block;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.5rem;
     }
-    .dns-table .time-sort-header {
+    .dns-table .time-sort-header,
+    .dns-table .count-sort-header {
       display: block;
       padding: 0.5rem 0.35rem;
     }
-    .dns-table th:not(.time-sort-header) {
+    .dns-table th:not(.time-sort-header):not(.count-sort-header) {
       position: absolute;
       width: 1px;
       height: 1px;
@@ -778,7 +910,8 @@
       gap: 0.25rem;
       padding: 0.5rem 0.35rem 0.45rem;
     }
-    .dns-table td {
+    .dns-table td,
+    .dns-table:not(.grouped) td {
       display: grid;
       grid-template-columns: 5.6rem minmax(0, 1fr);
       align-items: baseline;

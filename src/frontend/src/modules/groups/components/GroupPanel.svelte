@@ -551,6 +551,7 @@
       background-color: var(--bg-medium);
       border-radius: 0.5rem;
       border: 1px solid var(--bg-light-extra);
+      overflow: hidden;
       transition:
         transform 0.12s ease,
         opacity 0.12s ease,

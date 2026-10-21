@@ -59,7 +59,8 @@ static cJSON *status_json(mt_kn_policy_service_t *s)
                         !applied ? "applying" : !c.enabled ? "disabled" : ready ? "ready" : "unavailable";
     if (!cJSON_AddStringToObject(runtime, "state", state)) { cJSON_Delete(out); return NULL; }
     if (strcmp(state, "unavailable") == 0) {
-        cJSON_AddStringToObject(runtime, "reason", s->last_error == MT_ERR_NOENT ? "POLICY_NOT_FOUND" : "RCI_UNAVAILABLE");
+        cJSON_AddStringToObject(runtime, "reason", s->last_error == MT_ERR_NOENT ? "POLICY_NOT_FOUND" :
+            s->last_error == MT_ERR_AGAIN ? "POLICY_UNAVAILABLE" : "RCI_UNAVAILABLE");
     }
     if (strcmp(state, "error") == 0) { cJSON_AddStringToObject(runtime, "reason", "NETFILTER_APPLY_FAILED"); }
     return out;
@@ -73,6 +74,12 @@ static cJSON *error_json(const char *code, const char *message)
 static const mt_kn_policy_entry_t *find_policy(const mt_kn_policy_entry_t *entries, size_t count, const char *id)
 {
     for (size_t i = 0; i < count; i++) { if (strcmp(entries[i].id, id) == 0) { return &entries[i]; } }
+    /* The default may be saved before Keenetic assigns it a system ID. */
+    if (strcmp(id, "mt") == 0) {
+        for (size_t i = 0; i < count; i++) {
+            if (strcmp(entries[i].description, "mt") == 0) { return &entries[i]; }
+        }
+    }
     return NULL;
 }
 static void request_fetch(mt_kn_policy_service_t *s)
@@ -173,12 +180,8 @@ static void completed(mt_loop_t *loop, int fd, uint32_t events, void *ud)
             const mt_kn_policy_entry_t *entry = find_policy(entries, count, w->desired.policy_id);
             if (!mt_kn_policy_config_equal(&current, &w->baseline)) {
                 status = 409; out = error_json("POLICY_SETTINGS_CHANGED", "Policy settings changed while loading; reload and retry");
-            } else if (!entry || !entry->available) {
-                status = 409;
-                out = error_json(entry ? "POLICY_UNAVAILABLE" : "POLICY_NOT_FOUND",
-                                 "The selected Keenetic policy is missing or has no usable mark");
             } else {
-                s->last_error = MT_OK;
+                s->last_error = !entry ? MT_ERR_NOENT : !entry->available ? MT_ERR_AGAIN : MT_OK;
                 out = apply_settings(s, &w->desired, entry, &status);
             }
         } else {

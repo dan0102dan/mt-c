@@ -4,6 +4,7 @@ import { groupDnsBursts } from "../../src/modules/settings/dns-query-bursts";
 import { groupDnsQueries, type DnsQuery } from "../../src/modules/settings/dns-query-data";
 import {
   nextDnsTimeSort,
+  sortDnsByCount,
   sortDnsByTime,
   type DnsTimeSort,
 } from "../../src/modules/settings/dns-query-sort";
@@ -98,4 +99,32 @@ Deno.test("sorting display bursts keeps their anchor and complete raw membership
     rows.map((row) => row.id),
     [4, 3, 2, 1],
   );
+});
+
+Deno.test("count sorting orders full groups, breaks ties by time and preserves history", () => {
+  const groups = groupDnsQueries([
+    query(6, 6000, "recent.example"),
+    query(5, 5000, "busy.example"),
+    query(4, 4000, "busy.example"),
+    query(3, 3000, "busy.example"),
+    query(2, 2000, "old.example"),
+    query(1, 1000, "old.example"),
+  ]);
+  const before = structuredClone(groups);
+  assert.deepEqual(
+    sortDnsByCount(groups, "desc").map((row) => row.domain),
+    ["busy.example", "old.example", "recent.example"],
+  );
+  assert.deepEqual(
+    sortDnsByCount(groups, "asc").map((row) => row.domain),
+    ["recent.example", "old.example", "busy.example"],
+  );
+  const ties = groups.map((row) => ({ ...row, count: 1 }));
+  for (const direction of ["asc", "desc"] as const)
+    assert.deepEqual(
+      sortDnsByCount(ties, direction).map((row) => row.domain),
+      ["recent.example", "busy.example", "old.example"],
+    );
+  assert.deepEqual(groups, before);
+  assert.deepEqual(sortDnsByCount([], "desc"), []);
 });

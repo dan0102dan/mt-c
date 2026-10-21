@@ -75,6 +75,7 @@
     </Select.Trigger>
 
     <Select.Content
+      strategy="fixed"
       align="start"
       sideOffset={4}
       aria-label={ariaLabel}

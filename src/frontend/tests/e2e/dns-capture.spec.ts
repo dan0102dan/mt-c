@@ -170,13 +170,13 @@ test("explicit capture combines related DNS types but preserves all raw records"
   dns.emit(65, 1010);
   dns.emit(28, 1020);
   await expect(region.locator("tbody tr")).toHaveCount(1);
-  await expect(region.locator("summary")).toContainText("IPv4 · HTTPS parameters · IPv6");
-  await region.locator("summary").click();
-  await expect(region.getByText(/HTTPS \(TYPE 65\)/)).toBeVisible();
+  await expect(region.locator(".query-details")).toContainText("IPv4 · HTTPS · IPv6");
+  await region.locator(".query-details").click();
+  await expect(page.getByText(/HTTPS \(TYPE 65\)/)).toBeVisible();
   expect(dns.state.queries).toHaveLength(3);
   await expect(region.getByText("Stored requests: 3", { exact: true })).toBeVisible();
   await expect(region.getByRole("button", { name: "Combine related queries" })).toHaveCount(0);
-  await expect(region.locator(".raw-query")).toHaveCount(3);
+  await expect(page.locator(".dns-query-popover .raw-query")).toHaveCount(3);
   await expect(region.locator(".capture-toolbar")).not.toContainText("1024 / 1024 KiB");
   await expect(
     region.locator(".capture-toolbar").getByRole("button", { name: "History RAM" }),
@@ -201,7 +201,7 @@ test("stop frees history for all viewers and does not resume on reload", async (
   await expect(otherRegion.locator("tbody tr")).toHaveCount(1);
   await region.getByRole("button", { name: "Stop recording" }).click();
   await page
-    .getByRole("dialog", { name: "Stop recording", exact: true })
+    .getByRole("dialog", { name: "Stop recording?", exact: true })
     .getByRole("button", { name: "Stop recording", exact: true })
     .click();
   await expect(region.getByText("DNS recording is off", { exact: true })).toBeVisible();

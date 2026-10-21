@@ -45,37 +45,45 @@ Deno.test(
   },
 );
 
-Deno.test(
-  "mock rejects invalid or unavailable settings without overwriting saved state",
-  async () => {
-    const { app, save } = fixture();
-    const settings = { enabled: true, policy_id: "Policy1", mode: "include" };
-    await save(settings);
-    for (const body of [
-      null,
-      [],
-      {},
-      { ...settings, enabled: "true" },
-      { ...settings, policy_id: "" },
-      { ...settings, policy_id: "я".repeat(64) },
-      { ...settings, policy_id: "bad\nID" },
-      { ...settings, mode: "invalid" },
-      { ...settings, extra: true },
-    ])
-      assert.equal((await save(body)).status, 400);
-    const malformed = await app.request(`${BASE}/policy`, { method: "PUT", body: "{" });
-    assert.equal(malformed.status, 400);
-    for (const [policy_id, code] of [
-      ["Policy3", "POLICY_UNAVAILABLE"],
-      ["missing", "POLICY_NOT_FOUND"],
-    ]) {
-      const response = await save({ ...settings, policy_id });
-      assert.equal(response.status, 409);
-      assert.equal((await response.json()).code, code);
+Deno.test("mock rejects invalid settings without overwriting saved state", async () => {
+  const { app, save } = fixture();
+  const settings = { enabled: true, policy_id: "Policy1", mode: "include" };
+  await save(settings);
+  for (const body of [
+    null,
+    [],
+    {},
+    { ...settings, enabled: "true" },
+    { ...settings, policy_id: "" },
+    { ...settings, policy_id: "я".repeat(64) },
+    { ...settings, policy_id: "bad\nID" },
+    { ...settings, mode: "invalid" },
+    { ...settings, extra: true },
+  ])
+    assert.equal((await save(body)).status, 400);
+  const malformed = await app.request(`${BASE}/policy`, { method: "PUT", body: "{" });
+  assert.equal(malformed.status, 400);
+  assert.deepEqual(await (await app.request(`${BASE}/policy`)).json(), {
+    settings,
+    runtime: { state: "ready" },
+  });
+});
+
+Deno.test("missing and unready policies can be saved before Keenetic provides them", async () => {
+  const { app, save } = fixture();
+  for (const policy_id of ["mt", "Policy42", "imported-policy", "Policy3"])
+    for (const mode of ["include", "exclude"] as const) {
+      const settings = { enabled: true, policy_id, mode };
+      const response = await save(settings);
+      assert.equal(response.status, 200);
+      const expected = {
+        settings,
+        runtime: {
+          state: "unavailable",
+          reason: policy_id === "Policy3" ? "POLICY_UNAVAILABLE" : "POLICY_NOT_FOUND",
+        },
+      };
+      assert.deepEqual(await response.json(), expected);
+      assert.deepEqual(await (await app.request(`${BASE}/policy`)).json(), expected);
     }
-    assert.deepEqual(await (await app.request(`${BASE}/policy`)).json(), {
-      settings,
-      runtime: { state: "ready" },
-    });
-  },
-);
+});

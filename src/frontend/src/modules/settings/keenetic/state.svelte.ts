@@ -23,7 +23,9 @@ export const policy = $state({
   listFailed: false,
 });
 export function selectedPolicyId() {
-  return policy.draft.policy_id || policy.policies.find((p) => p.name === "mt")?.id || "";
+  const id = policy.draft.policy_id;
+  if (id && (id !== "mt" || policy.policies.some((p) => p.id === id))) return id;
+  return policy.policies.find((p) => p.name === "mt")?.id || "mt";
 }
 export function policyDirty() {
   return policy.persistencePending || JSON.stringify(policy.draft) !== policy.baseline;

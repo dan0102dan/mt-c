@@ -33,6 +33,8 @@ static mt_err_t mock_fetch(mt_kn_policy_entry_t **entries, size_t *count, const 
     int mode = atomic_load(&fetch_mode);
     if (mode == 1) { *entries = NULL; *count = 0; return MT_ERR_UPSTREAM; }
     const char *json = mode == 2 ? "{}" :
+      mode == 3 ? "{\"Policy42\":{\"description\":\"mt\",\"mark\":\"ffffd00\"}}" :
+      mode == 4 ? "{\"ImportedPolicy42\":{\"description\":\"Imported VPN\",\"mark\":\"ffffd00\"}}" :
       "{\"Policy0\":{\"description\":\"VPN\",\"mark\":\"ffffd00\"},\"Waiting\":{}}";
     return mt_kn_policy_parse(json, strlen(json), entries, count);
 }
@@ -245,7 +247,8 @@ TEST both_modes_persist_and_unavailable_policy_never_falls_back_to_all(void) {
     ASSERT_STR_EQ("Policy0", cJSON_GetObjectItemCaseSensitive(settings(out),"policy_id")->valuestring); cJSON_Delete(out);
     ASSERT_EQ(502, do_request("PUT", "/api/v1/keenetic/policy", include, NULL));
     atomic_store(&fetch_mode, 2);
-    ASSERT_EQ(409, do_request("PUT", "/api/v1/keenetic/policy", include, NULL));
+    ASSERT_EQ(200, do_request("PUT", "/api/v1/keenetic/policy", include, &out));
+    ASSERT_STR_EQ("unavailable", state(out)); cJSON_Delete(out);
     int calls = atomic_load(&fetch_calls);
     ASSERT_EQ(200, do_request("PUT", "/api/v1/keenetic/policy", disabled, &out));
     ASSERT_STR_EQ("disabled", state(out)); cJSON_Delete(out);
@@ -256,6 +259,52 @@ TEST both_modes_persist_and_unavailable_policy_never_falls_back_to_all(void) {
     ASSERT_STR_EQ("Policy0", persisted.app.keenetic_policy.policy_id);
     ASSERT_EQ(MT_KN_POLICY_EXCLUDE, persisted.app.keenetic_policy.mode);
     mt_config_clear(&persisted); harness_stop(h); PASS();
+}
+TEST missing_policy_is_persisted_in_both_modes_and_resolves_when_created(void) {
+    harness_t *h = harness_start(true); ASSERT(h);
+    atomic_store(&fetch_mode, 2);
+    const char *ids[] = {"ImportedPolicy42", "Policy0", "mt"};
+    const char *modes[] = {"include", "exclude"};
+    for (size_t i = 0; i < sizeof(ids)/sizeof(*ids); i++) {
+        for (size_t j = 0; j < sizeof(modes)/sizeof(*modes); j++) {
+            char body[256];
+            snprintf(body, sizeof(body), "{\"enabled\":true,\"policy_id\":\"%s\",\"mode\":\"%s\"}", ids[i], modes[j]);
+            cJSON *out = NULL;
+            ASSERT_EQ(200, do_request("PUT", "/api/v1/keenetic/policy", body, &out));
+            ASSERT_STR_EQ("unavailable", state(out));
+            ASSERT(cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(settings(out), "enabled")));
+            ASSERT_STR_EQ(ids[i], cJSON_GetObjectItemCaseSensitive(settings(out), "policy_id")->valuestring);
+            cJSON *runtime = cJSON_GetObjectItemCaseSensitive(out, "runtime");
+            ASSERT_STR_EQ("POLICY_NOT_FOUND", cJSON_GetObjectItemCaseSensitive(runtime, "reason")->valuestring);
+            cJSON_Delete(out);
+            mt_config_t persisted; ASSERT_EQ(MT_OK, mt_config_init_defaults(&persisted));
+            ASSERT_EQ(MT_OK, mt_config_load_file(&persisted, h->config_path));
+            ASSERT(persisted.app.keenetic_policy.enabled);
+            ASSERT_STR_EQ(ids[i], persisted.app.keenetic_policy.policy_id);
+            ASSERT_EQ(j == 0 ? MT_KN_POLICY_INCLUDE : MT_KN_POLICY_EXCLUDE, persisted.app.keenetic_policy.mode);
+            mt_config_clear(&persisted);
+        }
+        atomic_store(&fetch_mode, i == 0 ? 4 : i == 2 ? 3 : 0);
+        ASSERT_EQ(200, do_request("GET", "/api/v1/keenetic/policies", NULL, NULL));
+        cJSON *out = NULL;
+        ASSERT_EQ(200, do_request("GET", "/api/v1/keenetic/policy", NULL, &out));
+        ASSERT_STR_EQ("ready", state(out));
+        ASSERT_STR_EQ(ids[i], cJSON_GetObjectItemCaseSensitive(settings(out), "policy_id")->valuestring);
+        cJSON_Delete(out);
+        atomic_store(&fetch_mode, 2);
+    }
+    harness_stop(h); PASS();
+}
+TEST policy_without_a_mark_can_be_saved_without_broadening_scope(void) {
+    harness_t *h = harness_start(true); ASSERT(h);
+    cJSON *out = NULL;
+    ASSERT_EQ(200, do_request("PUT", "/api/v1/keenetic/policy",
+        "{\"enabled\":true,\"policy_id\":\"Waiting\",\"mode\":\"exclude\"}", &out));
+    ASSERT_STR_EQ("unavailable", state(out));
+    ASSERT(cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(settings(out), "enabled")));
+    ASSERT_STR_EQ("Waiting", cJSON_GetObjectItemCaseSensitive(settings(out), "policy_id")->valuestring);
+    cJSON_Delete(out);
+    harness_stop(h); PASS();
 }
 TEST disable_supersedes_late_activation_without_blocking_the_loop(void) {
     harness_t *h = harness_start(false); ASSERT(h);
@@ -303,6 +352,8 @@ int main(int argc, char **argv) {
 #ifdef MT_ENTWARE_KN
     RUN_TEST(defaults_no_rci_and_invalid_requests_have_no_side_effects);
     RUN_TEST(both_modes_persist_and_unavailable_policy_never_falls_back_to_all);
+    RUN_TEST(missing_policy_is_persisted_in_both_modes_and_resolves_when_created);
+    RUN_TEST(policy_without_a_mark_can_be_saved_without_broadening_scope);
     RUN_TEST(disable_supersedes_late_activation_without_blocking_the_loop);
     RUN_TEST(persistence_error_acknowledges_memory_state_and_supports_retry);
 #endif

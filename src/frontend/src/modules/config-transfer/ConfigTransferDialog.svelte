@@ -236,7 +236,7 @@
     if (!policySupported) return true;
     if (!inputPolicy.enabled) return false;
     const id = policyId || inputPolicy.policyId;
-    return !policies.some((p) => p.id === id && p.available);
+    return !id;
   });
   const errors = $derived([
     ...plan.problems.map(problemMessage),
@@ -246,14 +246,15 @@
         )
       : []),
     ...(missingPolicy
-      ? [
-          policySupported
-            ? t("Select an available Keenetic policy")
-            : t("This build does not support Keenetic policies"),
-        ]
+      ? [policySupported ? t("Select policy") : t("This build does not support Keenetic policies")]
       : []),
   ]);
   function problemMessage(problem: string) {
+    if (
+      problem === "Policy ID must be shorter than 128 UTF-8 bytes and contain no control characters"
+    ) {
+      return t(problem);
+    }
     const separator = problem.indexOf(": ");
     const reason = problem.slice(0, separator);
     const value = problem.slice(separator + 2);
@@ -291,7 +292,7 @@
     if (/token|password|secret|key|credential/i.test(field)) return "••••";
     let printed = typeof value === "string" ? value : JSON.stringify(value);
     printed = printed.replace(/([?&](?:token|key|password|secret)=)[^&#]+/gi, "$1•••");
-    return printed.length > 130 ? printed.slice(0, 130) + "…" : printed;
+    return printed;
   }
   function setChoice(key: string, choice: string) {
     choices = { ...choices, [key]: choice as Choice };
@@ -345,7 +346,10 @@
                           disabled={busy}
                           on:change={(event) => toggleEntry(entry.key, event.detail.checked)}
                         />
-                        <div class="group-info">
+                        <div
+                          class="group-info"
+                          class:subscription-info={section === "subscriptions"}
+                        >
                           <span class="group-name">{entry.name}</span>
                           {#if entry.meta}<span class="group-meta">{entry.meta}</span>{/if}
                         </div>
@@ -373,12 +377,13 @@
           selected={policyId || inputPolicy.policyId || ""}
           options={[
             { value: "", label: t("Select policy") },
-            ...policies
-              .filter((item) => item.available)
-              .map((item) => ({
-                value: item.id,
-                label: item.name || item.id,
-              })),
+            ...(inputPolicy.policyId && !policies.some((item) => item.id === inputPolicy.policyId)
+              ? [{ value: inputPolicy.policyId, label: inputPolicy.policyId }]
+              : []),
+            ...policies.map((item) => ({
+              value: item.id,
+              label: item.name || item.id,
+            })),
           ]}
           onValueChange={(value) => (policyId = value)}
           ariaLabel={t("Keenetic policy mapping")}
@@ -519,6 +524,16 @@
     max-width: 55%;
     min-width: 0;
     font-variant-numeric: tabular-nums;
+  }
+
+  .subscription-info {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 0.25rem;
+  }
+
+  .subscription-info .group-meta {
+    max-width: 100%;
   }
 
   .dialog-actions {
