@@ -6,7 +6,7 @@ import { subscriptionRulePattern } from "../../src/utils/subscription-pattern";
 Deno.test("keywords map to the existing wildcard type", () => {
   assert.equal(subscriptionRulePattern("DOMAIN-KEYWORD,openai", "wildcard"), "*openai*");
   assert.equal(subscriptionRulePattern("DOMAIN-KEYWORD,labs.google", "wildcard"), "*labs.google*");
-  assert.equal(subscriptionRulePattern("DOMAIN-KEYWORD,a*b?c", "wildcard"), String.raw`*a\\*b\\?c*`);
+  assert.equal(subscriptionRulePattern("DOMAIN-KEYWORD,a*b?c", "wildcard"), String.raw`*a\*b\?c*`);
   assert.equal(subscriptionRulePattern("DOMAIN-KEYWORD,openai", "namespace"), "openai");
   assert.equal(subscriptionRulePattern("DOMAIN-WILDCARD,*.example.com", "wildcard"), "*.example.com");
   assert.equal(VALIDATOP_MAP.keyword, undefined);
