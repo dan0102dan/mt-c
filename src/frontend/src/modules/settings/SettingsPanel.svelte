@@ -1,9 +1,10 @@
 <script lang="ts">
   import PlatformSettings from "#platform/settings";
   import { Tabs } from "bits-ui";
-  import { getContext, setContext } from "svelte";
+  import { getContext, setContext, tick } from "svelte";
 
   import PageControls from "../../components/layout/PageControls.svelte";
+  import Button from "../../components/ui/Button.svelte";
   import { t } from "../../data/locale.svelte";
   import DnsQueryLog from "./DnsQueryLog.svelte";
   import ProfilesPanel from "./ProfilesPanel.svelte";
@@ -33,6 +34,22 @@
   const invalid = $derived(
     sections.find((section) => section.controls().dirty && !section.controls().canSave)?.controls(),
   );
+  const validationSections = $derived(
+    sections.filter((section) => {
+      const controls = section.controls();
+      return controls.dirty && controls.validationMessage;
+    }),
+  );
+
+  async function showSection(section: SettingsSection) {
+    selected = section.element.id;
+    await tick();
+    section.element
+      .closest(".settings-page")
+      ?.querySelector<HTMLElement>('.settings-tabs [data-state="active"]')
+      ?.focus();
+  }
+
   const canSave = $derived(dirty && !saving && !invalid);
 
   async function saveAll() {
@@ -76,6 +93,7 @@
       onSave={() => void saveAll()}
       saveButtonId="save-settings"
       saveLabel={t("Save Changes")}
+      saveDescriptionId={validationSections.length ? "settings-validation" : undefined}
       exportLabel={t("Export Config")}
       importLabel={t("Import Config")}
       onExport={() => void transfer.exportConfig()}
@@ -92,6 +110,16 @@
         </Tabs.List>
       {/snippet}
     </PageControls>
+    {#if validationSections.length}
+      <div id="settings-validation" class="settings-validation" role="status">
+        <span>{t("Cannot save settings")}</span>
+        {#each validationSections as section (section.element.id)}
+          <Button small onclick={() => void showSection(section)}>
+            {tabLabels[section.element.id]}: {section.controls().validationMessage}
+          </Button>
+        {/each}
+      </div>
+    {/if}
   </div>
   <Tabs.Content value="profiles" class="settings-content"><ProfilesPanel /></Tabs.Content>
   <Tabs.Content value="keenetic" class="settings-content"><PlatformSettings /></Tabs.Content>
@@ -128,6 +156,27 @@
     height: auto;
     flex-shrink: 0;
     margin-left: auto;
+  }
+  .settings-validation {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: 0.25rem 0.5rem;
+    padding: 0.25rem 0;
+    color: var(--text-2);
+    font: 400 0.9rem / 1.5 var(--font);
+  }
+  .settings-validation :global(button) {
+    min-width: 0;
+    padding: 0;
+    font: inherit;
+    text-align: left;
+    text-decoration: underline;
+    overflow-wrap: anywhere;
+  }
+  .settings-validation :global(button:focus-visible) {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
   }
   :global(.settings-content[data-state="inactive"]) {
     display: none;

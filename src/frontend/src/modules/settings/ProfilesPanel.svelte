@@ -49,6 +49,7 @@
     addLabel: t("Add profile"),
     canAdd: !unavailable,
     dirty,
+    validationMessage: validation ? t(validation) : undefined,
     canSave: dirty && !unavailable && !validation,
     onAdd: addProfile,
     onSave: save,

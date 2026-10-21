@@ -230,7 +230,9 @@ test("draft survives tab navigation without a footer; invalid empty chain cannot
     await page.getByRole("button", { name: `Remove interface: ${name}`, exact: true }).click();
   await expect(page.locator("#save-settings")).toBeDisabled();
   expect(state.profiles[0].interfaces).toHaveLength(3);
-  await expect(page.getByText("Add at least one interface", { exact: true })).toHaveCount(0);
+  await expect(
+    page.getByRole("button", { name: "Profiles: Add at least one interface", exact: true }),
+  ).toBeVisible();
   await expect(page.locator("#save-settings")).toHaveAccessibleName("Save Changes");
   await expect(page.locator("#save-settings")).toHaveClass(/inactive/);
   await addInterface(page.locator(".profile"), "tun1");
@@ -711,4 +713,66 @@ for (const language of ["en", "ru"]) {
       await name.fill("Valid name");
     }
   });
+}
+
+for (const width of [390, 1280]) {
+  for (const language of ["en", "ru"] as const) {
+    test(`hidden profile validation explains shared Save and returns to the editor (${width}px, ${language})`, async ({
+      page,
+    }) => {
+      await page.setViewportSize({ width, height: 844 });
+      const state = await backend(page);
+      state.profiles = [
+        { id: "existing", name: "Original", interfaces: ["tun0"], on_unavailable: "blackhole" },
+      ];
+      await page.goto("/");
+      await openSettings(page);
+      if (language === "ru") await page.locator(".locale button").click();
+      const ru = language === "ru";
+      const profilesTab = page.getByRole("tab", { name: ru ? "Профили" : "Profiles", exact: true });
+      const nameError = ru ? "Профили: Введите название профиля" : "Profiles: Enter a profile name";
+      const interfaceError = ru
+        ? "Профили: Добавьте хотя бы один интерфейс"
+        : "Profiles: Add at least one interface";
+      const toolbar = page.locator(".settings-toolbar");
+      const save = page.locator("#save-settings");
+      await expect(page.locator("#settings-validation")).toHaveCount(0);
+      await page
+        .getByRole("button", { name: ru ? "Добавить профиль" : "Add profile", exact: true })
+        .click();
+      const draft = page.locator(".profile").last();
+      await page
+        .getByRole("tab", { name: ru ? "DNS-запросы" : "DNS queries", exact: true })
+        .click();
+      await expect(draft).toBeHidden();
+      await expect(save).toBeDisabled();
+      await expect(save).toHaveAccessibleDescription(new RegExp(nameError));
+      const reason = toolbar.getByRole("button", { name: nameError, exact: true });
+      await expect(reason).toBeVisible();
+      await reason.click();
+      await expect(profilesTab).toHaveAttribute("aria-selected", "true");
+      await expect(profilesTab).toBeFocused();
+      await draft
+        .getByLabel(ru ? "Название профиля" : "Profile name", { exact: true })
+        .fill("New profile");
+      await expect(
+        toolbar.getByRole("button", { name: interfaceError, exact: true }),
+      ).toBeVisible();
+      await expect(save).toBeDisabled();
+      await draft
+        .getByRole("button", { name: ru ? "Добавить интерфейс" : "Add interface", exact: true })
+        .click();
+      await page.getByRole("option", { name: "tun1", exact: true }).click();
+      await expect(page.locator("#settings-validation")).toHaveCount(0);
+      await expect(save).not.toHaveAttribute("aria-describedby");
+      await expect(save).toBeEnabled();
+      expect(state.writes).toBe(0);
+      expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(
+        width,
+      );
+      await save.click();
+      await expect.poll(() => state.writes).toBe(1);
+      expect(state.profiles.map((profile) => profile.name)).toEqual(["Original", "New profile"]);
+    });
+  }
 }

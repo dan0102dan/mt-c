@@ -19,6 +19,7 @@
     onSave: () => void;
     saveButtonId?: string;
     saveLabel: string;
+    saveDescriptionId?: string;
     exportLabel?: string;
     importAccept?: string;
     importLabel?: string;
@@ -43,6 +44,7 @@
     onSave,
     saveButtonId,
     saveLabel,
+    saveDescriptionId,
   }: Props = $props();
 
   const motion = getContext<PageControlsMotion | undefined>(PAGE_CONTROLS_MOTION);
@@ -91,6 +93,7 @@
         onclick={onSave}
         id={saveButtonId}
         aria-label={saveLabel}
+        aria-describedby={saveDescriptionId}
         class="accent"
         inactive={!canSave}
         disabled={!canSave}

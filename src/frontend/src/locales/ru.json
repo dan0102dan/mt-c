@@ -57,6 +57,7 @@
   "Groups": "Группы",
   "Group": "Группа",
   "Settings": "Настройки",
+  "Cannot save settings": "Не удаётся сохранить настройки",
   "DNS queries": "DNS-запросы",
   "Requests captured by the DNS proxy. Cached or encrypted DNS traffic is not visible.": "Показываются запросы через DNS-прокси. Кэшированные запросы и зашифрованный DNS здесь не отображаются.",
   "Search domain": "Поиск домена",

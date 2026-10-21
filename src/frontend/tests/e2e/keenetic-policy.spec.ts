@@ -470,8 +470,15 @@ test.describe("Save applies to the entire Settings page", { tag: "@entware_kn" }
     await expect(save(page)).toHaveAccessibleName("Save Changes");
     expect(state.profileWrites).toBe(0);
     expect(state.writes).toBe(0);
-    await page.getByRole("tab", { name: "Profiles", exact: true }).click();
+    const reason = page
+      .locator(".settings-toolbar")
+      .getByRole("button", { name: "Profiles: Enter a profile name", exact: true });
+    await expect(reason).toBeVisible();
+    await expect(save(page)).toHaveAccessibleDescription(/Profiles: Enter a profile name/);
+    await reason.click();
+    await expect(page.getByRole("tab", { name: "Profiles", exact: true })).toBeFocused();
     await name.fill("Repaired");
+    await expect(page.locator("#settings-validation")).toHaveCount(0);
     await expect(save(page)).toBeEnabled();
     await save(page).click();
     await expect.poll(() => state.profileWrites).toBe(1);

@@ -76,6 +76,12 @@
   aria-busy={policy.saving}
   use:section={() => ({
     dirty,
+    validationMessage:
+      !valid && !policy.listing
+        ? policy.listFailed
+          ? t("Could not load policies. Reload the page to retry.")
+          : undefined
+        : undefined,
     canSave: dirty && policy.loaded && !policy.saving && valid,
     onSave: save,
   })}
