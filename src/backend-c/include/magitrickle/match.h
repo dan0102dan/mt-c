@@ -1,10 +1,13 @@
-/* Rule matching — semantics must be identical to Go models.Rule.IsMatch
+/* Legacy rule matching preserves Go models.Rule.IsMatch
  * (compatibility-contract.md §6):
  *   domain     exact, case-sensitive
  *   namespace  exact or dot-boundary suffix (".example.com" also matches)
  *   wildcard   IGLOU-EU/go-wildcard v2 Match port: '*' any run, '?' exactly
  *              one byte, '.' IN THE PATTERN MATCHES ANY SINGLE BYTE (quirk
  *              of the library the Go backend uses) — case-sensitive
+ *   keyword    literal, ASCII case-insensitive substring; no PCRE2
+ *   domain-wildcard  ASCII case-insensitive '*'/'?' glob, literal '.';
+ *              separate from wildcard so old configs retain Go semantics
  *   regex      PCRE2, CASELESS|UTF|UCP, unanchored, match/depth limits;
  *              a pattern that fails to compile never matches (like Go's
  *              invalid-regex behaviour) and reports the error once
@@ -12,7 +15,7 @@
  *
  * mt_matcher_t is the per-group index (decisions D-12 consumer arrives in
  * Phase 4): exact domains in a hash table, namespaces in a reversed-label
- * trie, wildcard/regex pre-compiled and scanned linearly. Group-level
+ * trie, other matchers scanned linearly (only regex is compiled). Group-level
  * matching is an OR over enabled rules, so index order is free.
  */
 #ifndef MAGITRICKLE_MATCH_H
@@ -28,12 +31,12 @@
 typedef struct mt_rule_matcher mt_rule_matcher_t;
 
 /* Compiles one rule (regex is compiled eagerly here, unlike Go's lazy
- * sync.Once — observable behaviour is the same). Never fails for
- * non-regex types; invalid regex yields a matcher that never matches
- * (with compile_ok=false observable for diagnostics). */
+ * sync.Once — observable behaviour is the same). Invalid regex or empty
+ * keyword/domain-wildcard yields a matcher that never matches
+ * (with compile_ok=false observable for diagnostics). Allocation can fail. */
 mt_rule_matcher_t *mt_rule_matcher_new(const char *type, const char *rule);
 void mt_rule_matcher_free(mt_rule_matcher_t *m);
-bool mt_rule_matcher_ok(const mt_rule_matcher_t *m); /* regex compiled? */
+bool mt_rule_matcher_ok(const mt_rule_matcher_t *m); /* valid pattern? */
 bool mt_rule_matcher_match(mt_rule_matcher_t *m, const char *domain);
 
 /* Standalone wildcard match (exact IGLOU go-wildcard v2 port). */

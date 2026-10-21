@@ -6,6 +6,7 @@
 #include <stdlib.h>
 
 #include "magitrickle/id.h"
+#include "magitrickle/subparse.h"
 
 mt_group_t *mt_sub_runtime_group(const mt_subscription_t *sub) {
     mt_group_t *g = mt_group_new();
@@ -47,7 +48,7 @@ mt_group_t *mt_sub_runtime_group(const mt_subscription_t *sub) {
         r->id = sr->id;
         mt_err_t err = mt_strset(&r->name, "");
         if (err == MT_OK) { err = mt_strset(&r->type, sr->type); }
-        if (err == MT_OK) { err = mt_strset(&r->rule, sr->rule); }
+        if (err == MT_OK) { err = mt_strset(&r->rule, mt_sub_rule_pattern(sr->rule)); }
         r->enable = sr->enable;
         if (err != MT_OK || mt_group_add_rule(g, r) != MT_OK) {
             mt_rule_free(r);

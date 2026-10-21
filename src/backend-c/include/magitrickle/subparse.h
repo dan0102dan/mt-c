@@ -1,7 +1,7 @@
 /* Subscription list parsing/refresh — port of src/backend/subscriptions
  * (parse.go, validate.go, auto_update.go).
  *
- * Behaviour contract:
+ * Behaviour contract (legacy plain lists):
  * - tokenized on '\n', '\r' and ',', trimmed, empty and '#'-prefixed
  *   entries skipped;
  * - duplicates removed by (detected type + '|' + text);
@@ -11,6 +11,12 @@
  * - refresh keeps ID/Enable/Type of entries whose exact text survived,
  *   assigns fresh unique random IDs to the rest;
  * - is_due mirrors subscriptions.IsDue.
+ *
+ * Typed text rule-sets (Meta/Surge and HOST aliases) are parsed by physical
+ * line; canonical TYPE,value records are stable identities. This preserves
+ * source types through cache reload and distinguishes equal payloads of
+ * different types. Unsupported/invalid records reject the whole refresh.
+ * Only explicit DOMAIN-REGEX records use regex validation in typed lists.
  */
 #ifndef MAGITRICKLE_SUBPARSE_H
 #define MAGITRICKLE_SUBPARSE_H
@@ -42,6 +48,11 @@ mt_err_t mt_sub_rules_fix_ids(mt_sub_rule_t **rules, size_t n);
 /* Detected type for a single trimmed pattern; returns one of the
  * MT_RULE_* constants or "" (never NULL). */
 const char *mt_sub_detect_type(const char *pattern);
+
+/* Runtime payload of a canonical typed record, or the unchanged legacy
+ * pattern. Borrows from `rule`, independent of user-overridden effective type.
+ * NULL stays NULL. Do not use the payload as a subscription identity. */
+const char *mt_sub_rule_pattern(const char *rule);
 
 /* Parses a raw list into an array of mt_sub_rule_t (caller owns).
  * Every parsed rule: random unique ID, Enable=true. */
