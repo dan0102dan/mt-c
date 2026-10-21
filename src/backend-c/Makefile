@@ -167,6 +167,7 @@ KEENETIC_SRCS := \
     src/netfilter/keenetic_policy.c \
     src/interfaces/keenetic_policy_rci.c \
     src/interfaces/keenetic_dns_clients.c \
+    src/platform/dns_neighbors.c \
     src/api/keenetic_policy_api.c \
     src/interfaces/keenetic_ifstate.c \
     src/interfaces/keenetic_ifstate_rci.c \

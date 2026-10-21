@@ -1,12 +1,34 @@
 /* Compiled only for Entware _kn. Read-only local RCI; never called on the DNS loop. */
 #include "dns_clients_internal.h"
+#include "magitrickle/dns_neighbors.h"
 #include <stdlib.h>
 #include <string.h>
 #include <cjson/cJSON.h>
 #include <curl/curl.h>
 
-mt_err_t mt_dns_clients_parse_hotspot(const char *json, size_t len,
-                                     mt_dns_client_t **clients, size_t *count)
+static int hex_digit(unsigned char c)
+{
+    if (c >= '0' && c <= '9') { return c - '0'; }
+    if (c >= 'a' && c <= 'f') { return c - 'a' + 10; }
+    if (c >= 'A' && c <= 'F') { return c - 'A' + 10; }
+    return -1;
+}
+static bool parse_mac(const cJSON *value, unsigned char mac[6])
+{
+    if (!cJSON_IsString(value) || strnlen(value->valuestring, 18) != 17) { return false; }
+    const unsigned char *text = (const unsigned char *)value->valuestring;
+    unsigned nonzero = 0;
+    for (size_t i = 0; i < 6; i++) {
+        int hi = hex_digit(text[i * 3]), lo = hex_digit(text[i * 3 + 1]);
+        if (hi < 0 || lo < 0 || (i < 5 && text[i * 3 + 2] != ':')) { return false; }
+        mac[i] = (unsigned char)((unsigned)hi * 16u + (unsigned)lo);
+        nonzero |= mac[i];
+    }
+    return nonzero && !(mac[0] & 1u);
+}
+static mt_err_t parse_hotspot(const char *json, size_t len,
+                              const mt_dns_neighbor_t *neighbors, size_t neighbor_count,
+                              mt_dns_client_t **clients, size_t *count)
 {
     if (!clients || !count) { return MT_ERR_INVAL; }
     *clients = NULL; *count = 0;
@@ -25,7 +47,8 @@ mt_err_t mt_dns_clients_parse_hotspot(const char *json, size_t len,
         cJSON_Delete(root);
         return empty ? MT_OK : MT_ERR_PROTO;
     }
-    bool single = cJSON_IsObject(hosts) && cJSON_GetObjectItemCaseSensitive(hosts, "ip");
+    bool single = cJSON_IsObject(hosts) && (cJSON_GetObjectItemCaseSensitive(hosts, "ip") ||
+                                           cJSON_GetObjectItemCaseSensitive(hosts, "mac"));
     if (!cJSON_IsArray(hosts) && !single) { cJSON_Delete(root); return MT_ERR_PROTO; }
     if (!single && (unsigned)cJSON_GetArraySize(hosts) > MT_DNS_CLIENT_LIMIT) {
         cJSON_Delete(root); return MT_ERR_LIMIT;
@@ -38,20 +61,57 @@ mt_err_t mt_dns_clients_parse_hotspot(const char *json, size_t len,
         const cJSON *active = cJSON_GetObjectItemCaseSensitive(host, "active");
         if (cJSON_IsFalse(active)) { continue; }
         const cJSON *ip = cJSON_GetObjectItemCaseSensitive(host, "ip");
-        if (!cJSON_IsString(ip)) { continue; }
         const cJSON *name = cJSON_GetObjectItemCaseSensitive(host, "name");
         const cJSON *hostname = cJSON_GetObjectItemCaseSensitive(host, "hostname");
         char label[MT_DNS_CLIENT_NAME_LEN];
         /* Keenetic's user-defined Client Lists name is distinct from hostname. */
         if (!(cJSON_IsString(name) && mt_dns_client_label(name->valuestring, label)) &&
             !(cJSON_IsString(hostname) && mt_dns_client_label(hostname->valuestring, label))) { continue; }
-        err = mt_dns_client_table_add(&table, ip->valuestring, label);
+        if (cJSON_IsString(ip)) { err = mt_dns_client_table_add(&table, ip->valuestring, label); }
+        if (err != MT_OK) { break; }
+        unsigned char mac[6];
+        if (!neighbor_count || !parse_mac(cJSON_GetObjectItemCaseSensitive(host, "mac"), mac)) { continue; }
+        /* Only exact kernel-observed MACs join addresses; no EUI-64/vendor/PTR guesses.
+         * The finished snapshot is MAC-sorted and excludes ambiguous IP scopes. */
+        size_t lo = 0, hi = neighbor_count;
+        while (lo < hi) {
+            size_t mid = lo + (hi - lo) / 2;
+            if (memcmp(neighbors[mid].mac, mac, sizeof(mac)) < 0) { lo = mid + 1; }
+            else { hi = mid; }
+        }
+        for (; lo < neighbor_count && memcmp(neighbors[lo].mac, mac, sizeof(mac)) == 0; lo++) {
+            err = mt_dns_client_table_add(&table, neighbors[lo].ip, label);
+            if (err != MT_OK) { break; }
+        }
         if (err != MT_OK) { break; }
     }
     cJSON_Delete(root);
     if (err != MT_OK) { free(table.items); return err; }
     mt_dns_client_table_finish(&table, clients, count);
     return MT_OK;
+}
+
+mt_err_t mt_dns_clients_parse_hotspot(const char *json, size_t len,
+                                     mt_dns_client_t **clients, size_t *count)
+{
+    return parse_hotspot(json, len, NULL, 0, clients, count);
+}
+mt_err_t mt_dns_clients_parse_hotspot_neighbors(const char *json, size_t len,
+                                                const mt_dns_neighbor_t *neighbors,
+                                                size_t neighbor_count,
+                                                mt_dns_client_t **clients, size_t *count)
+{
+    if (!clients || !count) { return MT_ERR_INVAL; }
+    *clients = NULL; *count = 0;
+    if (neighbor_count && !neighbors) { return MT_ERR_INVAL; }
+    if (neighbor_count > MT_DNS_NEIGHBOR_LIMIT) { return MT_ERR_LIMIT; }
+    mt_err_t err = parse_hotspot(json, len, neighbors, neighbor_count, clients, count);
+    /* Never publish a partial join: a skipped conflicting host could attach
+     * the wrong name. Optional enrichment must not erase valid IPv4 labels. */
+    if (neighbor_count && (err == MT_ERR_LIMIT || err == MT_ERR_NOMEM)) {
+        err = mt_dns_clients_parse_hotspot(json, len, clients, count);
+    }
+    return err;
 }
 
 typedef struct { char *data; size_t len; mt_err_t error; } client_response_t;
@@ -114,7 +174,17 @@ mt_err_t mt_dns_clients_fetch_keenetic(mt_dns_client_t **clients, size_t *count,
               result == CURLE_OPERATION_TIMEDOUT ? MT_ERR_TIMEOUT : MT_ERR_UPSTREAM;
     }
     if (err == MT_OK && status != 200) { err = MT_ERR_UPSTREAM; }
-    if (err == MT_OK) { err = mt_dns_clients_parse_hotspot(response.data, response.len, clients, count); }
+    if (err == MT_OK) {
+        mt_dns_neighbor_t *neighbors = NULL;
+        size_t neighbor_count = 0;
+        mt_err_t discovery = mt_dns_neighbors_read(&neighbors, &neighbor_count, stop);
+        /* Unavailable/interrupted neighbor dumps fall back to explicit RCI IPs.
+         * Cancellation is not a fallback: it must promptly stop this worker. */
+        err = discovery == MT_ERR_CANCELED ? discovery :
+            mt_dns_clients_parse_hotspot_neighbors(response.data, response.len,
+                                                   neighbors, neighbor_count, clients, count);
+        free(neighbors);
+    }
     free(response.data);
     return err;
 }
