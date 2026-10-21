@@ -18,53 +18,77 @@ static bool matches(const char *type, const char *pattern, const char *domain)
     return result;
 }
 
-TEST native_keyword(void)
+static bool imported_matches(const char *source, const char *domain)
 {
-    ASSERT(matches(MT_RULE_KEYWORD, "OpenAI", "api.OPENAI.com"));
-    ASSERT(matches(MT_RULE_KEYWORD, "labs.google", "x.LABS.GOOGLE.net"));
-    ASSERT_FALSE(matches(MT_RULE_KEYWORD, "labs.google", "labsXgoogle.net"));
-    ASSERT(matches(MT_RULE_KEYWORD, "a*b?c", "x.a*b?c.example"));
-    ASSERT_FALSE(matches(MT_RULE_KEYWORD, "a*b?c", "x.axbyc.example"));
-    ASSERT_FALSE(matches(MT_RULE_KEYWORD, "", "example.com"));
-    ASSERT_FALSE(matches(MT_RULE_KEYWORD, "longer", "short"));
-    ASSERT_FALSE(matches(MT_RULE_KEYWORD, "openai", ""));
-    mt_rule_matcher_t *empty = mt_rule_matcher_new(MT_RULE_KEYWORD, "");
-    ASSERT(empty != NULL);
-    ASSERT_FALSE(mt_rule_matcher_ok(empty));
-    mt_rule_matcher_free(empty);
+    mt_sub_rule_t **rules = NULL;
+    size_t n = 0;
+    if (mt_sub_parse_rules(source, &rules, &n) != MT_OK || n != 1) {
+        mt_sub_rules_free(rules, n);
+        return false;
+    }
+    char *pattern = mt_sub_rule_runtime_pattern(rules[0]->rule, rules[0]->type);
+    bool found = pattern && matches(rules[0]->type, pattern, domain);
+    free(pattern);
+    mt_sub_rules_free(rules, n);
+    return found;
+}
+
+TEST imported_keyword_uses_existing_wildcard(void)
+{
+    ASSERT(imported_matches("DOMAIN-KEYWORD,OpenAI", "api.OPENAI.com"));
+    ASSERT(imported_matches("DOMAIN-KEYWORD,labs.google", "x.LABS.GOOGLE.net"));
+    ASSERT_FALSE(imported_matches("DOMAIN-KEYWORD,labs.google", "labsXgoogle.net"));
+    ASSERT(imported_matches("DOMAIN-KEYWORD,a*b?c", "x.a*b?c.example"));
+    ASSERT_FALSE(imported_matches("DOMAIN-KEYWORD,a*b?c", "x.axbyc.example"));
+    ASSERT_FALSE(imported_matches("DOMAIN-KEYWORD,longer", "short"));
+    ASSERT_FALSE(imported_matches("DOMAIN-KEYWORD,openai", ""));
+    mt_sub_rule_t **rules = NULL;
+    size_t n = 0;
+    ASSERT_EQ(MT_ERR_INVAL, mt_sub_parse_rules("DOMAIN-KEYWORD,", &rules, &n));
+    ASSERT(rules == NULL);
     PASS();
 }
 
-TEST native_wildcard(void)
+TEST imported_domain_wildcard_uses_existing_type(void)
 {
-    ASSERT(matches(MT_RULE_DOMAIN_WILDCARD, "*.EXAMPLE.COM", "a.b.example.com"));
-    ASSERT_FALSE(matches(MT_RULE_DOMAIN_WILDCARD, "*.example.com", "example.com"));
-    ASSERT(matches(MT_RULE_DOMAIN_WILDCARD, "*example*", "example"));
-    ASSERT(matches(MT_RULE_DOMAIN_WILDCARD, "a**b", "ab"));
-    ASSERT(matches(MT_RULE_DOMAIN_WILDCARD, "a?b", "a.b"));
-    ASSERT_FALSE(matches(MT_RULE_DOMAIN_WILDCARD, "a?b", "ab"));
-    ASSERT_FALSE(matches(MT_RULE_DOMAIN_WILDCARD, "a?", "a"));
-    ASSERT_FALSE(matches(MT_RULE_DOMAIN_WILDCARD, "a.b", "aXb"));
-    ASSERT_FALSE(matches(MT_RULE_DOMAIN_WILDCARD, "", ""));
-    /* Explicitly retain legacy dot, case and trailing-question-mark quirks. */
+    ASSERT(imported_matches("DOMAIN-WILDCARD,*.EXAMPLE.COM", "a.b.example.com"));
+    ASSERT_FALSE(imported_matches("DOMAIN-WILDCARD,*.example.com", "example.com"));
+    ASSERT(imported_matches("DOMAIN-WILDCARD,*example*", "example"));
+    ASSERT(imported_matches("DOMAIN-WILDCARD,a**b", "ab"));
+    ASSERT(imported_matches("DOMAIN-WILDCARD,a?b", "a.b"));
+    ASSERT_FALSE(imported_matches("DOMAIN-WILDCARD,a?b", "ab"));
+    ASSERT_FALSE(imported_matches("DOMAIN-WILDCARD,a?", "a"));
+    ASSERT_FALSE(imported_matches("DOMAIN-WILDCARD,a.b", "aXb"));
+    /* Explicitly preserve Go-compatible wildcard quirks for existing rules. */
     ASSERT(matches(MT_RULE_WILDCARD, "a.b", "aXb"));
     ASSERT(matches(MT_RULE_WILDCARD, "a?", "a"));
     ASSERT_FALSE(matches(MT_RULE_WILDCARD, "*openai*", "OPENAI.COM"));
     PASS();
 }
 
-TEST indexed_native_rules(void)
+TEST indexed_imported_rules(void)
 {
+    mt_sub_rule_t **rules = NULL;
+    size_t n = 0;
+    ASSERT_EQ(MT_OK, mt_sub_parse_rules(
+        "DOMAIN-KEYWORD,openai\nDOMAIN-WILDCARD,api?.example.com\n",
+        &rules, &n));
     mt_matcher_t *matcher = mt_matcher_new();
     ASSERT(matcher != NULL);
-    ASSERT_EQ(MT_OK, mt_matcher_add(matcher, MT_RULE_KEYWORD, "OpenAI"));
-    ASSERT_EQ(MT_OK, mt_matcher_add(matcher, MT_RULE_DOMAIN_WILDCARD, "api?.example.com"));
+    for (size_t i = 0; i < n; i++) {
+        ASSERT_STR_EQ("wildcard", rules[i]->type);
+        char *pattern = mt_sub_rule_runtime_pattern(rules[i]->rule, rules[i]->type);
+        ASSERT(pattern != NULL);
+        ASSERT_EQ(MT_OK, mt_matcher_add(matcher, rules[i]->type, pattern));
+        free(pattern);
+    }
     ASSERT(mt_matcher_match(matcher, "cdn.OPENAI.example"));
     ASSERT(mt_matcher_match(matcher, "API1.EXAMPLE.COM"));
     ASSERT_FALSE(mt_matcher_match(matcher, "api12.example.com"));
     ASSERT_FALSE(mt_matcher_match(matcher, "api1Xexample.com"));
     ASSERT_FALSE(mt_matcher_match(matcher, "unrelated.net"));
     mt_matcher_free(matcher);
+    mt_sub_rules_free(rules, n);
     PASS();
 }
 
@@ -92,7 +116,7 @@ TEST typed_import_canonical_identity(void)
         "IP-CIDR6,2001:db8::/32", "IP-CIDR6,2001:db8:1::/48",
         "DOMAIN-REGEX,^a[0-9]{1,3}\\.example\\.com$",
     };
-    const char *types[] = {"domain", "namespace", "keyword", "domain-wildcard",
+    const char *types[] = {"domain", "namespace", "wildcard", "wildcard",
                            "subnet", "subnet6", "subnet6", "regex"};
     for (size_t i = 0; i < n; i++) {
         ASSERT_STR_EQ(expected[i], rules[i]->rule);
@@ -162,7 +186,7 @@ TEST typed_cache_restore_and_runtime(void)
     ASSERT_EQ(MT_OK, mt_strset(&sub->rules[1]->type, "domain"));
     sub->rules[1]->enable = false;
     ASSERT_EQ(MT_OK, mt_subscription_restore_cached_rules(sub));
-    ASSERT_STR_EQ("keyword", sub->rules[1]->type);
+    ASSERT_STR_EQ("wildcard", sub->rules[1]->type);
     ASSERT(sub->rules[1]->enable);
     ASSERT_EQ(MT_OK, mt_subscription_override_set(sub, "DOMAIN,openai", NULL, 0));
     ASSERT_EQ(MT_OK, mt_subscription_override_set(sub, "DOMAIN-KEYWORD,openai", "namespace", -1));
@@ -176,8 +200,8 @@ TEST typed_cache_restore_and_runtime(void)
     ASSERT_STR_EQ("openai", group->rules[0]->rule);
     ASSERT_STR_EQ("openai", group->rules[1]->rule);
     ASSERT_STR_EQ("namespace", group->rules[1]->type);
-    ASSERT_STR_EQ("*.example.com", group->rules[2]->rule);
-    ASSERT_STR_EQ("domain-wildcard", group->rules[2]->type);
+    ASSERT_STR_EQ("@mtc:*.example.com", group->rules[2]->rule);
+    ASSERT_STR_EQ("wildcard", group->rules[2]->type);
     ASSERT_STR_EQ("192.0.2.0/24", group->rules[3]->rule);
     ASSERT_STR_EQ("DOMAIN-KEYWORD,openai", sub->rules[1]->rule);
     mt_group_free(group);
@@ -196,7 +220,7 @@ TEST typed_refresh_stable_ids_and_failure(void)
     ASSERT_EQ(1u, (unsigned)n_fresh);
     ASSERT(mt_id_equal(old[0]->id, fresh[0]->id));
     ASSERT_FALSE(fresh[0]->enable);
-    ASSERT_STR_EQ("keyword", fresh[0]->type);
+    ASSERT_STR_EQ("wildcard", fresh[0]->type);
     mt_sub_rules_free(fresh, n_fresh);
     fresh = NULL;
     ASSERT_EQ(MT_ERR_INVAL, mt_sub_refresh_rules("DOMAIN-KEYWORD,openai\nGEOIP,CN",
@@ -230,9 +254,9 @@ GREATEST_MAIN_DEFS();
 int main(int argc, char **argv)
 {
     GREATEST_MAIN_BEGIN();
-    RUN_TEST(native_keyword);
-    RUN_TEST(native_wildcard);
-    RUN_TEST(indexed_native_rules);
+    RUN_TEST(imported_keyword_uses_existing_wildcard);
+    RUN_TEST(imported_domain_wildcard_uses_existing_type);
+    RUN_TEST(indexed_imported_rules);
     RUN_TEST(typed_import_canonical_identity);
     RUN_TEST(typed_import_rejects_atomically);
     RUN_TEST(typed_cache_restore_and_runtime);
