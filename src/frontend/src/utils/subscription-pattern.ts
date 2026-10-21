@@ -8,9 +8,8 @@ const TYPED_SOURCE_PREFIXES = new Set([
   "IP-CIDR6",
 ]);
 
-/** Display/validation only: retain the full source in rule.rule and API payloads.
- * Its prefix distinguishes equal patterns of different types and survives
- * user type overrides, refresh, export/import and cache reload.
+/** Display/validation only: retain the original source in rule.rule and API payloads.
+ * The source prefix preserves identity through refresh and cache recovery.
  */
 export function subscriptionRulePattern(source: string, type?: string): string {
   const comma = source.indexOf(",");
@@ -19,8 +18,8 @@ export function subscriptionRulePattern(source: string, type?: string): string {
   if (!TYPED_SOURCE_PREFIXES.has(prefix)) return source;
   const payload = source.slice(comma + 1);
   if (prefix === "DOMAIN-KEYWORD" && type === "wildcard") {
-    // Preserve literal '*' and '?' in a keyword's displayed wildcard pattern.
-    return `*${payload.replace(/[\\\\*?]/g, "\\\\  return prefix === "DOMAIN-KEYWORD" && type === "wildcard" ? `*${payload}*` : payload;")}*`;
+    // The wildcard matches an entire domain; source metacharacters stay literal.
+    return `*${payload.replace(/[\\*?]/g, "\\$&")}*`;
   }
   return payload;
 }
