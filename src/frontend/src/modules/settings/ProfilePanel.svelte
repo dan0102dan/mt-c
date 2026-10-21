@@ -227,6 +227,7 @@
     background-color: var(--bg-medium);
     border-radius: 0.5rem;
     border: 1px solid var(--bg-light-extra);
+    overflow: hidden;
     margin: 1rem 0;
   }
   .profile:first-child {
@@ -399,9 +400,10 @@
       padding: 0.35rem 0.35rem 0.35rem 0;
     }
     .interface-label {
-      display: grid;
-      grid-template-rows: 1.2rem 0.96rem;
-      align-items: start;
+      flex-direction: column;
+      justify-content: center;
+      align-items: stretch;
+      min-height: 2.26rem;
       gap: 0.1rem;
       padding: 0;
     }
