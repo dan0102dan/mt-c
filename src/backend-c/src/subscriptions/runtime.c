@@ -48,7 +48,11 @@ mt_group_t *mt_sub_runtime_group(const mt_subscription_t *sub) {
         r->id = sr->id;
         mt_err_t err = mt_strset(&r->name, "");
         if (err == MT_OK) { err = mt_strset(&r->type, sr->type); }
-        if (err == MT_OK) { err = mt_strset(&r->rule, mt_sub_rule_pattern(sr->rule)); }
+        if (err == MT_OK) {
+            /* mt_rule_new() zero-initializes and owns these fields. */
+            r->rule = mt_sub_rule_runtime_pattern(sr->rule, sr->type);
+            if (!r->rule) { err = MT_ERR_NOMEM; }
+        }
         r->enable = sr->enable;
         if (err != MT_OK || mt_group_add_rule(g, r) != MT_OK) {
             mt_rule_free(r);
