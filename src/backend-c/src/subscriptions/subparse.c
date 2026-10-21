@@ -317,11 +317,20 @@ static bool canceled(const atomic_bool *cancel) {
 static bool looks_typed(const char *s, size_t len)
 {
     if (typed_rule(s, len)) { return true; }
+    /* Complete remaining names from Mihomo rules/parser.go (2026-10-21).
+     * Recognition selects strict parsing; it does NOT implement these rules.
+     * Keep the independent coverage table in test_mihomo_rule_types.c in sync. */
     static const char *const unsupported[] = {
-        "GEOIP", "GEOSITE", "AND", "OR", "NOT", "MATCH", "FINAL",
-        "NETWORK", "UID", "DSCP", "INCLUDE", "SUB-RULE",
-        "PROCESS-NAME", "PROCESS-PATH", "PROCESS-NAME-REGEX", "PROCESS-PATH-REGEX",
-        "IP-ASN", "SRC-IP-CIDR", "SRC-IP-SUFFIX", "SRC-PORT", "DST-PORT", "RULE-SET",
+        "GEOSITE", "GEOIP", "SRC-GEOIP", "IP-ASN", "SRC-IP-ASN",
+        "IP-SUFFIX", "SRC-IP-CIDR", "SRC-IP-SUFFIX",
+        "SRC-PORT", "DST-PORT", "IN-PORT", "IN-TYPE", "IN-USER", "IN-NAME",
+        "REMATCH-NAME", "PROCESS-NAME", "PROCESS-PATH",
+        "PROCESS-NAME-REGEX", "PROCESS-PATH-REGEX",
+        "PROCESS-NAME-WILDCARD", "PROCESS-PATH-WILDCARD",
+        "NETWORK", "UID", "DSCP", "RULE-SET", "SUB-RULE",
+        "AND", "OR", "NOT", "MATCH",
+        /* Other already-reserved text dialect names, not Mihomo aliases. */
+        "FINAL", "INCLUDE",
     };
     for (size_t i = 0; i < sizeof(unsupported) / sizeof(unsupported[0]); i++) {
         if (ascii_equal(s, len, unsupported[i])) { return true; }
