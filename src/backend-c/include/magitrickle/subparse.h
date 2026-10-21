@@ -54,6 +54,12 @@ const char *mt_sub_detect_type(const char *pattern);
  * NULL stays NULL. Do not use the payload as a subscription identity. */
 const char *mt_sub_rule_pattern(const char *rule);
 
+/* Allocates runtime matcher input according to the CURRENT, existing rule
+ * type. Canonical keyword/glob source -> wildcard pattern under an internal
+ * case-insensitive, literal-dot matching mode; other types use raw values.
+ * Returns owned memory; caller must free the result. */
+char *mt_sub_rule_runtime_pattern(const char *rule, const char *type);
+
 /* Parses a raw list into an array of mt_sub_rule_t (caller owns).
  * Every parsed rule: random unique ID, Enable=true. */
 mt_err_t mt_sub_parse_rules(const char *list, mt_sub_rule_t ***out_rules,
