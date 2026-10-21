@@ -1,88 +1,83 @@
-# Native keywords and text rule-set subscriptions
+# Text rule-set import using existing mt-c rule types
 
-## Rule types
+## Design
 
-`keyword` searches for a **literal ASCII case-insensitive substring**. For example,
-`openai` matches `api.OPENAI.com`; `labs.google` does not match `labsXgoogle`.
-Dots, stars and question marks in a keyword are literal. Empty keywords do not
-match. There is no PCRE2 compilation or matching for this type.
+Importing rules from Meta / Surge / Loon / Shadowrocket / Stash text lists
+does **not** create new configurable rule types. mt-c retains the existing
+`domain`, `namespace`, `wildcard`, `regex`, `subnet`, and `subnet6`.
 
-`domain-wildcard` is a separate native, ASCII case-insensitive glob: `*` matches
-zero or more bytes (including dots), `?` exactly one byte, and `.` is literal.
-`*.example.com` matches `a.b.example.com`, but not `example.com`. The supported
-import dialect is only `*`/`?`, not bracket classes or regular expressions.
+| External rule | Existing mt-c type | Meaning |
+| --- | --- | --- |
+| `DOMAIN,example.com` | `domain` | Exact domain |
+| `DOMAIN-SUFFIX,example.com` | `namespace` | Domain and subdomains |
+| `DOMAIN-KEYWORD,openai` | `wildcard` | Like `*openai*` |
+| `DOMAIN-WILDCARD,*.example.com` | `wildcard` | Source wildcard |
+| `DOMAIN-REGEX,expression` | `regex` | PCRE2 |
+| `IP-CIDR,192.0.2.0/24` | `subnet` | Existing IP routing |
+| `IP-CIDR6,2001:db8::/32` | `subnet6` | Existing IPv6 routing |
 
-The existing `wildcard` retains its go-wildcard compatibility behavior, including
-its non-literal dot, case sensitivity and trailing-question-mark quirk. Existing
-`domain`, `namespace`, `regex`, `subnet` and `subnet6` rules are unchanged.
-Neither new type is silently converted into a regex. Only `regex` uses PCRE2.
+`HOST`, `HOST-SUFFIX`, `HOST-KEYWORD` and `IP6-CIDR` are accepted aliases.
 
-## Supported subscription sources
+Keyword and source wildcard records map to the **existing `wildcard`** rule
+type, rather than adding keyword/domain-wildcard types. `DOMAIN-KEYWORD,openai`
+is converted to a wildcard equivalent to `*openai*` at runtime. Since mt-c's
+legacy Go-compatible wildcard implementation interprets `.` as any byte and
+compares case-sensitively, imported source records use a small, **runtime-only**
+`@mtc:` pattern marker selecting literal-dot, ASCII case-insensitive glob
+matching. The importer escapes any keyword `*`, `?`, or backslash so they
+stay literal. This marker is never persisted or exposed as a configurable
+rule type. Original user-entered wildcard rules still use the unchanged
+Go-compatible implementation.
 
-Use a **full text rule-set**, for example `meta/ai.list` in the `ruleset` branch of
-QuixoticHeart/rule-set, not its `meta/domain/ai.list` (which omits keyword rules).
-This is a shared text-rule subset, not support for entire proxy configurations.
+Neither imported keyword nor source wildcard invokes PCRE2. Only explicit
+`DOMAIN-REGEX` rules use the regex engine.
 
-| Source record | Effective mt-c type |
-| --- | --- |
-| `DOMAIN,example.com` / `HOST,example.com,policy` | `domain` |
-| `DOMAIN-SUFFIX,example.com` / `HOST-SUFFIX,...` | `namespace` |
-| `DOMAIN-KEYWORD,openai` / `HOST-KEYWORD,...` | `keyword` |
-| `DOMAIN-WILDCARD,*.example.com` | `domain-wildcard` |
-| `DOMAIN-REGEX,^a[0-9]{1,3}\.example\.com$` | `regex` |
-| `IP-CIDR,192.0.2.0/24,no-resolve` | `subnet` |
-| `IP-CIDR6,2001:db8::/32,no-resolve` / `IP6-CIDR,...` | `subnet6` |
+## Source identity and user overrides
 
-The IP family is validated and selected from the address, including IPv6 written
-using `IP-CIDR`. Optional policy labels are ignored: the subscription's mt-c
-interface/profile and priority select the route. `no-resolve` is accepted only as
-the final IP modifier; these records already become static destination IP rules.
-Source-IP (`src`) rules are rejected, not imported as destination rules.
+The subscription cache retains a canonical `TYPE,value` record as each
+downloaded rule's stable **source identity**. This distinguishes identical
+values from different external types and preserves IDs and user overrides
+across refreshes and restart. At runtime, a recognized source prefix is
+removed or converted according to the current *existing* rule type.
+If an imported keyword's type is manually overridden to `namespace`, its
+runtime value is `openai`, not `*openai*`. The WebUI displays the imported
+keyword as `*openai*` when its effective type is `wildcard`.
 
-Record names are case-insensitive. Non-regex values are folded to ASCII lowercase;
-exact-domain and namespace rules retain the existing mt-c matching semantics
-(case-sensitive matching of the normalized value). Native keyword/glob rules are
-case-insensitive. IDNs must be supplied as ASCII A-labels.
+This changes neither the persisted schema nor the public six-type enum;
+older versions still cannot be assumed to understand typed canonical source
+lines in an exported subscription cache.
 
-Typed rule-sets use one record per physical line, accept UTF-8 BOM and CRLF, and
-skip empty lines and whole-line `#`, `;`, `//` comments. Regex records retain the
-**entire remainder after the first comma**, including quantifiers and character
-classes. Use two-field `DOMAIN-REGEX,expression`; inline policy suffixes on regex
-records and inline comments are not interpreted.
+## Supported text source and validation
 
-`PROCESS-*`, `GEOIP`, `GEOSITE`, `IP-ASN`, logical rules and unsupported modifiers
-are not approximated. A recognized typed source is parsed strictly: an unsupported
-or malformed record rejects the entire refresh, logs its line/reason, and leaves
-the previous subscription rules intact. Mixing bare domains into a typed rule-set
-is rejected. YAML/JSON, binary MRS/SRS, nested rule providers and complete client
-configs are outside this importer. A successful empty source retains the existing
-empty-subscription behavior.
+Use the complete text rule-set, such as `meta/ai.list` in the
+QuixoticHeart/rule-set `ruleset` branch. The split `meta/domain/ai.list`
+omits keyword rules.
 
-Plain legacy lists still use their existing comma/newline tokenizer and inference
-order; no automatic reinterpretation of existing wildcard/regex patterns occurs.
-The existing 8 MiB download, 100,000-rule and 4096-byte rule limits remain in effect.
+Typed sources are parsed one physical line at a time. BOM and CRLF work;
+empty lines and whole-line `#`, `;`, `//` comments are skipped.
+`DOMAIN-REGEX` expressions retain all text after the first comma,
+including quantifier commas. Optional upstream policy labels are ignored:
+the interface/profile/priority from the mt-c subscription take precedence.
+`no-resolve` is accepted only as a final IP modifier; `src` is rejected.
 
-## Persistence and identity decision
+Unknown/unsupported types, malformed records, unsupported flags and mixing
+plain domains with typed records cause an atomic refresh failure. Previously
+loaded subscription rules are retained. This imports a common **text rule-set
+subset**, not full client configs, YAML/JSON, MRS/SRS or nested rule providers.
+`GEOIP`, `GEOSITE`, process rules, ASN rules and logical rules are not
+approximated.
 
-The downloaded rule's `rule` field retains a canonical `TYPE,value` source record.
-It is the stable identity, not just the extracted payload. Consequently
-`DOMAIN,example.com` and `DOMAIN-KEYWORD,example.com` do not collapse together.
-Aliases, whitespace, non-regex case and policy-label changes normalize to the same
-identity, preserving IDs and user overrides across refreshes.
+Legacy plain-domain subscriptions retain their original comma/newline
+tokenization and type inference, and old wildcard rules retain their matching
+semantics. Original size limits remain (8 MiB fetch, 100k rules, 4096 bytes
+per record).
 
-Only runtime projection and WebUI display/validation extract the payload. HTTP
-updates and exported overrides retain the canonical identity, even when the user
-changes the effective type. Cache reload can recover the original type before
-applying authoritative user overrides; removing an override cannot resurrectitate
-from an effective cache. No new YAML/JSON fields or config-version changes are
-required. New `keyword`/`domain-wildcard` rules require a supporting mt-c version;
-older versions cannot be assumed to understand them. Existing configurations
-remain readable without migration.
+## Tests
 
-This is an additive extension to the legacy contracts in
-`c-rewrite/compatibility-contract.md` sections 6 and 8 and the regex decision D-07.
-The frozen legacy differential corpus is not changed. Coverage is in
-`test_native_rule_import.c` and `native-rule-import.test.ts`. Matching remains
-linear over keyword/glob rules; no measured throughput or device-speedup claim
-is made. A shared multi-pattern index should be justified by router benchmarks,
-not introduced speculatively.
+C regression tests cover the typed parser, literal-dot keywords, case folding,
+literal keyword metacharacters, imported glob semantics, legacy behavior,
+cache restore, override persistence and runtime projection. A dedicated
+executable intercepts PCRE2 and asserts zero compile/match calls for typed
+keyword and source wildcard rules. Frontend tests assert the absence of new
+configurable rule types. Router throughput improvement is not claimed without
+benchmark measurements.
