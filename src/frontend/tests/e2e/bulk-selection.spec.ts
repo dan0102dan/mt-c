@@ -171,7 +171,7 @@ for (const kind of ["groups", "subscriptions"] as const) {
     await page.getByRole("button", { name: "Select item: Second", exact: true }).click();
     await bar.getByRole("button", { name: "Select all" }).click();
     await expect(bar.getByRole("status")).toContainText("3 selected");
-    const stateButton = bar.getByRole("button", { name: "State", exact: true });
+    const stateButton = bar.locator('[data-select-trigger][aria-label="State"]');
     await expect(stateButton).toHaveText("State");
     await stateButton.click();
     const stateMenu = page.getByRole("listbox", { name: "State" });
