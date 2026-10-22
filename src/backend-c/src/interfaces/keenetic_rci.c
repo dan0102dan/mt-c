@@ -10,8 +10,8 @@
 #include <cjson/cJSON.h>
 #include <curl/curl.h>
 
-
 char *mt_kn_build_system_name_request(const mt_kn_ifinfo_t *metas, size_t n) {
+    if (n && !metas) { return NULL; }
     cJSON *arr = cJSON_CreateArray();
     if (!arr) { return NULL; }
 
@@ -38,9 +38,18 @@ char *mt_kn_build_system_name_request(const mt_kn_ifinfo_t *metas, size_t n) {
             cJSON_Delete(arr);
             return NULL;
         }
-        cJSON_AddItemToObject(show, "interface", iface);
-        cJSON_AddItemToObject(item, "show", show);
-        cJSON_AddItemToArray(arr, item);
+        if (!cJSON_AddItemToObject(show, "interface", iface)) {
+            cJSON_Delete(iface); cJSON_Delete(show); cJSON_Delete(item); cJSON_Delete(arr);
+            return NULL;
+        }
+        if (!cJSON_AddItemToObject(item, "show", show)) {
+            cJSON_Delete(show); cJSON_Delete(item); cJSON_Delete(arr);
+            return NULL;
+        }
+        if (!cJSON_AddItemToArray(arr, item)) {
+            cJSON_Delete(item); cJSON_Delete(arr);
+            return NULL;
+        }
     }
 
     char *body = cJSON_PrintUnformatted(arr);
@@ -140,4 +149,3 @@ mt_err_t mt_kn_rci_request(const char *url, const char *post, size_t limit,
     *body = response.data; *length = response.length;
     return MT_OK;
 }
-

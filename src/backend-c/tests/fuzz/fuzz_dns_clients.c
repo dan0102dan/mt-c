@@ -5,6 +5,8 @@
 #include <string.h>
 
 #include "magitrickle/dns_clients.h"
+#include "magitrickle/keenetic_policy_rci.h"
+#include "magitrickle/keenetic_ifstate.h"
 
 static void check_snapshot(const char *hotspot, size_t hotspot_len,
                             const char *neighbors, size_t neighbors_len)
@@ -33,6 +35,16 @@ static void check_snapshot(const char *hotspot, size_t hotspot_len,
 int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
 {
     const char *text = (const char *)data;
+    mt_kn_policy_entry_t *policies = NULL; size_t n = 0;
+    mt_err_t err = mt_kn_policy_parse(text, size, &policies, &n);
+    if (err != MT_OK && (policies || n)) { abort(); }
+    if (n > MT_KN_POLICY_LIST_LIMIT) { abort(); }
+    free(policies);
+    mt_kn_ifinfo_t *interfaces = NULL; n = 0;
+    err = mt_kn_ifinfo_parse(text, size, &interfaces, &n);
+    if (err != MT_OK && (interfaces || n)) { abort(); }
+    if (n > MT_KN_IFSTATE_LIMIT) { abort(); }
+    free(interfaces);
     const char *separator = memchr(text, '\n', size);
     size_t hotspot_len = separator ? (size_t)(separator - text) : size;
     check_snapshot(text, hotspot_len, separator ? separator + 1 : NULL,

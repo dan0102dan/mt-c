@@ -70,8 +70,11 @@ static void json_value(emitter_ctx_t *ctx, cJSON *value)
         else { ctx->stack[i].key = value; }
         return;
     }
-    bool ok = cJSON_IsArray(parent) ? cJSON_AddItemToArray(parent, value) :
-        cJSON_AddItemToObject(parent, ctx->stack[i].key->valuestring, value);
+    bool ok = false;
+    if (cJSON_IsArray(parent)) { ok = cJSON_AddItemToArray(parent, value); }
+    else if (cJSON_IsObject(parent) && cJSON_IsString(ctx->stack[i].key)) {
+        ok = cJSON_AddItemToObject(parent, ctx->stack[i].key->valuestring, value);
+    }
     cJSON_Delete(ctx->stack[i].key); ctx->stack[i].key = NULL;
     if (!ok) { cJSON_Delete(value); ctx->failed = true; }
 }

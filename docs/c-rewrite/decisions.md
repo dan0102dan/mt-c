@@ -3925,3 +3925,54 @@ The browser still receives only IP/name entries through the existing metadata
 stream. Address identity, DNS forwarding, routing, target matrices and the UI
 contract remain unchanged. Host tests exercise native libcurl and real ubusd;
 they do not establish physical-router firmware behaviour.
+
+
+## D-85 — System-integration audit: reuse existing transports and prepared models
+
+Status: accepted (intentional follow-up to D-84, no new runtime dependencies).
+
+- Interface labels share the existing NDM snapshot worker/cache. An HTTP list
+  request uses the server's existing deferred-response API, with at most 64
+  pending label refreshes. Requests queued during a read wait for a subsequent
+  read; errors return the kernel list without optional labels. No RCI call runs
+  on the DNS/HTTP loop. The source/alias preference stays description then
+  interface-name; duplicate kernel mappings follow the NDM parent selection.
+- Keenetic interface, policy and device inventory use one bounded libcurl
+  transport (no proxy, no redirects, 500 ms connect / 2 s total per request,
+  cancellation, checked setup/status and body limits). cJSON parsing rejects raw
+  and escaped NUL and trailing documents before returning decoded identifiers;
+  literal backslash-u text remains valid. Schemas remain platform-specific.
+- Base64 decoders take output capacity and validate the entire input before
+  writing. Standard encoding requires canonical padding, URL-safe encoding is
+  unpadded, and unused bits must be zero. auth_secret must decode to exactly the
+  32 bytes produced by the application. Invalid/oversized/truncated files fail
+  authentication instead of being truncated or overwriting the stack. Existing
+  generated secrets/JWTs are unchanged.
+- Supersedes D-09's historical 301/302-only compatibility quirk: subscription
+  GETs now use libcurl redirect handling, including 303/307/308 and relative
+  Location. Initial and redirect protocols are HTTP/HTTPS only; maximum five
+  redirects and one 15-second budget for the entire transfer. Redirect loops
+  reach the same limit (MT_ERR_LIMIT); no separate visited-URL cache is kept.
+  Response size, cancellation and TLS validation remain enforced. The update
+  downloader's per-hop host allowlist is intentionally unchanged.
+- Netlink attributes are traversed with mnl_attr_parse/parse_nested callbacks,
+  not local alignment code or the old macro/pragma combination. libmnl validates
+  typed fields; application code still handles ownership, network byte order,
+  family and prefix bounds. Invalid/missing IP data cannot synthesize a zero
+  address. The target-compiler regression remains as a function-call test.
+- File reload prepares its historical overlay, then shares a transactional
+  prepared-model apply operation with HTTP import. Old model/registry objects
+  remain alive until kernel preparation and optional atomic persistence succeed.
+  Failure restores those objects without creating/reloading staging files.
+  JSON snapshots and persisted YAML use one schema traversal; snapshots no
+  longer parse serialized YAML. The existing libyaml loader remains the single
+  model-validation boundary for serialized import JSON. Import checks actual
+  supported setting names, not a magic number of fields. Revisions remain
+  opaque 16-digit tokens, now over canonical JSON; an old preview may need a
+  refresh across upgrade. Subscription cache/override inheritance is unchanged.
+
+Compatibility tests cover canonical YAML/JSON equivalence, rollback object
+identity, existing config/API contracts, slow RCI with concurrent loop traffic,
+client disconnect/shutdown, proxy/redirect/body-limit failures and parser fuzzing.
+Hardware-specific inventory formats and the old Entware SDK still require their
+normal on-device/cross-build validation; host tests are not a substitute.
