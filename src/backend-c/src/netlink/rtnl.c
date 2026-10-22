@@ -1,6 +1,5 @@
 /* See rtnl.h. */
 #include "magitrickle/rtnl.h"
-#include "magitrickle/nlattr_iter.h"
 
 #include <arpa/inet.h>
 #include <errno.h>
@@ -277,19 +276,21 @@ typedef struct link_ctx {
     uint8_t operstate;
 } link_ctx_t;
 
+static int link_attr_cb(const struct nlattr *attr, void *ud) {
+    link_ctx_t *ctx = ud;
+    if (mnl_attr_get_type(attr) == IFLA_OPERSTATE &&
+        mnl_attr_validate(attr, MNL_TYPE_U8) == 0) {
+        ctx->operstate = mnl_attr_get_u8(attr);
+    }
+    return MNL_CB_OK;
+}
+
 static void link_msg_cb(const struct nlmsghdr *h, void *ud) {
     link_ctx_t *ctx = ud;
-    if (h->nlmsg_type != RTM_NEWLINK) { return; }
-    if (mnl_nlmsg_get_payload_len(h) < sizeof(struct ifinfomsg)) { return; }
+    if (h->nlmsg_type != RTM_NEWLINK ||
+        mnl_nlmsg_get_payload_len(h) < sizeof(struct ifinfomsg)) { return; }
     const struct ifinfomsg *ifi = mnl_nlmsg_get_payload(h);
-    mt_nlattr_iter_t it;
-    const struct nlattr *attr;
-    if (!mt_nlattr_iter_init_nlmsg(&it, h, sizeof(*ifi))) { return; }
-    while (mt_nlattr_iter_next(&it, &attr)) {
-        if (mnl_attr_get_type(attr) == IFLA_OPERSTATE && mnl_attr_get_payload_len(attr) == 1) {
-            ctx->operstate = mnl_attr_get_u8(attr);
-        }
-    }
+    if (mnl_attr_parse(h, sizeof(*ifi), link_attr_cb, ctx) < 0) { return; }
     ctx->found = true;
     ctx->flags = ifi->ifi_flags;
 }
@@ -379,35 +380,51 @@ typedef struct gw_ctx {
     uint8_t gw[16], gw_len;
 } gw_ctx_t;
 
+/* These are route fields, not a second attribute parser. libmnl owns
+ * traversal/alignment; callbacks keep only the application's field policy. */
+typedef struct route_attrs {
+    int family, oif;
+    uint32_t table, metric;
+    uint8_t gateway[16], gateway_len;
+    bool multipath;
+} route_attrs_t;
+
+static int route_attr_cb(const struct nlattr *attr, void *ud) {
+    route_attrs_t *a = ud;
+    uint16_t type = mnl_attr_get_type(attr);
+    if (type == RTA_OIF || type == RTA_TABLE || type == RTA_PRIORITY) {
+        if (mnl_attr_validate(attr, MNL_TYPE_U32) != 0) { return MNL_CB_ERROR; }
+        uint32_t value = mnl_attr_get_u32(attr);
+        if (type == RTA_OIF) { a->oif = (int)value; }
+        else if (type == RTA_TABLE) { a->table = value; }
+        else { a->metric = value; }
+    } else if (type == RTA_MULTIPATH) {
+        a->multipath = true;
+    } else if (type == RTA_GATEWAY) {
+        size_t len = a->family == AF_INET ? 4u : 16u;
+        if (mnl_attr_validate2(attr, MNL_TYPE_BINARY, len) != 0 ||
+            mnl_attr_get_payload_len(attr) != len) { return MNL_CB_ERROR; }
+        memcpy(a->gateway, mnl_attr_get_payload(attr), len);
+        a->gateway_len = (uint8_t)len;
+    }
+    return MNL_CB_OK;
+}
+
 static void gw_msg_cb(const struct nlmsghdr *h, void *ud) {
     gw_ctx_t *ctx = ud;
     if ((ctx->found && !ctx->profile) || h->nlmsg_type != RTM_NEWROUTE ||
         mnl_nlmsg_get_payload_len(h) < sizeof(struct rtmsg)) { return; }
     const struct rtmsg *rtm = mnl_nlmsg_get_payload(h);
     if (rtm->rtm_family != ctx->family || rtm->rtm_type != RTN_UNICAST) { return; }
-    int oif = -1;
-    uint8_t gw[16] = {0}, gwlen = 0;
-    uint32_t table = rtm->rtm_table, metric = 0;
-    mt_nlattr_iter_t it;
-    const struct nlattr *attr;
-    if (!mt_nlattr_iter_init_nlmsg(&it, h, sizeof(*rtm))) { return; }
-    while (mt_nlattr_iter_next(&it, &attr)) {
-        uint16_t type = mnl_attr_get_type(attr), len = mnl_attr_get_payload_len(attr);
-        if (type == RTA_OIF && len == 4) { oif = (int)mnl_attr_get_u32(attr); }
-        else if (type == RTA_TABLE && len == 4) { table = mnl_attr_get_u32(attr); }
-        else if (type == RTA_PRIORITY && len == 4) { metric = mnl_attr_get_u32(attr); }
-        else if (type == RTA_GATEWAY &&
-                 ((ctx->family == AF_INET && len == 4) || (ctx->family == AF_INET6 && len == 16))) {
-            memcpy(gw, mnl_attr_get_payload(attr), len); gwlen = (uint8_t)len;
-        }
-    }
-    if (oif != ctx->want_oif || !gwlen || (ctx->profile && owns_table(ctx->r, table))) { return; }
+    route_attrs_t a = {.family = ctx->family, .oif = -1, .table = rtm->rtm_table};
+    if (mnl_attr_parse(h, sizeof(*rtm), route_attr_cb, &a) < 0) { return; }
+    if (a.oif != ctx->want_oif || !a.gateway_len || (ctx->profile && owns_table(ctx->r, a.table))) { return; }
     /* Prefer the manager's default route, then main-table routes, then
      * other routes via this interface. Never depend on kernel dump order. */
-    unsigned rank = (rtm->rtm_dst_len == 0 ? 2u : 0u) + (table == RT_TABLE_MAIN ? 1u : 0u);
-    if (!ctx->found || rank > ctx->rank || (rank == ctx->rank && metric < ctx->metric)) {
-        memcpy(ctx->gw, gw, gwlen); ctx->gw_len = gwlen;
-        ctx->found = true; ctx->rank = rank; ctx->metric = metric;
+    unsigned rank = (rtm->rtm_dst_len == 0 ? 2u : 0u) + (a.table == RT_TABLE_MAIN ? 1u : 0u);
+    if (!ctx->found || rank > ctx->rank || (rank == ctx->rank && a.metric < ctx->metric)) {
+        memcpy(ctx->gw, a.gateway, a.gateway_len); ctx->gw_len = a.gateway_len;
+        ctx->found = true; ctx->rank = rank; ctx->metric = a.metric;
     }
 }
 
@@ -476,39 +493,41 @@ typedef struct scan_ctx {
     used_set_t tables;
 } scan_ctx_t;
 
+static int rule_scan_attr_cb(const struct nlattr *attr, void *ud) {
+    scan_ctx_t *ctx = ud;
+    uint16_t type = mnl_attr_get_type(attr);
+    if (type == FRA_FWMARK || type == FRA_TABLE) {
+        if (mnl_attr_validate(attr, MNL_TYPE_U32) != 0) { return MNL_CB_ERROR; }
+        used_set_add(type == FRA_FWMARK ? &ctx->marks : &ctx->tables, mnl_attr_get_u32(attr));
+    }
+    return MNL_CB_OK;
+}
+
 static void rule_scan_cb(const struct nlmsghdr *h, void *ud) {
     scan_ctx_t *ctx = ud;
-    if (h->nlmsg_type != RTM_NEWRULE) { return; }
+    if (h->nlmsg_type != RTM_NEWRULE ||
+        mnl_nlmsg_get_payload_len(h) < sizeof(struct fib_rule_hdr)) { return; }
     const struct fib_rule_hdr *frh = mnl_nlmsg_get_payload(h);
     used_set_add(&ctx->tables, frh->table);
+    (void)mnl_attr_parse(h, sizeof(*frh), rule_scan_attr_cb, ctx);
+}
 
-    mt_nlattr_iter_t attr_it;
-    const struct nlattr *attr;
-    if (!mt_nlattr_iter_init_nlmsg(&attr_it, h, sizeof(struct fib_rule_hdr))) { return; }
-    while (mt_nlattr_iter_next(&attr_it, &attr)) {
-        uint16_t type = mnl_attr_get_type(attr);
-        if (type == FRA_FWMARK && mnl_attr_get_payload_len(attr) == 4) {
-            used_set_add(&ctx->marks, *(const uint32_t *)mnl_attr_get_payload(attr));
-        } else if (type == FRA_TABLE && mnl_attr_get_payload_len(attr) == 4) {
-            used_set_add(&ctx->tables, *(const uint32_t *)mnl_attr_get_payload(attr));
-        }
+static int route_scan_attr_cb(const struct nlattr *attr, void *ud) {
+    scan_ctx_t *ctx = ud;
+    if (mnl_attr_get_type(attr) == RTA_TABLE) {
+        if (mnl_attr_validate(attr, MNL_TYPE_U32) != 0) { return MNL_CB_ERROR; }
+        used_set_add(&ctx->tables, mnl_attr_get_u32(attr));
     }
+    return MNL_CB_OK;
 }
 
 static void route_scan_cb(const struct nlmsghdr *h, void *ud) {
     scan_ctx_t *ctx = ud;
-    if (h->nlmsg_type != RTM_NEWROUTE) { return; }
+    if (h->nlmsg_type != RTM_NEWROUTE ||
+        mnl_nlmsg_get_payload_len(h) < sizeof(struct rtmsg)) { return; }
     const struct rtmsg *rtm = mnl_nlmsg_get_payload(h);
     used_set_add(&ctx->tables, rtm->rtm_table);
-
-    mt_nlattr_iter_t attr_it;
-    const struct nlattr *attr;
-    if (!mt_nlattr_iter_init_nlmsg(&attr_it, h, sizeof(struct rtmsg))) { return; }
-    while (mt_nlattr_iter_next(&attr_it, &attr)) {
-        if (mnl_attr_get_type(attr) == RTA_TABLE && mnl_attr_get_payload_len(attr) == 4) {
-            used_set_add(&ctx->tables, *(const uint32_t *)mnl_attr_get_payload(attr));
-        }
-    }
+    (void)mnl_attr_parse(h, sizeof(*rtm), route_scan_attr_cb, ctx);
 }
 
 static mt_err_t dump_family(mt_rtnl_t *r, uint16_t msg_type, int family,
@@ -552,25 +571,12 @@ static void current_route_cb(const struct nlmsghdr *h, void *ud)
     const struct rtmsg *rtm = mnl_nlmsg_get_payload(h);
     if (rtm->rtm_family != ctx->family || rtm->rtm_dst_len || rtm->rtm_src_len ||
         rtm->rtm_tos) { return; }
-    uint32_t table = rtm->rtm_table, priority = 0;
-    mt_rtnl_default_route_t candidate = {.type = rtm->rtm_type, .found = true};
-    mt_nlattr_iter_t it;
-    const struct nlattr *attr;
-    if (!mt_nlattr_iter_init_nlmsg(&it, h, sizeof(*rtm))) { return; }
-    while (mt_nlattr_iter_next(&it, &attr)) {
-        uint16_t type = mnl_attr_get_type(attr), len = mnl_attr_get_payload_len(attr);
-        if (type == RTA_TABLE && len == 4) { table = mnl_attr_get_u32(attr); }
-        else if (type == RTA_PRIORITY && len == 4) { priority = mnl_attr_get_u32(attr); }
-        else if (type == RTA_OIF && len == 4) { candidate.ifindex = (int)mnl_attr_get_u32(attr); }
-        else if (type == RTA_MULTIPATH) { candidate.multipath = true; }
-        else if (type == RTA_GATEWAY &&
-                 ((ctx->family == AF_INET && len == 4) ||
-                  (ctx->family == AF_INET6 && len == 16))) {
-            memcpy(candidate.gateway, mnl_attr_get_payload(attr), len);
-            candidate.gateway_len = (uint8_t)len;
-        }
-    }
-    if (table != ctx->table || priority != ctx->priority) { return; }
+    route_attrs_t a = {.family = ctx->family, .table = rtm->rtm_table};
+    if (mnl_attr_parse(h, sizeof(*rtm), route_attr_cb, &a) < 0) { return; }
+    if (a.table != ctx->table || a.metric != ctx->priority) { return; }
+    mt_rtnl_default_route_t candidate = {.type = rtm->rtm_type, .found = true,
+        .ifindex = a.oif, .multipath = a.multipath, .gateway_len = a.gateway_len};
+    memcpy(candidate.gateway, a.gateway, a.gateway_len);
     if (ctx->out->found) { ctx->duplicate = true; }
     *ctx->out = candidate;
 }
@@ -626,6 +632,28 @@ typedef struct addr_ctx {
     bool found;
 } addr_ctx_t;
 
+typedef struct addr_attrs {
+    int family;
+    uint32_t flags;
+    bool nonzero;
+} addr_attrs_t;
+
+static int addr_attr_cb(const struct nlattr *attr, void *ud) {
+    addr_attrs_t *a = ud;
+    uint16_t type = mnl_attr_get_type(attr);
+    if (type == MT_IFA_FLAGS_ATTR) {
+        if (mnl_attr_validate(attr, MNL_TYPE_U32) != 0) { return MNL_CB_ERROR; }
+        a->flags = mnl_attr_get_u32(attr);
+    } else if (type == IFA_LOCAL || type == IFA_ADDRESS) {
+        size_t len = a->family == AF_INET ? 4u : 16u;
+        if (mnl_attr_validate2(attr, MNL_TYPE_BINARY, len) != 0 ||
+            mnl_attr_get_payload_len(attr) != len) { return MNL_CB_ERROR; }
+        const uint8_t *bytes = mnl_attr_get_payload(attr);
+        for (size_t i = 0; i < len; i++) { if (bytes[i]) { a->nonzero = true; } }
+    }
+    return MNL_CB_OK;
+}
+
 static void addr_msg_cb(const struct nlmsghdr *h, void *ud)
 {
     addr_ctx_t *ctx = ud;
@@ -634,21 +662,9 @@ static void addr_msg_cb(const struct nlmsghdr *h, void *ud)
     const struct ifaddrmsg *ifa = mnl_nlmsg_get_payload(h);
     if (ifa->ifa_family != ctx->family || ifa->ifa_index != (unsigned)ctx->ifindex ||
         ifa->ifa_scope >= RT_SCOPE_LINK) { return; }
-    uint32_t flags = ifa->ifa_flags;
-    bool nonzero = false;
-    mt_nlattr_iter_t it;
-    const struct nlattr *attr;
-    if (!mt_nlattr_iter_init_nlmsg(&it, h, sizeof(*ifa))) { return; }
-    while (mt_nlattr_iter_next(&it, &attr)) {
-        uint16_t type = mnl_attr_get_type(attr), len = mnl_attr_get_payload_len(attr);
-        if (type == MT_IFA_FLAGS_ATTR && len == sizeof(uint32_t)) { flags = mnl_attr_get_u32(attr); }
-        if ((type == IFA_LOCAL || type == IFA_ADDRESS) &&
-            ((ctx->family == AF_INET && len == 4) || (ctx->family == AF_INET6 && len == 16))) {
-            const uint8_t *bytes = mnl_attr_get_payload(attr);
-            for (uint16_t i = 0; i < len; i++) { if (bytes[i]) { nonzero = true; } }
-        }
-    }
-    ctx->found = nonzero && !(flags & (IFA_F_TENTATIVE | IFA_F_DADFAILED));
+    addr_attrs_t a = {.family = ctx->family, .flags = ifa->ifa_flags};
+    if (mnl_attr_parse(h, sizeof(*ifa), addr_attr_cb, &a) < 0) { return; }
+    ctx->found = a.nonzero && !(a.flags & (IFA_F_TENTATIVE | IFA_F_DADFAILED));
 }
 
 mt_err_t mt_rtnl_iface_has_address(mt_rtnl_t *r, int family, int ifindex, bool *found)

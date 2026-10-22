@@ -1,6 +1,5 @@
 #include "magitrickle/netlink_watcher.h"
 #include "magitrickle/log.h"
-#include "magitrickle/nlattr_iter.h"
 
 #include <errno.h>
 #include <fcntl.h>
@@ -36,21 +35,24 @@ static void notify_resync(mt_nl_watcher_t *w)
     if (w->resync_cb) { w->resync_cb(w->resync_ud); }
 }
 
+static int link_name_cb(const struct nlattr *attr, void *ud)
+{
+    char *name = ud;
+    if (mnl_attr_get_type(attr) == IFLA_IFNAME) {
+        if (mnl_attr_validate(attr, MNL_TYPE_NUL_STRING) != 0 ||
+            mnl_attr_get_payload_len(attr) > IFNAMSIZ) { return MNL_CB_ERROR; }
+        snprintf(name, IFNAMSIZ, "%s", mnl_attr_get_str(attr));
+    }
+    return MNL_CB_OK;
+}
+
 static bool handle_link_msg(mt_nl_watcher_t *w, const struct nlmsghdr *h)
 {
     if (mnl_nlmsg_get_payload_len(h) < sizeof(struct ifinfomsg)) { return false; }
     const struct ifinfomsg *ifi = mnl_nlmsg_get_payload(h);
     bool up = h->nlmsg_type != RTM_DELLINK && (ifi->ifi_flags & IFF_UP) != 0;
     char name[IFNAMSIZ] = {0};
-    mt_nlattr_iter_t it;
-    const struct nlattr *attr;
-    if (!mt_nlattr_iter_init_nlmsg(&it, h, sizeof(*ifi))) { return false; }
-    while (mt_nlattr_iter_next(&it, &attr)) {
-        if (mnl_attr_get_type(attr) == IFLA_IFNAME) {
-            if (mnl_attr_validate(attr, MNL_TYPE_NUL_STRING) != 0) { return false; }
-            snprintf(name, sizeof(name), "%s", mnl_attr_get_str(attr));
-        }
-    }
+    if (mnl_attr_parse(h, sizeof(*ifi), link_name_cb, name) < 0) { return false; }
     if (!name[0]) { return false; }
     if (w->link_cb) { w->link_cb(name, up, w->link_ud); }
     return true;

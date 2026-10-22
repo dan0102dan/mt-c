@@ -130,7 +130,6 @@ NETFILTER_SRCS := \
     src/netfilter/cleaner.c \
     src/netfilter/committer.c \
     src/netfilter/ruleset.c \
-    src/netlink/nlattr_iter.c \
     src/netlink/rtnl.c \
     src/netlink/watcher.c
 
