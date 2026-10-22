@@ -212,6 +212,17 @@ def run_test(emulator, package, preset, log_dir):
             serial = SerialConsole(conn, process, work / "ci-serial.log")
             serial.wait_for_shell()
             print("OpenWrt root shell is ready", flush=True)
+            # A freshly prepared NAND has no saved wall clock, and this
+            # QEMU board need not expose a battery-backed RTC. Before an
+            # HTTPS feed update, set the guest clock to the CI host's UTC
+            # timestamp so certificate validity checks can work. Do not
+            # disable TLS certificate verification to mask the issue.
+            host_epoch = int(time.time())
+            serial.run(
+                f"date -u -s '@{host_epoch}' >/dev/null && "
+                f"test \"$(date +%s)\" -ge {host_epoch - 2} && date -u",
+                timeout=20,
+            )
             serial.run("command -v apk && grep -q '25.12.5' /etc/openwrt_release")
             serial.run("for i in $(seq 1 30); do ip -4 route show default | grep -q '^default ' && break; sleep 2; done; ip -4 route show default | grep -q '^default '", timeout=75)
             serial.run(f"wget -T 30 -O {GUEST_PACKAGE} http://10.0.2.2:{http_port}/mt-c.apk", timeout=120)
