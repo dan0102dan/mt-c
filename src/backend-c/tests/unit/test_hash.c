@@ -123,7 +123,7 @@ TEST base64_std_vectors(void) {
         uint8_t decoded[16] = {0};
         size_t decoded_len = 0;
         ASSERT_EQ(0, mt_base64_decode(cases[i].out, strlen(cases[i].out),
-                                      decoded, &decoded_len));
+                                      decoded, sizeof(decoded), &decoded_len));
         ASSERT_EQ(inlen, decoded_len);
         ASSERT_EQ(0, memcmp(cases[i].in, decoded, inlen));
     }
@@ -140,7 +140,7 @@ TEST base64url_no_padding(void) {
 
     uint8_t decoded[8] = {0};
     size_t decoded_len = 0;
-    ASSERT_EQ(0, mt_base64url_decode("Zg", 2, decoded, &decoded_len));
+    ASSERT_EQ(0, mt_base64url_decode("Zg", 2, decoded, sizeof(decoded), &decoded_len));
     ASSERT_EQ(1u, decoded_len);
     ASSERT_EQ('f', decoded[0]);
     PASS();
@@ -160,6 +160,34 @@ TEST base64_urlsafe_alphabet_chars(void) {
     PASS();
 }
 
+TEST base64_bounds_and_invalid_inputs(void) {
+    struct { uint8_t bytes[64]; uint8_t guard[8]; } buffer;
+    memset(&buffer, 0xa5, sizeof(buffer));
+    char oversized[97];
+    memset(oversized, 'A', 96); oversized[96] = '\0';
+    size_t n = 999;
+    ASSERT_EQ(-1, mt_base64_decode(oversized, 96, buffer.bytes, sizeof(buffer.bytes), &n));
+    ASSERT_EQ(0u, n);
+    for (size_t i = 0; i < sizeof(buffer.bytes); i++) { ASSERT_EQ(0xa5, buffer.bytes[i]); }
+    for (size_t i = 0; i < sizeof(buffer.guard); i++) { ASSERT_EQ(0xa5, buffer.guard[i]); }
+    uint8_t out[3] = {0};
+    ASSERT_EQ(0, mt_base64_decode("Zm9v", 4, out, sizeof(out), &n));
+    ASSERT_EQ(3u, n);
+    ASSERT_EQ(-1, mt_base64_decode("Zm9v", 4, out, 2, &n));
+    ASSERT_EQ(0u, n);
+    const char *bad[] = {"A", "Zg", "Z===", "Zg===", "Zg==junk", "Zh==", "Zm9=", "====", "AA!A"};
+    for (size_t i = 0; i < sizeof(bad) / sizeof(bad[0]); i++) {
+        ASSERT_EQ(-1, mt_base64_decode(bad[i], strlen(bad[i]), out, sizeof(out), &n));
+        ASSERT_EQ(0u, n);
+    }
+    ASSERT_EQ(-1, mt_base64url_decode("Zg==", 4, out, sizeof(out), &n));
+    ASSERT_EQ(-1, mt_base64url_decode("Zh", 2, out, sizeof(out), &n));
+    ASSERT_EQ(-1, mt_base64url_decode("Zg", 2, out, 0, &n));
+    ASSERT_EQ(0, mt_base64_decode("", 0, NULL, 0, &n));
+    ASSERT_EQ(0u, n);
+    PASS();
+}
+
 GREATEST_MAIN_DEFS();
 
 int main(int argc, char **argv) {
@@ -171,6 +199,7 @@ int main(int argc, char **argv) {
     RUN_TEST(hmac_sha256_rfc4231_case1);
     RUN_TEST(hash_equal_semantics);
     RUN_TEST(base64_std_vectors);
+    RUN_TEST(base64_bounds_and_invalid_inputs);
     RUN_TEST(base64url_no_padding);
     RUN_TEST(base64_urlsafe_alphabet_chars);
     GREATEST_MAIN_END();
