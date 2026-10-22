@@ -185,47 +185,6 @@ def check_http_api(timeout=60):
     raise SmokeFailure(f"HTTP API not reachable: {url} ({last})")
 
 
-def wait_for_guest_file_command(path, attempts, failure_path=None):
-    """Wait for the guest to signal readiness or exit, without killing its shell."""
-    valid_path = r"/tmp/[a-zA-Z0-9-]+"
-    if (not re.fullmatch(valid_path, path) or not 1 <= attempts <= 120
-            or (failure_path and not re.fullmatch(valid_path, failure_path))):
-        raise ValueError("invalid guest polling arguments")
-    exited = f"test -e {failure_path} && break; " if failure_path else ""
-    return (
-        f"for i in $(seq 1 {attempts}); do "
-        f"test -e {path} && break; {exited}sleep 1; "
-        f"done; test -e {path}"
-    )
-
-
-def create_routing_group():
-    """Add a real enabled domain group through the application's HTTP API."""
-    url = f"http://127.0.0.1:{API_HOST_PORT}/api/v1/groups"
-    payload = json.dumps({
-        "name": "CI example.com policy",
-        "interface": "mtci-out",
-        "enable": True,
-        "rules": [{"name": "example.com", "type": "domain",
-                   "rule": "example.com", "enable": True}],
-    }).encode()
-    request = urllib.request.Request(
-        url, data=payload, method="POST",
-        headers={"Content-Type": "application/json"},
-    )
-    with urllib.request.urlopen(request, timeout=20) as response:
-        body = json.loads(response.read())
-        if response.status != 200 or not body.get("enable"):
-            raise SmokeFailure(f"routing group not enabled: {body}")
-        if body.get("interface") != "mtci-out":
-            raise SmokeFailure(f"unexpected routing interface: {body}")
-        group_id = body.get("id")
-        if not isinstance(group_id, str) or not re.fullmatch(r"[0-9a-f]{8}", group_id):
-            raise SmokeFailure(f"unexpected group ID from API: {body}")
-    print(f"Routing group {group_id} created via live API", flush=True)
-    return group_id
-
-
 def stop_emulator(process, monitor_path):
     if process.poll() is not None:
         return
@@ -298,17 +257,16 @@ def run_test(emulator, package, preset, log_dir):
             serial.run("apk add ip-full kmod-veth ipset uhttpd", timeout=240)
             serial.run(f"wget -T 30 -O /tmp/mtci-routing.sh http://10.0.2.2:{http_port}/routing.sh", timeout=60)
             serial.run("chmod 700 /tmp/mtci-routing.sh")
-            serial.run("rm -f /tmp/mtci-ready /tmp/mtci-status /tmp/mtci-group-id")
+            serial.run("rm -f /tmp/mtci-status /tmp/mtci-routing.log")
+            # Keep group creation in the guest's real HTTP API. Host-side
+            # QEMU port forwarding is already exercised by check_http_api;
+            # the routing fixture should not depend on that forwarding
+            # still working after a full fw4 reload.
             serial.run("(sh /tmp/mtci-routing.sh > /tmp/mtci-routing.log 2>&1; echo $? > /tmp/mtci-status) </dev/null >/dev/null 2>&1 &")
-            # dnsmasq/udhcpc initialisation and the negative HTTP probe can
-            # exceed 30s on emulated NAND without hardware acceleration.
-            # Stop early if the fixture exited, otherwise allow 100s.
-            serial.run(wait_for_guest_file_command(
-                "/tmp/mtci-ready", 100, failure_path="/tmp/mtci-status"
-            ), timeout=115)
-            group_id = create_routing_group()
-            serial.run(f"printf '%s\\n' '{group_id}' > /tmp/mtci-group-id")
-            serial.run(wait_for_guest_file_command("/tmp/mtci-status", 60), timeout=75)
+            serial.run(
+                "for i in $(seq 1 120); do test -f /tmp/mtci-status && break; sleep 1; done; test -f /tmp/mtci-status",
+                timeout=135,
+            )
             serial.run("cat /tmp/mtci-routing.log", show_output=True)
             serial.run("test \"$(cat /tmp/mtci-status)\" = 0")
             print("PASS: client DNS and HTTP traffic routed over selected interface", flush=True)

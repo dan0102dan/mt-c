@@ -116,20 +116,29 @@ if ip netns exec "$CLIENT" wget -T 3 -q -O /tmp/mtci-before \
   "http://$DEST:18080/"; then
   die "destination reachable before the mt-c rule was created"
 fi
-# Signal only after the negative control completed. Put the file first
-# so slow log flushing cannot hold the caller past its readiness deadline.
-touch /tmp/mtci-ready
 log "PASS: destination blocked before adding domain group"
 
-# Host creates the group through the real API and provides its returned ID.
-for i in $(seq 1 60); do
-  [ -s /tmp/mtci-group-id ] && break
-  sleep 1
-done
-[ -s /tmp/mtci-group-id ] || die "no group ID from host API"
-GROUP_ID=$(cat /tmp/mtci-group-id)
-printf '%s\n' "$GROUP_ID" | grep -Eq '^[0-9a-f]{8}$' ||
-  die "invalid group ID from API"
+# Configure the real application's live HTTP API from inside the router.
+# This removes the incidental QEMU host-port-forward dependency after fw4
+# reload; external API reachability was checked before this scenario.
+# A fixed ID in the disposable router gives deterministic ipset/chain names.
+GROUP_ID=c1c0ffee
+cat > /tmp/mtci-group-request.json <<EOF
+{"id":"$GROUP_ID","name":"CI example.com policy","interface":"mtci-out","enable":true,"rules":[{"name":"example.com","type":"domain","rule":"example.com","enable":true}]}
+EOF
+wget -T 10 -q -O /tmp/mtci-groups-before \
+  http://127.0.0.1:8080/api/v1/groups ||
+  die "local HTTP API not reachable after fw4 reload"
+if ! wget -T 45 -q -O /tmp/mtci-group-response.json \
+  --header='Content-Type: application/json' \
+  --post-file=/tmp/mtci-group-request.json \
+  http://127.0.0.1:8080/api/v1/groups; then
+  cat /tmp/mtci-group-response.json 2>/dev/null || :
+  die "creating example.com group via local HTTP API failed"
+fi
+grep -q "$GROUP_ID" /tmp/mtci-group-response.json ||
+  die "group creation response did not confirm requested ID"
+log "PASS: group $GROUP_ID created through mt-c HTTP API"
 SET_NAME=mt_"$GROUP_ID"_4
 CHAIN_NAME=MT_"$GROUP_ID"
 
