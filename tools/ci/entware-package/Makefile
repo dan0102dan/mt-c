@@ -114,7 +114,7 @@ ifneq ($(MAGITRICKLE_IS_KN),)
 	$(INSTALL_DIR) $(1)/opt/lib/magitrickle
 	$(INSTALL_BIN) $(PKG_BUILD_DIR)/files/entware_kn/lib/magitrickle/ndm-interface-hook \
 		$(1)/opt/lib/magitrickle/ndm-interface-hook
-	$(foreach hook,iflayerchanged.d ifstatechanged.d ifcreated.d ifdestroyed.d, \
+	$(foreach hook,iflayerchanged.d ifstatechanged.d ifcreated.d ifdestroyed.d neighbour.d, \
 		$(INSTALL_DIR) $(1)/opt/etc/ndm/$(hook) && \
 		$(INSTALL_BIN) $(PKG_BUILD_DIR)/files/entware_kn/etc/ndm/$(hook)/100-magitrickle \
 			$(1)/opt/etc/ndm/$(hook)/100-magitrickle || exit 1;)

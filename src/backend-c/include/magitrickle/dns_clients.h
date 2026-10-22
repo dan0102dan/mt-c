@@ -33,16 +33,11 @@ bool mt_dns_client_address(const char *address, char *out, size_t size);
 /* Copy a bounded, printable UTF-8 name without truncating a code point. */
 bool mt_dns_client_label(const char *name, char out[MT_DNS_CLIENT_NAME_LEN]);
 
-/* Dnsmasq's default lease format; expired/unnamed leases are not labels. */
-mt_err_t mt_dns_clients_parse_leases(const char *text, size_t len, int64_t now,
-                                    mt_dns_client_t **clients, size_t *count);
-#ifdef MT_PLATFORM_OPENWRT
-mt_err_t mt_dns_clients_fetch_openwrt(mt_dns_client_t **clients, size_t *count,
-                                     const atomic_bool *stop, void *ud);
-#endif
 #ifdef MT_ENTWARE_KN
 mt_err_t mt_dns_clients_parse_hotspot(const char *json, size_t len,
                                      mt_dns_client_t **clients, size_t *count);
+mt_err_t mt_dns_clients_parse_keenetic(const char *hotspot, size_t hotspot_len,
+    const char *neighbors, size_t neighbors_len, mt_dns_client_t **clients, size_t *count);
 mt_err_t mt_dns_clients_fetch_keenetic(mt_dns_client_t **clients, size_t *count,
                                       const atomic_bool *stop, void *ud);
 #endif
@@ -57,6 +52,9 @@ void mt_dns_clients_destroy(mt_dns_clients_t *clients);
 int mt_dns_clients_subscribe(mt_dns_clients_t *clients, mt_dns_clients_notify_fn fn, void *ud);
 void mt_dns_clients_unsubscribe(mt_dns_clients_t *clients, int subscription);
 void mt_dns_clients_refresh(mt_dns_clients_t *clients);
+/* Source notifications invalidate a whole snapshot. Bursts are debounced;
+ * events received during a fetch always request a subsequent snapshot. */
+void mt_dns_clients_invalidate(mt_dns_clients_t *clients);
 /* Loop-local inventory view for bounded metadata events. Never retain these
  * pointers across callbacks; check revision again before the next batch. */
 size_t mt_dns_clients_count(const mt_dns_clients_t *clients);

@@ -5,11 +5,13 @@ on:
     paths:
       - 'src/backend-c/**'
       - 'tools/tests/keenetic_policy_isolation.py'
+      - 'tools/ci/openwrt-host-libs.sh'
       - '.github/workflows/check-c.yml'
   push:
     paths:
       - 'src/backend-c/**'
       - 'tools/tests/keenetic_policy_isolation.py'
+      - 'tools/ci/openwrt-host-libs.sh'
       - '.github/workflows/check-c.yml'
 
 jobs:
@@ -68,6 +70,41 @@ jobs:
           sudo apt-get install -y clang libclang-rt-18-dev || \
             sudo apt-get install -y clang
           make fuzz FUZZ_RUNS=200000
+
+  openwrt_native:
+    name: OpenWrt native ubus integration
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install tooling
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake fakeroot libjson-c-dev libpcre2-dev libyaml-dev libmnl-dev libcjson-dev libcurl4-openssl-dev
+      - name: Build native OpenWrt libraries
+        run: sh tools/ci/openwrt-host-libs.sh "$RUNNER_TEMP/openwrt-native"
+      - name: Build and test, including real ubusd
+        working-directory: src/backend-c
+        run: |
+          export LD_LIBRARY_PATH="$RUNNER_TEMP/openwrt-native/lib"
+          export MT_TEST_UBUSD="$RUNNER_TEMP/openwrt-native/sbin/ubusd"
+          make PLATFORM=openwrt BUILD=openwrt-native \
+            CFLAGS_EXTRA="-Werror -isystem $RUNNER_TEMP/openwrt-native/include" \
+            LDFLAGS_EXTRA="-L$RUNNER_TEMP/openwrt-native/lib" all
+          python3 ../../tools/tests/keenetic_policy_isolation.py --generic-binary build/openwrt-native/magitrickled-c
+          fakeroot -- make PLATFORM=openwrt BUILD=openwrt-native \
+            CFLAGS_EXTRA="-Werror -isystem $RUNNER_TEMP/openwrt-native/include" \
+            LDFLAGS_EXTRA="-L$RUNNER_TEMP/openwrt-native/lib" test
+      - name: Sanitize native ubus integration
+        working-directory: src/backend-c
+        run: |
+          export LD_LIBRARY_PATH="$RUNNER_TEMP/openwrt-native/lib"
+          export MT_TEST_UBUSD="$RUNNER_TEMP/openwrt-native/sbin/ubusd"
+          sudo env "LD_LIBRARY_PATH=$LD_LIBRARY_PATH" "MT_TEST_UBUSD=$MT_TEST_UBUSD" \
+            make PLATFORM=openwrt BUILD=openwrt-sanitize \
+            OPT="-O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer -fno-pie" \
+            CFLAGS_EXTRA="-Werror -isystem $RUNNER_TEMP/openwrt-native/include" \
+            LDFLAGS_EXTRA="-fsanitize=address,undefined -no-pie -L$RUNNER_TEMP/openwrt-native/lib" \
+            test
 
   differential:
     name: Differential/regression suites (vs golden snapshots)

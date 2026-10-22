@@ -1,0 +1,2 @@
+{"host":{"ip":"192.0.2.1","mac":"02:00:00:00:00:01","name":"Client\u0000suffix"}}
+{"mac":"02:00:00:00:00:01\u0000suffix","address-family":"ipv4","address":"192.0.2.1"}

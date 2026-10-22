@@ -145,7 +145,7 @@ API_SRCS := \
     src/api/app.c \
     src/api/groups.c \
     src/api/system.c src/api/profiles_api.c \
-    src/platform/dns_clients_service.c \
+    src/platform/dns_clients_service.c src/platform/dns_openwrt.c \
     src/update/release.c src/platform/update.c \
     src/api/staticfiles.c \
     src/api/subscriptions_api.c \
@@ -167,6 +167,7 @@ KEENETIC_SRCS := \
     src/netfilter/keenetic_policy.c \
     src/interfaces/keenetic_policy_rci.c \
     src/interfaces/keenetic_dns_clients.c \
+    src/platform/dns_keenetic_hook.c \
     src/api/keenetic_policy_api.c \
     src/interfaces/keenetic_ifstate.c \
     src/interfaces/keenetic_ifstate_rci.c \
@@ -197,6 +198,9 @@ CACHETOOL_OBJ := $(CACHETOOL_SRC:%.c=$(BUILDDIR)/%.o)
 PCRE2_LIB ?= -lpcre2-8
 CJSON_LIB ?= -lcjson
 DEP_LIBS := -lyaml $(PCRE2_LIB) -lmnl $(CJSON_LIB) -lm -lcurl
+ifeq ($(PLATFORM),openwrt)
+DEP_LIBS += -lubus -lubox
+endif
 
 # fake_iptables.c/fake_ipset_nl.c are test *support* (the former a port of
 # executable-fake.go, gated behind Go's `testing` build tag there; the
@@ -213,6 +217,9 @@ endif
 TEST_BINS := $(TEST_SRCS:tests/unit/%.c=$(BUILDDIR)/tests/%)
 
 FUZZ_SRCS := $(wildcard tests/fuzz/*.c)
+ifneq ($(strip $(ENTWARE_KN)),1)
+FUZZ_SRCS := $(filter-out tests/fuzz/fuzz_dns_clients.c,$(FUZZ_SRCS))
+endif
 FUZZ_BINS := $(FUZZ_SRCS:tests/fuzz/%.c=$(BUILDDIR)/fuzz/%)
 
 .PHONY: all core clean test sanitize static_analysis fuzz
@@ -279,9 +286,15 @@ $(BUILDDIR)/tests/%: tests/unit/%.c $(LIB_OBJS) $(TEST_SUPPORT_OBJS)
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -Itests/vendor -Itests/unit $(LDFLAGS) -o $@ $< $(LIB_OBJS) $(TEST_SUPPORT_OBJS) $(LDLIBS) $(DEP_LIBS)
 
+# Include the native source to exercise shutdown with a real deferred ubus
+# notification, without adding a production-only testing API.
+$(BUILDDIR)/tests/test_dns_openwrt: tests/unit/test_dns_openwrt.c src/platform/dns_openwrt.c $(LIB_OBJS) $(TEST_SUPPORT_OBJS)
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) -Itests/vendor -Itests/unit $(LDFLAGS) -o $@ $< $(filter-out $(BUILDDIR)/src/platform/dns_openwrt.o,$(LIB_OBJS)) $(TEST_SUPPORT_OBJS) $(LDLIBS) $(DEP_LIBS)
+
 $(BUILDDIR)/tests/test_dns_stream_bounds: tests/unit/test_dns_stream_bounds.c src/api/system.c src/api/dns_stream.inc $(LIB_OBJS) $(TEST_SUPPORT_OBJS)
 	@mkdir -p $(dir $@)
-	$(CC) $(CFLAGS) -Itests/vendor -Itests/unit $(LDFLAGS) -o $@ $< $(filter-out $(BUILDDIR)/src/api/system.o,$(LIB_OBJS)) $(TEST_SUPPORT_OBJS) $(LDLIBS) $(DEP_LIBS)
+	$(CC) $(CFLAGS) -Itests/vendor -Itests/unit $(LDFLAGS) -Wl,--wrap=mt_loop_add_timer -o $@ $< $(filter-out $(BUILDDIR)/src/api/system.o,$(LIB_OBJS)) $(TEST_SUPPORT_OBJS) $(LDLIBS) $(DEP_LIBS)
 
 # Operation-count and allocation-failure regressions, not timing gates.
 $(BUILDDIR)/tests/test_dns_stream: tests/unit/test_dns_stream.c $(LIB_OBJS) $(TEST_SUPPORT_OBJS)
