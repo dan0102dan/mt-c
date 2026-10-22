@@ -25,6 +25,7 @@ typedef enum {
 typedef struct {
     char id[64];
     char name[16]; /* system-name, never derived from a description/NDM ID */
+    char alias[64]; /* optional display label from the same RCI snapshot */
     mt_kn_iflevel_t fields[MT_KN_IF_FIELDS];
     bool layered;
 } mt_kn_ifinfo_t;
@@ -50,6 +51,8 @@ typedef void (*mt_kn_ifchanged_fn)(void *ud, const char *name);
 mt_kn_ifstate_t *mt_kn_ifstate_new(mt_kn_ifchanged_fn changed, void *ud);
 void mt_kn_ifstate_free(mt_kn_ifstate_t *state);
 bool mt_kn_ifstate_blocks(const mt_kn_ifstate_t *state, const char *name, int family);
+/* Borrowed loop-owned label; NULL for absent/removed/redundant labels. */
+const char *mt_kn_ifstate_alias(const mt_kn_ifstate_t *state, const char *name);
 uint64_t mt_kn_ifstate_revision(const mt_kn_ifstate_t *state);
 /* Event is already parsed/validated. resync tells the owner to request a
  * one-off snapshot (new interface without a baseline, unknown fields, loss). */

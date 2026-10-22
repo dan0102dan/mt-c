@@ -28,34 +28,64 @@ static void must_route(mt_httpd_t *h, const char *method, const char *pattern, m
     }
 }
 
+static mt_err_t interfaces_json(mt_system_ctx_t *ctx, bool labels, cJSON **result) {
+#ifndef MT_ENTWARE_KN
+    (void)labels;
+#endif
+    *result = NULL;
+    mt_iface_info_t *ifaces = NULL; size_t n = 0;
+    mt_err_t err = mt_app_list_interfaces(ctx->app, &ifaces, &n);
+    if (err != MT_OK) { return err; }
+    cJSON *out = cJSON_CreateObject();
+    cJSON *arr = out ? cJSON_AddArrayToObject(out, "interfaces") : NULL;
+    for (size_t i = 0; arr && i <= n; i++) {
+        cJSON *item = cJSON_CreateObject();
+        bool ok = item && cJSON_AddStringToObject(item, "id", i ? ifaces[i-1].id : "blackhole");
+#ifdef MT_ENTWARE_KN
+        if (ok && labels && i && ifaces[i-1].name[0]) {
+            ok = cJSON_AddStringToObject(item, "name", ifaces[i-1].name) != NULL;
+        }
+#endif
+        if (!ok || !cJSON_AddItemToArray(arr, item)) {
+            cJSON_Delete(item); err = MT_ERR_NOMEM; break;
+        }
+    }
+    free(ifaces);
+    if (!arr || err != MT_OK) { cJSON_Delete(out); return MT_ERR_NOMEM; }
+    *result = out; return MT_OK;
+}
+#ifdef MT_ENTWARE_KN
+typedef struct { mt_system_ctx_t *ctx; mt_http_deferred_t *reply; } interface_request_t;
+static void interfaces_refreshed(void *ud, mt_err_t error) {
+    interface_request_t *request = ud;
+    cJSON *out = NULL;
+    /* A failed refresh affects labels, not enumeration of kernel interfaces. */
+    mt_err_t err = interfaces_json(request->ctx, error == MT_OK, &out);
+    if (err == MT_OK) { mt_http_deferred_json(request->reply, 200, out); }
+    else { mt_http_deferred_error(request->reply, 500, mt_err_str(err)); }
+    free(request);
+}
+#endif
 static void handle_list_interfaces(mt_http_req_t *req, mt_http_res_t *res, void *ud) {
     (void)req;
     mt_system_ctx_t *ctx = ud;
-
-    mt_iface_info_t *ifaces = NULL;
-    size_t n = 0;
-    mt_err_t err = mt_app_list_interfaces(ctx->app, &ifaces, &n);
-    if (err != MT_OK) {
-        mt_http_res_write_error(res, 500, mt_err_str(err));
-        return;
-    }
-
-    cJSON *out = cJSON_CreateObject();
-    cJSON *arr = cJSON_AddArrayToObject(out, "interfaces");
-    cJSON *blackhole = cJSON_CreateObject();
-    cJSON_AddStringToObject(blackhole, "id", "blackhole");
-    cJSON_AddItemToArray(arr, blackhole);
-    for (size_t i = 0; i < n; i++) {
-        cJSON *item = cJSON_CreateObject();
-        cJSON_AddStringToObject(item, "id", ifaces[i].id);
 #ifdef MT_ENTWARE_KN
-        /* Keep the kernel ID; the optional RCI alias only enriches KN responses. */
-        if (ifaces[i].name[0] != '\0') { cJSON_AddStringToObject(item, "name", ifaces[i].name); }
-#endif
-        cJSON_AddItemToArray(arr, item);
+    if (ctx->interface_service) {
+        interface_request_t *request = calloc(1, sizeof(*request));
+        if (request) {
+            request->ctx = ctx;
+            request->reply = mt_http_res_defer(req, res);
+            if (request->reply && mt_kn_ifstate_service_refresh(ctx->interface_service,
+                                                               interfaces_refreshed, request) == MT_OK) { return; }
+            if (request->reply) { mt_http_res_cancel_defer(res); }
+            free(request);
+        }
     }
-    free(ifaces);
-    mt_http_res_write_json(res, 200, out);
+#endif
+    cJSON *out = NULL;
+    mt_err_t err = interfaces_json(ctx, true, &out);
+    if (err == MT_OK) { mt_http_res_write_json(res, 200, out); }
+    else { mt_http_res_write_error(res, 500, mt_err_str(err)); }
 }
 
 static void handle_save_config(mt_http_req_t *req, mt_http_res_t *res, void *ud) {

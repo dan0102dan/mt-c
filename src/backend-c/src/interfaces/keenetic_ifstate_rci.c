@@ -53,11 +53,7 @@ mt_err_t mt_kn_ifstate_fetch(mt_kn_ifinfo_t **items, size_t *count, const atomic
     bool need_names = false;
     for (size_t i = 0; i < n; i++) { if (!data[i].name[0]) { need_names = true; break; } }
     if (need_names) {
-        mt_kn_iface_meta_t *metas = calloc(n, sizeof(*metas));
-        if (!metas) { free(data); return MT_ERR_NOMEM; }
-        for (size_t i = 0; i < n; i++) { strcpy(metas[i].id, data[i].id); }
-        char *request = mt_kn_build_system_name_request(metas, n);
-        free(metas);
+        char *request = mt_kn_build_system_name_request(data, n);
         if (!request) { free(data); return MT_ERR_NOMEM; }
         body_t names = {0};
         err = mt_kn_rci_request(MT_KN_RCI_BASE_URL "/rci/", request,

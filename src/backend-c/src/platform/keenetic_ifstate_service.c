@@ -13,6 +13,12 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
+typedef struct refresh_waiter {
+    struct refresh_waiter *next;
+    mt_kn_ifrefresh_fn done;
+    void *ud;
+} refresh_waiter_t;
+
 struct mt_kn_ifstate_service {
     mt_loop_t *loop;
     mt_kn_ifstate_t *cache;
@@ -33,6 +39,8 @@ struct mt_kn_ifstate_service {
     uint64_t token;
     unsigned retry_ms;
     mt_err_t last_error;
+    refresh_waiter_t *waiting, *active;
+    size_t n_waiters;
 };
 
 static void start_read(mt_kn_ifstate_service_t *s);
@@ -56,6 +64,7 @@ static void start_read(mt_kn_ifstate_service_t *s)
     if (atomic_load(&s->stopping)) { return; }
     if (s->inflight) { s->again = true; return; }
     s->inflight = true;
+    s->active = s->waiting; s->waiting = NULL;
     s->again = false;
     s->token = mt_kn_ifstate_revision(s->cache);
     /* Consume the loss marker at READ START. A later delivery failure then
@@ -71,6 +80,31 @@ void mt_kn_ifstate_service_resync(mt_kn_ifstate_service_t *s)
     if (!s || atomic_load(&s->stopping)) { return; }
     if (s->inflight) { s->again = true; }
     else { schedule_read(s, 20); }
+}
+mt_err_t mt_kn_ifstate_service_refresh(mt_kn_ifstate_service_t *s,
+                                       mt_kn_ifrefresh_fn done, void *ud)
+{
+    if (!s || !done || atomic_load(&s->stopping)) { return MT_ERR_STATE; }
+    if (s->n_waiters >= 64) { return MT_ERR_LIMIT; }
+    refresh_waiter_t *w = malloc(sizeof(*w));
+    if (!w) { return MT_ERR_NOMEM; }
+    *w = (refresh_waiter_t){.next = s->waiting, .done = done, .ud = ud};
+    s->waiting = w; s->n_waiters++;
+    if (s->inflight) { s->again = true; }
+    else {
+        if (s->retry_timer) { mt_loop_del_timer(s->loop, s->retry_timer); s->retry_timer = 0; }
+        start_read(s);
+    }
+    return MT_OK;
+}
+static void finish_waiters(mt_kn_ifstate_service_t *s, refresh_waiter_t *w, mt_err_t error)
+{
+    while (w) {
+        refresh_waiter_t *next = w->next;
+        s->n_waiters--;
+        w->done(w->ud, error);
+        free(w); w = next;
+    }
 }
 static void *snapshot_worker(void *ud)
 {
@@ -110,6 +144,7 @@ static void completed(mt_loop_t *loop, int fd, uint32_t events, void *ud)
     s->completed = false; s->result = NULL;
     pthread_mutex_unlock(&s->mutex);
     s->inflight = false;
+    refresh_waiter_t *finished = s->active; s->active = NULL;
     if (error == MT_OK) { error = mt_kn_ifstate_snapshot(s->cache, items, count, s->token); }
     free(items);
     if (error != MT_OK) {
@@ -124,6 +159,13 @@ static void completed(mt_loop_t *loop, int fd, uint32_t events, void *ud)
         if (s->again) { schedule_read(s, 20); }
     }
     s->last_error = error;
+    /* API callers queued during the old read require a fresh read even if it
+     * failed. Do not let a retry-timer allocation failure strand a response. */
+    if (s->waiting) {
+        if (s->retry_timer) { mt_loop_del_timer(s->loop, s->retry_timer); s->retry_timer = 0; }
+        start_read(s);
+    }
+    finish_waiters(s, finished, error);
 }
 static void handle_hook(mt_http_req_t *req, mt_http_res_t *res, void *ud)
 {
@@ -267,6 +309,8 @@ void mt_kn_ifstate_service_destroy(mt_kn_ifstate_service_t *s)
     watch_close(s);
     if (s->fd_registered) { mt_loop_del_fd(s->loop, s->pipefd[0]); }
     for (size_t i = 0; i < 2; i++) { if (s->pipefd[i] >= 0) { close(s->pipefd[i]); } }
+    finish_waiters(s, s->active, MT_ERR_CANCELED);
+    finish_waiters(s, s->waiting, MT_ERR_CANCELED);
     free(s->result); free(s->marker); free(s->watch_dir);
     pthread_cond_destroy(&s->ready); pthread_mutex_destroy(&s->mutex);
     free(s);

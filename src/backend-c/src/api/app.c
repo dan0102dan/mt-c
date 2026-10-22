@@ -16,7 +16,7 @@
 #include <time.h>
 
 #ifdef MT_ENTWARE_KN
-#include "magitrickle/keenetic_rci.h"
+#include "magitrickle/keenetic_ifstate.h"
 #endif
 #include "magitrickle/log.h"
 #include "magitrickle/lookup.h"
@@ -1196,20 +1196,12 @@ mt_err_t mt_app_list_interfaces(const mt_app_t *app, mt_iface_info_t **out, size
     freeifaddrs(ifap);
 
 #ifdef MT_ENTWARE_KN
-    /* Friendly names from Keenetic RCI. Go's interfaces.List logged the
-     * error at debug level and carried on with unnamed interfaces --
-     * an unreachable RCI must never fail the interface list itself. */
-    mt_kn_aliases_t aliases = {0};
-    mt_err_t alias_err = mt_kn_get_iface_aliases(&aliases);
-    if (alias_err != MT_OK) {
-        MT_DEBUG("failed to load interface aliases: %s", mt_err_str(alias_err));
-    } else {
-        for (size_t i = 0; i < n; i++) {
-            const char *alias = mt_kn_aliases_lookup(&aliases, arr[i].id);
-            if (alias) { snprintf(arr[i].name, sizeof(arr[i].name), "%s", alias); }
-        }
+    /* The HTTP path never performs RCI I/O. Names and readiness share the
+     * loop-owned snapshot published by the existing interface worker. */
+    for (size_t i = 0; i < n; i++) {
+        const char *alias = mt_kn_ifstate_alias(app->interface_states, arr[i].id);
+        if (alias) { snprintf(arr[i].name, sizeof(arr[i].name), "%s", alias); }
     }
-    mt_kn_aliases_free(&aliases);
 #endif
 
     *out = arr;

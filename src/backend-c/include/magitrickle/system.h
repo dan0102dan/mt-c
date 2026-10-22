@@ -11,7 +11,14 @@
 #include "magitrickle/dns_clients.h"
 #include "magitrickle/httpd.h"
 
+#ifdef MT_ENTWARE_KN
+#include "magitrickle/keenetic_ifstate_service.h"
+#endif
+
 typedef struct mt_system_ctx {
+#ifdef MT_ENTWARE_KN
+    mt_kn_ifstate_service_t *interface_service; /* optional, borrowed */
+#endif
     mt_app_t *app;
     mt_dns_query_log_t *query_log; /* nullable in system API tests */
     mt_dns_clients_t *dns_clients; /* optional loop-owned device label cache */

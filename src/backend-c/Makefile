@@ -305,13 +305,6 @@ $(BUILDDIR)/tests/test_dns_query_alloc: tests/unit/test_dns_query_alloc.c $(LIB_
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -Itests/vendor -Itests/unit $(LDFLAGS) -Wl,--wrap=malloc -Wl,--wrap=calloc -Wl,--wrap=memmove -Wl,--wrap=realloc -o $@ $< $(LIB_OBJS) $(TEST_SUPPORT_OBJS) $(LDLIBS) $(DEP_LIBS)
 
-# Exercise alias enrichment/failure via the real interface API without a router.
-ifeq ($(strip $(ENTWARE_KN)),1)
-$(BUILDDIR)/tests/test_system: tests/unit/test_system.c $(LIB_OBJS) $(TEST_SUPPORT_OBJS)
-	@mkdir -p $(dir $@)
-	$(CC) $(CFLAGS) -Itests/vendor -Itests/unit $(LDFLAGS) -Wl,--wrap=mt_kn_get_iface_aliases -o $@ $< $(LIB_OBJS) $(TEST_SUPPORT_OBJS) $(LDLIBS) $(DEP_LIBS)
-endif
-
 # Redirect only libcurl's connection target; exercise the shared RCI transport.
 $(BUILDDIR)/tests/test_dns_keenetic: tests/unit/test_dns_keenetic.c $(LIB_OBJS) $(TEST_SUPPORT_OBJS)
 	@mkdir -p $(dir $@)

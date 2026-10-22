@@ -19,26 +19,16 @@
 #include "magitrickle/system.h"
 
 #ifdef MT_ENTWARE_KN
-#include "magitrickle/keenetic_rci.h"
+#include "magitrickle/keenetic_ifstate.h"
 static mt_err_t alias_result = MT_OK;
-
-mt_err_t __wrap_mt_kn_get_iface_aliases(mt_kn_aliases_t *out);
-mt_err_t __wrap_mt_kn_get_iface_aliases(mt_kn_aliases_t *out) {
-    out->items = NULL;
-    out->n = 0;
-    if (alias_result != MT_OK) { return alias_result; }
-    out->items = calloc(1, sizeof(*out->items));
-    if (!out->items) { return MT_ERR_NOMEM; }
-    out->n = 1;
-    snprintf(out->items[0].system_name, sizeof(out->items[0].system_name), "lo");
-    snprintf(out->items[0].alias, sizeof(out->items[0].alias), "Router loopback");
-    return MT_OK;
-}
 #else
 _Static_assert(sizeof(mt_iface_info_t) == 16, "generic interfaces must not retain alias storage");
 #endif
 
 typedef struct harness {
+#ifdef MT_ENTWARE_KN
+    mt_kn_ifstate_t *interface_states;
+#endif
     mt_loop_t *loop;
     mt_httpd_t *tcp;
     mt_config_t cfg;
@@ -65,6 +55,12 @@ static harness_t *harness_start(bool with_config_path) {
     mt_app_deps_t deps = {.cfg = &h->cfg, .cache = h->cache};
     h->app = mt_app_create(&deps);
     h->ctx.app = h->app;
+#ifdef MT_ENTWARE_KN
+    h->interface_states = mt_kn_ifstate_new(NULL, NULL);
+    mt_kn_ifinfo_t item = {.id = "Loopback", .name = "lo", .alias = "Router loopback"};
+    if (alias_result == MT_OK) { (void)mt_kn_ifstate_snapshot(h->interface_states, &item, 1, 0); }
+    mt_app_set_interface_states(h->app, h->interface_states);
+#endif
     h->query_log = mt_dns_query_log_create();
     h->ctx.query_log = h->query_log;
     if (with_config_path) {
@@ -90,6 +86,9 @@ static void harness_stop(harness_t *h) {
     mt_httpd_destroy(h->tcp);
     mt_loop_destroy(h->loop);
     mt_app_destroy(h->app);
+#ifdef MT_ENTWARE_KN
+    mt_kn_ifstate_free(h->interface_states);
+#endif
     mt_cache_destroy(h->cache);
     mt_dns_query_log_destroy(h->query_log);
     mt_config_clear(&h->cfg);
