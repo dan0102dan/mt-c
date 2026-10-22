@@ -8,6 +8,7 @@ and HTTP API. Only Python's standard library is needed on the CI host.
 """
 
 import argparse
+import hashlib
 from contextlib import contextmanager
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
@@ -56,7 +57,8 @@ def serve_package(package):
         def log_message(self, format_string, *args):
             print("package server: " + (format_string % args), flush=True)
 
-    server = ThreadingHTTPServer(("0.0.0.0", 0), PackageHandler)
+    # QEMU user networking maps guest 10.0.2.2 to the host loopback.
+    server = ThreadingHTTPServer(("127.0.0.1", 0), PackageHandler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     try:
@@ -114,7 +116,7 @@ class SerialConsole:
                 return
         raise SmokeFailure("OpenWrt did not reach a root shell before boot timeout")
 
-    def run(self, command, timeout=COMMAND_TIMEOUT, check=True):
+    def run(self, command, timeout=COMMAND_TIMEOUT, check=True, show_output=False):
         if not self.ready:
             raise SmokeFailure("guest serial shell is not ready")
         self.counter += 1
@@ -133,6 +135,9 @@ class SerialConsole:
             match = regex.search(self.recent)
             if match:
                 status = int(match.group(1))
+                if show_output:
+                    print("--- guest output ---", flush=True)
+                    print(self.recent.decode("utf-8", errors="replace"), flush=True)
                 if check and status:
                     raise SmokeFailure(f"guest command failed (exit {status}): {command}")
                 return status
@@ -211,7 +216,11 @@ def create_routing_group():
             raise SmokeFailure(f"routing group not enabled: {body}")
         if body.get("interface") != "mtci-out":
             raise SmokeFailure(f"unexpected routing interface: {body}")
-    print("Routing group created via live API", flush=True)
+        group_id = body.get("id")
+        if not isinstance(group_id, str) or not re.fullmatch(r"[0-9a-f]{8}", group_id):
+            raise SmokeFailure(f"unexpected group ID from API: {body}")
+    print(f"Routing group {group_id} created via live API", flush=True)
+    return group_id
 
 
 def stop_emulator(process, monitor_path):
@@ -265,7 +274,10 @@ def run_test(emulator, package, preset, log_dir):
             serial.run("command -v apk && grep -q '25.12.5' /etc/openwrt_release")
             serial.run("for i in $(seq 1 30); do ip -4 route show default | grep -q '^default ' && break; sleep 2; done; ip -4 route show default | grep -q '^default '", timeout=75)
             serial.run(f"wget -T 30 -O {GUEST_PACKAGE} http://10.0.2.2:{http_port}/mt-c.apk", timeout=120)
-            serial.run(f"test \"$(wc -c < {GUEST_PACKAGE})\" -eq {package.stat().st_size}")
+            package_sha256 = hashlib.sha256(package.read_bytes()).hexdigest()
+            serial.run(
+                f"printf '%s  %s\\n' '{package_sha256}' '{GUEST_PACKAGE}' | sha256sum -c -"
+            )
             serial.run("apk update", timeout=180)
             serial.run(f"apk add --allow-untrusted {GUEST_PACKAGE}", timeout=240)
             serial.run("apk info -e mt-c && test -x /usr/bin/magitrickled && test -x /etc/init.d/magitrickle")
@@ -274,7 +286,6 @@ def run_test(emulator, package, preset, log_dir):
             # Detect immediate startup failures before waiting for the API.
             serial.run("sleep 3; pidof magitrickled", timeout=20)
             check_http_api(timeout=75)
-            serial.run("pidof magitrickled", timeout=20)
             # Verify the service survives the API request, not just a
             # momentary procd spawn immediately after package install.
             serial.run("sleep 3; pidof magitrickled", timeout=20)
@@ -286,10 +297,10 @@ def run_test(emulator, package, preset, log_dir):
             serial.run("chmod 700 /tmp/mtci-routing.sh")
             serial.run("(sh /tmp/mtci-routing.sh > /tmp/mtci-routing.log 2>&1; echo $? > /tmp/mtci-status) </dev/null >/dev/null 2>&1 &")
             serial.run(wait_for_guest_file_command("/tmp/mtci-ready", 30), timeout=40)
-            create_routing_group()
-            serial.run("touch /tmp/mtci-go")
+            group_id = create_routing_group()
+            serial.run(f"printf '%s\\n' '{group_id}' > /tmp/mtci-group-id")
             serial.run(wait_for_guest_file_command("/tmp/mtci-status", 60), timeout=75)
-            serial.run("cat /tmp/mtci-routing.log")
+            serial.run("cat /tmp/mtci-routing.log", show_output=True)
             serial.run("test \"$(cat /tmp/mtci-status)\" = 0")
             print("PASS: client DNS and HTTP traffic routed over selected interface", flush=True)
         except Exception:
@@ -303,7 +314,7 @@ def run_test(emulator, package, preset, log_dir):
                     "cat /tmp/mtci-routing.log 2>/dev/null || true",
                 ):
                     try:
-                        serial.run(diagnostic, timeout=15, check=False)
+                        serial.run(diagnostic, timeout=15, check=False, show_output=True)
                     except (SmokeFailure, OSError):
                         pass
                 serial.print_tail()

@@ -948,7 +948,7 @@ jobs:
 
       # One real OpenWrt 25.12.5 boot per run. The APK is the exact
       # cross-built SDK artifact above, not a host-repacked copy.
-      # Run before release uploads: a broken install/service must fail.
+      # Push-only smoke gate; release/workflow_dispatch triggers stay unchanged.
       - name: Install and smoke-test APK in router emulator
         if: github.event_name == 'push' && matrix.name == 'aarch64_cortex-a53' && matrix.openwrt_version == '25.12.5' && steps.package_outputs.outputs.package_1_path != ''
         env:
