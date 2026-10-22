@@ -8,6 +8,8 @@ on:
       - 'tools/tests/package_identity.py'
       - 'tools/tests/frontend_variants.py'
       - '.github/workflows/check-packaging.yml'
+      - '.github/workflows/build.yml'
+      - '.github/workflows/build-pr.yml'
   push:
     paths:
       - 'Makefile'
@@ -16,6 +18,8 @@ on:
       - 'tools/tests/package_identity.py'
       - 'tools/tests/frontend_variants.py'
       - '.github/workflows/check-packaging.yml'
+      - '.github/workflows/build.yml'
+      - '.github/workflows/build-pr.yml'
 permissions:
   contents: read
 jobs:
@@ -30,3 +34,5 @@ jobs:
         run: python3 tools/ci/tests/test_openwrt_sdk.py
       - name: Test router-emulator orchestration
         run: python3 tools/ci/tests/test_router_emulator_smoke.py
+      - name: Test PR package target-selection and release boundaries
+        run: python3 tools/ci/tests/test_build_matrix.py
