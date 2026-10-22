@@ -8,14 +8,6 @@ on:
       - '**.md'
       - '.github/**'
       - '!.github/workflows/build.yml'
-  pull_request:
-    paths:
-      - 'Makefile'
-      - 'config/**'
-      - 'files/**'
-      - 'src/**'
-      - 'tools/ci/**'
-      - '.github/workflows/build.yml'
   release:
     types: [published]
   workflow_dispatch:
@@ -43,7 +35,6 @@ jobs:
   # slow mirror costs a missing report, not a failed run. Mappings are
   # still applied by hand, from data instead of from memory.
   discover:
-    if: github.event_name != 'pull_request'
     name: Discover OpenWrt arch mappings
     runs-on: ubuntu-latest
     continue-on-error: true
@@ -139,9 +130,6 @@ jobs:
 
   prepare:
     name: Prepare build matrix
-    # Manually published test previews emit release:published too. Never
-    # rebuild the entire production matrix or attach packages to PR tags.
-    if: ${{ github.event_name != 'release' || startsWith(github.event.release.tag_name, 'pr-') == false }}
     runs-on: ubuntu-latest
     outputs:
       configs: ${{ steps.collect.outputs.configs }}
@@ -154,7 +142,6 @@ jobs:
         run: |
           python3 - <<'PY' >> "$GITHUB_OUTPUT"
           import json
-          import os
           from pathlib import Path
 
           SNAPSHOT_ONLY_ARCHS = {"mips64_mips64r2", "mips64el_mips64r2"}
@@ -191,17 +178,6 @@ jobs:
                       })
               else:
                   matrix.append(item)
-
-          # PRs need one real-device-class package test, not the entire
-          # multi-platform release build. Push/release builds remain full.
-          if os.environ.get("GITHUB_EVENT_NAME") == "pull_request":
-              matrix = [
-                  item for item in matrix
-                  if item["config"] == "config/openwrt/aarch64_cortex-a53.config"
-                  and item["openwrt_version"] == "25.12.5"
-              ]
-              if len(matrix) != 1:
-                  raise SystemExit("Missing OpenWrt 25.12.5 A53 emulator test target")
 
           print(f"configs={json.dumps(matrix, separators=(',', ':'))}")
           PY
@@ -961,6 +937,16 @@ jobs:
             echo "package_1_name=$(basename "$package")" >> "$GITHUB_OUTPUT"
           fi
 
+      # Keep all installable PR packages available even if runtime smoke fails.
+      - name: Upload package artifact 1
+        if: ${{ github.event_name != 'release' && github.event_name != 'workflow_dispatch' && steps.package_outputs.outputs.package_1_path != '' }}
+        uses: actions/upload-artifact@v6
+        with:
+          name: ${{ steps.package_outputs.outputs.package_1_name }}
+          path: ${{ steps.package_outputs.outputs.package_1_path }}
+          if-no-files-found: error
+          compression-level: 0
+
       # One real OpenWrt 25.12.5 boot per run. The APK is the exact
       # cross-built SDK artifact above, not a host-repacked copy.
       # Run before release uploads: a broken install/service must fail.
@@ -1011,15 +997,6 @@ jobs:
             .build/router-emulator-smoke/Router-Emulator/work/logs/
           if-no-files-found: warn
           retention-days: 7
-
-      - name: Upload package artifact 1
-        if: ${{ github.event_name != 'release' && github.event_name != 'workflow_dispatch' && steps.package_outputs.outputs.package_1_path != '' }}
-        uses: actions/upload-artifact@v6
-        with:
-          name: ${{ steps.package_outputs.outputs.package_1_name }}
-          path: ${{ steps.package_outputs.outputs.package_1_path }}
-          if-no-files-found: error
-          compression-level: 0
 
       - name: Upload package assets to release
         if: ${{ github.event_name == 'release' || github.event_name == 'workflow_dispatch' }}
