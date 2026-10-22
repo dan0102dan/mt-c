@@ -482,6 +482,21 @@ TEST config_apply_save_failure_restores_subscription_exceptions(void) {
     PASS();
 }
 
+TEST config_apply_checks_field_names_not_a_magic_field_count(void) {
+    harness_t *h = harness_start(true); ASSERT(h);
+    cJSON *snapshot = NULL;
+    ASSERT_EQ(200, do_request("GET", "/api/v1/system/config/snapshot", NULL, &snapshot));
+    cJSON *app = cJSON_GetObjectItemCaseSensitive(cJSON_GetObjectItemCaseSensitive(snapshot, "config"), "app");
+    cJSON_DeleteItemFromObjectCaseSensitive(app, "logLevel");
+    ASSERT(cJSON_AddBoolToObject(app, "unsupportedSetting", true));
+    char *text = cJSON_PrintUnformatted(snapshot); ASSERT(text);
+    ASSERT_EQ(409, do_request("POST", "/api/v1/system/config/apply", text, NULL));
+    free(text); cJSON_Delete(snapshot);
+    ASSERT_EQ(400, do_request("POST", "/api/v1/system/config/apply", "{}{}", NULL));
+    ASSERT_EQ(400, do_request("POST", "/api/v1/system/config/apply", "{\"revision\":\"a\\u0000b\"}", NULL));
+    harness_stop(h); PASS();
+}
+
 TEST save_config_noop_without_path(void) {
     harness_t *h = harness_start(false);
     ASSERT(h != NULL);
@@ -538,6 +553,7 @@ int main(int argc, char **argv) {
     RUN_TEST(config_snapshot_is_read_only_and_includes_live_settings);
     RUN_TEST(config_apply_rejects_stale_preview_and_commits_valid_settings);
     RUN_TEST(config_apply_save_failure_restores_subscription_exceptions);
+    RUN_TEST(config_apply_checks_field_names_not_a_magic_field_count);
     RUN_TEST(save_config_noop_without_path);
     RUN_TEST(netfilterd_hook_ok_and_bad_json);
     RUN_TEST(ignored_interfaces_list);
