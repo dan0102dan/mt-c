@@ -116,10 +116,12 @@ if ip netns exec "$CLIENT" wget -T 3 -q -O /tmp/mtci-before \
   "http://$DEST:18080/"; then
   die "destination reachable before the mt-c rule was created"
 fi
+# Signal only after the negative control completed. Put the file first
+# so slow log flushing cannot hold the caller past its readiness deadline.
+touch /tmp/mtci-ready
 log "PASS: destination blocked before adding domain group"
 
 # Host creates the group through the real API and provides its returned ID.
-touch /tmp/mtci-ready
 for i in $(seq 1 60); do
   [ -s /tmp/mtci-group-id ] && break
   sleep 1

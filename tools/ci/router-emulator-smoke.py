@@ -185,13 +185,16 @@ def check_http_api(timeout=60):
     raise SmokeFailure(f"HTTP API not reachable: {url} ({last})")
 
 
-def wait_for_guest_file_command(path, attempts):
-    """Poll a guest file without terminating the interactive serial shell."""
-    if not re.fullmatch(r"/tmp/[a-zA-Z0-9-]+", path) or not 1 <= attempts <= 120:
+def wait_for_guest_file_command(path, attempts, failure_path=None):
+    """Wait for the guest to signal readiness or exit, without killing its shell."""
+    valid_path = r"/tmp/[a-zA-Z0-9-]+"
+    if (not re.fullmatch(valid_path, path) or not 1 <= attempts <= 120
+            or (failure_path and not re.fullmatch(valid_path, failure_path))):
         raise ValueError("invalid guest polling arguments")
+    exited = f"test -e {failure_path} && break; " if failure_path else ""
     return (
         f"for i in $(seq 1 {attempts}); do "
-        f"test -e {path} && break; sleep 1; "
+        f"test -e {path} && break; {exited}sleep 1; "
         f"done; test -e {path}"
     )
 
@@ -295,8 +298,14 @@ def run_test(emulator, package, preset, log_dir):
             serial.run("apk add ip-full kmod-veth ipset uhttpd", timeout=240)
             serial.run(f"wget -T 30 -O /tmp/mtci-routing.sh http://10.0.2.2:{http_port}/routing.sh", timeout=60)
             serial.run("chmod 700 /tmp/mtci-routing.sh")
+            serial.run("rm -f /tmp/mtci-ready /tmp/mtci-status /tmp/mtci-group-id")
             serial.run("(sh /tmp/mtci-routing.sh > /tmp/mtci-routing.log 2>&1; echo $? > /tmp/mtci-status) </dev/null >/dev/null 2>&1 &")
-            serial.run(wait_for_guest_file_command("/tmp/mtci-ready", 30), timeout=40)
+            # dnsmasq/udhcpc initialisation and the negative HTTP probe can
+            # exceed 30s on emulated NAND without hardware acceleration.
+            # Stop early if the fixture exited, otherwise allow 100s.
+            serial.run(wait_for_guest_file_command(
+                "/tmp/mtci-ready", 100, failure_path="/tmp/mtci-status"
+            ), timeout=115)
             group_id = create_routing_group()
             serial.run(f"printf '%s\\n' '{group_id}' > /tmp/mtci-group-id")
             serial.run(wait_for_guest_file_command("/tmp/mtci-status", 60), timeout=75)
