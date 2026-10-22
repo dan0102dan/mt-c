@@ -309,10 +309,14 @@ $(BUILDDIR)/tests/test_sub_fetch_timeout: tests/unit/test_sub_fetch_timeout.c sr
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -Itests/vendor -Itests/unit $(LDFLAGS) -o $@ $< $(filter-out $(BUILDDIR)/src/subscriptions/fetch.o,$(LIB_OBJS)) $(TEST_SUPPORT_OBJS) $(LDLIBS) $(DEP_LIBS)
 
-# Redirect only libcurl's connection target; exercise the shared RCI transport.
+# Redirect only libcurl's connection target in Keenetic tests. Generic builds
+# compile an empty test and must not rewrite calls from shared fetch/update code.
+ifeq ($(ENTWARE_KN),1)
+RCI_TEST_LDFLAGS := -Wl,--wrap=curl_easy_init
+endif
 $(BUILDDIR)/tests/test_dns_keenetic: tests/unit/test_dns_keenetic.c $(LIB_OBJS) $(TEST_SUPPORT_OBJS)
 	@mkdir -p $(dir $@)
-	$(CC) $(CFLAGS) -Itests/vendor -Itests/unit $(LDFLAGS) -Wl,--wrap=curl_easy_init -o $@ $< $(LIB_OBJS) $(TEST_SUPPORT_OBJS) $(LDLIBS) $(DEP_LIBS)
+	$(CC) $(CFLAGS) -Itests/vendor -Itests/unit $(LDFLAGS) $(RCI_TEST_LDFLAGS) -o $@ $< $(LIB_OBJS) $(TEST_SUPPORT_OBJS) $(LDLIBS) $(DEP_LIBS)
 
 # Inspect the snapshot transport without exporting test-only production helpers.
 $(BUILDDIR)/tests/test_keenetic_ifstate_rci: tests/unit/test_keenetic_ifstate_rci.c src/interfaces/keenetic_ifstate_rci.c $(LIB_OBJS) $(TEST_SUPPORT_OBJS)
