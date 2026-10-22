@@ -92,6 +92,15 @@ class GuestPollTests(unittest.TestCase):
             self.assertIn("SHELL_ALIVE", result.stdout)
 
 
+class RoutingFixtureTests(unittest.TestCase):
+    def test_routing_fixture_shell_syntax(self):
+        fixture = SCRIPT.with_name('router-emulator-routing.sh')
+        result = subprocess.run(
+            ['sh', '-n', str(fixture)], capture_output=True, text=True, timeout=5,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+
 class PackageServerTests(unittest.TestCase):
     def test_serves_exact_apk_and_denies_unrelated_paths(self):
         with tempfile.TemporaryDirectory() as tmp:
