@@ -1267,9 +1267,6 @@ mt_err_t mt_app_apply_config(mt_app_t *app, mt_config_t *candidate,
     mt_kn_policy_scope_t checked;
     err = mt_kn_policy_scope_init(&checked, &next.app.keenetic_policy, app->chain_prefix);
     if (err != MT_OK) { mt_config_clear(&next); return err; }
-    const mt_kn_policy_scope_t old_desired = app->policy_desired;
-    const mt_kn_policy_scope_t old_scope = app->policy_scope;
-    bool policy_touched = false;
 #endif
     /* Absent subscriptions still CLEAR, as before; absent profiles overlay.
      * Recheck after restoring groups omitted from the YAML overlay: a newly
@@ -1280,6 +1277,13 @@ mt_err_t mt_app_apply_config(mt_app_t *app, mt_config_t *candidate,
 
     size_t ng = next.n_groups, ns = next.n_subscriptions;
     app_nf_enter(app);
+#ifdef MT_ENTWARE_KN
+    /* The committer publishes policy_scope under nf_mu. Capture rollback
+     * state only after excluding that writer, like the registries below. */
+    const mt_kn_policy_scope_t old_desired = app->policy_desired;
+    const mt_kn_policy_scope_t old_scope = app->policy_scope;
+    bool policy_touched = false;
+#endif
     /* One immutable size per old registry: allocation, capture, retirement
      * and rollback must describe the same snapshot, including empty sets.
      * Only the loop thread replaces these arrays; nf_mu excludes rebuilds. */
