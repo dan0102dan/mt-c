@@ -3879,3 +3879,39 @@ zero history movement on churn, bounded timer/wakeup operation counts, access
 revocation, metadata-only renames, pagination and slow-snapshot termination.
 Performance claims belong to the accompanying benchmark scripts/raw results,
 not to CI success or a router estimate inferred from a host run.
+
+
+## D-84 — Event-driven Keenetic IPv6 client labels (2026-10-22)
+
+Keenetic `_kn` client labels join complete read-only IPv6 neighbor snapshots to
+hotspot RCI names by exact observed MAC. Ambiguous IP/interface/MAC or name
+bindings fall back to IP. This changes optional presentation metadata only;
+DNS forwarding, address identity, routing and API formats remain unchanged.
+
+While a journal viewer is subscribed, a separate `RTMGRP_NEIGH` socket invalidates
+the snapshot on IPv6 neighbor changes. Coalesce to at most one worker refresh
+per second and retain notifications arriving during a fetch. The worker caches
+bounded hotspot RCI: known MACs reuse names, previously unseen unknown MACs
+request RCI with a five-second cooldown and deferred retry. Already checked
+unknown MACs do not repeatedly poll RCI. Every five minutes reconcile RCI and
+neighbors completely, including renames and recovery from missed events or an
+unavailable subscription. OpenWrt uses native libubus/libubox and the packaged `rpcd-mod-luci`
+`luci-rpc.getDHCPLeases` snapshot API, including IPv4/IPv6 DHCP leases and
+configured platform paths. Subscribe to dnsmasq/odhcpd object notifications,
+DHCP config changes and provider lifecycle; rebuild subscriptions after broker
+loss with bounded reconnect backoff. Lease expiry schedules a snapshot even
+without an event. Some supported odhcpd versions lack IPv6 notifications, so
+five-minute reconciliation remains necessary. No direct lease-file parser,
+inotify or shell ubus client remains. Generic/Entware packages do not gain these
+OpenWrt dependencies. All libubus calls are owned by one metadata worker,
+because the library uses shared internal buffers. Viewer generations discard
+responses belonging to a closed/reopened journal. Real-ubusd host tests cover
+events, expiry, provider/broker restart and subscription lifecycle. Target SDK
+build recipes include the native libraries and rpcd module for every configured
+OpenWrt target; no matrix entry changes.
+
+Keenetic watch receive work is bounded per callback; malformed/truncated/overflow events
+invalidate rather than partially update the map. Full dump failures drop IPv6
+enrichment while keeping explicit inventory labels. Close the watch and release
+worker inventory after the last subscriber. No historical ownership assertion,
+PTR/EUI-64 inference, subprocess, probe or kernel write is introduced.

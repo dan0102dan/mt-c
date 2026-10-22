@@ -3,6 +3,7 @@
 #include "magitrickle/dns_neighbors.h"
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 #include <cjson/cJSON.h>
 #include <curl/curl.h>
 
@@ -136,11 +137,8 @@ static int fetch_progress(void *ud, curl_off_t total, curl_off_t now, curl_off_t
     const client_progress_t *ctx = ud;
     return atomic_load(ctx->stop) ? 1 : 0;
 }
-mt_err_t mt_dns_clients_fetch_keenetic(mt_dns_client_t **clients, size_t *count,
-                                      const atomic_bool *stop, void *ud)
+static mt_err_t fetch_hotspot(client_response_t *out, const atomic_bool *stop)
 {
-    (void)ud;
-    *clients = NULL; *count = 0;
     if (stop && atomic_load(stop)) { return MT_ERR_CANCELED; }
     CURL *curl = curl_easy_init();
     if (!curl) { return MT_ERR_NOMEM; }
@@ -174,17 +172,98 @@ mt_err_t mt_dns_clients_fetch_keenetic(mt_dns_client_t **clients, size_t *count,
               result == CURLE_OPERATION_TIMEDOUT ? MT_ERR_TIMEOUT : MT_ERR_UPSTREAM;
     }
     if (err == MT_OK && status != 200) { err = MT_ERR_UPSTREAM; }
-    if (err == MT_OK) {
-        mt_dns_neighbor_t *neighbors = NULL;
-        size_t neighbor_count = 0;
-        mt_err_t discovery = mt_dns_neighbors_read(&neighbors, &neighbor_count, stop);
-        /* Unavailable/interrupted neighbor dumps fall back to explicit RCI IPs.
-         * Cancellation is not a fallback: it must promptly stop this worker. */
-        err = discovery == MT_ERR_CANCELED ? discovery :
-            mt_dns_clients_parse_hotspot_neighbors(response.data, response.len,
-                                                   neighbors, neighbor_count, clients, count);
-        free(neighbors);
+    if (err == MT_OK) { *out = response; }
+    else { free(response.data); }
+    return err;
+}
+void mt_dns_hotspot_cache_clear(mt_dns_hotspot_cache_t *cache)
+{
+    free(cache->json);
+    free(cache->observed);
+    *cache = (mt_dns_hotspot_cache_t){0};
+}
+static bool unknown_mac(const mt_dns_hotspot_cache_t *cache,
+                        const mt_dns_neighbor_t *neighbors, size_t count)
+{
+    cJSON *root = cJSON_ParseWithLength(cache->json, cache->len);
+    if (!root) { return true; }
+    const cJSON *hosts = cJSON_IsArray(root) ? root : cJSON_GetObjectItemCaseSensitive(root, "host");
+    bool single = cJSON_IsObject(hosts);
+    bool known[MT_DNS_NEIGHBOR_LIMIT] = {false};
+    for (const cJSON *host = single ? hosts : hosts ? hosts->child : NULL;
+         host; host = single ? NULL : host->next) {
+        unsigned char mac[6];
+        if (!parse_mac(cJSON_GetObjectItemCaseSensitive(host, "mac"), mac)) { continue; }
+        size_t lo = 0, hi = count;
+        while (lo < hi) {
+            size_t mid = lo + (hi - lo) / 2;
+            if (memcmp(neighbors[mid].mac, mac, 6) < 0) { lo = mid + 1; }
+            else { hi = mid; }
+        }
+        for (; lo < count && memcmp(neighbors[lo].mac, mac, 6) == 0; lo++) { known[lo] = true; }
     }
-    free(response.data);
+    cJSON_Delete(root);
+    for (size_t i = 0; i < count; i++) {
+        if (known[i]) { continue; }
+        size_t lo = 0, hi = cache->observed_count;
+        while (lo < hi) {
+            size_t mid = lo + (hi - lo) / 2;
+            if (memcmp(cache->observed[mid], neighbors[i].mac, 6) < 0) { lo = mid + 1; }
+            else { hi = mid; }
+        }
+        if (lo == cache->observed_count || memcmp(cache->observed[lo], neighbors[i].mac, 6)) { return true; }
+    }
+    return false;
+}
+mt_err_t mt_dns_clients_fetch_keenetic_cached(mt_dns_client_t **clients, size_t *count,
+    const atomic_bool *stop, mt_dns_hotspot_cache_t *cache)
+{
+    *clients = NULL; *count = 0;
+    mt_dns_neighbor_t *neighbors = NULL;
+    size_t neighbor_count = 0;
+    mt_err_t discovery = mt_dns_neighbors_read(&neighbors, &neighbor_count, stop);
+    if (discovery == MT_ERR_CANCELED) { return discovery; }
+    struct timespec ts;
+    uint64_t now = clock_gettime(CLOCK_MONOTONIC, &ts) == 0 ?
+        (uint64_t)ts.tv_sec * 1000u + (uint64_t)ts.tv_nsec / 1000000u : UINT64_MAX;
+    mt_err_t err = MT_OK;
+    bool unknown = cache->json && unknown_mac(cache, neighbors, neighbor_count);
+    cache->retry_pending = (!cache->json || unknown) && now < cache->retry_after;
+    if (!cache->json && cache->retry_pending) { free(neighbors); return MT_ERR_AGAIN; }
+    if (!cache->json || (unknown && !cache->retry_pending)) {
+        client_response_t response = {0};
+        err = fetch_hotspot(&response, stop);
+        mt_dns_hotspot_cache_clear(cache);
+        if (err == MT_OK) {
+            cache->json = response.data; cache->len = response.len;
+            if (neighbor_count) {
+                cache->observed = malloc(neighbor_count * sizeof(*cache->observed));
+                if (cache->observed) {
+                    for (size_t i = 0; i < neighbor_count; i++) { memcpy(cache->observed[i], neighbors[i].mac, 6); }
+                    cache->observed_count = neighbor_count;
+                }
+            }
+        }
+        /* Unknown/unnamed neighbors must not cause an RCI request storm. */
+        cache->retry_after = now == UINT64_MAX ? UINT64_MAX : now + 5000u;
+    }
+    if (err == MT_OK) {
+        err = mt_dns_clients_parse_hotspot_neighbors(cache->json, cache->len,
+            neighbors, neighbor_count, clients, count);
+    }
+    if (err != MT_OK) {
+        mt_dns_hotspot_cache_clear(cache);
+        cache->retry_after = now == UINT64_MAX ? UINT64_MAX : now + 5000u;
+    }
+    free(neighbors);
+    return err;
+}
+mt_err_t mt_dns_clients_fetch_keenetic(mt_dns_client_t **clients, size_t *count,
+                                      const atomic_bool *stop, void *ud)
+{
+    (void)ud;
+    mt_dns_hotspot_cache_t cache = {0};
+    mt_err_t err = mt_dns_clients_fetch_keenetic_cached(clients, count, stop, &cache);
+    mt_dns_hotspot_cache_clear(&cache);
     return err;
 }

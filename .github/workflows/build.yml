@@ -695,16 +695,15 @@ jobs:
 
           (
             cd "$sdk_dir"
-            # Every dependency resolves out of `base` or `packages` (see
-            # feeds-install.log), so cloning luci/routing/telephony/video
-            # on top of those is pure cost. `base` is also declared
+            # Native inventory uses rpcd-mod-luci as well as base/packages.
+            # Keep luci, while avoiding unrelated routing/telephony/video. `base` is also declared
             # src-git-full, i.e. the entire openwrt.git history, where a
             # shallow clone builds the same packages. Together this is
             # what lets the matrix run more jobs in parallel without the
             # feed servers throttling. Fall back to the SDK's own list if
             # the layout ever stops matching.
             awk '
-              $1 ~ /^src-git(-full)?$/ && ($2 == "base" || $2 == "packages") {
+              $1 ~ /^src-git(-full)?$/ && ($2 == "base" || $2 == "packages" || $2 == "luci") {
                 # url;ref names a branch or tag, which clones shallow
                 # fine; url^sha needs a fetch by commit the server may
                 # refuse on a shallow clone, so leave those alone.
@@ -712,7 +711,7 @@ jobs:
                 print
               }
             ' feeds.conf.default > feeds.conf
-            if [ "$(wc -l < feeds.conf)" -ne 2 ]; then
+            if [ "$(wc -l < feeds.conf)" -ne 3 ]; then
               echo "unexpected feeds.conf.default layout; using it unchanged" >&2
               rm -f feeds.conf
             fi
@@ -733,7 +732,7 @@ jobs:
               echo "feeds update failed after 4 attempts" >> "$log_dir/feeds-update.log"
               exit 1
             fi
-            ./scripts/feeds install libyaml pcre2 libmnl libcurl \
+            ./scripts/feeds install libyaml pcre2 libmnl libcurl libubus libubox rpcd-mod-luci \
               iptables-nft iptables-mod-conntrack-extra kmod-ipt-nat kmod-ipt-ipset ip6tables-nft libatomic \
               > "$log_dir/feeds-install.log" 2>&1
 
@@ -742,7 +741,8 @@ jobs:
             # headers or libraries. Build compile-time dependencies first.
             # cJSON installs a private static archive into staging. PCRE2,
             # yaml, libmnl and curl remain normal runtime libraries.
-            make package/yaml/{clean,compile} \
+            make package/libubox/compile package/ubus/compile \
+                 package/yaml/{clean,compile} \
                  package/pcre2/{clean,compile} \
                  package/libmnl/{clean,compile} \
                  package/curl/{clean,compile} \

@@ -7,6 +7,22 @@
 #ifdef MT_ENTWARE_KN
 #define MT_DNS_NEIGHBOR_LIMIT 2048u
 
+/* Worker-owned RCI cache; never accessed by the event loop. */
+typedef struct {
+    char *json;
+    size_t len;
+    uint64_t retry_after;
+    unsigned char (*observed)[6];
+    size_t observed_count;
+    bool retry_pending;
+} mt_dns_hotspot_cache_t;
+void mt_dns_hotspot_cache_clear(mt_dns_hotspot_cache_t *cache);
+mt_err_t mt_dns_clients_fetch_keenetic_cached(mt_dns_client_t **clients, size_t *count,
+    const atomic_bool *stop, mt_dns_hotspot_cache_t *cache);
+/* Event socket only invalidates snapshots; it never mutates the label map. */
+int mt_dns_neighbors_watch_open(void);
+mt_err_t mt_dns_neighbors_watch_drain(int fd, bool *changed);
+
 typedef struct {
     char ip[MT_DNS_CLIENT_IP_LEN];
     unsigned char mac[6];

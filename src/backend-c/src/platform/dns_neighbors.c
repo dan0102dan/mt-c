@@ -213,3 +213,48 @@ out:
     close(fd);
     return err;
 }
+
+/* A separate multicast socket avoids mixing notifications into dump replies. */
+int mt_dns_neighbors_watch_open(void)
+{
+    int fd = socket(AF_NETLINK, SOCK_RAW | SOCK_CLOEXEC | SOCK_NONBLOCK, NETLINK_ROUTE);
+    if (fd < 0) { return -1; }
+    struct sockaddr_nl local = {.nl_family = AF_NETLINK, .nl_groups = RTMGRP_NEIGH};
+    if (bind(fd, (struct sockaddr *)&local, sizeof(local)) != 0) { close(fd); return -1; }
+    return fd;
+}
+mt_err_t mt_dns_neighbors_watch_drain(int fd, bool *changed)
+{
+    *changed = false;
+    /* Bound loop work even under a continuous neighbor event flood. */
+    for (unsigned batch = 0; batch < 16; batch++) {
+        unsigned char data[16384];
+        struct sockaddr_nl sender = {0};
+        struct iovec iov = {.iov_base = data, .iov_len = sizeof(data)};
+        struct msghdr msg = {.msg_name = &sender, .msg_namelen = sizeof(sender),
+                             .msg_iov = &iov, .msg_iovlen = 1};
+        ssize_t n = recvmsg(fd, &msg, 0);
+        if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) { return MT_OK; }
+        if (n < 0 && errno == EINTR) { continue; }
+        if (n < 0 && errno == ENOBUFS) { *changed = true; continue; }
+        if (n <= 0) { return MT_ERR_IO; }
+        if (msg.msg_namelen < sizeof(sender) || sender.nl_family != AF_NETLINK || sender.nl_pid) { continue; }
+        if (msg.msg_flags & (MSG_TRUNC | MSG_CTRUNC)) { *changed = true; continue; }
+        size_t offset = 0;
+        while (offset < (size_t)n) {
+            struct nlmsghdr h;
+            if ((size_t)n - offset < sizeof(h)) { *changed = true; break; }
+            memcpy(&h, data + offset, sizeof(h));
+            if (h.nlmsg_len < sizeof(h) || h.nlmsg_len > (size_t)n - offset) { *changed = true; break; }
+            if (h.nlmsg_type == NLMSG_OVERRUN || h.nlmsg_type == NLMSG_ERROR) { *changed = true; }
+            if (h.nlmsg_type == RTM_NEWNEIGH || h.nlmsg_type == RTM_DELNEIGH) {
+                struct ndmsg nd;
+                if (h.nlmsg_len < sizeof(h) + sizeof(nd)) { *changed = true; break; }
+                memcpy(&nd, data + offset + sizeof(h), sizeof(nd));
+                if (nd.ndm_family == AF_INET6) { *changed = true; }
+            }
+            offset += align4(h.nlmsg_len);
+        }
+    }
+    return MT_OK;
+}

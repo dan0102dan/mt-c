@@ -3,6 +3,8 @@
 #ifdef MT_ENTWARE_KN
 #include <arpa/inet.h>
 #include <assert.h>
+#include <errno.h>
+#include <sys/socket.h>
 #include <linux/neighbour.h>
 #include <linux/netlink.h>
 #include <linux/rtnetlink.h>
@@ -62,6 +64,51 @@ static mt_err_t labels(const char *json, mt_dns_neighbors_t *neighbors,
     mt_dns_neighbors_finish(neighbors);
     return mt_dns_clients_parse_hotspot_neighbors(json, strlen(json), neighbors->items,
                                                   neighbors->count, clients, count);
+}
+
+static bool mock_receive;
+static packet_t notification;
+static unsigned notification_reads;
+static int notification_flags, notification_error;
+static uint32_t notification_sender;
+ssize_t __real_recvmsg(int fd, struct msghdr *msg, int flags);
+ssize_t __wrap_recvmsg(int fd, struct msghdr *msg, int flags);
+ssize_t __wrap_recvmsg(int fd, struct msghdr *msg, int flags)
+{
+    if (!mock_receive) { return __real_recvmsg(fd, msg, flags); }
+    if (notification_reads++) { errno = EAGAIN; return -1; }
+    if (notification_error) { errno = notification_error; return -1; }
+    struct sockaddr_nl sender = {.nl_family = AF_NETLINK, .nl_pid = notification_sender};
+    memcpy(msg->msg_name, &sender, sizeof(sender)); msg->msg_namelen = sizeof(sender);
+    memcpy(msg->msg_iov[0].iov_base, notification.data, notification.len);
+    msg->msg_flags = notification_flags;
+    return (ssize_t)notification.len;
+}
+TEST event_notifications_are_ipv6_kernel_hints_and_overflow_resyncs(void)
+{
+    mock_receive = true;
+    for (unsigned variant = 0; variant < 7; variant++) {
+        notification = neighbor(lenovo_ip, lenovo_mac, 10, NUD_REACHABLE);
+        notification_reads = 0; notification_flags = 0; notification_error = 0; notification_sender = 0;
+        if (variant == 1) {
+            struct ndmsg nd; memcpy(&nd, notification.data + sizeof(struct nlmsghdr), sizeof(nd));
+            nd.ndm_family = AF_INET;
+            memcpy(notification.data + sizeof(struct nlmsghdr), &nd, sizeof(nd));
+        }
+        if (variant == 2) { notification_sender = 123; }
+        if (variant == 3) { notification_error = ENOBUFS; }
+        if (variant == 4) { notification_flags = MSG_TRUNC; }
+        if (variant == 5) { notification.len = 3; }
+        if (variant == 6) {
+            struct nlmsghdr h; memcpy(&h, notification.data, sizeof(h));
+            h.nlmsg_type = RTM_DELNEIGH; memcpy(notification.data, &h, sizeof(h));
+        }
+        bool changed = false;
+        ASSERT_EQ(MT_OK, mt_dns_neighbors_watch_drain(-1, &changed));
+        ASSERT_EQ(variant != 1 && variant != 2, changed);
+    }
+    mock_receive = false;
+    PASS();
 }
 
 TEST lenovo_ipv6_joins_hotspot_via_observed_mac(void)
@@ -276,6 +323,7 @@ int main(int argc, char **argv)
 {
     GREATEST_MAIN_BEGIN();
 #ifdef MT_ENTWARE_KN
+    RUN_TEST(event_notifications_are_ipv6_kernel_hints_and_overflow_resyncs);
     RUN_TEST(lenovo_ipv6_joins_hotspot_via_observed_mac);
     RUN_TEST(stale_is_usable_failed_incomplete_and_proxy_are_not);
     RUN_TEST(non_ethernet_neighbors_do_not_discard_the_lan_snapshot);

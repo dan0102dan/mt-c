@@ -177,3 +177,16 @@ recvmsg/pktinfo, getrandom fallback to /dev/urandom for old kernels).
    ≥ 3.4 with backports; `_kn` firmwares must be tested).
 3. Minimal epoll DNS echo proxy on mipsel qemu — measure RSS/latency floor.
 4. libyaml emit shape vs committed canonical save fixture.
+
+
+## OpenWrt client labels (D-84)
+
+OpenWrt builds additionally link the platform's `libubus` (LGPL-2.1) and
+`libubox` (ISC), and require the `rpcd-mod-luci` runtime inventory provider.
+The latter exposes `luci-rpc.getDHCPLeases` on OpenWrt 24.10 and later, including
+configured dnsmasq/odhcpd lease sources. Native object subscriptions invalidate
+that snapshot. These dependencies are OpenWrt-only; Entware remains glibc with
+its existing RCI provider and never links the host test libraries. Firmware
+builds use the SDK libraries for the selected matrix target. Host CI builds
+official revisions pinned by the OpenWrt 24.10.0 recipes, including real ubusd,
+for protocol/lifecycle tests; those host artifacts are never packaged.

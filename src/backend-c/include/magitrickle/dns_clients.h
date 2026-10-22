@@ -15,7 +15,7 @@
 #define MT_DNS_CLIENT_IP_LEN 48u
 #define MT_DNS_CLIENT_BODY_LIMIT ((size_t)1024 * 1024)
 #define MT_DNS_CLIENT_SUBSCRIBERS 8u
-#define MT_DNS_CLIENT_REFRESH_MS 30000u
+#define MT_DNS_CLIENT_REFRESH_MS 300000u
 
 typedef struct mt_dns_client {
     char ip[MT_DNS_CLIENT_IP_LEN];
@@ -33,13 +33,6 @@ bool mt_dns_client_address(const char *address, char *out, size_t size);
 /* Copy a bounded, printable UTF-8 name without truncating a code point. */
 bool mt_dns_client_label(const char *name, char out[MT_DNS_CLIENT_NAME_LEN]);
 
-/* Dnsmasq's default lease format; expired/unnamed leases are not labels. */
-mt_err_t mt_dns_clients_parse_leases(const char *text, size_t len, int64_t now,
-                                    mt_dns_client_t **clients, size_t *count);
-#ifdef MT_PLATFORM_OPENWRT
-mt_err_t mt_dns_clients_fetch_openwrt(mt_dns_client_t **clients, size_t *count,
-                                     const atomic_bool *stop, void *ud);
-#endif
 #ifdef MT_ENTWARE_KN
 mt_err_t mt_dns_clients_parse_hotspot(const char *json, size_t len,
                                      mt_dns_client_t **clients, size_t *count);

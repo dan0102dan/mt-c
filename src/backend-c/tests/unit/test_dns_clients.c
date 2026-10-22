@@ -38,29 +38,6 @@ TEST labels_preserve_unicode_and_reject_unsafe_or_truncated_values(void)
     ASSERT(!mt_dns_client_label(too_long, label));
     PASS();
 }
-TEST leases_ignore_expired_unnamed_and_ambiguous_addresses(void)
-{
-    const char *text =
-        "200 aa:bb:cc:dd:ee:01 192.168.1.42 phone id\n"
-        "200 aa:bb:cc:dd:ee:01 192.168.1.42 phone id\n"
-        "0 aa:bb:cc:dd:ee:02 192.168.1.43 desktop id\n"
-        "99 aa:bb:cc:dd:ee:03 192.168.1.44 expired id\n"
-        "200 aa:bb:cc:dd:ee:04 192.168.1.45 * id\n"
-        "200 aa:bb:cc:dd:ee:05 192.168.1.46 alpha id\n"
-        "200 aa:bb:cc:dd:ee:06 192.168.1.46 beta id\n"
-        "bad lease\n";
-    mt_dns_client_t *clients = NULL; size_t n = 0;
-    ASSERT_EQ(MT_OK, mt_dns_clients_parse_leases(text, strlen(text), 100, &clients, &n));
-    ASSERT_EQ(2u, (unsigned)n);
-    ASSERT_STR_EQ("192.168.1.42", clients[0].ip);
-    ASSERT_STR_EQ("phone", clients[0].name);
-    ASSERT_STR_EQ("desktop", clients[1].name);
-    free(clients);
-    ASSERT_EQ(MT_OK, mt_dns_clients_parse_leases("", 0, 100, &clients, &n));
-    ASSERT_EQ(0u, (unsigned)n); ASSERT(clients == NULL);
-    ASSERT_EQ(MT_ERR_LIMIT, mt_dns_clients_parse_leases("", MT_DNS_CLIENT_BODY_LIMIT + 1, 0, &clients, &n));
-    PASS();
-}
 #ifdef MT_ENTWARE_KN
 TEST hotspot_prefers_user_name_and_falls_back_to_hostname(void)
 {
@@ -111,7 +88,6 @@ int main(int argc, char **argv)
     GREATEST_MAIN_BEGIN();
     RUN_TEST(address_normalization_is_not_prefix_stripping);
     RUN_TEST(labels_preserve_unicode_and_reject_unsafe_or_truncated_values);
-    RUN_TEST(leases_ignore_expired_unnamed_and_ambiguous_addresses);
 #ifdef MT_ENTWARE_KN
     RUN_TEST(hotspot_prefers_user_name_and_falls_back_to_hostname);
     RUN_TEST(hotspot_empty_errors_and_conflicts_do_not_invent_names);

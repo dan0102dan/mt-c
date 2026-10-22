@@ -1,6 +1,10 @@
 /* Loop-owned label inventory and a single coalesced worker. Labels are optional:
  * router discovery failure must never delay DNS or prevent opening the journal. */
 #include "magitrickle/dns_clients.h"
+#include "magitrickle/dns_openwrt.h"
+#ifdef MT_ENTWARE_KN
+#include "magitrickle/dns_neighbors.h"
+#endif
 #include <errno.h>
 #include <fcntl.h>
 #include <pthread.h>
@@ -20,6 +24,23 @@ struct mt_dns_clients {
     pthread_cond_t cv;
     pthread_t thread;
     atomic_bool stopping;
+    /* Loop-owned watch and debounce; callbacks only drain nonblocking events. */
+    int (*watch_open)(void);
+    mt_err_t (*watch_drain)(int fd, bool *changed);
+    int watch_fd, event_timer;
+    bool dirty, full_pending;
+    /* Worker commands/results, guarded by mu. Cache itself is worker-only. */
+    bool full_refresh, clear_cache, result_retry;
+    uint64_t epoch, result_epoch;
+    bool source_active;
+#ifdef MT_ENTWARE_KN
+    bool keenetic;
+    mt_dns_hotspot_cache_t hotspot;
+#endif
+#ifdef MT_PLATFORM_OPENWRT
+    bool openwrt;
+    int control[2];
+#endif
     bool requested, result_ready; /* guarded by mu */
     mt_dns_client_t *result;
     size_t result_count;
@@ -55,29 +76,91 @@ const char *mt_dns_clients_lookup(const mt_dns_clients_t *s, const char *address
     }
     return NULL;
 }
+/* Wake either the native ubus worker or the ordinary fetch worker. */
+static void wake_worker(mt_dns_clients_t *s)
+{
+#ifdef MT_PLATFORM_OPENWRT
+    if (s->openwrt) {
+        ssize_t written;
+        do { written = write(s->control[1], "x", 1); } while (written < 0 && errno == EINTR);
+        return; /* EAGAIN means a wakeup is already queued. */
+    }
+#endif
+    pthread_cond_signal(&s->cv);
+}
+#ifdef MT_PLATFORM_OPENWRT
+static mt_dns_source_command_t native_command(void *ud)
+{
+    mt_dns_clients_t *s = ud;
+    pthread_mutex_lock(&s->mu);
+    mt_dns_source_command_t command = {.active = s->source_active,
+        .refresh = s->requested, .epoch = s->epoch};
+    s->requested = false; s->clear_cache = false; s->full_refresh = false;
+    pthread_mutex_unlock(&s->mu);
+    return command;
+}
+static void native_publish(void *ud, uint64_t epoch, mt_dns_client_t *entries,
+                            size_t count, mt_err_t error)
+{
+    mt_dns_clients_t *s = ud;
+    pthread_mutex_lock(&s->mu);
+    /* Metadata is a replaceable snapshot; bound queued results to one map. */
+    free(s->result);
+    s->result = entries; s->result_count = count; s->result_error = error;
+    s->result_epoch = epoch; s->result_ready = true;
+    pthread_mutex_unlock(&s->mu);
+    ssize_t written;
+    do { written = write(s->notify[1], "x", 1); } while (written < 0 && errno == EINTR);
+}
+#endif
 void mt_dns_clients_refresh(mt_dns_clients_t *s)
 {
     if (!s || !s->listeners || s->inflight || atomic_load(&s->stopping)) { return; }
     s->inflight = true;
     pthread_mutex_lock(&s->mu);
+    s->full_refresh = true;
     s->requested = true;
-    pthread_cond_signal(&s->cv);
+    wake_worker(s);
     pthread_mutex_unlock(&s->mu);
 }
 static void *client_worker(void *ud)
 {
     mt_dns_clients_t *s = ud;
+#ifdef MT_PLATFORM_OPENWRT
+    if (s->openwrt) {
+        const mt_dns_openwrt_worker_t worker = {.control_fd = s->control[0], .stop = &s->stopping,
+            .ud = s, .command = native_command, .publish = native_publish};
+        mt_dns_openwrt_run(&worker);
+        return NULL;
+    }
+#endif
     for (;;) {
         pthread_mutex_lock(&s->mu);
-        while (!s->requested && !atomic_load(&s->stopping)) { pthread_cond_wait(&s->cv, &s->mu); }
+        while (!s->requested && !s->clear_cache && !atomic_load(&s->stopping)) { pthread_cond_wait(&s->cv, &s->mu); }
         if (atomic_load(&s->stopping)) { pthread_mutex_unlock(&s->mu); break; }
+#ifdef MT_ENTWARE_KN
+        if (s->clear_cache || s->full_refresh) { mt_dns_hotspot_cache_clear(&s->hotspot); }
+#endif
+        s->clear_cache = false; s->full_refresh = false;
+        if (!s->requested) { pthread_mutex_unlock(&s->mu); continue; }
         s->requested = false;
+        uint64_t epoch = s->epoch;
         pthread_mutex_unlock(&s->mu);
         mt_dns_client_t *entries = NULL;
         size_t count = 0;
-        mt_err_t err = s->fetch(&entries, &count, &s->stopping, s->fetch_ud);
+        mt_err_t err;
+#ifdef MT_ENTWARE_KN
+        if (s->keenetic) { err = mt_dns_clients_fetch_keenetic_cached(&entries, &count, &s->stopping, &s->hotspot); }
+        else
+#endif
+        { err = s->fetch(&entries, &count, &s->stopping, s->fetch_ud); }
         if (count > MT_DNS_CLIENT_LIMIT || (count && !entries)) { err = MT_ERR_LIMIT; }
         pthread_mutex_lock(&s->mu);
+#ifdef MT_ENTWARE_KN
+        s->result_retry = s->keenetic && s->hotspot.retry_pending;
+#endif
+
+        s->result_epoch = epoch;
         s->result = entries; s->result_count = count; s->result_error = err; s->result_ready = true;
         pthread_mutex_unlock(&s->mu);
         ssize_t n;
@@ -93,6 +176,7 @@ static bool same_clients(const mt_dns_clients_t *s, const mt_dns_client_t *entri
     }
     return true;
 }
+static void source_schedule(mt_dns_clients_t *s);
 static void clients_completed(mt_loop_t *loop, int fd, uint32_t events, void *ud)
 {
     (void)loop; (void)events;
@@ -108,9 +192,18 @@ static void clients_completed(mt_loop_t *loop, int fd, uint32_t events, void *ud
     mt_dns_client_t *entries = s->result;
     size_t count = s->result_count;
     mt_err_t err = s->result_error;
+    if (s->result_retry && s->listeners) { s->dirty = true; }
+    bool stale = s->result_epoch != s->epoch;
     s->result = NULL; s->result_count = 0; s->result_ready = false;
     pthread_mutex_unlock(&s->mu);
     s->inflight = false;
+    source_schedule(s);
+    if (s->full_pending || stale) {
+        s->full_pending = false;
+        free(entries);
+        mt_dns_clients_refresh(s);
+        return;
+    }
     /* Do not display a stale name for a reassigned address after a failure,
      * and do not keep device inventories alive without an open viewer. */
     if (err != MT_OK || !s->listeners) { free(entries); entries = NULL; count = 0; }
@@ -121,10 +214,60 @@ static void clients_completed(mt_loop_t *loop, int fd, uint32_t events, void *ud
         if (listener.fn) { listener.fn(listener.ud); }
     }
 }
+static void source_start(mt_dns_clients_t *s);
 static void clients_tick(mt_loop_t *loop, void *ud)
 {
     (void)loop;
-    mt_dns_clients_refresh(ud);
+    mt_dns_clients_t *s = ud;
+    source_start(s);
+    if (s->inflight) { s->full_pending = true; }
+    mt_dns_clients_refresh(s);
+}
+static void source_tick(mt_loop_t *loop, void *ud)
+{
+    (void)loop;
+    mt_dns_clients_t *s = ud;
+    s->event_timer = 0;
+    if (!s->dirty || s->inflight || !s->listeners) { return; }
+    s->dirty = false;
+    s->inflight = true;
+    pthread_mutex_lock(&s->mu);
+    s->requested = true;
+    wake_worker(s);
+    pthread_mutex_unlock(&s->mu);
+}
+static void source_schedule(mt_dns_clients_t *s)
+{
+    if (!s->watch_open || !s->listeners || !s->dirty || s->event_timer) { return; }
+    /* One-shot debounce: no timer wakeups while the source is idle. */
+    (void)mt_loop_add_timer(s->loop, 1000, 0, source_tick, s, &s->event_timer);
+}
+static void source_changed(mt_loop_t *loop, int fd, uint32_t events, void *ud)
+{
+    mt_dns_clients_t *s = ud;
+    bool changed = false;
+    mt_err_t err = s->watch_drain(fd, &changed);
+    if (changed || err != MT_OK || (events & (EPOLLERR | EPOLLHUP))) { s->dirty = true; source_schedule(s); }
+    if (err != MT_OK || (events & (EPOLLERR | EPOLLHUP))) {
+        (void)mt_loop_del_fd(loop, fd); close(fd); s->watch_fd = -1;
+    }
+}
+static void source_start(mt_dns_clients_t *s)
+{
+    if (!s->watch_open || !s->listeners || s->watch_fd >= 0) { return; }
+    int fd = s->watch_open();
+    if (fd < 0) { return; } /* Periodic reconciliation remains available. */
+    if (mt_loop_add_fd(s->loop, fd, EPOLLIN, source_changed, s) != MT_OK) { close(fd); return; }
+    s->watch_fd = fd;
+}
+static void source_stop(mt_dns_clients_t *s)
+{
+    if (s->watch_fd >= 0) {
+        (void)mt_loop_del_fd(s->loop, s->watch_fd); close(s->watch_fd); s->watch_fd = -1;
+    }
+    if (s->event_timer) { (void)mt_loop_del_timer(s->loop, s->event_timer); s->event_timer = 0; }
+    if (s->timer) { (void)mt_loop_del_timer(s->loop, s->timer); s->timer = 0; }
+    s->dirty = false;
 }
 int mt_dns_clients_subscribe(mt_dns_clients_t *s, mt_dns_clients_notify_fn fn, void *ud)
 {
@@ -133,7 +276,23 @@ int mt_dns_clients_subscribe(mt_dns_clients_t *s, mt_dns_clients_notify_fn fn, v
         if (s->subscriptions[i].fn) { continue; }
         s->subscriptions[i] = (client_listener_t){fn, ud};
         s->listeners++;
-        if (s->listeners == 1) { mt_dns_clients_refresh(s); }
+        if (s->listeners == 1) {
+            pthread_mutex_lock(&s->mu);
+            s->source_active = true; s->epoch++;
+            if (s->inflight) { wake_worker(s); }
+            pthread_mutex_unlock(&s->mu);
+            source_start(s);
+            if (s->inflight) { s->full_pending = true; }
+            bool needs_timer = true;
+#ifdef MT_PLATFORM_OPENWRT
+            needs_timer = !s->openwrt;
+#endif
+            if (needs_timer && !s->timer) {
+                (void)mt_loop_add_timer(s->loop, MT_DNS_CLIENT_REFRESH_MS, MT_DNS_CLIENT_REFRESH_MS,
+                                       clients_tick, s, &s->timer);
+            }
+            mt_dns_clients_refresh(s);
+        }
         return (int)i + 1;
     }
     return 0;
@@ -143,6 +302,12 @@ void mt_dns_clients_unsubscribe(mt_dns_clients_t *s, int id)
     if (!s || id <= 0 || (unsigned)id > MT_DNS_CLIENT_SUBSCRIBERS || !s->subscriptions[id - 1].fn) { return; }
     s->subscriptions[id - 1] = (client_listener_t){0};
     if (--s->listeners == 0) {
+        source_stop(s);
+        pthread_mutex_lock(&s->mu);
+        s->source_active = false; s->epoch++;
+        s->clear_cache = true;
+        wake_worker(s);
+        pthread_mutex_unlock(&s->mu);
         free(s->entries); s->entries = NULL; s->count = 0; s->revision++;
     }
 }
@@ -152,11 +317,12 @@ mt_err_t mt_dns_clients_create(mt_loop_t *loop, mt_dns_clients_fetch_fn fetch,
 {
     if (!out || !loop) { return MT_ERR_INVAL; }
     *out = NULL;
-    if (!fetch) {
+    bool native_provider = fetch == NULL;
+    if (native_provider) {
 #ifdef MT_ENTWARE_KN
         fetch = mt_dns_clients_fetch_keenetic;
 #elif defined(MT_PLATFORM_OPENWRT)
-        fetch = mt_dns_clients_fetch_openwrt;
+        /* Native worker owns inventory, subscriptions and reconnects. */
 #else
         return MT_OK;
 #endif
@@ -164,6 +330,15 @@ mt_err_t mt_dns_clients_create(mt_loop_t *loop, mt_dns_clients_fetch_fn fetch,
     mt_dns_clients_t *s = calloc(1, sizeof(*s));
     if (!s) { return MT_ERR_NOMEM; }
     s->loop = loop; s->fetch = fetch; s->fetch_ud = fetch_ud;
+    s->watch_fd = -1;
+#ifdef MT_ENTWARE_KN
+    s->keenetic = native_provider;
+    if (s->keenetic) { s->watch_open = mt_dns_neighbors_watch_open; s->watch_drain = mt_dns_neighbors_watch_drain; }
+#endif
+#ifdef MT_PLATFORM_OPENWRT
+    s->openwrt = native_provider;
+    s->control[0] = -1; s->control[1] = -1;
+#endif
     s->notify[0] = -1; s->notify[1] = -1;
     atomic_init(&s->stopping, false);
     mt_err_t err = MT_ERR_SYS;
@@ -171,6 +346,16 @@ mt_err_t mt_dns_clients_create(mt_loop_t *loop, mt_dns_clients_fetch_fn fetch,
     s->mutex_ready = true;
     if (pthread_cond_init(&s->cv, NULL) != 0) { goto fail; }
     s->cond_ready = true;
+#ifdef MT_PLATFORM_OPENWRT
+    if (s->openwrt) {
+        if (pipe(s->control)) { goto fail; }
+        for (int i = 0; i < 2; i++) {
+            int flags = fcntl(s->control[i], F_GETFL);
+            if (flags < 0 || fcntl(s->control[i], F_SETFL, flags | O_NONBLOCK) < 0 ||
+                fcntl(s->control[i], F_SETFD, FD_CLOEXEC) < 0) { goto fail; }
+        }
+    }
+#endif
     if (pipe(s->notify) != 0) { goto fail; }
     for (int i = 0; i < 2; i++) {
         int flags = fcntl(s->notify[i], F_GETFL);
@@ -180,8 +365,6 @@ mt_err_t mt_dns_clients_create(mt_loop_t *loop, mt_dns_clients_fetch_fn fetch,
     err = mt_loop_add_fd(loop, s->notify[0], EPOLLIN, clients_completed, s);
     if (err != MT_OK) { goto fail; }
     s->registered = true;
-    err = mt_loop_add_timer(loop, MT_DNS_CLIENT_REFRESH_MS, MT_DNS_CLIENT_REFRESH_MS, clients_tick, s, &s->timer);
-    if (err != MT_OK) { goto fail; }
     if (pthread_create(&s->thread, NULL, client_worker, s) != 0) { err = MT_ERR_SYS; goto fail; }
     s->thread_started = true;
     *out = s;
@@ -195,10 +378,17 @@ void mt_dns_clients_destroy(mt_dns_clients_t *s)
     if (!s) { return; }
     atomic_store(&s->stopping, true);
     if (s->thread_started) {
-        pthread_mutex_lock(&s->mu); pthread_cond_signal(&s->cv); pthread_mutex_unlock(&s->mu);
+        pthread_mutex_lock(&s->mu); wake_worker(s); pthread_mutex_unlock(&s->mu);
         pthread_join(s->thread, NULL);
     }
-    if (s->timer) { (void)mt_loop_del_timer(s->loop, s->timer); }
+    source_stop(s);
+#ifdef MT_PLATFORM_OPENWRT
+    if (s->control[0] >= 0) { close(s->control[0]); }
+    if (s->control[1] >= 0) { close(s->control[1]); }
+#endif
+#ifdef MT_ENTWARE_KN
+    mt_dns_hotspot_cache_clear(&s->hotspot);
+#endif
     if (s->registered) { (void)mt_loop_del_fd(s->loop, s->notify[0]); }
     if (s->notify[0] >= 0) { close(s->notify[0]); }
     if (s->notify[1] >= 0) { close(s->notify[1]); }
