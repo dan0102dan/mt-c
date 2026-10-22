@@ -119,6 +119,10 @@ SYSROOT ?=
 # space-separated.
 DEPS_IPK := libatomic, libyaml, libpcre2, libmnl, libcurl
 DEPS_APK := libatomic libyaml libpcre2 libmnl libcurl libcjson
+ifeq ($(PLATFORM),openwrt)
+DEPS_IPK := $(DEPS_IPK), libubus, libubox, rpcd-mod-luci
+DEPS_APK += libubus libubox rpcd-mod-luci
+endif
 
 ifeq ($(shell id -u),0)
 	ROOT_WRAP :=

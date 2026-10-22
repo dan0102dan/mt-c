@@ -28,6 +28,7 @@
 
 #include "magitrickle/app.h"
 #ifdef MT_ENTWARE_KN
+#include "magitrickle/dns_keenetic_hook.h"
 #include "magitrickle/keenetic_policy_api.h"
 #include "magitrickle/keenetic_ifstate_service.h"
 #endif
@@ -895,6 +896,9 @@ int main(int argc, char **argv)
     if (mt_kn_policy_register_routes(d.http_unix, d.policy_service) != MT_OK) {
         MT_ERROR("failed to register Keenetic policy routes");
         daemon_teardown(&d); mt_config_clear(&cfg); return 1;
+    }
+    if (d.dns_clients && mt_dns_keenetic_register_hook(d.http_unix, d.dns_clients) != MT_OK) {
+        MT_WARN("device-name notifications unavailable; periodic refresh remains active");
     }
 #endif
     mt_subs_register_routes(d.http_unix, &subs_ctx);

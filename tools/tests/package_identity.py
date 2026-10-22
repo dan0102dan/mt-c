@@ -20,7 +20,7 @@ import threading
 import time
 
 REPO = Path(__file__).resolve().parents[2]
-NDM_HOOKS = ("iflayerchanged.d", "ifstatechanged.d", "ifcreated.d", "ifdestroyed.d")
+NDM_HOOKS = ("iflayerchanged.d", "ifstatechanged.d", "ifcreated.d", "ifdestroyed.d", "neighbour.d")
 NDM_FILES = {f"etc/ndm/{hook}/100-magitrickle" for hook in NDM_HOOKS} | {
     "lib/magitrickle/ndm-interface-hook",
 }
@@ -179,7 +179,7 @@ def ndm_hook_contract(work: Path) -> None:
     helper = REPO / "files/entware_kn/lib/magitrickle/ndm-interface-hook"
     text = helper.read_text()
     run(["sh", "-n", str(helper)], REPO)
-    for hook, kind in zip(NDM_HOOKS, ("layer", "state", "created", "destroyed")):
+    for hook, kind in zip(NDM_HOOKS, ("layer", "state", "created", "destroyed", "neighbour")):
         wrapper = REPO / f"files/entware_kn/etc/ndm/{hook}/100-magitrickle"
         run(["sh", "-n", str(wrapper)], REPO)
         assert f'ndm-interface-hook {kind} "$@"' in wrapper.read_text()
@@ -218,8 +218,25 @@ def ndm_hook_contract(work: Path) -> None:
             assert argv[:3] == ["-T", "1", "-"] and "connect-timeout=1" in argv[3]
             assert not lost.exists()
         request.unlink()
+        # neighbour.d has different environment fields from interface hooks.
+        # It sends a fixed invalidation, including with absent/hostile tokens.
+        neighbour_env = dict(env, system_name="", id='unused"id', mac='unused;mac')
+        run(["sh", str(copied), "neighbour", "hook"], work, neighbour_env)
+        head, body = request.read_bytes().split(b"\r\n\r\n", 1)
+        assert head.startswith(b"POST /api/v1/system/hooks/ndm-neighbour HTTP/1.1\r\n")
+        assert b"Content-Length: 0" in head and body == b""
+        assert not lost.exists()
+        run(["sh", str(copied), "neighbour", "hook"], work,
+            dict(neighbour_env, HOOK_REPLY="HTTP/1.1 503 Unavailable"))
+        assert not lost.exists()  # metadata never creates a routing-loss marker
+        lost.mkdir()
+        run(["sh", str(copied), "neighbour", "hook"], work, neighbour_env)
+        assert lost.exists()  # it must not consume an existing interface marker
+        lost.rmdir()
+        request.unlink()
         run(["sh", str(copied)], work, env)
         run(["sh", str(copied), "layer", "other"], work, env)
+        run(["sh", str(copied), "neighbour", "other"], work, neighbour_env)
         assert not request.exists()
         for values in ({"id": 'bad"id'}, {"system_name": "x;touch BAD"}, {"level": "x\ncmd"}, {"id": "x" * 64}):
             run(["sh", str(copied), "layer", "hook"], work, dict(env, **values))
