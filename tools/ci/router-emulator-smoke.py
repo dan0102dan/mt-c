@@ -26,6 +26,7 @@ BOOT_TIMEOUT = 720
 COMMAND_TIMEOUT = 180
 API_HOST_PORT = 18881
 GUEST_PACKAGE = "/tmp/mt-c-ci.apk"
+ROUTING_SCRIPT = Path(__file__).with_name("router-emulator-routing.sh")
 
 
 class SmokeFailure(RuntimeError):
@@ -37,14 +38,18 @@ def serve_package(package):
     """Expose exactly one package to QEMU's 10.0.2.2 host gateway."""
     class PackageHandler(BaseHTTPRequestHandler):
         def do_GET(self):
-            if self.path != "/mt-c.apk":
+            if self.path == "/mt-c.apk":
+                payload = package
+            elif self.path == "/routing.sh":
+                payload = ROUTING_SCRIPT
+            else:
                 self.send_error(404)
                 return
             self.send_response(200)
             self.send_header("Content-Type", "application/octet-stream")
-            self.send_header("Content-Length", str(package.stat().st_size))
+            self.send_header("Content-Length", str(payload.stat().st_size))
             self.end_headers()
-            with package.open("rb") as file:
+            with payload.open("rb") as file:
                 while chunk := file.read(65536):
                     self.wfile.write(chunk)
 
@@ -175,6 +180,29 @@ def check_http_api(timeout=60):
     raise SmokeFailure(f"HTTP API not reachable: {url} ({last})")
 
 
+def create_routing_group():
+    """Add a real enabled domain group through the application's HTTP API."""
+    url = f"http://127.0.0.1:{API_HOST_PORT}/api/v1/groups"
+    payload = json.dumps({
+        "name": "CI example.com policy",
+        "interface": "mtci-out",
+        "enable": True,
+        "rules": [{"name": "example.com", "type": "domain",
+                   "rule": "example.com", "enable": True}],
+    }).encode()
+    request = urllib.request.Request(
+        url, data=payload, method="POST",
+        headers={"Content-Type": "application/json"},
+    )
+    with urllib.request.urlopen(request, timeout=20) as response:
+        body = json.loads(response.read())
+        if response.status != 200 or not body.get("enable"):
+            raise SmokeFailure(f"routing group not enabled: {body}")
+        if body.get("interface") != "mtci-out":
+            raise SmokeFailure(f"unexpected routing interface: {body}")
+    print("Routing group created via live API", flush=True)
+
+
 def stop_emulator(process, monitor_path):
     if process.poll() is not None:
         return
@@ -240,6 +268,19 @@ def run_test(emulator, package, preset, log_dir):
             # momentary procd spawn immediately after package install.
             serial.run("sleep 3; pidof magitrickled", timeout=20)
             print("PASS: APK installed, procd service running, HTTP API responding", flush=True)
+            # The forwarding test requires isolated client/server network
+            # namespaces, and fails rather than degrading to a rule-only test.
+            serial.run("apk add ip-full kmod-veth ipset uhttpd", timeout=240)
+            serial.run(f"wget -T 30 -O /tmp/mtci-routing.sh http://10.0.2.2:{http_port}/routing.sh", timeout=60)
+            serial.run("chmod 700 /tmp/mtci-routing.sh")
+            serial.run("(sh /tmp/mtci-routing.sh > /tmp/mtci-routing.log 2>&1; echo $? > /tmp/mtci-status) </dev/null >/dev/null 2>&1 &")
+            serial.run("for i in $(seq 1 30); do test -e /tmp/mtci-ready && exit 0; sleep 1; done; exit 1", timeout=40)
+            create_routing_group()
+            serial.run("touch /tmp/mtci-go")
+            serial.run("for i in $(seq 1 60); do test -f /tmp/mtci-status && exit 0; sleep 1; done; exit 1", timeout=75)
+            serial.run("cat /tmp/mtci-routing.log")
+            serial.run("test \"$(cat /tmp/mtci-status)\" = 0")
+            print("PASS: client DNS and HTTP traffic routed over selected interface", flush=True)
         except Exception:
             if serial is not None:
                 for diagnostic in (
@@ -248,6 +289,7 @@ def run_test(emulator, package, preset, log_dir):
                     "ip -br link",
                     "cat /etc/magitrickle/state/config.yaml | head -n 45",
                     "pidof magitrickled || true",
+                    "cat /tmp/mtci-routing.log 2>/dev/null || true",
                 ):
                     try:
                         serial.run(diagnostic, timeout=15, check=False)
