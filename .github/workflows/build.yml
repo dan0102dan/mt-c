@@ -937,6 +937,25 @@ jobs:
             echo "package_1_name=$(basename "$package")" >> "$GITHUB_OUTPUT"
           fi
 
+      # Exercise exactly the SDK-built .ipk in a real OpenWrt 24.10.4 guest.
+      # OpenWrt 25.12 uses apk, so it must not be paired with this opkg test.
+      - name: Install and exercise IPK on Router Emulator
+        if: ${{ matrix.name == 'aarch64_cortex-a53' && matrix.openwrt_version == '24.10.4' && steps.package_outputs.outputs.package_1_path != '' }}
+        timeout-minutes: 35
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y mtd-utils unzip
+          bash tools/ci/test-router-emulator.sh "${{ steps.package_outputs.outputs.package_1_path }}"
+
+      - name: Upload Router Emulator test logs
+        if: ${{ always() && matrix.name == 'aarch64_cortex-a53' && matrix.openwrt_version == '24.10.4' }}
+        uses: actions/upload-artifact@v6
+        with:
+          name: router-emulator-openwrt-24.10.4-aarch64_cortex-a53
+          path: .build/router-emulator-test/logs/
+          if-no-files-found: ignore
+          retention-days: 7
+
       - name: Upload package artifact 1
         if: ${{ github.event_name != 'release' && github.event_name != 'workflow_dispatch' && steps.package_outputs.outputs.package_1_path != '' }}
         uses: actions/upload-artifact@v6
