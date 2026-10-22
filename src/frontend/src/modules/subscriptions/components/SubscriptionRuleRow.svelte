@@ -9,6 +9,7 @@
 
   import { RULE_TYPES, type SubscriptionRule } from "../../../types";
   import { VALIDATOP_MAP } from "../../../utils/rule-validators";
+  import { subscriptionRulePattern } from "../../../utils/subscription-pattern";
 
   type Props = {
     rule: SubscriptionRule;
@@ -23,10 +24,15 @@
     throw new Error("SubscriptionsStore context is missing");
   }
 
+  const pattern = $derived(subscriptionRulePattern(rule.rule, rule.type));
+
   function isPatternInvalid() {
-    return (
-      rule.rule.length === 0 || (VALIDATOP_MAP[rule.type] && !VALIDATOP_MAP[rule.type](rule.rule))
-    );
+    // Imported wildcard source is validated by the backend; the old UI
+    // validator deliberately does not allow every supported imported glob.
+    const typedWildcard = rule.type === "wildcard" &&
+      (rule.rule.startsWith("DOMAIN-KEYWORD,") || rule.rule.startsWith("DOMAIN-WILDCARD,"));
+    return pattern.length === 0 ||
+      (!typedWildcard && VALIDATOP_MAP[rule.type] && !VALIDATOP_MAP[rule.type](pattern));
   }
 
   async function handleTypeChange(value: string) {
@@ -48,7 +54,7 @@
     <div class="subscription-rule-pattern">
       <div class="label">{t("Pattern")}</div>
       <div class="subscription-rule-value pattern-value" class:invalid={isPatternInvalid()}>
-        {rule.rule}
+        {pattern}
       </div>
     </div>
     <div class="subscription-rule-type">

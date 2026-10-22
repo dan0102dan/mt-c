@@ -1,7 +1,7 @@
 /* Subscription list parsing/refresh — port of src/backend/subscriptions
  * (parse.go, validate.go, auto_update.go).
  *
- * Behaviour contract:
+ * Behaviour contract (legacy plain lists):
  * - tokenized on '\n', '\r' and ',', trimmed, empty and '#'-prefixed
  *   entries skipped;
  * - duplicates removed by (detected type + '|' + text);
@@ -11,6 +11,14 @@
  * - refresh keeps ID/Enable/Type of entries whose exact text survived,
  *   assigns fresh unique random IDs to the rest;
  * - is_due mirrors subscriptions.IsDue.
+ *
+ * Typed text rule-sets (Meta/Surge and HOST aliases) are parsed by physical
+ * line; canonical TYPE,value records are stable identities. This preserves
+ * source types through cache reload and distinguishes equal payloads of
+ * different types. Unsupported/invalid records are silently skipped whole.
+ * No compatible records is a successful empty result. Resource failures and
+ * cancellation remain atomic errors, not a partial successful update.
+ * Only explicit DOMAIN-REGEX records use regex validation in typed lists.
  */
 #ifndef MAGITRICKLE_SUBPARSE_H
 #define MAGITRICKLE_SUBPARSE_H
@@ -42,6 +50,17 @@ mt_err_t mt_sub_rules_fix_ids(mt_sub_rule_t **rules, size_t n);
 /* Detected type for a single trimmed pattern; returns one of the
  * MT_RULE_* constants or "" (never NULL). */
 const char *mt_sub_detect_type(const char *pattern);
+
+/* Runtime payload of a canonical typed record, or the unchanged legacy
+ * pattern. Borrows from `rule`, independent of user-overridden effective type.
+ * NULL stays NULL. Do not use the payload as a subscription identity. */
+const char *mt_sub_rule_pattern(const char *rule);
+
+/* Allocates runtime matcher input according to the CURRENT, existing rule
+ * type. Canonical keyword/glob source -> wildcard pattern under an internal
+ * case-insensitive, literal-dot matching mode; other types use raw values.
+ * Returns owned memory; caller must free the result. */
+char *mt_sub_rule_runtime_pattern(const char *rule, const char *type);
 
 /* Parses a raw list into an array of mt_sub_rule_t (caller owns).
  * Every parsed rule: random unique ID, Enable=true. */

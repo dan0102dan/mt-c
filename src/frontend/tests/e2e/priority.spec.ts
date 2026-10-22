@@ -162,7 +162,7 @@ for (const kind of ["groups", "subscriptions"] as const) {
     await expect(e.save).toHaveClass(/inactive/);
     const routeSelect = page
       .locator(kind === "groups" ? ".group-header" : ".subscription-actions")
-      .getByRole("button", { name: "Route", exact: true });
+      .locator('[data-select-trigger][aria-label="Route"]');
     await expect(routeSelect).toHaveText("Shared VPN");
     await routeSelect.click();
     await page.getByRole("option", { name: "eth1", exact: true }).click();

@@ -8,6 +8,7 @@
  * Contract notes (compatibility-contract.md §1):
  * - absent `enable` in YAML unmarshals to false (plain Go bool);
  * - rule types: domain | namespace | wildcard | regex | subnet | subnet6;
+ *   imported keyword/glob entries map to existing wildcard.
  * - group color is normalized at load: invalid -> "#ffffff", valid ->
  *   lowercased.
  */
