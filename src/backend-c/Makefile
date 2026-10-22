@@ -305,6 +305,11 @@ $(BUILDDIR)/tests/test_dns_query_alloc: tests/unit/test_dns_query_alloc.c $(LIB_
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -Itests/vendor -Itests/unit $(LDFLAGS) -Wl,--wrap=malloc -Wl,--wrap=calloc -Wl,--wrap=memmove -Wl,--wrap=realloc -o $@ $< $(LIB_OBJS) $(TEST_SUPPORT_OBJS) $(LDLIBS) $(DEP_LIBS)
 
+# Exercise the total redirect deadline with a short test-only timeout.
+$(BUILDDIR)/tests/test_sub_fetch_timeout: tests/unit/test_sub_fetch_timeout.c src/subscriptions/fetch.c $(LIB_OBJS) $(TEST_SUPPORT_OBJS)
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) -Itests/vendor -Itests/unit $(LDFLAGS) -o $@ $< $(filter-out $(BUILDDIR)/src/subscriptions/fetch.o,$(LIB_OBJS)) $(TEST_SUPPORT_OBJS) $(LDLIBS) $(DEP_LIBS)
+
 # Redirect only libcurl's connection target; exercise the shared RCI transport.
 $(BUILDDIR)/tests/test_dns_keenetic: tests/unit/test_dns_keenetic.c $(LIB_OBJS) $(TEST_SUPPORT_OBJS)
 	@mkdir -p $(dir $@)
