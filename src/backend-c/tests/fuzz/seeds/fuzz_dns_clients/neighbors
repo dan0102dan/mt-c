@@ -1,0 +1,1 @@
+{"one":{"mac":"02:00:00:00:00:01","address-family":"ipv6","interface":"Bridge0","addresses":{"address":[{"address":"fe80::1","status":"active"},{"address":"fd00::1","status":"active"}]}}}

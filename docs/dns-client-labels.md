@@ -47,10 +47,13 @@ conflict detection.
 
 RCI neighbour responses normally contain an object indexed by neighbour ID;
 array and single-record forms with the same fields are accepted. IPv6 addresses
-come from `addresses.address`. Input validation is conservative: an unsupported,
-malformed or oversized neighbour response drops the entire optional join and
+come from `addresses.address`. The `expired` flag accepts booleans and exact
+`"yes"`/`"no"` strings; other present values are rejected. Input validation is
+conservative: an unsupported, malformed or oversized neighbour response drops the entire optional join and
 retains only fresh explicit hotspot labels. Hotspot failure clears all labels.
 No previous response or partial neighbour join survives an error.
+Encoded NUL characters are rejected before cJSON can truncate a decoded name,
+address, MAC or field name; literal text such as `\\u0000` remains valid.
 
 The installed `/opt/etc/ndm/neighbour.d/100-magitrickle` hook uses Keenetic's
 documented `hook` invocation. It reuses the existing socat delivery helper to
@@ -86,6 +89,10 @@ One worker owns all libubus calls and runs native `uloop`. The control pipe is a
 deadline. Native `ubus_auto_conn` and automatic object subscriptions handle
 broker and object recovery. No extra polling loop, exponential reconnect
 implementation or lease-expiry scheduler is maintained in mt-c.
+During shutdown, stop socket I/O and let libubus dispatch and release deferred
+messages before shutting down the context. Such messages can be queued while
+the library performs a synchronous lookup; cancelling their timer alone does
+not release them.
 
 Subscribe to dnsmasq instances, `dhcp`, `service` and the inventory provider's
 lifecycle. DHCP notifications invalidate the snapshot. Configuration changes
@@ -114,6 +121,8 @@ RCI connect/total timeouts are 500/2000 ms per request, with cancellation;
 redirects and environment proxies are disabled. Responses are capped at 1 MiB
 each, observations at 2048 and names at 127 printable UTF-8 bytes. Snapshot
 failure clears optional labels rather than retaining names indefinitely.
+If the periodic reconciliation timer cannot be created, optional discovery
+does not start; the journal continues to deliver DNS records with IP addresses.
 
 Removing the final viewer stops timers, closes OpenWrt discovery and releases
 the map. A bounded RCI request already in progress may finish, but its result
@@ -125,18 +134,23 @@ dependency. This refactor adds no runtime dependencies to PR #25.
 
 - `test_dns_clients.c`: canonical addresses, UTF-8, alias/hostname precedence,
   fresh RCI joins, IPv6-only clients, expiry, interface and owner conflicts,
-  malformed and oversized atomic fallback.
+  encoded NUL rejection, malformed and oversized atomic fallback.
 - `test_dns_client_owners.c`: equal aliases on different MACs, unnamed conflicting
   owners, scope conflicts, canonical MACs, bounded observations and compaction.
 - `test_dns_client_service.c` and `test_dns_client_events.c`: off-loop discovery,
   refresh coalescing, rename/failure/recovery, bursts, notifications during an
   inflight request and closed/reopened viewer generations.
+- `test_dns_stream_bounds.c`: failure to allocate the metadata timer preserves
+  snapshot/live DNS streaming and does not consume subscription slots.
 - `test_dns_keenetic.c`: native libcurl against an isolated local HTTP fixture.
 - `test_dns_keenetic_hook.c`: real Unix/TCP HTTP servers, Unix-only registration,
   immediate hook acknowledgement and coalesced invalidation.
 - `test_dns_openwrt.c`: native blobmsg parsing and an isolated real ubusd/provider,
   including host hints, service notifications, provider/broker recreation,
-  request timeout/cancellation and viewer lifecycle.
+  request timeout/cancellation, viewer lifecycle and deferred-message cleanup
+  with a stopped broker.
+- `fuzz_dns_clients.c`: mutate both RCI documents under libFuzzer/ASan/UBSan;
+  successful output must remain bounded, valid, sorted and unique by IP.
 - `tools/tests/package_identity.py`: the installed neighbour hook and SDK package
   inventory, together with existing package checks.
 
@@ -149,10 +163,20 @@ Sanitizer builds cover the same parser and lifecycle code. Target SDK builds
 use their own libraries; host results do not establish physical-router firmware
 behaviour. Frontend and DNS forwarding code are unchanged by this refactor.
 
+The RCI fixtures combine published hotspot JSON, a working neighbour consumer
+and the official CLI's address/status examples. They are not complete captures
+from a router. CLI output alone does not establish every JSON field type;
+verification on a specific Keenetic firmware still requires its actual hotspot
+and neighbour responses. An unsupported neighbour shape falls back to explicit
+hotspot labels, so a passing fixture suite alone cannot establish IPv6 naming
+on that firmware.
+
 ## Sources
 
 - [Keenetic OPKG hook contract](https://support.keenetic.com/peak/kn-2710/en/42407-opkg-component-description.html)
 - [Keenetic CLI reference: `show ip neighbour` and RCI](https://storage.googleapis.com/docs.help.keenetic.com/cli/4.1/en/cli_manual_kn-2210.pdf)
+- [Published KeeneticOS 4.2.6.3 hotspot response](https://forum.keenetic.ru/topic/20770-4263-%D1%81%D0%BF%D0%B8%D1%81%D0%BE%D0%BA-%D0%BA%D0%BB%D0%B8%D0%B5%D0%BD%D1%82%D0%BE%D0%B2/)
+- [Working consumer of the RCI neighbour address fields](https://blog.rvb.name/posts/pbr-keenetic)
 - [OpenWrt 24.10 host-hint implementation](https://github.com/openwrt/luci/blob/0e6537981036ea221a73e497920192179e9f74c3/libs/rpcd-mod-luci/src/luci.c)
 - [procd service notifications](https://github.com/openwrt/procd/blob/42d3937654508b04da64969f9d764ac2ec411904/service/service.c)
 - [Native ubus subscriber API](https://github.com/openwrt/ubus/blob/afa57cce0aff82f4a7a0e509d4387ebc23dd3be7/libubus-sub.c)

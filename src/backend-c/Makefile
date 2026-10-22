@@ -217,6 +217,9 @@ endif
 TEST_BINS := $(TEST_SRCS:tests/unit/%.c=$(BUILDDIR)/tests/%)
 
 FUZZ_SRCS := $(wildcard tests/fuzz/*.c)
+ifneq ($(strip $(ENTWARE_KN)),1)
+FUZZ_SRCS := $(filter-out tests/fuzz/fuzz_dns_clients.c,$(FUZZ_SRCS))
+endif
 FUZZ_BINS := $(FUZZ_SRCS:tests/fuzz/%.c=$(BUILDDIR)/fuzz/%)
 
 .PHONY: all core clean test sanitize static_analysis fuzz
@@ -283,9 +286,15 @@ $(BUILDDIR)/tests/%: tests/unit/%.c $(LIB_OBJS) $(TEST_SUPPORT_OBJS)
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -Itests/vendor -Itests/unit $(LDFLAGS) -o $@ $< $(LIB_OBJS) $(TEST_SUPPORT_OBJS) $(LDLIBS) $(DEP_LIBS)
 
+# Include the native source to exercise shutdown with a real deferred ubus
+# notification, without adding a production-only testing API.
+$(BUILDDIR)/tests/test_dns_openwrt: tests/unit/test_dns_openwrt.c src/platform/dns_openwrt.c $(LIB_OBJS) $(TEST_SUPPORT_OBJS)
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) -Itests/vendor -Itests/unit $(LDFLAGS) -o $@ $< $(filter-out $(BUILDDIR)/src/platform/dns_openwrt.o,$(LIB_OBJS)) $(TEST_SUPPORT_OBJS) $(LDLIBS) $(DEP_LIBS)
+
 $(BUILDDIR)/tests/test_dns_stream_bounds: tests/unit/test_dns_stream_bounds.c src/api/system.c src/api/dns_stream.inc $(LIB_OBJS) $(TEST_SUPPORT_OBJS)
 	@mkdir -p $(dir $@)
-	$(CC) $(CFLAGS) -Itests/vendor -Itests/unit $(LDFLAGS) -o $@ $< $(filter-out $(BUILDDIR)/src/api/system.o,$(LIB_OBJS)) $(TEST_SUPPORT_OBJS) $(LDLIBS) $(DEP_LIBS)
+	$(CC) $(CFLAGS) -Itests/vendor -Itests/unit $(LDFLAGS) -Wl,--wrap=mt_loop_add_timer -o $@ $< $(filter-out $(BUILDDIR)/src/api/system.o,$(LIB_OBJS)) $(TEST_SUPPORT_OBJS) $(LDLIBS) $(DEP_LIBS)
 
 # Operation-count and allocation-failure regressions, not timing gates.
 $(BUILDDIR)/tests/test_dns_stream: tests/unit/test_dns_stream.c $(LIB_OBJS) $(TEST_SUPPORT_OBJS)

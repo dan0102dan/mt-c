@@ -240,20 +240,24 @@ int mt_dns_clients_subscribe(mt_dns_clients_t *s, mt_dns_clients_notify_fn fn, v
     if (!s || !fn) { return 0; }
     for (size_t i = 0; i < MT_DNS_CLIENT_SUBSCRIBERS; i++) {
         if (s->subscriptions[i].fn) { continue; }
+        if (!s->listeners) {
+            bool needs_timer = true;
+#ifdef MT_PLATFORM_OPENWRT
+            needs_timer = !s->openwrt;
+#endif
+            /* Without reconciliation a one-time snapshot can remain stale
+             * indefinitely. Fail optional discovery before activating it;
+             * the journal remains available with plain IP addresses. */
+            if (needs_timer && !s->timer &&
+                mt_loop_add_timer(s->loop, MT_DNS_CLIENT_REFRESH_MS, MT_DNS_CLIENT_REFRESH_MS,
+                                  clients_tick, s, &s->timer) != MT_OK) { return 0; }
+        }
         s->subscriptions[i] = (client_listener_t){fn, ud};
         s->listeners++;
         if (s->listeners == 1) {
             pthread_mutex_lock(&s->mu);
             s->source_active = true; s->epoch++;
             pthread_mutex_unlock(&s->mu);
-            bool needs_timer = true;
-#ifdef MT_PLATFORM_OPENWRT
-            needs_timer = !s->openwrt;
-#endif
-            if (needs_timer && !s->timer) {
-                (void)mt_loop_add_timer(s->loop, MT_DNS_CLIENT_REFRESH_MS, MT_DNS_CLIENT_REFRESH_MS,
-                                       clients_tick, s, &s->timer);
-            }
             mt_dns_clients_refresh(s);
         }
         return (int)i + 1;

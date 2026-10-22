@@ -18,6 +18,14 @@ static mt_err_t parse_document(const char *json, size_t len, cJSON **out)
     *out = NULL;
     if (len > MT_DNS_CLIENT_BODY_LIMIT) { return MT_ERR_LIMIT; }
     if (!json || !len || memchr(json, 0, len)) { return MT_ERR_PROTO; }
+    /* cJSON exposes NUL-terminated strings without their decoded lengths.
+     * Reject encoded NULs before they can truncate a name, address or owner.
+     * Skip escaped characters so a literal backslash followed by u0000 works. */
+    for (size_t i = 0; i < len; i++) {
+        if (json[i] != '\\') { continue; }
+        if (len - i >= 6 && memcmp(json + i, "\\u0000", 6) == 0) { return MT_ERR_PROTO; }
+        if (i + 1 < len) { i++; }
+    }
     const char *end = NULL;
     cJSON *root = cJSON_ParseWithLengthOpts(json, len, &end, false);
     while (end && end < json + len && (*end == ' ' || *end == '\n' || *end == '\r' || *end == '\t')) { end++; }
@@ -28,6 +36,7 @@ static mt_err_t parse_document(const char *json, size_t len, cJSON **out)
 }
 static mt_err_t hotspot_rows(const cJSON *root, client_rows_t *rows)
 {
+    if (!root) { return MT_ERR_PROTO; }
     const cJSON *hosts = cJSON_IsArray(root) ? root : cJSON_GetObjectItemCaseSensitive(root, "host");
     if (!hosts) {
         return cJSON_IsObject(root) && !root->child ? MT_OK : MT_ERR_PROTO;
@@ -41,7 +50,7 @@ static mt_err_t hotspot_rows(const cJSON *root, client_rows_t *rows)
 }
 static mt_err_t neighbor_rows(const cJSON *root, client_rows_t *rows)
 {
-    if (!cJSON_IsArray(root) && !cJSON_IsObject(root)) { return MT_ERR_PROTO; }
+    if (!root || (!cJSON_IsArray(root) && !cJSON_IsObject(root))) { return MT_ERR_PROTO; }
     rows->single = cJSON_IsObject(root) && cJSON_GetObjectItemCaseSensitive(root, "address-family");
     if (rows->single) { rows->first = root; return MT_OK; }
     if ((unsigned)cJSON_GetArraySize(root) > MT_DNS_CLIENT_LIMIT) { return MT_ERR_LIMIT; }
@@ -119,11 +128,16 @@ static mt_err_t add_neighbors(mt_dns_client_table_t *table, const client_rows_t 
     size_t addresses = 0;
     for (const cJSON *row = neighbors->first; row; row = neighbors->single ? NULL : row->next) {
         const cJSON *expired = cJSON_GetObjectItemCaseSensitive(row, "expired");
+        const char *expired_text = string_field(row, "expired");
         const cJSON *interface = cJSON_GetObjectItemCaseSensitive(row, "interface");
         const char *scope = string_field(row, "interface");
-        if ((expired && !cJSON_IsBool(expired)) ||
+        /* Preserve the firmware's exact yes/no meaning when supplied as a
+         * string; other representations must not silently become false. */
+        bool known_expiry = !expired || cJSON_IsBool(expired) ||
+            (expired_text && (!strcmp(expired_text, "yes") || !strcmp(expired_text, "no")));
+        if (!known_expiry ||
             (interface && (!scope || !*scope || strnlen(scope, MT_DNS_CLIENT_SCOPE_LEN) >= MT_DNS_CLIENT_SCOPE_LEN))) { return MT_ERR_PROTO; }
-        if (cJSON_IsTrue(expired)) { continue; }
+        if (cJSON_IsTrue(expired) || (expired_text && !strcmp(expired_text, "yes"))) { continue; }
         char owner[18];
         const char *mac = mt_dns_client_mac(string_field(row, "mac"), owner) ? owner : NULL;
         const char *family = string_field(row, "address-family");

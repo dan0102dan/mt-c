@@ -9,6 +9,7 @@
 #include <stddef.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/socket.h>
 #include <unistd.h>
 #include <libubus.h>
 #include <libubox/blobmsg.h>
@@ -153,6 +154,7 @@ static bool new_object(struct ubus_context *ctx, struct ubus_subscriber *subscri
 {
     (void)ctx;
     source_t *s = container_of(subscriber, source_t, subscriber);
+    if (!s->active || atomic_load(s->worker->stop)) { return false; }
     if (strcmp(path, "service") && strcmp(path, "dhcp") && strcmp(path, "luci-rpc") &&
         strcmp(path, "dnsmasq") && strncmp(path, "dnsmasq.", 8)) { return false; }
     schedule_refresh(s, 1000);
@@ -238,10 +240,19 @@ fail:
 
 static void disconnect_source(source_t *s)
 {
+    s->active = false;
     uloop_timeout_cancel(&s->refresh);
     uloop_timeout_cancel(&s->connection.timer);
     cancel_request(s);
-    if (s->initialized) { ubus_shutdown(&s->connection.ctx); }
+    if (s->initialized) {
+        /* libubus can defer notifications received inside a synchronous lookup.
+         * Its shutdown cancels their timer but does not release that queue.
+         * End socket I/O before native dispatch so cleanup cannot start a new
+         * subscription or wait for more data, then close the native context. */
+        (void)shutdown(s->connection.ctx.sock.fd, SHUT_RDWR);
+        ubus_handle_event(&s->connection.ctx);
+        ubus_auto_shutdown(&s->connection);
+    }
     memset(&s->connection, 0, sizeof(s->connection));
     memset(&s->subscriber, 0, sizeof(s->subscriber));
     s->initialized = false; s->subscribed = false; s->dirty = false;

@@ -19,6 +19,7 @@
 #include <unistd.h>
 #include <libubus.h>
 #include <libubox/blobmsg.h>
+#include "../../src/platform/dns_openwrt.c"
 extern char **environ;
 
 static void hint(struct blob_buf *blob, const char *owner, const char *name,
@@ -304,6 +305,85 @@ static bool start_provider(const char *path, pid_t *pid, int *command_fd, int *r
     *command_fd = command[1]; *report_fd = response[0];
     return !error && wait_report(*report_fd, 'r');
 }
+
+static unsigned cleanup_notifications;
+static int cleanup_notification(struct ubus_context *ctx, struct ubus_object *obj,
+    struct ubus_request_data *request, const char *method, struct blob_attr *message)
+{
+    if (!strcmp(method, "dhcp.ack")) { cleanup_notifications++; }
+    return notification(ctx, obj, request, method, message);
+}
+TEST native_shutdown_releases_notifications_deferred_during_lookup(void)
+{
+    const char *broker = getenv("MT_TEST_UBUSD");
+    if (!broker) { SKIPm("set MT_TEST_UBUSD to the native ubusd binary"); }
+    char directory[] = "/tmp/mt-ubus-pending-XXXXXX", path[256] = {0};
+    bool ok = true, directory_created = false, loop_ready = false, broker_stopped = false;
+    bool handle_sigchld = uloop_handle_sigchld;
+    pid_t broker_pid = -1, server_pid = -1;
+    int command_fd = -1, report_fd = -1;
+    fixture_t f = {.mutex = PTHREAD_MUTEX_INITIALIZER, .active = true, .epoch = 1, .path = path};
+    atomic_init(&f.stop, false);
+    mt_dns_openwrt_worker_t worker = {.stop = &f.stop, .ud = &f, .command = worker_command,
+        .publish = worker_publish, .socket_path = path};
+    source_t source = {.worker = &worker, .active = true, .epoch = 1,
+        .refresh = {.cb = fetch_inventory}, .deadline = {.cb = inventory_timeout}};
+#define CHECK(expr) do { if (!(expr)) { fprintf(stderr, "ubus pending cleanup failed at %d: %s\n", __LINE__, #expr); ok = false; goto cleanup; } } while (0)
+    CHECK(mkdtemp(directory)); directory_created = true;
+    (void)snprintf(path, sizeof(path), "%s/bus.sock", directory);
+    CHECK(start_broker(broker, path, &broker_pid));
+    CHECK(start_provider(path, &server_pid, &command_fd, &report_fd));
+    uloop_handle_sigchld = false;
+    CHECK(uloop_init() == 0); loop_ready = true;
+    cleanup_notifications = 0;
+    source.subscriber.cb = cleanup_notification; source.subscriber.remove_cb = removed;
+    source.subscriber.new_obj_cb = new_object;
+    source.connection.path = path; source.connection.cb = connected;
+    ubus_auto_connect(&source.connection);
+    CHECK(source.initialized);
+    CHECK(ubus_register_subscriber(&source.connection.ctx, &source.subscriber) == 0);
+    source.subscribed = true;
+    ubus_handle_event(&source.connection.ctx);
+    uloop_timeout_cancel(&source.refresh);
+    CHECK(send_command(command_fd, 'e'));
+    struct pollfd readable = {.fd = source.connection.ctx.sock.fd, .events = POLLIN};
+    CHECK(poll(&readable, 1, 2000) > 0);
+    uint32_t id;
+    CHECK(ubus_lookup_id(&source.connection.ctx, "luci-rpc", &id) == 0);
+    /* The broker's notification arrives before the lookup result. libubus
+     * defers its callback while the synchronous request owns the context. */
+    CHECK(!list_empty(&source.connection.ctx.pending));
+    CHECK(cleanup_notifications == 0);
+    CHECK(kill(broker_pid, SIGSTOP) == 0); broker_stopped = true;
+    struct timespec before, after;
+    CHECK(clock_gettime(CLOCK_MONOTONIC, &before) == 0);
+    disconnect_source(&source);
+    CHECK(clock_gettime(CLOCK_MONOTONIC, &after) == 0);
+    int64_t elapsed_ms = (int64_t)(after.tv_sec - before.tv_sec) * 1000 +
+                         (after.tv_nsec - before.tv_nsec) / 1000000;
+    CHECK(elapsed_ms < 1500);
+    CHECK(cleanup_notifications == 1);
+    CHECK(!source.active && !source.initialized && !source.refresh.pending &&
+          !source.deadline.pending && !source.connection.timer.pending);
+cleanup:
+    if (broker_stopped) { kill(broker_pid, SIGCONT); }
+    disconnect_source(&source);
+    if (loop_ready) { uloop_done(); }
+    uloop_handle_sigchld = handle_sigchld;
+    if (server_pid > 0) { kill(server_pid, SIGTERM); waitpid(server_pid, NULL, 0); }
+    if (broker_pid > 0) { kill(broker_pid, SIGTERM); waitpid(broker_pid, NULL, 0); }
+    if (command_fd >= 0) { close(command_fd); }
+    if (report_fd >= 0) { close(report_fd); }
+    free(f.clients); pthread_mutex_destroy(&f.mutex);
+    if (directory_created) {
+        char acl_path[300]; (void)snprintf(acl_path, sizeof(acl_path), "%s/test.json", directory);
+        unlink(acl_path); unlink(path); rmdir(directory);
+    }
+#undef CHECK
+    if (!ok) { FAIL(); }
+    PASS();
+}
+
 TEST real_ubusd_native_lifecycle_and_platform_notifications(void)
 {
     const char *broker = getenv("MT_TEST_UBUSD");
@@ -433,6 +513,7 @@ int main(int argc, char **argv)
 #ifdef MT_PLATFORM_OPENWRT
     RUN_TEST(native_host_hints_include_slaac_and_suppress_ambiguous_owners);
     RUN_TEST(malformed_and_oversized_inventory_never_publishes_partial_names);
+    RUN_TEST(native_shutdown_releases_notifications_deferred_during_lookup);
     RUN_TEST(real_ubusd_native_lifecycle_and_platform_notifications);
 #endif
     GREATEST_MAIN_END();
