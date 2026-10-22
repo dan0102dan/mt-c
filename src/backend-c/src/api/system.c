@@ -199,6 +199,49 @@ static bool inherit_cached_subscriptions(cJSON *candidate, const cJSON *current)
     return true;
 }
 
+/* Config snapshots encode integers with 16+ decimal digits as JSON
+ * strings because cJSON (and ordinary JS numbers) cannot hold uint64_t
+ * losslessly. When importing, convert only the two uint64 settings back
+ * into exact JSON numeric literals before passing them to the existing
+ * libyaml model loader. All other quoted strings remain quoted; malformed
+ * or out-of-range integer strings fail instead of being silently rounded. */
+static bool restore_lossless_uint64(cJSON *document)
+{
+    cJSON *app = cJSON_GetObjectItemCaseSensitive(document, "app");
+    cJSON *dns = cJSON_GetObjectItemCaseSensitive(app, "dnsProxy");
+    if (!dns) { return true; }
+    if (!cJSON_IsObject(dns)) { return false; }
+    const char *const keys[] = {"maxIdleConns", "maxConcurrent"};
+    for (size_t i = 0; i < sizeof(keys) / sizeof(keys[0]); i++) {
+        cJSON *field = cJSON_GetObjectItemCaseSensitive(dns, keys[i]);
+        if (!field) { continue; }
+        if (cJSON_IsNumber(field)) {
+            /* Former snapshots used strings for 16+ decimal digits. A
+             * large JSON number can already be rounded by cJSON or JS,
+             * including just below 2^53; reject it rather than guess. */
+            if (field->valuedouble >= 1000000000000000.0) { return false; }
+            continue;
+        }
+        if (!cJSON_IsString(field) || !field->valuestring) { return false; }
+        const char *value = field->valuestring;
+        if (!*value || (value[0] == '0' && value[1])) { return false; }
+        uint64_t parsed = 0;
+        for (const unsigned char *q = (const unsigned char *)value; *q; q++) {
+            if (*q < '0' || *q > '9') { return false; }
+            unsigned digit = (unsigned)(*q - '0');
+            if (parsed > (UINT64_MAX - digit) / 10) { return false; }
+            parsed = parsed * 10 + digit;
+        }
+        cJSON *raw = cJSON_CreateRaw(value);
+        if (!raw) { return false; }
+        if (!cJSON_ReplaceItemInObjectCaseSensitive(dns, keys[i], raw)) {
+            cJSON_Delete(raw);
+            return false;
+        }
+    }
+    return true;
+}
+
 static void handle_config_snapshot(mt_http_req_t *req, mt_http_res_t *res, void *ud) {
     (void)req;
     mt_system_ctx_t *ctx = ud;
@@ -274,6 +317,11 @@ static void handle_config_apply(mt_http_req_t *req, mt_http_res_t *res, void *ud
     if (!cJSON_AddStringToObject(document, "configVersion", transfer_version(ctx))) {
         cJSON_Delete(document); cJSON_Delete(request);
         mt_http_res_write_error(res, 500, "out of memory"); return;
+    }
+    if (!restore_lossless_uint64(document)) {
+        cJSON_Delete(document); cJSON_Delete(request);
+        mt_http_res_write_error(res, 400, "invalid or inexact uint64 configuration field");
+        return;
     }
     char *serialized = cJSON_PrintUnformatted(document);
     cJSON_Delete(document);

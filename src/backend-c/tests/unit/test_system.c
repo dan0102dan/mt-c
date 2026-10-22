@@ -497,6 +497,59 @@ TEST config_apply_checks_field_names_not_a_magic_field_count(void) {
     harness_stop(h); PASS();
 }
 
+TEST config_snapshot_roundtrips_full_uint64_without_rounding(void) {
+    harness_t *h = harness_start(true);
+    ASSERT(h != NULL);
+    h->cfg.app.dns_proxy.max_idle_conns = UINT64_MAX;
+    h->cfg.app.dns_proxy.max_concurrent = UINT64_C(9007199254740993);
+
+    cJSON *snapshot = NULL;
+    ASSERT_EQ(200, do_request("GET", "/api/v1/system/config/snapshot", NULL, &snapshot));
+    ASSERT(cJSON_IsObject(snapshot));
+    cJSON *config = cJSON_GetObjectItemCaseSensitive(snapshot, "config");
+    cJSON *app = cJSON_GetObjectItemCaseSensitive(config, "app");
+    cJSON *dns = cJSON_GetObjectItemCaseSensitive(app, "dnsProxy");
+    cJSON *idle = cJSON_GetObjectItemCaseSensitive(dns, "maxIdleConns");
+    cJSON *concurrent = cJSON_GetObjectItemCaseSensitive(dns, "maxConcurrent");
+    ASSERT(cJSON_IsString(idle));
+    ASSERT(cJSON_IsString(concurrent));
+    ASSERT_STR_EQ("18446744073709551615", idle->valuestring);
+    ASSERT_STR_EQ("9007199254740993", concurrent->valuestring);
+
+    /* A byte-for-byte unmodified preview must round-trip through the HTTP
+     * importer and filesystem, without cJSON converting uint64 into double. */
+    char *payload = cJSON_PrintUnformatted(snapshot);
+    ASSERT(payload != NULL);
+    ASSERT_EQ(200, do_request("POST", "/api/v1/system/config/apply", payload, NULL));
+    free(payload);
+    ASSERT(h->cfg.app.dns_proxy.max_idle_conns == UINT64_MAX);
+    ASSERT(h->cfg.app.dns_proxy.max_concurrent == UINT64_C(9007199254740993));
+    mt_config_t disk = {0};
+    ASSERT_EQ(MT_OK, mt_config_init_defaults(&disk));
+    ASSERT_EQ(MT_OK, mt_config_load_file(&disk, h->config_path));
+    ASSERT(disk.app.dns_proxy.max_idle_conns == UINT64_MAX);
+    ASSERT(disk.app.dns_proxy.max_concurrent == UINT64_C(9007199254740993));
+    mt_config_clear(&disk);
+
+    /* Reject unsafe JSON numbers and decimal strings outside uint64 range. */
+    ASSERT(cJSON_ReplaceItemInObjectCaseSensitive(dns, "maxConcurrent",
+                                                 cJSON_CreateNumber(9007199254740992.0)));
+    payload = cJSON_PrintUnformatted(snapshot);
+    ASSERT(payload);
+    ASSERT_EQ(400, do_request("POST", "/api/v1/system/config/apply", payload, NULL));
+    free(payload);
+    ASSERT(cJSON_ReplaceItemInObjectCaseSensitive(dns, "maxConcurrent",
+                                                 cJSON_CreateString("18446744073709551616")));
+    payload = cJSON_PrintUnformatted(snapshot);
+    ASSERT(payload);
+    ASSERT_EQ(400, do_request("POST", "/api/v1/system/config/apply", payload, NULL));
+    free(payload);
+    ASSERT(h->cfg.app.dns_proxy.max_concurrent == UINT64_C(9007199254740993));
+    cJSON_Delete(snapshot);
+    harness_stop(h);
+    PASS();
+}
+
 TEST save_config_noop_without_path(void) {
     harness_t *h = harness_start(false);
     ASSERT(h != NULL);
@@ -554,6 +607,7 @@ int main(int argc, char **argv) {
     RUN_TEST(config_apply_rejects_stale_preview_and_commits_valid_settings);
     RUN_TEST(config_apply_save_failure_restores_subscription_exceptions);
     RUN_TEST(config_apply_checks_field_names_not_a_magic_field_count);
+    RUN_TEST(config_snapshot_roundtrips_full_uint64_without_rounding);
     RUN_TEST(save_config_noop_without_path);
     RUN_TEST(netfilterd_hook_ok_and_bad_json);
     RUN_TEST(ignored_interfaces_list);

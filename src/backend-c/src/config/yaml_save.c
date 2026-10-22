@@ -147,9 +147,16 @@ static void emit_bool(emitter_ctx_t *ctx, bool v)
 
 static void emit_u64(emitter_ctx_t *ctx, uint64_t v)
 {
-    if (ctx->json) { json_value(ctx, cJSON_CreateNumber((double)v)); return; }
     char buf[24];
     snprintf(buf, sizeof(buf), "%" PRIu64, v);
+    if (ctx->json) {
+        /* cJSON stores numbers as doubles. Mirror the former YAML->JSON
+         * conversion: decimals with 16+ digits are strings, not rounded
+         * numbers. In particular this preserves every uint64_t value. */
+        json_value(ctx, strlen(buf) < 16 ? cJSON_CreateNumber((double)v)
+                                         : cJSON_CreateString(buf));
+        return;
+    }
     emit_plain(ctx, buf);
 }
 
