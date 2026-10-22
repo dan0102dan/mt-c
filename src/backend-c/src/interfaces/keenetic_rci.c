@@ -3,6 +3,9 @@
 #include "magitrickle/keenetic_rci.h"
 
 #include <stdbool.h>
+#include <limits.h>
+#include <stdint.h>
+#include "magitrickle/json.h"
 #include <stdlib.h>
 #include <string.h>
 
@@ -49,7 +52,7 @@ mt_err_t mt_kn_parse_interface_list(const char *json, mt_kn_iface_meta_t **out, 
     *out_n = 0;
     if (!json) { return MT_ERR_INVAL; }
 
-    cJSON *root = cJSON_Parse(json);
+    cJSON *root = mt_json_parse_document(json, strlen(json));
     if (!root) { return MT_ERR_PROTO; }
     if (!cJSON_IsObject(root)) {
         cJSON_Delete(root);
@@ -132,7 +135,7 @@ char *mt_kn_build_system_name_request(const mt_kn_iface_meta_t *metas, size_t n)
 mt_err_t mt_kn_parse_system_names(const char *json, mt_kn_iface_meta_t *metas, size_t n) {
     if (!json) { return MT_ERR_INVAL; }
 
-    cJSON *root = cJSON_Parse(json);
+    cJSON *root = mt_json_parse_document(json, strlen(json));
     if (!root) { return MT_ERR_PROTO; }
     if (!cJSON_IsArray(root)) {
         cJSON_Delete(root);
@@ -213,90 +216,92 @@ void mt_kn_aliases_free(mt_kn_aliases_t *aliases) {
 
 typedef struct rci_buf {
     char *data;
-    size_t len;
-    size_t cap;
-    bool truncated;
+    size_t length, capacity, limit;
+    mt_err_t error;
 } rci_buf_t;
 
-static size_t write_cb(char *ptr, size_t size, size_t nmemb, void *ud) {
-    rci_buf_t *buf = ud;
-    size_t n = size * nmemb;
-    if (buf->len + n > (size_t)MT_KN_RCI_MAX_BODY_BYTES) {
-        buf->truncated = true;
-        return 0; /* abort the transfer */
+static size_t receive_rci(char *data, size_t size, size_t count, void *ud) {
+    rci_buf_t *b = ud;
+    if (count && size > SIZE_MAX / count) { b->error = MT_ERR_LIMIT; return 0; }
+    size_t n = size * count;
+    if (n > b->limit - b->length) { b->error = MT_ERR_LIMIT; return 0; }
+    size_t needed = b->length + n + 1;
+    if (needed > b->capacity) {
+        size_t capacity = b->capacity ? b->capacity : 4096;
+        while (capacity < needed) {
+            if (capacity > b->limit / 2) { capacity = b->limit + 1; break; }
+            capacity *= 2;
+        }
+        if (capacity > b->limit + 1) { capacity = b->limit + 1; }
+        char *p = realloc(b->data, capacity);
+        if (!p) { b->error = MT_ERR_NOMEM; return 0; }
+        b->data = p; b->capacity = capacity;
     }
-    if (buf->len + n + 1 > buf->cap) {
-        size_t new_cap = buf->cap ? buf->cap * 2 : 4096;
-        while (new_cap < buf->len + n + 1) { new_cap *= 2; }
-        char *na = realloc(buf->data, new_cap);
-        if (!na) { return 0; }
-        buf->data = na;
-        buf->cap = new_cap;
-    }
-    memcpy(buf->data + buf->len, ptr, n);
-    buf->len += n;
-    buf->data[buf->len] = '\0';
+    memcpy(b->data + b->length, data, n);
+    b->length += n; b->data[b->length] = '\0';
     return n;
 }
-
-/* Performs one RCI call. `post_body` NULL means GET. On success stores a
- * NUL-terminated body in *out_body (caller frees). */
-static mt_err_t rci_call(const char *url, const char *post_body, char **out_body) {
-    *out_body = NULL;
-
+static int rci_progress(void *ud, curl_off_t total, curl_off_t now,
+                         curl_off_t up_total, curl_off_t up_now) {
+    (void)total; (void)now; (void)up_total; (void)up_now;
+    const atomic_bool *stop = ud;
+    return stop && atomic_load(stop) ? 1 : 0;
+}
+mt_err_t mt_kn_rci_request(const char *url, const char *post, size_t limit,
+                            const atomic_bool *stop, char **body, size_t *length) {
+    if (!body || !length) { return MT_ERR_INVAL; }
+    *body = NULL; *length = 0;
+    if (!url || !limit || limit == SIZE_MAX || (post && strlen(post) > LONG_MAX)) {
+        return MT_ERR_INVAL;
+    }
+    if (stop && atomic_load(stop)) { return MT_ERR_CANCELED; }
     CURL *curl = curl_easy_init();
     if (!curl) { return MT_ERR_NOMEM; }
-
-    rci_buf_t buf = {0};
     struct curl_slist *headers = NULL;
-
-    curl_easy_setopt(curl, CURLOPT_URL, url);
-    curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 0L);
-    curl_easy_setopt(curl, CURLOPT_TIMEOUT, MT_KN_RCI_TIMEOUT_SECONDS);
-    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_cb);
-    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &buf);
-    curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1L);
-
-    if (post_body) {
-        headers = curl_slist_append(headers, "Content-Type: application/json");
-        if (!headers) {
-            curl_easy_cleanup(curl);
-            return MT_ERR_NOMEM;
-        }
-        curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
-        curl_easy_setopt(curl, CURLOPT_POSTFIELDS, post_body);
-        curl_easy_setopt(curl, CURLOPT_POSTFIELDSIZE, (long)strlen(post_body));
+    if (post) {
+        headers = curl_slist_append(NULL, "Content-Type: application/json");
+        if (!headers) { curl_easy_cleanup(curl); return MT_ERR_NOMEM; }
     }
-
-    CURLcode rc = curl_easy_perform(curl);
+    rci_buf_t response = {.limit = limit};
+    CURLcode setup = CURLE_OK;
+#define SET(option, value) do { if (setup == CURLE_OK) { setup = curl_easy_setopt(curl, option, value); } } while (0)
+    SET(CURLOPT_URL, url);
+    SET(CURLOPT_PROXY, "");
+    SET(CURLOPT_FOLLOWLOCATION, 0L);
+    SET(CURLOPT_CONNECTTIMEOUT_MS, 500L);
+    SET(CURLOPT_TIMEOUT_MS, 2000L);
+    SET(CURLOPT_NOSIGNAL, 1L);
+    SET(CURLOPT_WRITEFUNCTION, receive_rci);
+    SET(CURLOPT_WRITEDATA, &response);
+    SET(CURLOPT_XFERINFOFUNCTION, rci_progress);
+    SET(CURLOPT_XFERINFODATA, stop);
+    SET(CURLOPT_NOPROGRESS, 0L);
+#if LIBCURL_VERSION_NUM >= 0x075500
+    SET(CURLOPT_PROTOCOLS_STR, "http");
+#else
+    SET(CURLOPT_PROTOCOLS, (long)CURLPROTO_HTTP);
+#endif
+    if (post) {
+        SET(CURLOPT_HTTPHEADER, headers);
+        SET(CURLOPT_POSTFIELDS, post);
+        SET(CURLOPT_POSTFIELDSIZE, (long)strlen(post));
+    }
+#undef SET
+    CURLcode result = setup == CURLE_OK ? curl_easy_perform(curl) : setup;
     long status = 0;
-    if (rc == CURLE_OK) { curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &status); }
-
+    if (result == CURLE_OK) { result = curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &status); }
     curl_slist_free_all(headers);
     curl_easy_cleanup(curl);
-
-    if (rc != CURLE_OK) {
-        free(buf.data);
-        if (buf.truncated) {
-            MT_DEBUG("keenetic rci: %s response exceeded %d bytes", url,
-                     MT_KN_RCI_MAX_BODY_BYTES);
-            return MT_ERR_LIMIT;
-        }
-        MT_DEBUG("keenetic rci: %s failed: %s", url, curl_easy_strerror(rc));
-        return rc == CURLE_OPERATION_TIMEDOUT ? MT_ERR_TIMEOUT : MT_ERR_UPSTREAM;
+    mt_err_t error = response.error;
+    if (stop && atomic_load(stop)) { error = MT_ERR_CANCELED; }
+    else if (error == MT_OK && result != CURLE_OK) {
+        error = result == CURLE_OPERATION_TIMEDOUT ? MT_ERR_TIMEOUT :
+                result == CURLE_ABORTED_BY_CALLBACK ? MT_ERR_CANCELED : MT_ERR_UPSTREAM;
     }
-    if (status != 200) {
-        free(buf.data);
-        MT_DEBUG("keenetic rci: %s returned status %ld", url, status);
-        return MT_ERR_UPSTREAM;
-    }
-    if (!buf.data) {
-        /* 200 with an empty body: nothing to parse. */
-        free(buf.data);
-        return MT_ERR_PROTO;
-    }
-
-    *out_body = buf.data;
+    if (error == MT_OK && status != 200) { error = MT_ERR_UPSTREAM; }
+    if (error == MT_OK && !response.length) { error = MT_ERR_PROTO; }
+    if (error != MT_OK) { free(response.data); return error; }
+    *body = response.data; *length = response.length;
     return MT_OK;
 }
 
@@ -314,7 +319,8 @@ mt_err_t mt_kn_get_iface_aliases_from(const char *base_url, mt_kn_aliases_t *out
     snprintf(list_url, sizeof(list_url), "%.*s/rci/show/interface", (int)base_len, base_url);
 
     char *list_body = NULL;
-    mt_err_t err = rci_call(list_url, NULL, &list_body);
+    size_t length = 0;
+    mt_err_t err = mt_kn_rci_request(list_url, NULL, MT_KN_RCI_MAX_BODY_BYTES, NULL, &list_body, &length);
     if (err != MT_OK) { return err; }
 
     mt_kn_iface_meta_t *metas = NULL;
@@ -339,7 +345,7 @@ mt_err_t mt_kn_get_iface_aliases_from(const char *base_url, mt_kn_aliases_t *out
     snprintf(batch_url, sizeof(batch_url), "%.*s/rci/", (int)base_len, base_url);
 
     char *batch_body = NULL;
-    err = rci_call(batch_url, req_body, &batch_body);
+    err = mt_kn_rci_request(batch_url, req_body, MT_KN_RCI_MAX_BODY_BYTES, NULL, &batch_body, &length);
     free(req_body);
     if (err != MT_OK) {
         free(metas);

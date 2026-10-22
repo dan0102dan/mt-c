@@ -312,6 +312,11 @@ $(BUILDDIR)/tests/test_system: tests/unit/test_system.c $(LIB_OBJS) $(TEST_SUPPO
 	$(CC) $(CFLAGS) -Itests/vendor -Itests/unit $(LDFLAGS) -Wl,--wrap=mt_kn_get_iface_aliases -o $@ $< $(LIB_OBJS) $(TEST_SUPPORT_OBJS) $(LDLIBS) $(DEP_LIBS)
 endif
 
+# Redirect only libcurl's connection target; exercise the shared RCI transport.
+$(BUILDDIR)/tests/test_dns_keenetic: tests/unit/test_dns_keenetic.c $(LIB_OBJS) $(TEST_SUPPORT_OBJS)
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) -Itests/vendor -Itests/unit $(LDFLAGS) -Wl,--wrap=curl_easy_init -o $@ $< $(LIB_OBJS) $(TEST_SUPPORT_OBJS) $(LDLIBS) $(DEP_LIBS)
+
 # Inspect the snapshot transport without exporting test-only production helpers.
 $(BUILDDIR)/tests/test_keenetic_ifstate_rci: tests/unit/test_keenetic_ifstate_rci.c src/interfaces/keenetic_ifstate_rci.c $(LIB_OBJS) $(TEST_SUPPORT_OBJS)
 	@mkdir -p $(dir $@)

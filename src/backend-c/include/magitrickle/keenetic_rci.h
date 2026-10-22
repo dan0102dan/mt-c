@@ -29,6 +29,7 @@
 #ifdef MT_ENTWARE_KN
 
 #include <stddef.h>
+#include <stdatomic.h>
 
 #include "magitrickle/err.h"
 
@@ -42,6 +43,13 @@
  * trusted endpoint, but an unbounded read into a router's small RAM is
  * a worse failure mode than giving up on aliases, so cap and fail. */
 #define MT_KN_RCI_MAX_BODY_BYTES (1024 * 1024)
+
+/* Shared read-only RCI transport. No proxy inheritance or redirects; each
+ * call has a 500ms connect/2s total timeout and a caller-selected body limit.
+ * NULL post means GET. On success caller frees *body; outputs are empty on
+ * every error. Only worker threads may call this synchronous primitive. */
+mt_err_t mt_kn_rci_request(const char *url, const char *post, size_t limit,
+                            const atomic_bool *stop, char **body, size_t *length);
 
 /* One resolved alias: the kernel interface name getifaddrs reports, and
  * the human-facing name to show for it. Both are fixed-size and

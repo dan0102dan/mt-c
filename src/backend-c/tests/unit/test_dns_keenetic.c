@@ -1,6 +1,11 @@
 #include "greatest.h"
 #ifdef MT_ENTWARE_KN
 #include <curl/curl.h>
+#include <arpa/inet.h>
+#include <stdlib.h>
+#include <string.h>
+#include "magitrickle/dns_clients.h"
+#include "magitrickle/keenetic_rci.h"
 #include <pthread.h>
 #include <poll.h>
 #include <sys/socket.h>
@@ -9,24 +14,16 @@
 /* Keep the production URLs and actual libcurl transfer, redirecting only the
  * connection to an ephemeral loopback fixture. No router or privileged port. */
 static struct curl_slist *fixture_route;
-static CURL *fixture_curl_init(void)
+CURL *__real_curl_easy_init(void);
+CURL *__wrap_curl_easy_init(void);
+CURL *__wrap_curl_easy_init(void)
 {
-    CURL *curl = curl_easy_init();
+    CURL *curl = __real_curl_easy_init();
     if (curl && curl_easy_setopt(curl, CURLOPT_CONNECT_TO, fixture_route) != CURLE_OK) {
         curl_easy_cleanup(curl); return NULL;
     }
     return curl;
 }
-#define curl_easy_init fixture_curl_init
-#define mt_dns_clients_parse_hotspot fixture_parse_hotspot
-#define mt_dns_clients_parse_keenetic fixture_parse_keenetic
-#define mt_dns_clients_fetch_keenetic fixture_fetch_keenetic
-#include "../../src/interfaces/keenetic_dns_clients.c"
-#undef curl_easy_init
-#undef mt_dns_clients_parse_hotspot
-#undef mt_dns_clients_parse_keenetic
-#undef mt_dns_clients_fetch_keenetic
-
 typedef struct { unsigned status; const char *body; } reply_t;
 typedef struct {
     int listener;
@@ -116,7 +113,7 @@ TEST transport_refreshes_both_documents_and_never_reuses_stale_joins(void)
         server_t server = {.replies = cases[i], .count = 2};
         pthread_t thread; ASSERT(start_server(&server, &thread));
         mt_dns_client_t *clients = NULL; size_t count = 0;
-        mt_err_t err = fixture_fetch_keenetic(&clients, &count, NULL, NULL);
+        mt_err_t err = mt_dns_clients_fetch_keenetic(&clients, &count, NULL, NULL);
         stop_server(&server, thread);
         ASSERT_EQ(2u, (unsigned)server.handled);
         ASSERT(strstr(server.request[0], "GET /rci/show/ip/hotspot HTTP/"));
@@ -138,7 +135,7 @@ TEST hotspot_http_errors_and_cancellation_publish_no_partial_result(void)
         server_t server = {.replies = &replies[i], .count = 1, .cancel = i == 2 ? &cancel : NULL};
         pthread_t thread; ASSERT(start_server(&server, &thread));
         mt_dns_client_t *clients = NULL; size_t count = 0;
-        mt_err_t err = fixture_fetch_keenetic(&clients, &count, &cancel, NULL);
+        mt_err_t err = mt_dns_clients_fetch_keenetic(&clients, &count, &cancel, NULL);
         stop_server(&server, thread);
         ASSERT_EQ(1u, (unsigned)server.handled);
         ASSERT_EQ(i == 2 ? MT_ERR_CANCELED : MT_ERR_UPSTREAM, err);
@@ -146,26 +143,27 @@ TEST hotspot_http_errors_and_cancellation_publish_no_partial_result(void)
     }
     atomic_bool cancel = ATOMIC_VAR_INIT(true);
     mt_dns_client_t *clients = NULL; size_t count = 0;
-    ASSERT_EQ(MT_ERR_CANCELED, fixture_fetch_keenetic(&clients, &count, &cancel, NULL));
+    ASSERT_EQ(MT_ERR_CANCELED, mt_dns_clients_fetch_keenetic(&clients, &count, &cancel, NULL));
     ASSERT_EQ(0u, (unsigned)count); ASSERT(clients == NULL);
     curl_global_cleanup(); PASS();
 }
-TEST response_size_and_progress_callbacks_remain_bounded(void)
+TEST response_size_remains_bounded(void)
 {
-    client_response_t response = {0};
-    ASSERT_EQ(3u, receive_clients("abc", 1, 3, &response));
-    ASSERT_STR_EQ("abc", response.data);
-    ASSERT_EQ(0u, receive_clients("", SIZE_MAX, 2, &response));
-    ASSERT_EQ(MT_ERR_LIMIT, response.error); free(response.data);
-    response = (client_response_t){.len = MT_DNS_CLIENT_BODY_LIMIT};
-    ASSERT_EQ(0u, receive_clients("x", 1, 1, &response));
-    ASSERT_EQ(MT_ERR_LIMIT, response.error);
-    atomic_bool cancel = ATOMIC_VAR_INIT(false);
-    client_progress_t context = {.stop = &cancel};
-    ASSERT_EQ(0, fetch_progress(&context, 0, 0, 0, 0));
-    atomic_store(&cancel, true);
-    ASSERT_EQ(1, fetch_progress(&context, 0, 0, 0, 0));
-    PASS();
+    ASSERT_EQ(CURLE_OK, curl_global_init(CURL_GLOBAL_DEFAULT));
+    const reply_t replies[] = {{200, "abc"}, {200, "ab"}, {200, ""}};
+    for (size_t i = 0; i < 3; i++) {
+        server_t server = {.replies = &replies[i], .count = 1};
+        pthread_t thread; ASSERT(start_server(&server, &thread));
+        char *body = NULL; size_t length = 0;
+        mt_err_t err = mt_kn_rci_request(MT_KN_RCI_BASE_URL "/rci/", NULL,
+                                         2, NULL, &body, &length);
+        stop_server(&server, thread);
+        ASSERT_EQ(i == 0 ? MT_ERR_LIMIT : i == 1 ? MT_OK : MT_ERR_PROTO, err);
+        ASSERT_EQ(i == 1 ? 2u : 0u, length);
+        if (i == 1) { ASSERT_STR_EQ("ab", body); } else { ASSERT(body == NULL); }
+        free(body);
+    }
+    curl_global_cleanup(); PASS();
 }
 #endif
 GREATEST_MAIN_DEFS();
@@ -175,7 +173,7 @@ int main(int argc, char **argv)
 #ifdef MT_ENTWARE_KN
     RUN_TEST(transport_refreshes_both_documents_and_never_reuses_stale_joins);
     RUN_TEST(hotspot_http_errors_and_cancellation_publish_no_partial_result);
-    RUN_TEST(response_size_and_progress_callbacks_remain_bounded);
+    RUN_TEST(response_size_remains_bounded);
 #endif
     GREATEST_MAIN_END();
 }

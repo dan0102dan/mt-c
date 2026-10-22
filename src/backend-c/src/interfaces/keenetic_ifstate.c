@@ -2,7 +2,7 @@
 #include <netinet/in.h>
 #include <stdlib.h>
 #include <string.h>
-#include <cjson/cJSON.h>
+#include "magitrickle/json.h"
 
 typedef struct {
     mt_kn_ifinfo_t info;
@@ -42,18 +42,8 @@ static bool unique_keys(const cJSON *object)
 }
 static cJSON *parse_document(const char *body, size_t len)
 {
-    if (!body || !len || memchr(body, '\0', len)) { return NULL; }
-    /* cJSON exposes C strings, so reject escaped NUL before it can hide a
-     * suffix in an identifier/value. Skip escaped backslashes themselves. */
-    for (size_t i = 0; i < len; i++) {
-        if (body[i] != '\\') { continue; }
-        if (len - i >= 6 && !memcmp(body + i, "\\u0000", 6)) { return NULL; }
-        if (i + 1 < len) { i++; }
-    }
-    const char *end = NULL;
-    cJSON *json = cJSON_ParseWithLengthOpts(body, len, &end, false);
-    while (end && end < body + len && strchr(" \r\n\t", *end)) { end++; }
-    if (!cJSON_IsObject(json) || end != body + len ||
+    cJSON *json = mt_json_parse_document(body, len);
+    if (!json || !cJSON_IsObject(json) ||
         cJSON_GetArraySize(json) > (int)MT_KN_IFSTATE_LIMIT) { cJSON_Delete(json); return NULL; }
     if (!unique_keys(json)) { cJSON_Delete(json); return NULL; }
     return json;
