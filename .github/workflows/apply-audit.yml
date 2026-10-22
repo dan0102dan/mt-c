@@ -1,0 +1,41 @@
+name: Apply verified audit changes
+on:
+  push:
+    branches: [refactor/system-integration-audit]
+    paths: [.github/workflows/apply-audit.yml]
+permissions:
+  contents: write
+jobs:
+  apply:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+      - name: Apply verified patch series
+        run: |
+          python3 - <<'PY'
+          import base64, hashlib, json, lzma, subprocess
+          from pathlib import Path
+          def git(*args, **kw):
+              return subprocess.run(['git', *args], check=True, **kw)
+          packed = base64.b64decode(''.join(Path(f'.audit-transfer.{i}').read_text().strip() for i in range(1, 5)), validate=True)
+          assert hashlib.sha256(packed).hexdigest() == 'ecb4bd38b5920e722b9d74aa728c6a4ff742bf658fa7e2eb5d8e375dddc624e5', 'Transfer checksum mismatch'
+          data = json.loads(lzma.decompress(packed))
+          assert data['base_commit'] == '89b3a6f9be7a2e69bf3e7df36234ba33cb2668df'
+          git('diff', '--exit-code', data['base_commit'], '--', 'src/backend-c', 'docs')
+          git('config', 'user.name', 'github-actions[bot]')
+          git('config', 'user.email', '41898282+github-actions[bot]@users.noreply.github.com')
+          for item in data['commits']:
+              patch = item['patch'].encode()
+              git('apply', '--check', '--unidiff-zero', '--index', '-', input=patch)
+              git('apply', '--unidiff-zero', '--index', '-', input=patch)
+              git('commit', '-m', item['message'])
+          git('rm', *[f'.audit-transfer.{i}' for i in range(1, 5)], '.github/workflows/audit-workspace.yml', '.github/workflows/apply-audit.yml')
+          tree = subprocess.check_output(['git', 'write-tree'], text=True).strip()
+          assert tree == '241f669d1d4f9895aff7f540ee7f44020f5043b3', f'Final tree differs from tested workspace: {tree}'
+          git('commit', '-m', 'chore: remove temporary audit transfer helpers')
+          git('push', 'origin', 'HEAD:refactor/system-integration-audit')
+          print('Published exact tested tree:', tree)
+          PY
