@@ -126,15 +126,27 @@ GROUP_ID=c1c0ffee
 cat > /tmp/mtci-group-request.json <<EOF
 {"id":"$GROUP_ID","name":"CI example.com policy","interface":"mtci-out","enable":true,"rules":[{"name":"example.com","type":"domain","rule":"example.com","enable":true}]}
 EOF
-wget -T 10 -q -O /tmp/mtci-groups-before \
+# curl is installed solely for the integration fixture, not as a runtime
+# dependency of mt-c. Unlike uclient-fetch's wget compatibility frontend,
+# it reports the HTTP status and response body reliably for POST failures.
+curl --silent --show-error --connect-timeout 5 --max-time 12 --fail \
+  -o /tmp/mtci-groups-before \
   http://127.0.0.1:8080/api/v1/groups ||
   die "local HTTP API not reachable after fw4 reload"
-if ! wget -T 45 -q -O /tmp/mtci-group-response.json \
-  --header='Content-Type: application/json' \
-  --post-file=/tmp/mtci-group-request.json \
+if ! curl --silent --show-error --connect-timeout 5 --max-time 35 \
+  --dump-header /tmp/mtci-post-headers \
+  --output /tmp/mtci-group-response.json \
+  --header 'Content-Type: application/json' \
+  --data-binary @/tmp/mtci-group-request.json \
   http://127.0.0.1:8080/api/v1/groups; then
+  cat /tmp/mtci-post-headers 2>/dev/null || :
   cat /tmp/mtci-group-response.json 2>/dev/null || :
-  die "creating example.com group via local HTTP API failed"
+  die "HTTP POST request could not be transmitted to mt-c"
+fi
+if ! grep -Eq '^HTTP/[0-9.]+ 200([[:space:]]|$)' /tmp/mtci-post-headers; then
+  cat /tmp/mtci-post-headers
+  cat /tmp/mtci-group-response.json
+  die "mt-c API refused example.com group creation"
 fi
 grep -q "$GROUP_ID" /tmp/mtci-group-response.json ||
   die "group creation response did not confirm requested ID"

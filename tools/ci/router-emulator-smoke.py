@@ -254,7 +254,7 @@ def run_test(emulator, package, preset, log_dir):
             print("PASS: APK installed, procd service running, HTTP API responding", flush=True)
             # The forwarding test requires isolated client/server network
             # namespaces, and fails rather than degrading to a rule-only test.
-            serial.run("apk add ip-full kmod-veth ipset uhttpd", timeout=240)
+            serial.run("apk add ip-full kmod-veth ipset uhttpd curl", timeout=240)
             serial.run(f"wget -T 30 -O /tmp/mtci-routing.sh http://10.0.2.2:{http_port}/routing.sh", timeout=60)
             serial.run("chmod 700 /tmp/mtci-routing.sh")
             serial.run("rm -f /tmp/mtci-status /tmp/mtci-routing.log")
