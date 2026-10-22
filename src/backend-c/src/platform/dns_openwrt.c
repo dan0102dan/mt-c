@@ -1,305 +1,298 @@
-/* Native ubus client. All library calls run on the metadata worker: libubus
- * uses shared internal buffers and must not be driven from two threads. */
+/* Use the platform's host inventory and event loop. All libubus/uloop calls
+ * belong to this worker; both libraries have process-wide internal state. */
 #define _GNU_SOURCE
 #include "magitrickle/dns_openwrt.h"
 #ifdef MT_PLATFORM_OPENWRT
 #include "../interfaces/dns_clients_internal.h"
 #include <arpa/inet.h>
 #include <errno.h>
-#include <limits.h>
-#include <poll.h>
 #include <stddef.h>
 #include <stdlib.h>
 #include <string.h>
-#include <time.h>
 #include <unistd.h>
 #include <libubus.h>
 #include <libubox/blobmsg.h>
+#include <libubox/uloop.h>
 
-static uint64_t now_ms(void)
+static mt_err_t add_addresses(struct blob_attr *array, int family,
+    const char *name, const char *owner, mt_dns_client_table_t *table)
 {
-    struct timespec ts;
-    if (clock_gettime(CLOCK_MONOTONIC, &ts)) { return 0; }
-    return (uint64_t)ts.tv_sec * 1000u + (uint64_t)ts.tv_nsec / 1000000u;
-}
-static mt_err_t add_address(mt_dns_client_table_t *table, const char *text, const char *name, int family)
-{
-    char address[MT_DNS_CLIENT_IP_LEN];
-    size_t len = strnlen(text, sizeof(address));
-    if (len >= sizeof(address)) { return MT_OK; }
-    memcpy(address, text, len + 1);
-    char *prefix = strchr(address, '/');
-    if (prefix) {
-        if (family != AF_INET6 || strcmp(prefix, "/128")) { return MT_OK; }
-        *prefix = 0;
-    }
-    unsigned char binary[16];
-    if (inet_pton(family, address, binary) != 1) { return MT_OK; }
-    return mt_dns_client_table_add(table, address, name);
-}
-static mt_err_t parse_family(struct blob_attr *array, int family, mt_dns_client_table_t *table,
-                              uint64_t *expires_in_ms)
-{
-    enum { NAME, EXPIRES, ADDRESS, ADDRESSES, FIELDS };
-    const struct blobmsg_policy policy[FIELDS] = {
-        [NAME] = {.name = "hostname", .type = BLOBMSG_TYPE_STRING},
-        [EXPIRES] = {.name = "expires", .type = BLOBMSG_TYPE_UNSPEC},
-        [ADDRESS] = {.name = family == AF_INET ? "ipaddr" : "ip6addr", .type = BLOBMSG_TYPE_STRING},
-        [ADDRESSES] = {.name = "ip6addrs", .type = BLOBMSG_TYPE_ARRAY},
-    };
-    if (blobmsg_check_array(array, BLOBMSG_TYPE_TABLE) < 0) { return MT_ERR_PROTO; }
-    struct blob_attr *row; size_t remaining;
-    size_t rows = 0;
-    blobmsg_for_each_attr(row, array, remaining) {
-        if (++rows > MT_DNS_CLIENT_LIMIT) { return MT_ERR_LIMIT; }
-        struct blob_attr *fields[FIELDS];
-        if (blobmsg_parse(policy, FIELDS, fields, blobmsg_data(row), (unsigned int)blobmsg_data_len(row))) { return MT_ERR_PROTO; }
-        if (!fields[NAME] || !fields[EXPIRES]) { continue; }
-        char name[MT_DNS_CLIENT_NAME_LEN];
-        if (!mt_dns_client_label(blobmsg_get_string(fields[NAME]), name)) { continue; }
-        int type = blobmsg_type(fields[EXPIRES]);
-        uint32_t lifetime;
-        if (type == BLOBMSG_TYPE_INT8 && blobmsg_get_u8(fields[EXPIRES]) == 0) { lifetime = 0; }
-        else if (type == BLOBMSG_TYPE_INT32) {
-            lifetime = blobmsg_get_u32(fields[EXPIRES]);
-            if (!lifetime || lifetime > INT32_MAX) { continue; }
-        } else { continue; }
-        if (lifetime && (uint64_t)lifetime * 1000u < *expires_in_ms) { *expires_in_ms = (uint64_t)lifetime * 1000u; }
-        mt_err_t err = MT_OK;
-        if (family == AF_INET6 && fields[ADDRESSES]) {
-            if (blobmsg_check_array(fields[ADDRESSES], BLOBMSG_TYPE_STRING) < 0) { return MT_ERR_PROTO; }
-            struct blob_attr *address; size_t left;
-            blobmsg_for_each_attr(address, fields[ADDRESSES], left) {
-                err = add_address(table, blobmsg_get_string(address), name, family);
-                if (err != MT_OK) { return err; }
-            }
-        } else if (fields[ADDRESS]) {
-            err = add_address(table, blobmsg_get_string(fields[ADDRESS]), name, family);
-        }
+    if (!array) { return MT_OK; }
+    if (blobmsg_type(array) != BLOBMSG_TYPE_ARRAY ||
+        blobmsg_check_array(array, BLOBMSG_TYPE_STRING) < 0) { return MT_ERR_PROTO; }
+    struct blob_attr *address;
+    size_t remaining;
+    blobmsg_for_each_attr(address, array, remaining) {
+        unsigned char binary[16];
+        const char *text = blobmsg_get_string(address);
+        /* Host hints contain addresses, never delegated prefixes. The owner
+         * is retained even when no name is known, to detect ambiguous IPs. */
+        if (inet_pton(family, text, binary) != 1) { continue; }
+        mt_err_t err = mt_dns_client_table_add_owned(table, text, name, owner, NULL);
         if (err != MT_OK) { return err; }
     }
-    return MT_OK;
+    return remaining ? MT_ERR_PROTO : MT_OK;
 }
+
 mt_err_t mt_dns_openwrt_parse(const struct blob_attr *reply, size_t len,
-    mt_dns_client_t **clients, size_t *count, uint64_t *expires_in_ms)
+    mt_dns_client_t **clients, size_t *count)
 {
-    if (!clients || !count || !expires_in_ms) { return MT_ERR_INVAL; }
-    *clients = NULL; *count = 0; *expires_in_ms = MT_DNS_CLIENT_REFRESH_MS;
+    if (!clients || !count) { return MT_ERR_INVAL; }
+    *clients = NULL; *count = 0;
     if (len > MT_DNS_CLIENT_BODY_LIMIT) { return MT_ERR_LIMIT; }
     if (!reply || len < sizeof(*reply) || blob_raw_len(reply) != len ||
         blob_is_extended(reply)) { return MT_ERR_PROTO; }
-    const struct blobmsg_policy policy[] = {
-        {.name = "dhcp_leases", .type = BLOBMSG_TYPE_ARRAY},
-        {.name = "dhcp6_leases", .type = BLOBMSG_TYPE_ARRAY},
+    enum { NAME, IPV4, IPV6, FIELDS };
+    const struct blobmsg_policy policy[FIELDS] = {
+        [NAME] = {.name = "name", .type = BLOBMSG_TYPE_UNSPEC},
+        [IPV4] = {.name = "ipaddrs", .type = BLOBMSG_TYPE_UNSPEC},
+        [IPV6] = {.name = "ip6addrs", .type = BLOBMSG_TYPE_UNSPEC},
     };
-    struct blob_attr *arrays[2];
-    if (blobmsg_parse(policy, 2, arrays, blob_data(reply), (unsigned int)blob_len(reply)) || !arrays[0] || !arrays[1]) { return MT_ERR_PROTO; }
     mt_dns_client_table_t table = {0};
-    mt_err_t err = parse_family(arrays[0], AF_INET, &table, expires_in_ms);
-    if (err == MT_OK) { err = parse_family(arrays[1], AF_INET6, &table, expires_in_ms); }
+    mt_err_t err = MT_OK;
+    struct blob_attr *row;
+    size_t remaining, rows = 0;
+    blobmsg_for_each_attr(row, reply, remaining) {
+        if (++rows > MT_DNS_CLIENT_LIMIT) { err = MT_ERR_LIMIT; break; }
+        if (!blobmsg_check_attr_len(row, true, remaining) ||
+            blobmsg_type(row) != BLOBMSG_TYPE_TABLE) { err = MT_ERR_PROTO; break; }
+        char owner[18];
+        if (!mt_dns_client_mac(blobmsg_name(row), owner)) { continue; }
+        struct blob_attr *field;
+        size_t fields_remaining;
+        blobmsg_for_each_attr(field, row, fields_remaining) {
+            if (!blobmsg_check_attr_len(field, true, fields_remaining)) { err = MT_ERR_PROTO; break; }
+        }
+        if (err != MT_OK || fields_remaining) { err = MT_ERR_PROTO; break; }
+        struct blob_attr *fields[FIELDS] = {0};
+        if (blobmsg_data_len(row) && blobmsg_parse(policy, FIELDS, fields,
+            blobmsg_data(row), (unsigned int)blobmsg_data_len(row))) { err = MT_ERR_PROTO; break; }
+        if (fields[NAME] && blobmsg_type(fields[NAME]) != BLOBMSG_TYPE_STRING) { err = MT_ERR_PROTO; break; }
+        const char *name = fields[NAME] ? blobmsg_get_string(fields[NAME]) : NULL;
+        err = add_addresses(fields[IPV4], AF_INET, name, owner, &table);
+        if (err == MT_OK) { err = add_addresses(fields[IPV6], AF_INET6, name, owner, &table); }
+        if (err != MT_OK) { break; }
+    }
+    if (err == MT_OK && remaining) { err = MT_ERR_PROTO; }
     if (err != MT_OK) { free(table.items); return err; }
     mt_dns_client_table_finish(&table, clients, count);
     return MT_OK;
 }
 
-typedef struct source source_t;
-typedef struct { struct ubus_event_handler handler; source_t *source; } event_t;
-struct source {
-    const mt_dns_openwrt_worker_t *worker;
-    struct ubus_context bus;
-    struct ubus_subscriber subscriber;
-    event_t objects, config;
-    bool connected, lost, dirty;
-    uint64_t due, serial;
-};
-static void invalidate(source_t *s)
-{
-    s->serial++;
-    if (!s->dirty) { s->due = now_ms() + 1000u; }
-    s->dirty = true;
-}
-static bool relevant_object(const char *path)
-{
-    return !strcmp(path, "dhcp") || !strcmp(path, "luci-rpc") ||
-           !strcmp(path, "dnsmasq") || !strncmp(path, "dnsmasq.", 8);
-}
-static bool new_object(struct ubus_context *ctx, struct ubus_subscriber *subscriber, const char *path)
-{
-    (void)ctx;
-    source_t *s = (source_t *)((char *)subscriber - offsetof(source_t, subscriber));
-    if (!relevant_object(path)) { return false; }
-    invalidate(s);
-    /* luci-rpc is inventory only; dnsmasq/odhcpd emit object notifications. */
-    return strcmp(path, "luci-rpc") != 0;
-}
-static int notification(struct ubus_context *ctx, struct ubus_object *obj,
-    struct ubus_request_data *request, const char *method, struct blob_attr *message)
-{
-    (void)ctx; (void)request; (void)message;
-    struct ubus_subscriber *subscriber = (struct ubus_subscriber *)((char *)obj - offsetof(struct ubus_subscriber, obj));
-    source_t *s = (source_t *)((char *)subscriber - offsetof(source_t, subscriber));
-    if (!strncmp(method, "dhcp.", 5)) { invalidate(s); }
-    return 0;
-}
-static void removed(struct ubus_context *ctx, struct ubus_subscriber *subscriber, uint32_t id)
-{
-    (void)ctx; (void)id;
-    source_t *s = (source_t *)((char *)subscriber - offsetof(source_t, subscriber));
-    invalidate(s);
-}
-static void event_received(struct ubus_context *ctx, struct ubus_event_handler *handler,
-                            const char *type, struct blob_attr *message)
-{
-    (void)ctx;
-    event_t *event = (event_t *)((char *)handler - offsetof(event_t, handler));
-    const struct blobmsg_policy policy[] = {{.name = "path", .type = BLOBMSG_TYPE_STRING},
-                                           {.name = "package", .type = BLOBMSG_TYPE_STRING}};
-    struct blob_attr *fields[2];
-    if (!message || blobmsg_parse(policy, 2, fields, blob_data(message), (unsigned int)blob_len(message))) { return; }
-    if ((!strncmp(type, "ubus.object.", 12) && fields[0] && relevant_object(blobmsg_get_string(fields[0]))) ||
-        (!strcmp(type, "config.change") && fields[1] && !strcmp(blobmsg_get_string(fields[1]), "dhcp"))) {
-        invalidate(event->source);
-    }
-}
-static void connection_lost(struct ubus_context *ctx)
-{
-    source_t *s = (source_t *)((char *)ctx - offsetof(source_t, bus));
-    s->lost = true;
-}
-static void disconnect_source(source_t *s)
-{
-    if (s->connected) { ubus_shutdown(&s->bus); uloop_done(); }
-    s->connected = false; s->lost = false;
-    memset(&s->subscriber, 0, sizeof(s->subscriber));
-    memset(&s->objects, 0, sizeof(s->objects));
-    memset(&s->config, 0, sizeof(s->config));
-}
-static mt_err_t connect_source(source_t *s)
-{
-    if (ubus_connect_ctx(&s->bus, s->worker->socket_path)) { uloop_done(); return MT_ERR_UPSTREAM; }
-    s->connected = true; s->bus.connection_lost = connection_lost;
-    s->subscriber.cb = notification; s->subscriber.remove_cb = removed;
-    s->subscriber.new_obj_cb = new_object;
-    s->objects.source = s; s->objects.handler.cb = event_received;
-    s->config.source = s; s->config.handler.cb = event_received;
-    if (ubus_register_subscriber(&s->bus, &s->subscriber) ||
-        ubus_register_event_handler(&s->bus, &s->objects.handler, "ubus.object.*") ||
-        ubus_register_event_handler(&s->bus, &s->config.handler, "config.change")) {
-        disconnect_source(s); return MT_ERR_UPSTREAM;
-    }
-    return MT_OK;
-}
 typedef struct {
+    const mt_dns_openwrt_worker_t *worker;
+    struct ubus_auto_conn connection;
+    struct ubus_subscriber subscriber;
+    struct ubus_request request;
+    struct uloop_fd control;
+    struct uloop_timeout refresh, deadline;
+    void (*native_connection_lost)(struct ubus_context *ctx);
+    uint64_t epoch, request_epoch;
+    bool active, initialized, subscribed, pending, dirty, received;
     mt_dns_client_t *clients;
     size_t count;
-    uint64_t expires_in_ms;
     mt_err_t error;
-    bool received, done;
-    int status;
-} reply_t;
+} source_t;
+
+static void schedule_refresh(source_t *s, int delay)
+{
+    if (!s->active || atomic_load(s->worker->stop)) { return; }
+    s->dirty = true;
+    if (!s->pending && (!s->refresh.pending || uloop_timeout_remaining64(&s->refresh) > delay)) {
+        uloop_timeout_set(&s->refresh, delay);
+    }
+}
+
+static void publish(source_t *s, uint64_t epoch, mt_err_t error)
+{
+    if (error != MT_OK || !s->active || atomic_load(s->worker->stop)) {
+        free(s->clients); s->clients = NULL; s->count = 0;
+    }
+    if (s->active && !atomic_load(s->worker->stop)) {
+        s->worker->publish(s->worker->ud, epoch, s->clients, s->count, error);
+    }
+    s->clients = NULL; s->count = 0;
+}
+
+static void cancel_request(source_t *s)
+{
+    uloop_timeout_cancel(&s->deadline);
+    if (s->pending) { ubus_abort_request(&s->connection.ctx, &s->request); }
+    s->pending = false;
+    free(s->clients); s->clients = NULL; s->count = 0;
+}
+
 static void inventory_received(struct ubus_request *request, int type, struct blob_attr *message)
 {
     (void)type;
-    reply_t *reply = request->priv;
-    if (reply->received || !message) { reply->error = MT_ERR_PROTO; return; }
-    reply->received = true;
-    reply->error = mt_dns_openwrt_parse(message, blob_raw_len(message),
-        &reply->clients, &reply->count, &reply->expires_in_ms);
+    source_t *s = request->priv;
+    if (s->received || !message) { s->error = MT_ERR_PROTO; return; }
+    s->received = true;
+    s->error = mt_dns_openwrt_parse(message, blob_raw_len(message), &s->clients, &s->count);
 }
+
 static void inventory_done(struct ubus_request *request, int status)
 {
-    reply_t *reply = request->priv;
-    reply->done = true; reply->status = status;
+    source_t *s = request->priv;
+    uloop_timeout_cancel(&s->deadline);
+    s->pending = false;
+    mt_err_t error = status || !s->received ? MT_ERR_UPSTREAM : s->error;
+    publish(s, s->request_epoch, error);
+    schedule_refresh(s, s->dirty ? 1000 : error == MT_OK ? (int)MT_DNS_CLIENT_REFRESH_MS : 5000);
 }
-static mt_err_t fetch_inventory(source_t *s, reply_t *reply)
+
+static void inventory_timeout(struct uloop_timeout *timer)
 {
-    uint32_t id;
-    if (ubus_lookup_id(&s->bus, "luci-rpc", &id)) { return MT_ERR_UPSTREAM; }
-    struct ubus_request request;
-    struct blob_buf args = {0};
-    if (blob_buf_init(&args, 0)) { return MT_ERR_NOMEM; }
-    int error = ubus_invoke_async(&s->bus, id, "getDHCPLeases", args.head, &request);
-    blob_buf_free(&args);
-    if (error) { return MT_ERR_UPSTREAM; }
-    request.priv = reply; request.data_cb = inventory_received; request.complete_cb = inventory_done;
-    ubus_complete_request_async(&s->bus, &request);
-    uint64_t deadline = now_ms() + 2000u;
-    while (!reply->done && !s->lost && !atomic_load(s->worker->stop)) {
-        uint64_t now = now_ms();
-        if (now >= deadline) { break; }
-        struct pollfd fd = {.fd = s->bus.sock.fd, .events = POLLIN};
-        int ready = poll(&fd, 1, (int)(deadline - now > 50 ? 50 : deadline - now));
-        if (ready < 0 && errno == EINTR) { continue; }
-        if (ready < 0 || (fd.revents & (POLLHUP | POLLERR | POLLNVAL))) { s->lost = true; break; }
-        if (ready) { ubus_handle_event(&s->bus); }
-    }
-    if (!reply->done) { ubus_abort_request(&s->bus, &request); }
-    if (atomic_load(s->worker->stop)) { return MT_ERR_CANCELED; }
-    if (s->lost) { return MT_ERR_UPSTREAM; }
-    if (!reply->done) { return MT_ERR_TIMEOUT; }
-    if (reply->status || !reply->received) { return MT_ERR_UPSTREAM; }
-    return reply->error;
+    source_t *s = container_of(timer, source_t, deadline);
+    cancel_request(s);
+    publish(s, s->request_epoch, MT_ERR_TIMEOUT);
+    schedule_refresh(s, s->dirty ? 1000 : 5000);
 }
+
+static bool new_object(struct ubus_context *ctx, struct ubus_subscriber *subscriber, const char *path)
+{
+    (void)ctx;
+    source_t *s = container_of(subscriber, source_t, subscriber);
+    if (strcmp(path, "service") && strcmp(path, "dhcp") && strcmp(path, "luci-rpc") &&
+        strcmp(path, "dnsmasq") && strncmp(path, "dnsmasq.", 8)) { return false; }
+    schedule_refresh(s, 1000);
+    /* Subscribing to luci-rpc also reports its removal. libubus restores these
+     * subscriptions when providers or the broker return with new object IDs. */
+    return true;
+}
+
+static void removed(struct ubus_context *ctx, struct ubus_subscriber *subscriber, uint32_t id)
+{
+    (void)ctx; (void)id;
+    schedule_refresh(container_of(subscriber, source_t, subscriber), 1000);
+}
+
+static int notification(struct ubus_context *ctx, struct ubus_object *obj,
+    struct ubus_request_data *request, const char *method, struct blob_attr *message)
+{
+    (void)ctx; (void)request;
+    struct ubus_subscriber *subscriber = container_of(obj, struct ubus_subscriber, obj);
+    source_t *s = container_of(subscriber, source_t, subscriber);
+    if (!strncmp(method, "dhcp.", 5)) { schedule_refresh(s, 1000); }
+    if (!strcmp(method, "config.change") && message) {
+        const struct blobmsg_policy policy = {.name = "config", .type = BLOBMSG_TYPE_STRING};
+        struct blob_attr *config = NULL;
+        if (!blobmsg_parse(&policy, 1, &config, blob_data(message), (unsigned int)blob_len(message)) &&
+            config && !strcmp(blobmsg_get_string(config), "dhcp")) { schedule_refresh(s, 1000); }
+    }
+    return 0;
+}
+
+static void connection_lost(struct ubus_context *ctx)
+{
+    struct ubus_auto_conn *connection = container_of(ctx, struct ubus_auto_conn, ctx);
+    source_t *s = container_of(connection, source_t, connection);
+    cancel_request(s);
+    publish(s, s->epoch, MT_ERR_UPSTREAM);
+    s->native_connection_lost(ctx);
+    schedule_refresh(s, 5000);
+}
+
+static void connected(struct ubus_context *ctx)
+{
+    struct ubus_auto_conn *connection = container_of(ctx, struct ubus_auto_conn, ctx);
+    source_t *s = container_of(connection, source_t, connection);
+    s->initialized = true;
+    s->native_connection_lost = ctx->connection_lost;
+    ctx->connection_lost = connection_lost;
+    schedule_refresh(s, 0);
+}
+
+static void fetch_inventory(struct uloop_timeout *timer)
+{
+    source_t *s = container_of(timer, source_t, refresh);
+    if (!s->active || atomic_load(s->worker->stop)) { return; }
+    struct ubus_context *ctx = &s->connection.ctx;
+    mt_err_t error = MT_ERR_UPSTREAM;
+    if (!s->initialized || !ctx->sock.registered || ctx->sock.eof) { goto fail; }
+    if (!s->subscribed) {
+        if (ubus_register_subscriber(ctx, &s->subscriber)) { goto fail; }
+        s->subscribed = true;
+    }
+    uint32_t id;
+    if (ubus_lookup_id(ctx, "luci-rpc", &id)) { goto fail; }
+    struct blob_buf args = {0};
+    if (blob_buf_init(&args, 0)) { error = MT_ERR_NOMEM; goto fail; }
+    int status = ubus_invoke_async(ctx, id, "getHostHints", args.head, &s->request);
+    blob_buf_free(&args);
+    if (status) { goto fail; }
+    /* These timers bound an outstanding RPC, not libubus' synchronous
+     * connection/lookup operations before it. DNS forwarding stays separate. */
+    uloop_timeout_cancel(&s->refresh);
+    s->dirty = false; s->received = false; s->error = MT_OK;
+    s->pending = true; s->request_epoch = s->epoch;
+    s->request.priv = s; s->request.data_cb = inventory_received;
+    s->request.complete_cb = inventory_done;
+    ubus_complete_request_async(ctx, &s->request);
+    uloop_timeout_set(&s->deadline, 2000);
+    return;
+fail:
+    publish(s, s->epoch, error);
+    schedule_refresh(s, 5000);
+}
+
+static void disconnect_source(source_t *s)
+{
+    uloop_timeout_cancel(&s->refresh);
+    uloop_timeout_cancel(&s->connection.timer);
+    cancel_request(s);
+    if (s->initialized) { ubus_shutdown(&s->connection.ctx); }
+    memset(&s->connection, 0, sizeof(s->connection));
+    memset(&s->subscriber, 0, sizeof(s->subscriber));
+    s->initialized = false; s->subscribed = false; s->dirty = false;
+}
+
+static void process_commands(source_t *s)
+{
+    if (atomic_load(s->worker->stop)) { uloop_end(); return; }
+    mt_dns_source_command_t command = s->worker->command(s->worker->ud);
+    if (command.epoch != s->epoch || command.active != s->active) {
+        disconnect_source(s);
+        s->active = command.active; s->epoch = command.epoch;
+        if (s->active) {
+            s->subscriber.cb = notification; s->subscriber.remove_cb = removed;
+            s->subscriber.new_obj_cb = new_object;
+            s->connection.path = s->worker->socket_path;
+            s->connection.cb = connected;
+            ubus_auto_connect(&s->connection);
+            if (!s->initialized) { publish(s, s->epoch, MT_ERR_UPSTREAM); }
+        }
+    }
+    if (command.refresh) { schedule_refresh(s, 0); }
+}
+
+static void control_received(struct uloop_fd *fd, unsigned int events)
+{
+    (void)events;
+    source_t *s = container_of(fd, source_t, control);
+    char bytes[128];
+    ssize_t size;
+    do { size = read(fd->fd, bytes, sizeof(bytes)); } while (size > 0 || (size < 0 && errno == EINTR));
+    if (size == 0 || (size < 0 && errno != EAGAIN && errno != EWOULDBLOCK)) { uloop_end(); return; }
+    process_commands(s);
+}
+
 void mt_dns_openwrt_run(const mt_dns_openwrt_worker_t *worker)
 {
-    source_t source = {.worker = worker};
-    uint64_t epoch = 0, reconcile_at = 0, reconnect_at = 0;
-    unsigned backoff_ms = 1000;
-    bool active = false;
-    while (!atomic_load(worker->stop)) {
-        mt_dns_source_command_t command = worker->command(worker->ud);
-        uint64_t now = now_ms();
-        if (command.epoch != epoch || command.active != active) {
-            disconnect_source(&source);
-            epoch = command.epoch; active = command.active;
-            source.dirty = active; source.due = now;
-            reconnect_at = now; reconcile_at = now; backoff_ms = 1000;
-        }
-        if (command.refresh && active) { source.dirty = true; source.due = now; }
-        if (active && source.lost) {
-            disconnect_source(&source);
-            worker->publish(worker->ud, epoch, NULL, 0, MT_ERR_UPSTREAM);
-            reconnect_at = now + backoff_ms;
-        }
-        if (active && !source.connected && now >= reconnect_at) {
-            mt_err_t error = connect_source(&source);
-            if (error != MT_OK) {
-                worker->publish(worker->ud, epoch, NULL, 0, error);
-                reconnect_at = now_ms() + backoff_ms;
-                if (backoff_ms < 30000) { backoff_ms *= 2; if (backoff_ms > 30000) { backoff_ms = 30000; } }
-            } else {
-                backoff_ms = 1000; source.dirty = true; source.due = now_ms();
-            }
-        }
-        now = now_ms();
-        if (active && source.connected && (now >= reconcile_at || (source.dirty && now >= source.due))) {
-            uint64_t serial = source.serial;
-            source.dirty = false;
-            reply_t reply = {.expires_in_ms = MT_DNS_CLIENT_REFRESH_MS};
-            mt_err_t error = fetch_inventory(&source, &reply);
-            if (error != MT_OK) { free(reply.clients); reply.clients = NULL; reply.count = 0; }
-            worker->publish(worker->ud, epoch, reply.clients, reply.count, error);
-            uint64_t delay = error == MT_OK ? reply.expires_in_ms : 5000u;
-            if (!delay) { delay = 1000; }
-            reconcile_at = now_ms() + delay;
-            if (source.serial != serial) { source.dirty = true; source.due = now_ms() + 1000u; }
-        }
-        struct pollfd fds[2] = {{.fd = worker->control_fd, .events = POLLIN},
-                                {.fd = active && source.connected ? source.bus.sock.fd : -1, .events = POLLIN}};
-        int timeout = -1;
-        if (active) {
-            uint64_t deadline = source.connected ? reconcile_at : reconnect_at;
-            if (source.connected && source.dirty && source.due < deadline) { deadline = source.due; }
-            now = now_ms();
-            timeout = deadline <= now ? 0 : deadline - now > INT_MAX ? INT_MAX : (int)(deadline - now);
-        }
-        int ready = poll(fds, 2, timeout);
-        if (ready < 0 && errno == EINTR) { continue; }
-        if (ready < 0) { break; }
-        if (fds[0].revents) { char bytes[128]; while (read(worker->control_fd, bytes, sizeof(bytes)) > 0) {} }
-        if (fds[1].revents & POLLIN) { ubus_handle_event(&source.bus); }
-        if (fds[1].revents & (POLLHUP | POLLERR | POLLNVAL)) { source.lost = true; }
+    source_t source = {.worker = worker, .control = {.fd = worker->control_fd, .cb = control_received},
+        .refresh = {.cb = fetch_inventory}, .deadline = {.cb = inventory_timeout}};
+    /* The main application owns child processes such as iptables. uloop's
+     * default SIGCHLD handler would otherwise reap them with waitpid(-1). */
+    bool handle_sigchld = uloop_handle_sigchld;
+    uloop_handle_sigchld = false;
+    if (uloop_init()) { uloop_handle_sigchld = handle_sigchld; return; }
+    if (!uloop_fd_add(&source.control, ULOOP_READ)) {
+        process_commands(&source);
+        if (!atomic_load(worker->stop)) { uloop_run(); }
     }
     disconnect_source(&source);
+    uloop_fd_delete(&source.control);
+    uloop_done();
+    uloop_handle_sigchld = handle_sigchld;
 }
 #endif

@@ -167,7 +167,7 @@ KEENETIC_SRCS := \
     src/netfilter/keenetic_policy.c \
     src/interfaces/keenetic_policy_rci.c \
     src/interfaces/keenetic_dns_clients.c \
-    src/platform/dns_neighbors.c \
+    src/platform/dns_keenetic_hook.c \
     src/api/keenetic_policy_api.c \
     src/interfaces/keenetic_ifstate.c \
     src/interfaces/keenetic_ifstate_rci.c \
@@ -353,21 +353,6 @@ $(BUILDDIR)/tests/test_rule_priority: tests/unit/test_rule_priority.c $(LIB_OBJS
 $(BUILDDIR)/tests/test_update_process: tests/unit/test_update_process.c src/platform/update.c $(LIB_OBJS) $(TEST_SUPPORT_OBJS)
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -Itests/vendor -Itests/unit $(LDFLAGS) -o $@ $< $(filter-out $(BUILDDIR)/src/platform/update.o,$(LIB_OBJS)) $(TEST_SUPPORT_OBJS) $(LDLIBS) $(DEP_LIBS)
-
-ifeq ($(ENTWARE_KN),1)
-$(BUILDDIR)/tests/test_dns_neighbors: tests/unit/test_dns_neighbors.c $(LIB_OBJS) $(TEST_SUPPORT_OBJS)
-	@mkdir -p $(@D)
-	$(CC) $(CFLAGS) -Itests/vendor -Itests/unit $(LDFLAGS) -Wl,--wrap=recvmsg -o $@ $< $(LIB_OBJS) $(TEST_SUPPORT_OBJS) $(LDLIBS) $(DEP_LIBS)
-
-$(BUILDDIR)/tests/test_dns_client_events: tests/unit/test_dns_client_events.c $(LIB_OBJS) $(TEST_SUPPORT_OBJS)
-	@mkdir -p $(@D)
-	$(CC) $(CFLAGS) -Itests/vendor -Itests/unit $(LDFLAGS) -Wl,--wrap=mt_dns_neighbors_watch_open -Wl,--wrap=mt_dns_neighbors_watch_drain -Wl,--wrap=mt_dns_clients_fetch_keenetic_cached -o $@ $< $(LIB_OBJS) $(TEST_SUPPORT_OBJS) $(LDLIBS) $(DEP_LIBS)
-
-$(BUILDDIR)/tests/test_dns_hotspot_cache: tests/unit/test_dns_hotspot_cache.c $(LIB_OBJS) $(TEST_SUPPORT_OBJS)
-	@mkdir -p $(@D)
-	$(CC) $(CFLAGS) -Itests/vendor -Itests/unit $(LDFLAGS) -Wl,--wrap=curl_easy_init -Wl,--wrap=curl_easy_setopt -Wl,--wrap=curl_easy_perform -Wl,--wrap=curl_easy_getinfo -Wl,--wrap=curl_easy_cleanup -Wl,--wrap=mt_dns_neighbors_read -o $@ $< $(LIB_OBJS) $(TEST_SUPPORT_OBJS) $(LDLIBS) $(DEP_LIBS)
-endif
-
 
 test: $(TEST_BINS)
 	@set -e; for t in $(TEST_BINS); do echo "== $$t"; $$t; done

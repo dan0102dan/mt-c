@@ -1,38 +1,28 @@
 #include "greatest.h"
-#include "magitrickle/dns_neighbors.h"
-#ifdef MT_ENTWARE_KN
-#include <errno.h>
-#include <fcntl.h>
+#include "magitrickle/dns_clients.h"
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
-#include <unistd.h>
 
-static int event_pipe[2];
-static atomic_uint fetches;
-static unsigned notifications;
-static mt_loop_t *event_loop;
-static bool timed_out;
-int __wrap_mt_dns_neighbors_watch_open(void);
-mt_err_t __wrap_mt_dns_neighbors_watch_drain(int fd, bool *changed);
-mt_err_t __wrap_mt_dns_clients_fetch_keenetic_cached(mt_dns_client_t **out, size_t *count,
-    const atomic_bool *stop, mt_dns_hotspot_cache_t *cache);
-int __wrap_mt_dns_neighbors_watch_open(void) { return event_pipe[0]; }
-mt_err_t __wrap_mt_dns_neighbors_watch_drain(int fd, bool *changed)
+typedef struct {
+    mt_loop_t *loop;
+    mt_dns_clients_t *clients;
+    atomic_uint fetches;
+    atomic_bool release;
+    unsigned hold_fetch, notifications;
+    int subscription;
+    bool reopen, event_sent, timed_out, failed;
+} fixture_t;
+
+static mt_err_t fetch(mt_dns_client_t **out, size_t *count, const atomic_bool *stop, void *ud)
 {
-    char bytes[128];
-    *changed = read(fd, bytes, sizeof(bytes)) > 0;
-    return MT_OK;
-}
-mt_err_t __wrap_mt_dns_clients_fetch_keenetic_cached(mt_dns_client_t **out, size_t *count,
-    const atomic_bool *stop, mt_dns_hotspot_cache_t *cache)
-{
-    (void)cache;
-    unsigned n = atomic_fetch_add(&fetches, 1) + 1;
-    /* A notification racing the dump must cause a subsequent refresh. */
-    if (n == 2) { if (write(event_pipe[1], "event", 5) != 5) { abort(); } }
-    struct timespec delay = {.tv_nsec = 50000000};
-    nanosleep(&delay, NULL);
+    fixture_t *f = ud;
+    *out = NULL; *count = 0;
+    unsigned n = atomic_fetch_add(&f->fetches, 1) + 1;
+    while (n == f->hold_fetch && !atomic_load(&f->release) && !atomic_load(stop)) {
+        struct timespec delay = {.tv_nsec = 1000000};
+        nanosleep(&delay, NULL);
+    }
     if (atomic_load(stop)) { return MT_ERR_CANCELED; }
     *out = calloc(1, sizeof(**out));
     if (!*out) { return MT_ERR_NOMEM; }
@@ -41,47 +31,97 @@ mt_err_t __wrap_mt_dns_clients_fetch_keenetic_cached(mt_dns_client_t **out, size
     (void)snprintf((*out)[0].name, sizeof((*out)[0].name), "Device %u", n);
     return MT_OK;
 }
-static void event_changed(void *ud)
+static void changed(void *ud)
 {
-    (void)ud;
-    notifications++;
-    if (notifications == 1) { if (write(event_pipe[1], "burst of notifications", 22) != 22) { abort(); } }
-    if (notifications == 3) { mt_loop_stop(event_loop); }
+    fixture_t *f = ud;
+    f->notifications++;
+    if (f->reopen) {
+        const char *name = mt_dns_clients_lookup(f->clients, "fe80::1");
+        if (!name || strcmp(name, "Device 2")) { f->failed = true; }
+        mt_loop_stop(f->loop);
+    } else {
+        if (f->notifications == 1) {
+            for (unsigned i = 0; i < 100; i++) { mt_dns_clients_invalidate(f->clients); }
+        }
+        if (f->notifications == 3) { mt_loop_stop(f->loop); }
+    }
 }
-static void event_deadline(mt_loop_t *loop, void *ud)
+static void release_fetch(mt_loop_t *loop, void *ud)
 {
-    (void)ud; timed_out = true; mt_loop_stop(loop);
+    (void)loop;
+    atomic_store(&((fixture_t *)ud)->release, true);
 }
-TEST neighbor_events_coalesce_preserve_races_and_release_watch(void)
+static void during_fetch(mt_loop_t *loop, void *ud)
 {
-    atomic_init(&fetches, 0); notifications = 0; timed_out = false;
-    ASSERT_EQ(0, pipe(event_pipe));
-    ASSERT_EQ(0, fcntl(event_pipe[0], F_SETFL, O_NONBLOCK));
-    ASSERT_EQ(MT_OK, mt_loop_create(&event_loop));
-    mt_dns_clients_t *clients = NULL;
-    ASSERT_EQ(MT_OK, mt_dns_clients_create(event_loop, NULL, NULL, &clients));
-    int sub = mt_dns_clients_subscribe(clients, event_changed, NULL);
-    ASSERT(sub > 0);
-    int watchdog = 0;
-    ASSERT_EQ(MT_OK, mt_loop_add_timer(event_loop, 5000, 0, event_deadline, NULL, &watchdog));
-    ASSERT_EQ(MT_OK, mt_loop_run(event_loop));
-    ASSERT(!timed_out); ASSERT_EQ(3u, notifications); ASSERT_EQ(3u, atomic_load(&fetches));
-    ASSERT_STR_EQ("Device 3", mt_dns_clients_lookup(clients, "fe80::1"));
-    mt_dns_clients_unsubscribe(clients, sub);
-    ASSERT_EQ(-1, fcntl(event_pipe[0], F_GETFD)); ASSERT_EQ(EBADF, errno);
-    ASSERT(mt_dns_clients_lookup(clients, "fe80::1") == NULL);
-    mt_dns_clients_destroy(clients);
-    mt_loop_destroy(event_loop); close(event_pipe[1]);
+    fixture_t *f = ud;
+    if (f->event_sent || atomic_load(&f->fetches) != f->hold_fetch) { return; }
+    f->event_sent = true;
+    if (f->reopen) {
+        mt_dns_clients_unsubscribe(f->clients, f->subscription);
+        f->subscription = mt_dns_clients_subscribe(f->clients, changed, f);
+        if (!f->subscription) { f->failed = true; }
+        atomic_store(&f->release, true);
+    } else {
+        for (unsigned i = 0; i < 100; i++) { mt_dns_clients_invalidate(f->clients); }
+        /* The debounce expires while the snapshot is still in progress. */
+        int timer = 0;
+        if (mt_loop_add_timer(loop, 1200, 0, release_fetch, f, &timer) != MT_OK) {
+            f->failed = true; mt_loop_stop(loop);
+        }
+    }
+}
+static void deadline(mt_loop_t *loop, void *ud)
+{
+    ((fixture_t *)ud)->timed_out = true; mt_loop_stop(loop);
+}
+static bool setup(fixture_t *f)
+{
+    atomic_init(&f->fetches, 0); atomic_init(&f->release, false);
+    if (mt_loop_create(&f->loop) != MT_OK ||
+        mt_dns_clients_create(f->loop, fetch, f, &f->clients) != MT_OK) { return false; }
+    /* No viewer means no request, even if the router emits a burst. */
+    for (unsigned i = 0; i < 100; i++) { mt_dns_clients_invalidate(f->clients); }
+    f->subscription = mt_dns_clients_subscribe(f->clients, changed, f);
+    int poll = 0, watchdog = 0;
+    return f->subscription &&
+        mt_loop_add_timer(f->loop, 5, 5, during_fetch, f, &poll) == MT_OK &&
+        mt_loop_add_timer(f->loop, 6000, 0, deadline, f, &watchdog) == MT_OK;
+}
+static void cleanup(fixture_t *f)
+{
+    mt_dns_clients_unsubscribe(f->clients, f->subscription);
+    mt_dns_clients_invalidate(f->clients);
+    mt_dns_clients_destroy(f->clients);
+    mt_loop_destroy(f->loop);
+}
+TEST source_events_coalesce_and_survive_an_inflight_snapshot(void)
+{
+    fixture_t f = {.hold_fetch = 2};
+    ASSERT(setup(&f));
+    ASSERT_EQ(MT_OK, mt_loop_run(f.loop));
+    bool correct = !f.timed_out && !f.failed && f.event_sent && f.notifications == 3 &&
+        atomic_load(&f.fetches) == 3 && mt_dns_clients_lookup(f.clients, "fe80::1") &&
+        !strcmp(mt_dns_clients_lookup(f.clients, "fe80::1"), "Device 3");
+    cleanup(&f);
+    ASSERT(correct);
+    ASSERT_EQ(3u, atomic_load(&f.fetches));
     PASS();
 }
-
-#endif
+TEST a_reopened_viewer_never_receives_the_previous_snapshot(void)
+{
+    fixture_t f = {.hold_fetch = 1, .reopen = true};
+    ASSERT(setup(&f));
+    ASSERT_EQ(MT_OK, mt_loop_run(f.loop));
+    cleanup(&f);
+    ASSERT(!f.timed_out); ASSERT(!f.failed); ASSERT(f.event_sent);
+    ASSERT_EQ(1u, f.notifications); ASSERT_EQ(2u, atomic_load(&f.fetches));
+    PASS();
+}
 GREATEST_MAIN_DEFS();
 int main(int argc, char **argv)
 {
     GREATEST_MAIN_BEGIN();
-#ifdef MT_ENTWARE_KN
-    RUN_TEST(neighbor_events_coalesce_preserve_races_and_release_watch);
-#endif
+    RUN_TEST(source_events_coalesce_and_survive_an_inflight_snapshot);
+    RUN_TEST(a_reopened_viewer_never_receives_the_previous_snapshot);
     GREATEST_MAIN_END();
 }

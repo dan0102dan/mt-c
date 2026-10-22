@@ -1,0 +1,2 @@
+#!/bin/sh
+exec /opt/lib/magitrickle/ndm-interface-hook neighbour "$@"

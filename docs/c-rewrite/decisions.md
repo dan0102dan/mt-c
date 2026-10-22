@@ -3881,37 +3881,47 @@ Performance claims belong to the accompanying benchmark scripts/raw results,
 not to CI success or a router estimate inferred from a host run.
 
 
-## D-84 — Event-driven Keenetic IPv6 client labels (2026-10-22)
+## D-84 — System device inventories for DNS client labels (2026-10-22)
 
-Keenetic `_kn` client labels join complete read-only IPv6 neighbor snapshots to
-hotspot RCI names by exact observed MAC. Ambiguous IP/interface/MAC or name
-bindings fall back to IP. This changes optional presentation metadata only;
-DNS forwarding, address identity, routing and API formats remain unchanged.
+PR #25 uses the router's existing inventory and event facilities. This supersedes
+the initial custom Keenetic netlink dump/watch, hotspot cache and unknown-MAC
+cooldown, and the OpenWrt DHCP-only inventory/manual polling loop. The refactor
+adds no runtime dependency to the PR's existing packages.
 
-While a journal viewer is subscribed, a separate `RTMGRP_NEIGH` socket invalidates
-the snapshot on IPv6 neighbor changes. Coalesce to at most one worker refresh
-per second and retain notifications arriving during a fetch. The worker caches
-bounded hotspot RCI: known MACs reuse names, previously unseen unknown MACs
-request RCI with a five-second cooldown and deferred retry. Already checked
-unknown MACs do not repeatedly poll RCI. Every five minutes reconcile RCI and
-neighbors completely, including renames and recovery from missed events or an
-unavailable subscription. OpenWrt uses native libubus/libubox and the packaged `rpcd-mod-luci`
-`luci-rpc.getDHCPLeases` snapshot API, including IPv4/IPv6 DHCP leases and
-configured platform paths. Subscribe to dnsmasq/odhcpd object notifications,
-DHCP config changes and provider lifecycle; rebuild subscriptions after broker
-loss with bounded reconnect backoff. Lease expiry schedules a snapshot even
-without an event. Some supported odhcpd versions lack IPv6 notifications, so
-five-minute reconciliation remains necessary. No direct lease-file parser,
-inotify or shell ubus client remains. Generic/Entware packages do not gain these
-OpenWrt dependencies. All libubus calls are owned by one metadata worker,
-because the library uses shared internal buffers. Viewer generations discard
-responses belonging to a closed/reopened journal. Real-ubusd host tests cover
-events, expiry, provider/broker restart and subscription lifecycle. Target SDK
-build recipes include the native libraries and rpcd module for every configured
-OpenWrt target; no matrix entry changes.
+Keenetic `_kn` reads fresh `show/ip/hotspot` and `show/ip/neighbour` RCI documents
+with the existing libcurl/cJSON. The firmware's neighbour table supplies IPv4,
+IPv6 and interface information. Join exact client MACs, never the `via` MAC;
+prefer the configured hotspot alias to its DHCP hostname. The documented
+`neighbour.d` hook sends a constant invalidation through the existing socat/Unix
+HTTP transport. The handler acknowledges immediately; the metadata worker reads
+a complete snapshot. No event-derived inventory or separate loss-marker watch
+is maintained for names. If neighbour discovery fails, keep only this refresh's
+explicit hotspot IP labels; hotspot failure clears all labels.
 
-Keenetic watch receive work is bounded per callback; malformed/truncated/overflow events
-invalidate rather than partially update the map. Full dump failures drop IPv6
-enrichment while keeping explicit inventory labels. Close the watch and release
-worker inventory after the last subscriber. No historical ownership assertion,
-PTR/EUI-64 inference, subprocess, probe or kernel write is introduced.
+OpenWrt uses `luci-rpc.getHostHints` through the already required
+libubus/libubox/rpcd-mod-luci. The platform aggregates neighbours, configured
+DHCP sources and static host definitions. Its result is a set of display hints,
+not proof of reachability or historical ownership. Native optional reverse DNS
+may contribute names; mt-c performs no separate PTR lookup. A single metadata
+worker runs native `uloop`, asynchronous inventory requests, native reconnect
+and automatic object subscriptions. Subscribe to `dnsmasq`/`dnsmasq.*`, `dhcp`
+and `service`; procd emits `config.change` as a notification on `service` with
+the `config` field. Provider removal/recreation also invalidates the map.
+Do not replace native libubus behaviour with a private protocol or reconnect
+state machine. Its two-second inventory response deadline does not bound
+synchronous library connection, registration or lookup against a stalled broker.
+
+Coalesce notifications for one second and preserve events arriving during a
+fetch. Reconcile every 30 seconds while a viewer is subscribed: neither system
+promises complete notifications for alias changes, SLAAC and every supported
+DHCP daemon. Removing the final viewer releases the map and stops discovery;
+viewer generations discard responses from a closed/reopened journal. No
+per-query discovery runs on the DNS path.
+
+Keep bounded, validated IP/name observations; differing known MACs or interface
+scopes suppress a label even when aliases are equal or one owner is unnamed.
+OpenWrt hints do not include scopes, so scope certainty is not claimed there.
+The browser still receives only IP/name entries through the existing metadata
+stream. Address identity, DNS forwarding, routing, target matrices and the UI
+contract remain unchanged. Host tests exercise native libcurl and real ubusd;
+they do not establish physical-router firmware behaviour.

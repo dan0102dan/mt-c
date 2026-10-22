@@ -19,8 +19,8 @@ typedef struct {
     const char *socket_path;
 } mt_dns_openwrt_worker_t;
 void mt_dns_openwrt_run(const mt_dns_openwrt_worker_t *worker);
-/* Parse luci-rpc.getDHCPLeases, including DHCPv6 /128 addresses. */
+/* Parse the platform's luci-rpc.getHostHints snapshot. */
 mt_err_t mt_dns_openwrt_parse(const struct blob_attr *reply, size_t len,
-    mt_dns_client_t **clients, size_t *count, uint64_t *expires_in_ms);
+    mt_dns_client_t **clients, size_t *count);
 #endif
 #endif

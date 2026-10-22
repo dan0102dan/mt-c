@@ -183,9 +183,15 @@ recvmsg/pktinfo, getrandom fallback to /dev/urandom for old kernels).
 
 OpenWrt builds additionally link the platform's `libubus` (LGPL-2.1) and
 `libubox` (ISC), and require the `rpcd-mod-luci` runtime inventory provider.
-The latter exposes `luci-rpc.getDHCPLeases` on OpenWrt 24.10 and later, including
-configured dnsmasq/odhcpd lease sources. Native object subscriptions invalidate
-that snapshot. These dependencies are OpenWrt-only; Entware remains glibc with
+The latter exposes `luci-rpc.getHostHints` on OpenWrt 24.10 and later, combining
+the platform's IPv4/IPv6 neighbours, configured dnsmasq/odhcpd leases, static
+host definitions and names. Native object subscriptions invalidate that
+snapshot; libubox `uloop` owns the connection, timers and asynchronous request.
+Neither the full LuCI UI nor `rpcd-mod-rrdns` is required. If the system already
+provides reverse DNS, its result may be part of the host hints.
+These dependencies were already present in PR #25; the provider refactor adds
+none. Keenetic uses the existing libcurl/cJSON and socat hook delivery, without
+libndm. These dependencies are OpenWrt-only; Entware remains glibc with
 its existing RCI provider and never links the host test libraries. Firmware
 builds use the SDK libraries for the selected matrix target. Host CI builds
 official revisions pinned by the OpenWrt 24.10.0 recipes, including real ubusd,

@@ -1,5 +1,6 @@
 #include "greatest.h"
 #include <stdlib.h>
+#include <stdio.h>
 #include <string.h>
 #include "magitrickle/dns_clients.h"
 
@@ -81,6 +82,199 @@ TEST hotspot_empty_errors_and_conflicts_do_not_invent_names(void)
     ASSERT_EQ(MT_ERR_LIMIT, mt_dns_clients_parse_hotspot("", MT_DNS_CLIENT_BODY_LIMIT + 1, &clients, &n));
     PASS();
 }
+
+static const mt_dns_client_t *client_at(const mt_dns_client_t *clients, size_t count, const char *ip)
+{
+    for (size_t i = 0; i < count; i++) { if (strcmp(clients[i].ip, ip) == 0) { return &clients[i]; } }
+    return NULL;
+}
+/* Schema fixture, not a captured router response. The reported Lenovo MAC,
+ * alias and addresses use RCI's ID-keyed neighbour format, corroborated by
+ * https://blog.rvb.name/posts/pbr-keenetic . Address status/interface fields
+ * follow the official KeeneticOS CLI show ip neighbour documentation. */
+static const char *lenovo_hotspot =
+    "{\"host\":[{\"ip\":\"192.168.5.125\",\"mac\":\"14:5A:FC:2F:64:D3\","
+    "\"name\":\"Lenovo\",\"hostname\":\"Why\",\"active\":true,\"interface\":{\"id\":\"Bridge0\"}}]}";
+static const char *lenovo_neighbors =
+    "{\"7\":{\"mac\":\"14:5a:fc:2f:64:d3\",\"via\":\"02:00:00:00:00:01\","
+    "\"address-family\":\"ipv4\",\"address\":\"192.168.5.125\",\"interface\":\"Bridge0\",\"expired\":false},"
+    "\"8\":{\"mac\":\"14:5a:fc:2f:64:d3\",\"via\":\"02:00:00:00:00:01\","
+    "\"address-family\":\"ipv6\",\"interface\":\"Bridge0\",\"expired\":false,\"addresses\":{\"address\":["
+    "{\"address\":\"fe80::4a17:e738:40c9:6a7\",\"status\":\"active\"},"
+    "{\"address\":\"fdce:427e:77fb:0:b965:72de:de:eac3\",\"status\":\"active\"},"
+    "{\"address\":\"2001:db8::1\",\"status\":\"expired\"},"
+    "{\"address\":\"2001:db8::2\",\"status\":\"unknown\"},"
+    "{\"address\":\"2001:db8::3\"}]}},"
+    "\"9\":{\"mac\":\"02:00:00:00:00:02\",\"via\":\"14:5a:fc:2f:64:d3\","
+    "\"address-family\":\"ipv6\",\"interface\":\"Bridge0\",\"addresses\":{\"address\":{"
+    "\"address\":\"fe80::9\",\"status\":\"active\"}}}}";
+
+TEST keenetic_joins_reported_lenovo_addresses_by_mac_not_via(void)
+{
+    mt_dns_client_t *clients = NULL; size_t count = 0;
+    ASSERT_EQ(MT_OK, mt_dns_clients_parse_keenetic(lenovo_hotspot, strlen(lenovo_hotspot),
+        lenovo_neighbors, strlen(lenovo_neighbors), &clients, &count));
+    ASSERT_EQ(3u, (unsigned)count);
+    const char *ips[] = {"192.168.5.125", "fe80::4a17:e738:40c9:6a7", "fdce:427e:77fb:0:b965:72de:de:eac3"};
+    for (size_t i = 0; i < sizeof(ips) / sizeof(*ips); i++) {
+        const mt_dns_client_t *client = client_at(clients, count, ips[i]);
+        ASSERT(client); ASSERT_STR_EQ("Lenovo", client->name);
+    }
+    free(clients); PASS();
+}
+TEST keenetic_accepts_single_records_without_requiring_an_ipv4_lease(void)
+{
+    const char *host = "{\"host\":{\"mac\":\"02:00:00:00:00:01\",\"name\":\"\",\"hostname\":\"IPv6 only\",\"active\":true}}";
+    const char *neighbor = "{\"mac\":\"02:00:00:00:00:01\",\"address-family\":\"ipv6\",\"interface\":\"Bridge0\","
+        "\"addresses\":{\"address\":{\"address\":\"2001:0db8::7\",\"status\":\"active\"}}}";
+    mt_dns_client_t *clients = NULL; size_t count = 0;
+    ASSERT_EQ(MT_OK, mt_dns_clients_parse_keenetic(host, strlen(host), neighbor, strlen(neighbor), &clients, &count));
+    ASSERT_EQ(1u, (unsigned)count);
+    ASSERT_STR_EQ("2001:db8::7", clients[0].ip); ASSERT_STR_EQ("IPv6 only", clients[0].name);
+    free(clients); PASS();
+}
+TEST keenetic_rejects_inactive_expired_and_wrong_scope_joins(void)
+{
+    const char *hosts[] = {
+        "{\"host\":{\"mac\":\"02:00:00:00:00:01\",\"name\":\"old\",\"active\":false}}",
+        "{\"host\":{\"mac\":\"02:00:00:00:00:01\",\"name\":\"wrong segment\",\"interface\":{\"id\":\"Bridge1\"}}}",
+        "{\"host\":{\"mac\":\"02:00:00:00:00:01\",\"name\":\"expired\"}}",
+        "{\"host\":{\"mac\":\"ff:ff:ff:ff:ff:ff\",\"name\":\"invalid MAC\"}}"
+    };
+    const char *active = "[{\"mac\":\"02:00:00:00:00:01\",\"address-family\":\"ipv6\",\"interface\":\"Bridge0\","
+        "\"addresses\":{\"address\":[{\"address\":\"fe80::1\",\"status\":\"active\"}]}}]";
+    const char *expired = "[{\"mac\":\"02:00:00:00:00:01\",\"address-family\":\"ipv4\",\"expired\":true,\"address\":\"192.168.1.2\"}]";
+    for (size_t i = 0; i < sizeof(hosts) / sizeof(*hosts); i++) {
+        const char *neighbors = i == 2 ? expired : active;
+        mt_dns_client_t *clients = NULL; size_t count = 0;
+        ASSERT_EQ(MT_OK, mt_dns_clients_parse_keenetic(hosts[i], strlen(hosts[i]), neighbors, strlen(neighbors), &clients, &count));
+        ASSERT_EQ(0u, (unsigned)count); ASSERT(clients == NULL);
+    }
+    PASS();
+}
+TEST keenetic_unknown_optional_scope_preserves_explicit_labels_without_widening_joins(void)
+{
+    const char *scopes[] = {"null", "\"Bridge0\"", "{}", "[]", "{\"id\":\"\"}", "{\"id\":false}",
+        "{\"id\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}"};
+    const char *neighbors = "{"
+        "\"unknown/client\":{\"mac\":\"02:00:00:00:00:01\",\"address-family\":\"ipv6\",\"interface\":\"Bridge0\",\"addresses\":{\"address\":["
+        "{\"address\":\"fe80::20\",\"status\":\"active\"},{\"address\":\"fe80::40\",\"status\":\"active\"}]}},"
+        "\"known:client\":{\"mac\":\"02:00:00:00:00:03\",\"address-family\":\"ipv6\",\"interface\":\"Bridge0\",\"addresses\":{\"address\":["
+        "{\"address\":\"fe80::30\",\"status\":\"active\"},{\"address\":\"fe80::40\",\"status\":\"active\"}]}},"
+        "\"offline\":{\"mac\":\"02:00:00:00:00:02\",\"address-family\":\"ipv6\",\"interface\":\"Bridge0\",\"addresses\":{\"address\":{"
+        "\"address\":\"fe80::10\",\"status\":\"active\"}}}}";
+    for (size_t i = 0; i < sizeof(scopes) / sizeof(*scopes); i++) {
+        char hosts[1024];
+        int len = snprintf(hosts, sizeof(hosts), "{\"host\":["
+            "{\"ip\":\"192.168.1.10\",\"mac\":\"02:00:00:00:00:02\",\"name\":\"Offline\",\"active\":false,\"interface\":null},"
+            "{\"ip\":\"192.168.1.20\",\"mac\":\"02:00:00:00:00:01\",\"name\":\"Direct\",\"active\":true,\"interface\":%s},"
+            "{\"ip\":\"192.168.1.30\",\"mac\":\"02:00:00:00:00:03\",\"name\":\"Known\",\"interface\":{\"id\":\"Bridge0\"}}]}", scopes[i]);
+        ASSERT(len > 0 && (size_t)len < sizeof(hosts));
+        mt_dns_client_t *clients = NULL; size_t count = 0;
+        ASSERT_EQ(MT_OK, mt_dns_clients_parse_keenetic(hosts, (size_t)len, neighbors, strlen(neighbors), &clients, &count));
+        ASSERT_EQ(3u, (unsigned)count);
+        const mt_dns_client_t *direct = client_at(clients, count, "192.168.1.20");
+        const mt_dns_client_t *joined = client_at(clients, count, "fe80::30");
+        ASSERT(direct); ASSERT_STR_EQ("Direct", direct->name);
+        ASSERT(joined); ASSERT_STR_EQ("Known", joined->name);
+        ASSERT(client_at(clients, count, "192.168.1.30"));
+        ASSERT(!client_at(clients, count, "192.168.1.10"));
+        ASSERT(!client_at(clients, count, "fe80::10"));
+        ASSERT(!client_at(clients, count, "fe80::20"));
+        /* The unrecognized host still contributes an unnamed observed owner. */
+        ASSERT(!client_at(clients, count, "fe80::40"));
+        free(clients);
+    }
+    PASS();
+}
+TEST keenetic_same_alias_and_unnamed_owners_cannot_hide_ambiguity(void)
+{
+    const char *hosts[] = {
+        "[{\"mac\":\"02:00:00:00:00:01\",\"name\":\"Phone\"},{\"mac\":\"02:00:00:00:00:02\",\"name\":\"Phone\"}]",
+        "[{\"mac\":\"02:00:00:00:00:01\",\"name\":\"Phone\"},{\"mac\":\"02:00:00:00:00:02\"}]",
+        "[{\"mac\":\"02:00:00:00:00:01\",\"name\":\"Phone\"}]"
+    };
+    const char *neighbors = "["
+        "{\"mac\":\"02:00:00:00:00:01\",\"address-family\":\"ipv6\",\"interface\":\"Bridge0\",\"addresses\":{\"address\":{\"address\":\"fe80::1\",\"status\":\"active\"}}},"
+        "{\"mac\":\"02:00:00:00:00:02\",\"address-family\":\"ipv6\",\"interface\":\"Bridge0\",\"addresses\":{\"address\":{\"address\":\"fe80::1\",\"status\":\"active\"}}}]";
+    for (size_t i = 0; i < sizeof(hosts) / sizeof(*hosts); i++) {
+        mt_dns_client_t *clients = NULL; size_t count = 0;
+        ASSERT_EQ(MT_OK, mt_dns_clients_parse_keenetic(hosts[i], strlen(hosts[i]), neighbors, strlen(neighbors), &clients, &count));
+        ASSERT_EQ(0u, (unsigned)count); ASSERT(clients == NULL);
+    }
+    PASS();
+}
+TEST keenetic_direct_ipv6_and_duplicate_scopes_are_not_arbitrarily_named(void)
+{
+    const char *host = "[{\"ip\":\"fe80::1\",\"mac\":\"02:00:00:00:00:01\",\"name\":\"Phone\",\"interface\":{\"id\":\"Bridge0\"}}]";
+    const char *neighbors[] = {
+        "[{\"mac\":\"02:00:00:00:00:01\",\"address-family\":\"ipv6\",\"interface\":\"Bridge0\",\"addresses\":{\"address\":{\"address\":\"fe80::1\",\"status\":\"active\"}}}]",
+        "[{\"mac\":\"02:00:00:00:00:01\",\"address-family\":\"ipv6\",\"interface\":\"Bridge1\",\"addresses\":{\"address\":{\"address\":\"fe80::1\",\"status\":\"active\"}}}]",
+        "[{\"mac\":\"02:00:00:00:00:02\",\"address-family\":\"ipv6\",\"interface\":\"Bridge0\",\"addresses\":{\"address\":{\"address\":\"fe80::1\",\"status\":\"active\"}}}]"
+    };
+    for (size_t i = 0; i < sizeof(neighbors) / sizeof(*neighbors); i++) {
+        mt_dns_client_t *clients = NULL; size_t count = 0;
+        ASSERT_EQ(MT_OK, mt_dns_clients_parse_keenetic(host, strlen(host), neighbors[i], strlen(neighbors[i]), &clients, &count));
+        ASSERT_EQ(i == 0 ? 1u : 0u, (unsigned)count);
+        if (i == 0) { ASSERT_STR_EQ("Phone", clients[0].name); }
+        free(clients);
+    }
+    PASS();
+}
+TEST hotspot_duplicate_owners_are_ambiguous_even_with_equal_names(void)
+{
+    const char *hosts[] = {
+        "[{\"ip\":\"192.168.1.2\",\"mac\":\"02:00:00:00:00:01\",\"name\":\"Phone\"},{\"ip\":\"::ffff:192.168.1.2\",\"mac\":\"02:00:00:00:00:02\",\"name\":\"Phone\"}]",
+        "[{\"ip\":\"192.168.1.2\",\"mac\":\"02:00:00:00:00:01\",\"name\":\"Phone\"},{\"ip\":\"192.168.1.2\",\"mac\":\"02:00:00:00:00:02\"}]",
+        "[{\"ip\":\"fe80::1\",\"mac\":\"02:00:00:00:00:01\",\"name\":\"Phone\",\"interface\":{\"id\":\"Bridge0\"}},{\"ip\":\"fe80::1\",\"mac\":\"02:00:00:00:00:01\",\"name\":\"Phone\",\"interface\":{\"id\":\"Bridge1\"}}]"
+    };
+    for (size_t i = 0; i < sizeof(hosts) / sizeof(*hosts); i++) {
+        mt_dns_client_t *clients = NULL; size_t count = 0;
+        ASSERT_EQ(MT_OK, mt_dns_clients_parse_hotspot(hosts[i], strlen(hosts[i]), &clients, &count));
+        ASSERT_EQ(0u, (unsigned)count); ASSERT(clients == NULL);
+    }
+    PASS();
+}
+TEST keenetic_bad_neighbor_snapshot_keeps_only_explicit_hotspot_addresses(void)
+{
+    const char *bad[] = {
+        "garbage", "[]{}", "{\"status\":[{\"status\":\"error\"}]}", "{\"unexpected\":true}", "[null]",
+        "[{\"mac\":\"14:5a:fc:2f:64:d3\",\"address-family\":\"ipv4\",\"address\":\"fe80::1\"}]",
+        "[{\"mac\":\"14:5a:fc:2f:64:d3\",\"address-family\":\"ipv6\",\"addresses\":{\"address\":["
+        "{\"address\":\"fe80::1\",\"status\":\"active\"},{\"address\":\"bad-address\",\"status\":\"active\"}]}}]",
+        "[{\"mac\":\"14:5a:fc:2f:64:d3\",\"address-family\":\"ipv6\",\"addresses\":{\"address\":["
+        "{\"address\":\"fe80::1\",\"status\":\"active\"},null]}}]",
+        "[{\"mac\":\"14:5a:fc:2f:64:d3\",\"address-family\":\"ipv4\",\"address\":\"192.168.1.8\",\"expired\":\"no\"}]"
+    };
+    for (size_t i = 0; i < sizeof(bad) / sizeof(*bad); i++) {
+        mt_dns_client_t *clients = NULL; size_t count = 0;
+        ASSERT_EQ(MT_OK, mt_dns_clients_parse_keenetic(lenovo_hotspot, strlen(lenovo_hotspot), bad[i], strlen(bad[i]), &clients, &count));
+        ASSERT_EQ(1u, (unsigned)count); ASSERT_STR_EQ("192.168.5.125", clients[0].ip);
+        ASSERT_STR_EQ("Lenovo", clients[0].name); free(clients);
+    }
+    mt_dns_client_t *clients = NULL; size_t count = 0;
+    ASSERT_EQ(MT_OK, mt_dns_clients_parse_keenetic(lenovo_hotspot, strlen(lenovo_hotspot), "", MT_DNS_CLIENT_BODY_LIMIT + 1, &clients, &count));
+    ASSERT_EQ(1u, (unsigned)count); free(clients);
+    const char *error = "{\"status\":[{\"status\":\"error\"}]}";
+    ASSERT_EQ(MT_ERR_UPSTREAM, mt_dns_clients_parse_keenetic(error, strlen(error), lenovo_neighbors, strlen(lenovo_neighbors), &clients, &count));
+    ASSERT_EQ(0u, (unsigned)count); ASSERT(clients == NULL);
+    PASS();
+}
+TEST keenetic_oversized_enrichment_never_publishes_a_partial_join(void)
+{
+    size_t cap = (MT_DNS_CLIENT_LIMIT + 1u) * 64u + 256u;
+    char *neighbors = malloc(cap); ASSERT(neighbors);
+    size_t len = (size_t)snprintf(neighbors, cap,
+        "[{\"mac\":\"14:5a:fc:2f:64:d3\",\"address-family\":\"ipv6\",\"addresses\":{\"address\":[");
+    for (size_t i = 0; i <= MT_DNS_CLIENT_LIMIT; i++) {
+        len += (size_t)snprintf(neighbors + len, cap - len, "%s{\"address\":\"fe80::1\",\"status\":\"active\"}", i ? "," : "");
+    }
+    len += (size_t)snprintf(neighbors + len, cap - len, "]}}]");
+    mt_dns_client_t *clients = NULL; size_t count = 0;
+    ASSERT_EQ(MT_OK, mt_dns_clients_parse_keenetic(lenovo_hotspot, strlen(lenovo_hotspot), neighbors, len, &clients, &count));
+    ASSERT_EQ(1u, (unsigned)count); ASSERT_STR_EQ("192.168.5.125", clients[0].ip);
+    free(clients); free(neighbors); PASS();
+}
 #endif
 GREATEST_MAIN_DEFS();
 int main(int argc, char **argv)
@@ -91,6 +285,15 @@ int main(int argc, char **argv)
 #ifdef MT_ENTWARE_KN
     RUN_TEST(hotspot_prefers_user_name_and_falls_back_to_hostname);
     RUN_TEST(hotspot_empty_errors_and_conflicts_do_not_invent_names);
+    RUN_TEST(keenetic_joins_reported_lenovo_addresses_by_mac_not_via);
+    RUN_TEST(keenetic_accepts_single_records_without_requiring_an_ipv4_lease);
+    RUN_TEST(keenetic_rejects_inactive_expired_and_wrong_scope_joins);
+    RUN_TEST(keenetic_unknown_optional_scope_preserves_explicit_labels_without_widening_joins);
+    RUN_TEST(keenetic_same_alias_and_unnamed_owners_cannot_hide_ambiguity);
+    RUN_TEST(keenetic_direct_ipv6_and_duplicate_scopes_are_not_arbitrarily_named);
+    RUN_TEST(hotspot_duplicate_owners_are_ambiguous_even_with_equal_names);
+    RUN_TEST(keenetic_bad_neighbor_snapshot_keeps_only_explicit_hotspot_addresses);
+    RUN_TEST(keenetic_oversized_enrichment_never_publishes_a_partial_join);
 #endif
     GREATEST_MAIN_END();
 }

@@ -1,6 +1,7 @@
 #!/bin/sh
 # NDM invokes hooks serially. Only deliver an event; never wait for RCI or
-# routing work here. Every variable included in JSON is a bounded ASCII token.
+# routing work here. Interface JSON contains bounded ASCII tokens; neighbour
+# events carry no payload because the daemon reads the current system inventory.
 PATH=/opt/sbin:/opt/bin:/usr/sbin:/usr/bin:/sbin:/bin
 LC_ALL=C
 export PATH LC_ALL
@@ -10,30 +11,44 @@ shift
 [ "${1:-}" = hook ] || exit 0
 socket=/opt/var/run/magitrickle.sock
 lost=/opt/var/run/magitrickle-ndm-lost
-case "$kind" in layer|state|created|destroyed) ;; *) exit 0 ;; esac
-# Some firmware-only interfaces have no Linux name and cannot be MT candidates.
-[ -n "${system_name:-}" ] || exit 0
-mark_lost() { (umask 077; mkdir "$lost" 2>/dev/null) || :; }
-case "${id:-}" in ''|*[!a-zA-Z0-9_./:-]*) mark_lost; exit 0 ;; esac
-case "$system_name" in *[!a-zA-Z0-9_.:-]*) mark_lost; exit 0 ;; esac
-[ "${#id}" -lt 64 ] && [ "${#system_name}" -lt 16 ] || { mark_lost; exit 0; }
-resync=false
-[ -d "$lost" ] && resync=true
-body="{\"kind\":\"$kind\",\"id\":\"$id\",\"system_name\":\"$system_name\",\"resync\":$resync"
-if [ "$kind" = layer ]; then
-    case "${layer:-}" in ''|*[!a-zA-Z0-9_-]*) mark_lost; exit 0 ;; esac
-    case "${level:-}" in ''|*[!a-zA-Z0-9_-]*) mark_lost; exit 0 ;; esac
-    [ "${#layer}" -le 32 ] && [ "${#level}" -le 32 ] || { mark_lost; exit 0; }
-    body="$body,\"layer\":\"$layer\",\"level\":\"$level\""
-elif [ "$kind" = state ]; then
-    case "${up:-}/${link:-}/${connected:-}" in *[!a-zA-Z/-]*) mark_lost; exit 0 ;; esac
-    [ "${#up}" -le 16 ] && [ "${#link}" -le 16 ] && [ "${#connected}" -le 16 ] || { mark_lost; exit 0; }
-    body="$body,\"up\":\"${up:-}\",\"link\":\"${link:-}\",\"connected\":\"${connected:-}\""
-fi
-body="$body}"
+mark_lost() {
+    # Display metadata heals at the next periodic snapshot; routing readiness
+    # retains its existing durable delivery-loss marker.
+    [ "$kind" != neighbour ] || return 0
+    (umask 077; mkdir "$lost" 2>/dev/null) || :
+}
+case "$kind" in
+neighbour)
+    endpoint=/api/v1/system/hooks/ndm-neighbour
+    body=
+    ;;
+layer|state|created|destroyed)
+    endpoint=/api/v1/system/hooks/ndm-interface
+    # Some firmware-only interfaces have no Linux name and cannot be MT candidates.
+    [ -n "${system_name:-}" ] || exit 0
+    case "${id:-}" in ''|*[!a-zA-Z0-9_./:-]*) mark_lost; exit 0 ;; esac
+    case "$system_name" in *[!a-zA-Z0-9_.:-]*) mark_lost; exit 0 ;; esac
+    [ "${#id}" -lt 64 ] && [ "${#system_name}" -lt 16 ] || { mark_lost; exit 0; }
+    resync=false
+    [ -d "$lost" ] && resync=true
+    body="{\"kind\":\"$kind\",\"id\":\"$id\",\"system_name\":\"$system_name\",\"resync\":$resync"
+    if [ "$kind" = layer ]; then
+        case "${layer:-}" in ''|*[!a-zA-Z0-9_-]*) mark_lost; exit 0 ;; esac
+        case "${level:-}" in ''|*[!a-zA-Z0-9_-]*) mark_lost; exit 0 ;; esac
+        [ "${#layer}" -le 32 ] && [ "${#level}" -le 32 ] || { mark_lost; exit 0; }
+        body="$body,\"layer\":\"$layer\",\"level\":\"$level\""
+    elif [ "$kind" = state ]; then
+        case "${up:-}/${link:-}/${connected:-}" in *[!a-zA-Z/-]*) mark_lost; exit 0 ;; esac
+        [ "${#up}" -le 16 ] && [ "${#link}" -le 16 ] && [ "${#connected}" -le 16 ] || { mark_lost; exit 0; }
+        body="$body,\"up\":\"${up:-}\",\"link\":\"${link:-}\",\"connected\":\"${connected:-}\""
+    fi
+    body="$body}"
+    ;;
+*) exit 0 ;;
+esac
 [ -S "$socket" ] || { mark_lost; exit 0; }
 response=$(
-    printf 'POST /api/v1/system/hooks/ndm-interface HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nConnection: close\r\nContent-Length: %s\r\n\r\n%s' "${#body}" "$body" |
+    printf 'POST %s HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nConnection: close\r\nContent-Length: %s\r\n\r\n%s' "$endpoint" "${#body}" "$body" |
         socat -T 1 - UNIX-CONNECT:"$socket",connect-timeout=1 2>/dev/null
 )
 case "$response" in

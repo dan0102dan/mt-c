@@ -15,7 +15,7 @@
 #define MT_DNS_CLIENT_IP_LEN 48u
 #define MT_DNS_CLIENT_BODY_LIMIT ((size_t)1024 * 1024)
 #define MT_DNS_CLIENT_SUBSCRIBERS 8u
-#define MT_DNS_CLIENT_REFRESH_MS 300000u
+#define MT_DNS_CLIENT_REFRESH_MS 30000u
 
 typedef struct mt_dns_client {
     char ip[MT_DNS_CLIENT_IP_LEN];
@@ -36,6 +36,8 @@ bool mt_dns_client_label(const char *name, char out[MT_DNS_CLIENT_NAME_LEN]);
 #ifdef MT_ENTWARE_KN
 mt_err_t mt_dns_clients_parse_hotspot(const char *json, size_t len,
                                      mt_dns_client_t **clients, size_t *count);
+mt_err_t mt_dns_clients_parse_keenetic(const char *hotspot, size_t hotspot_len,
+    const char *neighbors, size_t neighbors_len, mt_dns_client_t **clients, size_t *count);
 mt_err_t mt_dns_clients_fetch_keenetic(mt_dns_client_t **clients, size_t *count,
                                       const atomic_bool *stop, void *ud);
 #endif
@@ -50,6 +52,9 @@ void mt_dns_clients_destroy(mt_dns_clients_t *clients);
 int mt_dns_clients_subscribe(mt_dns_clients_t *clients, mt_dns_clients_notify_fn fn, void *ud);
 void mt_dns_clients_unsubscribe(mt_dns_clients_t *clients, int subscription);
 void mt_dns_clients_refresh(mt_dns_clients_t *clients);
+/* Source notifications invalidate a whole snapshot. Bursts are debounced;
+ * events received during a fetch always request a subsequent snapshot. */
+void mt_dns_clients_invalidate(mt_dns_clients_t *clients);
 /* Loop-local inventory view for bounded metadata events. Never retain these
  * pointers across callbacks; check revision again before the next batch. */
 size_t mt_dns_clients_count(const mt_dns_clients_t *clients);
