@@ -13,6 +13,7 @@ cleanup() {
   ip netns del "$SERVER" 2>/dev/null || :
   ip link del mtci-lan 2>/dev/null || :
   ip link del "$OUT" 2>/dev/null || :
+  rm -rf /etc/netns/"$CLIENT"
   rm -f /etc/dnsmasq.d/mtci-routing.conf
   /etc/init.d/dnsmasq restart >/dev/null 2>&1 || :
 }
@@ -30,6 +31,8 @@ ip -n "$CLIENT" link set lo up
 ip -n "$CLIENT" link set mtci-client0 up
 ip -n "$CLIENT" addr add 192.168.1.250/24 dev mtci-client0
 ip -n "$CLIENT" route add default via 192.168.1.1
+mkdir -p /etc/netns/"$CLIENT"
+printf "nameserver 192.168.1.1\\n" > /etc/netns/"$CLIENT"/resolv.conf
 
 ip link add "$OUT" type veth peer name mtci-server0
 ip link set mtci-server0 netns "$SERVER"
@@ -72,6 +75,6 @@ ip -4 rule show | grep 'fwmark' >/tmp/mtci-rules || die "no fwmark policy rule"
 ip -4 route show table all | grep -q "dev $OUT" || die "missing egress policy route"
 # The HTTP request originates from the client namespace and must traverse
 # PREROUTING, fwmark policy and the selected outbound veth into server ns.
-ip netns exec "$CLIENT" wget -T 8 -q -O /tmp/mtci-body "http://$DEST:18080/" || die "client packet did not reach policy egress"
+ip netns exec "$CLIENT" wget -T 8 -q -O /tmp/mtci-body "http://example.com:18080/" || die "client packet did not reach policy egress"
 grep -q "route-ok" /tmp/mtci-body || die "unexpected HTTP response"
 log "PASS: client DNS, ipset, policy route and HTTP delivery through $OUT"
