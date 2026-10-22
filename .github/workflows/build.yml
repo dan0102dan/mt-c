@@ -16,30 +16,13 @@ on:
         description: Existing release tag to rebuild and populate
         required: true
         type: string
-  workflow_call:
-    inputs:
-      pr_number:
-        required: true
-        type: string
-      source_sha:
-        required: true
-        type: string
-      platform:
-        required: true
-        type: string
-      architecture:
-        required: true
-        type: string
-      openwrt_version:
-        required: true
-        type: string
 
 permissions:
   contents: write
 
 concurrency:
-  group: packages-${{ github.workflow }}-${{ github.ref }}-${{ inputs.pr_number || 'regular' }}-${{ inputs.architecture || 'all' }}-${{ inputs.openwrt_version || 'all' }}
-  cancel-in-progress: ${{ inputs.pr_number == '' }}
+  group: packages-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   # Which OpenWrt target/subtarget builds a given package architecture is
@@ -52,7 +35,6 @@ jobs:
   # slow mirror costs a missing report, not a failed run. Mappings are
   # still applied by hand, from data instead of from memory.
   discover:
-    if: ${{ inputs.pr_number == '' && (github.event_name != 'release' || startsWith(github.event.release.tag_name, 'pr-') == false) }}
     name: Discover OpenWrt arch mappings
     runs-on: ubuntu-latest
     continue-on-error: true
@@ -148,47 +130,58 @@ jobs:
 
   prepare:
     name: Prepare build matrix
-    if: ${{ github.event_name != 'release' || startsWith(github.event.release.tag_name, 'pr-') == false }}
     runs-on: ubuntu-latest
     outputs:
       configs: ${{ steps.collect.outputs.configs }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v5
-        with:
-          fetch-depth: 0
-          ref: ${{ inputs.pr_number != '' && format('refs/pull/{0}/head', inputs.pr_number) || github.ref }}
-          persist-credentials: ${{ inputs.pr_number == '' }}
-
-      - name: Verify requested PR SHA
-        if: inputs.pr_number != ''
-        env:
-          SOURCE_SHA: ${{ inputs.source_sha }}
-        run: test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
-
-      - name: Checkout trusted matrix selector
-        if: inputs.pr_number != ''
-        uses: actions/checkout@v5
-        with:
-          ref: ${{ github.sha }}
-          path: .ci-control
-          sparse-checkout: tools/ci/build_matrix.py
-          sparse-checkout-cone-mode: false
-          persist-credentials: false
 
       - name: Build config matrix
         id: collect
-        env:
-          MANUAL_PR_NUMBER: ${{ inputs.pr_number }}
-          MANUAL_PLATFORM: ${{ inputs.platform }}
-          MANUAL_ARCHITECTURE: ${{ inputs.architecture }}
-          MANUAL_OPENWRT_VERSION: ${{ inputs.openwrt_version }}
         run: |
-          if [ -n "$MANUAL_PR_NUMBER" ]; then
-            python3 .ci-control/tools/ci/build_matrix.py >> "$GITHUB_OUTPUT"
-          else
-            python3 tools/ci/build_matrix.py >> "$GITHUB_OUTPUT"
-          fi
+          python3 - <<'PY' >> "$GITHUB_OUTPUT"
+          import json
+          from pathlib import Path
+
+          SNAPSHOT_ONLY_ARCHS = {"mips64_mips64r2", "mips64el_mips64r2"}
+
+          configs = sorted(Path("config").glob("*/*.config"))
+
+          if not configs:
+              raise SystemExit("No build configs found")
+
+          matrix = []
+          for config in configs:
+              item = {
+                  "config": config.as_posix(),
+                  "name": config.stem,
+                  "label": config.stem,
+                  "openwrt_version": "",
+                  "package_ext": "ipk",
+              }
+              if config.parent.name == "openwrt":
+                  # No release line publishes a target for these, but
+                  # snapshots build malta, which does declare them
+                  # (D-60). Build them from there instead of twice
+                  # against release SDKs that 404.
+                  if config.stem in SNAPSHOT_ONLY_ARCHS:
+                      versions = (("snapshot", "apk"),)
+                  else:
+                      versions = (("24.10.4", "ipk"), ("25.12.5", "apk"))
+                  for version, package_ext in versions:
+                      matrix.append({
+                          **item,
+                          "label": f"{config.stem} / OpenWrt {version}",
+                          "openwrt_version": version,
+                          "package_ext": package_ext,
+                      })
+              else:
+                  matrix.append(item)
+
+          print(f"configs={json.dumps(matrix, separators=(',', ':'))}")
+          PY
+
   build:
     name: Build packages (${{ matrix.label }})
     needs: prepare
@@ -208,14 +201,6 @@ jobs:
         uses: actions/checkout@v5
         with:
           fetch-depth: 0
-          ref: ${{ inputs.pr_number != '' && format('refs/pull/{0}/head', inputs.pr_number) || github.ref }}
-          persist-credentials: ${{ inputs.pr_number == '' }}
-
-      - name: Verify requested PR SHA
-        if: inputs.pr_number != ''
-        env:
-          SOURCE_SHA: ${{ inputs.source_sha }}
-        run: test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
 
       - name: Check cross-toolchain availability
         id: toolchain
@@ -952,22 +937,20 @@ jobs:
             echo "package_1_name=$(basename "$package")" >> "$GITHUB_OUTPUT"
           fi
 
-      # Keep all installable PR packages available even if runtime smoke fails.
       - name: Upload package artifact 1
-        if: ${{ (inputs.pr_number != '' || (github.event_name != 'release' && github.event_name != 'workflow_dispatch')) && steps.package_outputs.outputs.package_1_path != '' }}
+        if: ${{ github.event_name != 'release' && github.event_name != 'workflow_dispatch' && steps.package_outputs.outputs.package_1_path != '' }}
         uses: actions/upload-artifact@v6
         with:
           name: ${{ steps.package_outputs.outputs.package_1_name }}
           path: ${{ steps.package_outputs.outputs.package_1_path }}
           if-no-files-found: error
           compression-level: 0
-          retention-days: 14
 
       # One real OpenWrt 25.12.5 boot per run. The APK is the exact
       # cross-built SDK artifact above, not a host-repacked copy.
       # Run before release uploads: a broken install/service must fail.
       - name: Install and smoke-test APK in router emulator
-        if: matrix.name == 'aarch64_cortex-a53' && matrix.openwrt_version == '25.12.5' && steps.package_outputs.outputs.package_1_path != ''
+        if: github.event_name == 'push' && matrix.name == 'aarch64_cortex-a53' && matrix.openwrt_version == '25.12.5' && steps.package_outputs.outputs.package_1_path != ''
         env:
           APK: ${{ steps.package_outputs.outputs.package_1_path }}
         run: |
@@ -1004,7 +987,7 @@ jobs:
             --package "$APK"
 
       - name: Upload router-emulator smoke logs
-        if: always() && matrix.name == 'aarch64_cortex-a53' && matrix.openwrt_version == '25.12.5'
+        if: always() && github.event_name == 'push' && matrix.name == 'aarch64_cortex-a53' && matrix.openwrt_version == '25.12.5'
         uses: actions/upload-artifact@v6
         with:
           name: router-emulator-smoke-25.12.5-aarch64_cortex-a53
@@ -1015,7 +998,7 @@ jobs:
           retention-days: 7
 
       - name: Upload package assets to release
-        if: ${{ inputs.pr_number == '' && (github.event_name == 'release' || github.event_name == 'workflow_dispatch') }}
+        if: ${{ github.event_name == 'release' || github.event_name == 'workflow_dispatch' }}
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ github.event.release.tag_name || inputs.release_tag }}
