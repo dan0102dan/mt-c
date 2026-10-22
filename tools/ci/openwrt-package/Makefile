@@ -62,6 +62,8 @@ define Package/mt-c/install
 	$(INSTALL_DIR) $(1)/etc/magitrickle/state
 	$(INSTALL_CONF) $(PKG_BUILD_DIR)/files/common/var/lib/magitrickle/config.yaml \
 		$(1)/etc/magitrickle/state/config.yaml
+	# OpenWrt uses br-lan by default; keep the Entware/Keenetic template unchanged.
+	$(SED) 's/^    - br0/    - br-lan/' $(1)/etc/magitrickle/state/config.yaml
 
 	$(INSTALL_DIR) $(1)/etc/config
 	$(INSTALL_CONF) $(PKG_BUILD_DIR)/files/openwrt/etc/config/magitrickle \

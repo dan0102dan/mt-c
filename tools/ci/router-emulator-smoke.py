@@ -230,7 +230,10 @@ def run_test(emulator, package, preset, log_dir):
             serial.run("apk update", timeout=180)
             serial.run(f"apk add --allow-untrusted {GUEST_PACKAGE}", timeout=240)
             serial.run("apk info -e mt-c && test -x /usr/bin/magitrickled && test -x /etc/init.d/magitrickle")
+            serial.run("grep -A 3 '^  link:' /etc/magitrickle/state/config.yaml | grep -q 'br-lan'")
             serial.run("/etc/init.d/magitrickle restart", timeout=90)
+            # Detect immediate startup failures before waiting for the API.
+            serial.run("sleep 3; pidof magitrickled", timeout=20)
             check_http_api(timeout=75)
             serial.run("pidof magitrickled", timeout=20)
             # Verify the service survives the API request, not just a
@@ -239,6 +242,17 @@ def run_test(emulator, package, preset, log_dir):
             print("PASS: APK installed, procd service running, HTTP API responding", flush=True)
         except Exception:
             if serial is not None:
+                for diagnostic in (
+                    "ubus call service list '{\"name\":\"magitrickle\",\"verbose\":true}'",
+                    "logread | tail -n 90",
+                    "ip -br link",
+                    "cat /etc/magitrickle/state/config.yaml | head -n 45",
+                    "pidof magitrickled || true",
+                ):
+                    try:
+                        serial.run(diagnostic, timeout=15, check=False)
+                    except (SmokeFailure, OSError):
+                        pass
                 serial.print_tail()
             raise
         finally:
