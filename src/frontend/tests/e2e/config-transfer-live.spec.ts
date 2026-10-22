@@ -557,7 +557,7 @@ for (const width of [1280, 390]) {
 
         const { policies } = await (await backend.api.get("/api/v1/keenetic/policies")).json();
         const local = policies.find((policy: { id: string }) => policy.id === "Policy0");
-        await dialog.getByRole("button", { name: "Keenetic policy mapping", exact: true }).click();
+        await dialog.locator('[data-select-trigger][aria-label="Keenetic policy mapping"]').click();
         await page.getByRole("option", { name: local.name, exact: true }).click();
         await expect(button).toBeEnabled();
         await button.click();
@@ -587,7 +587,7 @@ for (const width of [1280, 390]) {
         },
       });
       await expect(
-        dialog.getByRole("button", { name: "Keenetic policy mapping", exact: true }),
+        dialog.locator('[data-select-trigger][aria-label="Keenetic policy mapping"]'),
       ).toHaveText("ForeignPolicy73");
       await expect(dialog.getByRole("button", { name: "Import", exact: true })).toBeEnabled();
       await dialog.getByRole("button", { name: "Import", exact: true }).click();
