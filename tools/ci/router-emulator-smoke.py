@@ -180,6 +180,17 @@ def check_http_api(timeout=60):
     raise SmokeFailure(f"HTTP API not reachable: {url} ({last})")
 
 
+def wait_for_guest_file_command(path, attempts):
+    """Poll a guest file without terminating the interactive serial shell."""
+    if not re.fullmatch(r"/tmp/[a-zA-Z0-9-]+", path) or not 1 <= attempts <= 120:
+        raise ValueError("invalid guest polling arguments")
+    return (
+        f"for i in $(seq 1 {attempts}); do "
+        f"test -e {path} && break; sleep 1; "
+        f"done; test -e {path}"
+    )
+
+
 def create_routing_group():
     """Add a real enabled domain group through the application's HTTP API."""
     url = f"http://127.0.0.1:{API_HOST_PORT}/api/v1/groups"
@@ -274,10 +285,10 @@ def run_test(emulator, package, preset, log_dir):
             serial.run(f"wget -T 30 -O /tmp/mtci-routing.sh http://10.0.2.2:{http_port}/routing.sh", timeout=60)
             serial.run("chmod 700 /tmp/mtci-routing.sh")
             serial.run("(sh /tmp/mtci-routing.sh > /tmp/mtci-routing.log 2>&1; echo $? > /tmp/mtci-status) </dev/null >/dev/null 2>&1 &")
-            serial.run("for i in $(seq 1 30); do test -e /tmp/mtci-ready && exit 0; sleep 1; done; exit 1", timeout=40)
+            serial.run(wait_for_guest_file_command("/tmp/mtci-ready", 30), timeout=40)
             create_routing_group()
             serial.run("touch /tmp/mtci-go")
-            serial.run("for i in $(seq 1 60); do test -f /tmp/mtci-status && exit 0; sleep 1; done; exit 1", timeout=75)
+            serial.run(wait_for_guest_file_command("/tmp/mtci-status", 60), timeout=75)
             serial.run("cat /tmp/mtci-routing.log")
             serial.run("test \"$(cat /tmp/mtci-status)\" = 0")
             print("PASS: client DNS and HTTP traffic routed over selected interface", flush=True)

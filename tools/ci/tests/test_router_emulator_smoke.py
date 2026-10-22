@@ -3,6 +3,7 @@
 import importlib.util
 from pathlib import Path
 import re
+import subprocess
 import socket
 import tempfile
 import threading
@@ -61,6 +62,34 @@ class SerialTests(unittest.TestCase):
         self.simulate_shell(7)
         with self.assertRaisesRegex(smoke.SmokeFailure, 'exit 7'):
             self.console.run('false', timeout=3)
+
+
+class GuestPollTests(unittest.TestCase):
+    def test_existing_file_keeps_interactive_shell_alive(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "ready"
+            path.touch()
+            # Test the same shell construct used by the guest runner.
+            command = smoke.wait_for_guest_file_command("/tmp/mtci-ready", 2)
+            command = command.replace("/tmp/mtci-ready", str(path))
+            result = subprocess.run(
+                ["sh", "-c", command + "; result=$?; echo SHELL_ALIVE; exit $result"],
+                capture_output=True, text=True, timeout=5,
+            )
+            self.assertEqual(result.returncode, 0)
+            self.assertIn("SHELL_ALIVE", result.stdout)
+
+    def test_missing_file_fails_without_closing_shell(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "missing"
+            command = smoke.wait_for_guest_file_command("/tmp/mtci-status", 1)
+            command = command.replace("/tmp/mtci-status", str(path))
+            result = subprocess.run(
+                ["sh", "-c", command + "; result=$?; echo SHELL_ALIVE; exit $result"],
+                capture_output=True, text=True, timeout=5,
+            )
+            self.assertEqual(result.returncode, 1)
+            self.assertIn("SHELL_ALIVE", result.stdout)
 
 
 class PackageServerTests(unittest.TestCase):
