@@ -243,7 +243,17 @@ def run_test(emulator, package, preset, log_dir):
             serial.run(
                 f"printf '%s  %s\\n' '{package_sha256}' '{GUEST_PACKAGE}' | sha256sum -c -"
             )
-            serial.run("apk update", timeout=180)
+            # Early boot can briefly disrupt external feed downloads while
+            # netifd/dnsmasq finish initializing. Retry failed index updates,
+            # but never proceed with a partial index or hide a persistent error.
+            for attempt in range(1, 5):
+                result = serial.run("apk update", timeout=180, check=False, show_output=True)
+                if result == 0:
+                    break
+                if attempt == 4:
+                    raise SmokeFailure("apk update failed after 4 attempts (see guest output)")
+                print(f"apk update attempt {attempt}/4 failed; retrying in 5s", flush=True)
+                time.sleep(5)
             serial.run(f"apk add --allow-untrusted {GUEST_PACKAGE}", timeout=240)
             serial.run("apk info -e mt-c && test -x /usr/bin/magitrickled && test -x /etc/init.d/magitrickle")
             serial.run("grep -A 3 '^  link:' /etc/magitrickle/state/config.yaml | grep -q 'br-lan'")
