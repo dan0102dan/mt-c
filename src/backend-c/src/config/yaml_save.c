@@ -47,7 +47,55 @@ static int emit_buf_write(void *ext, unsigned char *buffer, size_t size)
 typedef struct emitter_ctx {
     yaml_emitter_t emitter;
     bool failed;
+    bool json;
+    cJSON *root;
+    struct { cJSON *node, *key; } stack[8];
+    size_t depth;
 } emitter_ctx_t;
+
+/* Both formats walk the same schema below. JSON is built directly, never
+ * serialized to YAML and reparsed. The bounded stack reflects schema depth. */
+static void json_value(emitter_ctx_t *ctx, cJSON *value)
+{
+    if (!value || ctx->failed) { cJSON_Delete(value); ctx->failed = true; return; }
+    if (!ctx->depth) {
+        if (ctx->root) { cJSON_Delete(value); ctx->failed = true; }
+        else { ctx->root = value; }
+        return;
+    }
+    size_t i = ctx->depth - 1;
+    cJSON *parent = ctx->stack[i].node;
+    if (cJSON_IsObject(parent) && !ctx->stack[i].key) {
+        if (!cJSON_IsString(value)) { cJSON_Delete(value); ctx->failed = true; }
+        else { ctx->stack[i].key = value; }
+        return;
+    }
+    bool ok = false;
+    if (cJSON_IsArray(parent)) { ok = cJSON_AddItemToArray(parent, value); }
+    else if (cJSON_IsObject(parent) && ctx->stack[i].key &&
+             cJSON_IsString(ctx->stack[i].key) && ctx->stack[i].key->valuestring) {
+        ok = cJSON_AddItemToObject(parent, ctx->stack[i].key->valuestring, value);
+    }
+    cJSON_Delete(ctx->stack[i].key); ctx->stack[i].key = NULL;
+    if (!ok) { cJSON_Delete(value); ctx->failed = true; }
+}
+
+static void json_start(emitter_ctx_t *ctx, bool array)
+{
+    if (ctx->failed) { return; }
+    if (ctx->depth == sizeof(ctx->stack) / sizeof(ctx->stack[0])) { ctx->failed = true; return; }
+    cJSON *node = array ? cJSON_CreateArray() : cJSON_CreateObject();
+    json_value(ctx, node);
+    if (!ctx->failed) { ctx->stack[ctx->depth++].node = node; }
+}
+
+static void json_end(emitter_ctx_t *ctx)
+{
+    if (ctx->failed) { return; }
+    if (!ctx->depth || ctx->stack[ctx->depth - 1].key) { ctx->failed = true; return; }
+    ctx->depth--;
+    ctx->stack[ctx->depth].node = NULL;
+}
 
 static void emit_event(emitter_ctx_t *ctx, yaml_event_t *ev)
 {
@@ -63,6 +111,7 @@ static void emit_event(emitter_ctx_t *ctx, yaml_event_t *ev)
 static void emit_scalar_styled(emitter_ctx_t *ctx, const char *value,
                                yaml_scalar_style_t style)
 {
+    if (ctx->json) { json_value(ctx, cJSON_CreateString(value)); return; }
     yaml_event_t ev;
     if (!yaml_scalar_event_initialize(&ev, NULL, NULL,
                                       (yaml_char_t *)value,
@@ -92,6 +141,7 @@ static void emit_plain(emitter_ctx_t *ctx, const char *value)
 
 static void emit_bool(emitter_ctx_t *ctx, bool v)
 {
+    if (ctx->json) { json_value(ctx, cJSON_CreateBool(v)); return; }
     emit_plain(ctx, v ? "true" : "false");
 }
 
@@ -99,6 +149,14 @@ static void emit_u64(emitter_ctx_t *ctx, uint64_t v)
 {
     char buf[24];
     snprintf(buf, sizeof(buf), "%" PRIu64, v);
+    if (ctx->json) {
+        /* cJSON stores numbers as doubles. Mirror the former YAML->JSON
+         * conversion: decimals with 16+ digits are strings, not rounded
+         * numbers. In particular this preserves every uint64_t value. */
+        json_value(ctx, strlen(buf) < 16 ? cJSON_CreateNumber((double)v)
+                                         : cJSON_CreateString(buf));
+        return;
+    }
     emit_plain(ctx, buf);
 }
 
@@ -119,6 +177,7 @@ static void emit_id(emitter_ctx_t *ctx, mt_id_t id)
 
 static void map_start(emitter_ctx_t *ctx)
 {
+    if (ctx->json) { json_start(ctx, false); return; }
     yaml_event_t ev;
     if (!yaml_mapping_start_event_initialize(&ev, NULL, NULL, 1,
                                              YAML_BLOCK_MAPPING_STYLE)) {
@@ -130,6 +189,7 @@ static void map_start(emitter_ctx_t *ctx)
 
 static void map_end(emitter_ctx_t *ctx)
 {
+    if (ctx->json) { json_end(ctx); return; }
     yaml_event_t ev;
     if (!yaml_mapping_end_event_initialize(&ev)) {
         ctx->failed = true;
@@ -140,6 +200,7 @@ static void map_end(emitter_ctx_t *ctx)
 
 static void seq_start(emitter_ctx_t *ctx, bool empty)
 {
+    if (ctx->json) { json_start(ctx, true); return; }
     yaml_event_t ev;
     if (!yaml_sequence_start_event_initialize(
             &ev, NULL, NULL, 1,
@@ -152,6 +213,7 @@ static void seq_start(emitter_ctx_t *ctx, bool empty)
 
 static void seq_end(emitter_ctx_t *ctx)
 {
+    if (ctx->json) { json_end(ctx); return; }
     yaml_event_t ev;
     if (!yaml_sequence_end_event_initialize(&ev)) {
         ctx->failed = true;
@@ -267,6 +329,161 @@ static void emit_subscription(emitter_ctx_t *ctx, const mt_config_t *cfg, const 
     map_end(ctx);
 }
 
+static void emit_config(emitter_ctx_t *ctx, const mt_config_t *cfg, const char *version)
+{
+    const mt_app_config_t *a = &cfg->app;
+
+    map_start(ctx);
+    emit_plain(ctx, "configVersion");
+    emit_string(ctx, version);
+
+    emit_plain(ctx, "app");
+    map_start(ctx);
+
+    emit_plain(ctx, "httpWeb");
+    map_start(ctx);
+    emit_plain(ctx, "enabled");
+    emit_bool(ctx, a->http_web.enabled);
+    emit_plain(ctx, "auth");
+    map_start(ctx);
+    emit_plain(ctx, "enabled");
+    emit_bool(ctx, a->http_web.auth.enabled);
+    map_end(ctx);
+    emit_plain(ctx, "host");
+    map_start(ctx);
+    emit_plain(ctx, "address");
+    emit_string(ctx, a->http_web.host.address);
+    emit_plain(ctx, "port");
+    emit_u64(ctx, a->http_web.host.port);
+    map_end(ctx);
+    emit_plain(ctx, "skin");
+    emit_string(ctx, a->http_web.skin);
+    map_end(ctx);
+
+    emit_plain(ctx, "dnsProxy");
+    map_start(ctx);
+    emit_plain(ctx, "host");
+    map_start(ctx);
+    emit_plain(ctx, "address");
+    emit_string(ctx, a->dns_proxy.host.address);
+    emit_plain(ctx, "port");
+    emit_u64(ctx, a->dns_proxy.host.port);
+    map_end(ctx);
+    emit_plain(ctx, "upstream");
+    map_start(ctx);
+    emit_plain(ctx, "address");
+    emit_string(ctx, a->dns_proxy.upstream.address);
+    emit_plain(ctx, "port");
+    emit_u64(ctx, a->dns_proxy.upstream.port);
+    map_end(ctx);
+    emit_plain(ctx, "disableRemap53");
+    emit_bool(ctx, a->dns_proxy.disable_remap53);
+    emit_plain(ctx, "disableFakePTR");
+    emit_bool(ctx, a->dns_proxy.disable_fake_ptr);
+    emit_plain(ctx, "disableDropAAAA");
+    emit_bool(ctx, a->dns_proxy.disable_drop_aaaa);
+    emit_plain(ctx, "maxIdleConns");
+    emit_u64(ctx, a->dns_proxy.max_idle_conns);
+    emit_plain(ctx, "maxConcurrent");
+    emit_u64(ctx, a->dns_proxy.max_concurrent);
+    emit_plain(ctx, "timeout");
+    emit_duration(ctx, a->dns_proxy.timeout);
+    map_end(ctx);
+
+    emit_plain(ctx, "netfilter");
+    map_start(ctx);
+    emit_plain(ctx, "iptables");
+    map_start(ctx);
+    emit_plain(ctx, "chainPrefix");
+    emit_string(ctx, a->netfilter.iptables.chain_prefix);
+    map_end(ctx);
+    emit_plain(ctx, "ipset");
+    map_start(ctx);
+    emit_plain(ctx, "tablePrefix");
+    emit_string(ctx, a->netfilter.ipset.table_prefix);
+    emit_plain(ctx, "additionalTTL");
+    emit_duration(ctx, a->netfilter.ipset.additional_ttl);
+    map_end(ctx);
+    emit_plain(ctx, "disableIPv4");
+    emit_bool(ctx, a->netfilter.disable_ipv4);
+    emit_plain(ctx, "disableIPv6");
+    emit_bool(ctx, a->netfilter.disable_ipv6);
+    emit_plain(ctx, "startMarkTableIndex");
+    emit_u64(ctx, a->netfilter.start_mark_table_index);
+    map_end(ctx);
+
+#ifdef MT_ENTWARE_KN
+    emit_plain(ctx, "keeneticPolicy");
+    map_start(ctx);
+    emit_plain(ctx, "enabled"); emit_bool(ctx, a->keenetic_policy.enabled);
+    emit_plain(ctx, "policyId"); emit_string(ctx, a->keenetic_policy.policy_id);
+    emit_plain(ctx, "mode");
+    emit_string(ctx, a->keenetic_policy.mode == MT_KN_POLICY_EXCLUDE ? "exclude" : "include");
+    map_end(ctx);
+#endif
+    emit_plain(ctx, "link");
+    seq_start(ctx, a->n_link == 0);
+    for (size_t i = 0; i < a->n_link; i++) {
+        emit_string(ctx, a->link[i]);
+    }
+    seq_end(ctx);
+    emit_plain(ctx, "showAllInterfaces");
+    emit_bool(ctx, a->show_all_interfaces);
+    emit_plain(ctx, "logLevel");
+    emit_string(ctx, a->log_level);
+    map_end(ctx); /* app */
+
+    if (cfg->n_profiles) {
+        emit_plain(ctx, "profiles");
+        seq_start(ctx, false);
+        for (size_t i = 0; i < cfg->n_profiles; i++) {
+            const mt_profile_t *p = cfg->profiles[i];
+            map_start(ctx);
+            emit_plain(ctx, "id"); emit_string(ctx, p->id);
+            emit_plain(ctx, "name"); emit_string(ctx, p->name);
+            emit_plain(ctx, "interfaces"); seq_start(ctx, false);
+            for (size_t j = 0; j < p->n_interfaces; j++) { emit_string(ctx, p->interfaces[j]); }
+            seq_end(ctx);
+            emit_plain(ctx, "on_unavailable"); emit_string(ctx, MT_PROFILE_TERMINAL);
+            map_end(ctx);
+        }
+        seq_end(ctx);
+    }
+
+    emit_plain(ctx, "groups");
+    seq_start(ctx, cfg->n_groups == 0);
+    for (size_t i = 0; i < cfg->n_groups; i++) {
+        emit_group(ctx, cfg, cfg->groups[i]);
+    }
+    seq_end(ctx);
+
+    emit_plain(ctx, "subscriptions");
+    seq_start(ctx, cfg->n_subscriptions == 0);
+    for (size_t i = 0; i < cfg->n_subscriptions; i++) {
+        emit_subscription(ctx, cfg, cfg->subscriptions[i]);
+    }
+    seq_end(ctx);
+
+    map_end(ctx);
+
+}
+
+mt_err_t mt_config_save_json(const mt_config_t *cfg, const char *version, cJSON **out)
+{
+    if (!cfg || !version || !out) { return MT_ERR_INVAL; }
+    *out = NULL;
+    mt_err_t err = mt_profiles_validate(cfg, NULL, 0);
+    if (err != MT_OK) { return err; }
+    emitter_ctx_t ctx = {.json = true};
+    emit_config(&ctx, cfg, version);
+    for (size_t i = 0; i < sizeof(ctx.stack) / sizeof(ctx.stack[0]); i++) {
+        cJSON_Delete(ctx.stack[i].key);
+    }
+    if (ctx.failed || ctx.depth || !ctx.root) { cJSON_Delete(ctx.root); return MT_ERR_NOMEM; }
+    *out = ctx.root;
+    return MT_OK;
+}
+
 mt_err_t mt_config_save_buffer(const mt_config_t *cfg, const char *version,
                                char **out, size_t *out_len)
 {
@@ -296,140 +513,7 @@ mt_err_t mt_config_save_buffer(const mt_config_t *cfg, const char *version,
         emit_event(&ctx, &ev);
     }
 
-    const mt_app_config_t *a = &cfg->app;
-
-    map_start(&ctx);
-    emit_plain(&ctx, "configVersion");
-    emit_string(&ctx, version);
-
-    emit_plain(&ctx, "app");
-    map_start(&ctx);
-
-    emit_plain(&ctx, "httpWeb");
-    map_start(&ctx);
-    emit_plain(&ctx, "enabled");
-    emit_bool(&ctx, a->http_web.enabled);
-    emit_plain(&ctx, "auth");
-    map_start(&ctx);
-    emit_plain(&ctx, "enabled");
-    emit_bool(&ctx, a->http_web.auth.enabled);
-    map_end(&ctx);
-    emit_plain(&ctx, "host");
-    map_start(&ctx);
-    emit_plain(&ctx, "address");
-    emit_string(&ctx, a->http_web.host.address);
-    emit_plain(&ctx, "port");
-    emit_u64(&ctx, a->http_web.host.port);
-    map_end(&ctx);
-    emit_plain(&ctx, "skin");
-    emit_string(&ctx, a->http_web.skin);
-    map_end(&ctx);
-
-    emit_plain(&ctx, "dnsProxy");
-    map_start(&ctx);
-    emit_plain(&ctx, "host");
-    map_start(&ctx);
-    emit_plain(&ctx, "address");
-    emit_string(&ctx, a->dns_proxy.host.address);
-    emit_plain(&ctx, "port");
-    emit_u64(&ctx, a->dns_proxy.host.port);
-    map_end(&ctx);
-    emit_plain(&ctx, "upstream");
-    map_start(&ctx);
-    emit_plain(&ctx, "address");
-    emit_string(&ctx, a->dns_proxy.upstream.address);
-    emit_plain(&ctx, "port");
-    emit_u64(&ctx, a->dns_proxy.upstream.port);
-    map_end(&ctx);
-    emit_plain(&ctx, "disableRemap53");
-    emit_bool(&ctx, a->dns_proxy.disable_remap53);
-    emit_plain(&ctx, "disableFakePTR");
-    emit_bool(&ctx, a->dns_proxy.disable_fake_ptr);
-    emit_plain(&ctx, "disableDropAAAA");
-    emit_bool(&ctx, a->dns_proxy.disable_drop_aaaa);
-    emit_plain(&ctx, "maxIdleConns");
-    emit_u64(&ctx, a->dns_proxy.max_idle_conns);
-    emit_plain(&ctx, "maxConcurrent");
-    emit_u64(&ctx, a->dns_proxy.max_concurrent);
-    emit_plain(&ctx, "timeout");
-    emit_duration(&ctx, a->dns_proxy.timeout);
-    map_end(&ctx);
-
-    emit_plain(&ctx, "netfilter");
-    map_start(&ctx);
-    emit_plain(&ctx, "iptables");
-    map_start(&ctx);
-    emit_plain(&ctx, "chainPrefix");
-    emit_string(&ctx, a->netfilter.iptables.chain_prefix);
-    map_end(&ctx);
-    emit_plain(&ctx, "ipset");
-    map_start(&ctx);
-    emit_plain(&ctx, "tablePrefix");
-    emit_string(&ctx, a->netfilter.ipset.table_prefix);
-    emit_plain(&ctx, "additionalTTL");
-    emit_duration(&ctx, a->netfilter.ipset.additional_ttl);
-    map_end(&ctx);
-    emit_plain(&ctx, "disableIPv4");
-    emit_bool(&ctx, a->netfilter.disable_ipv4);
-    emit_plain(&ctx, "disableIPv6");
-    emit_bool(&ctx, a->netfilter.disable_ipv6);
-    emit_plain(&ctx, "startMarkTableIndex");
-    emit_u64(&ctx, a->netfilter.start_mark_table_index);
-    map_end(&ctx);
-
-#ifdef MT_ENTWARE_KN
-    emit_plain(&ctx, "keeneticPolicy");
-    map_start(&ctx);
-    emit_plain(&ctx, "enabled"); emit_bool(&ctx, a->keenetic_policy.enabled);
-    emit_plain(&ctx, "policyId"); emit_string(&ctx, a->keenetic_policy.policy_id);
-    emit_plain(&ctx, "mode");
-    emit_string(&ctx, a->keenetic_policy.mode == MT_KN_POLICY_EXCLUDE ? "exclude" : "include");
-    map_end(&ctx);
-#endif
-    emit_plain(&ctx, "link");
-    seq_start(&ctx, a->n_link == 0);
-    for (size_t i = 0; i < a->n_link; i++) {
-        emit_string(&ctx, a->link[i]);
-    }
-    seq_end(&ctx);
-    emit_plain(&ctx, "showAllInterfaces");
-    emit_bool(&ctx, a->show_all_interfaces);
-    emit_plain(&ctx, "logLevel");
-    emit_string(&ctx, a->log_level);
-    map_end(&ctx); /* app */
-
-    if (cfg->n_profiles) {
-        emit_plain(&ctx, "profiles");
-        seq_start(&ctx, false);
-        for (size_t i = 0; i < cfg->n_profiles; i++) {
-            const mt_profile_t *p = cfg->profiles[i];
-            map_start(&ctx);
-            emit_plain(&ctx, "id"); emit_string(&ctx, p->id);
-            emit_plain(&ctx, "name"); emit_string(&ctx, p->name);
-            emit_plain(&ctx, "interfaces"); seq_start(&ctx, false);
-            for (size_t j = 0; j < p->n_interfaces; j++) { emit_string(&ctx, p->interfaces[j]); }
-            seq_end(&ctx);
-            emit_plain(&ctx, "on_unavailable"); emit_string(&ctx, MT_PROFILE_TERMINAL);
-            map_end(&ctx);
-        }
-        seq_end(&ctx);
-    }
-
-    emit_plain(&ctx, "groups");
-    seq_start(&ctx, cfg->n_groups == 0);
-    for (size_t i = 0; i < cfg->n_groups; i++) {
-        emit_group(&ctx, cfg, cfg->groups[i]);
-    }
-    seq_end(&ctx);
-
-    emit_plain(&ctx, "subscriptions");
-    seq_start(&ctx, cfg->n_subscriptions == 0);
-    for (size_t i = 0; i < cfg->n_subscriptions; i++) {
-        emit_subscription(&ctx, cfg, cfg->subscriptions[i]);
-    }
-    seq_end(&ctx);
-
-    map_end(&ctx);
+    emit_config(&ctx, cfg, version);
 
     if (!yaml_document_end_event_initialize(&ev, 1)) {
         ctx.failed = true;

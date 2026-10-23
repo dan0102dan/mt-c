@@ -50,7 +50,7 @@ static void h_redirect(mt_http_req_t *req, mt_http_res_t *res, void *ud) {
     (void)req;
     redirect_ud_t *r = ud;
     mt_http_res_set_header(res, "Location", r->location);
-    mt_http_res_write(res, r->status, NULL, NULL, 0);
+    mt_http_res_write(res, r->status, "text/plain", (const uint8_t *)"not the final list", 18);
 }
 
 typedef struct harness {
@@ -71,6 +71,9 @@ static void add_redirect(harness_t *h, const char *path, int status, const char 
     redirect_ud_t *r = &h->redirects[h->n_redirects++];
     r->status = status;
     snprintf(r->location, sizeof(r->location), "http://127.0.0.1:%d%s", TEST_PORT, location_path);
+    if (strstr(location_path, "://") || location_path[0] != '/') {
+        snprintf(r->location, sizeof(r->location), "%s", location_path);
+    }
     mt_httpd_route(h->srv, "GET", path, h_redirect, r);
 }
 
@@ -88,6 +91,12 @@ static harness_t *harness_start(void) {
 
     add_redirect(h, "/redirect301", 301, "/list");
     add_redirect(h, "/redirect302", 302, "/list");
+    add_redirect(h, "/redirect303", 303, "/list");
+    add_redirect(h, "/redirect307", 307, "/list");
+    add_redirect(h, "/redirect308", 308, "/list");
+    add_redirect(h, "/relative", 302, "list");
+    add_redirect(h, "/file", 302, "file:///etc/passwd");
+    add_redirect(h, "/ftp", 302, "ftp://127.0.0.1/list");
     add_redirect(h, "/loopA", 302, "/loopB");
     add_redirect(h, "/loopB", 302, "/loopA");
     /* exactly 5 hops (allowed): chain_ok0..chain_ok4 -> /list */
@@ -171,7 +180,7 @@ TEST detects_redirect_loop(void) {
     ASSERT(h != NULL);
     char *body = NULL;
     size_t len = 0;
-    ASSERT_EQ(MT_ERR_INVAL, mt_sub_fetch_list(url_for("/loopA"), &body, &len));
+    ASSERT_EQ(MT_ERR_LIMIT, mt_sub_fetch_list(url_for("/loopA"), &body, &len));
     ASSERT(body == NULL);
     harness_stop(h);
     PASS();
@@ -248,12 +257,26 @@ TEST connection_refused_is_io_error(void) {
     PASS();
 }
 
+TEST native_redirects_and_protocol_restrictions(void) {
+    harness_t *h = harness_start(); ASSERT(h);
+    const char *paths[] = {"/redirect303", "/redirect307", "/redirect308", "/relative", "/file", "/ftp"};
+    for (size_t i = 0; i < sizeof(paths)/sizeof(*paths); i++) {
+        char *body = NULL; size_t len = 0;
+        ASSERT_EQ(i < 4 ? MT_OK : MT_ERR_INVAL, mt_sub_fetch_list(url_for(paths[i]), &body, &len));
+        if (i < 4) { ASSERT_STR_EQ("example.com\nexample.org", body); }
+        else { ASSERT(body == NULL); ASSERT_EQ(0u, len); }
+        free(body);
+    }
+    harness_stop(h); PASS();
+}
+
 GREATEST_MAIN_DEFS();
 
 int main(int argc, char **argv) {
     mt_sub_fetch_global_init();
     GREATEST_MAIN_BEGIN();
     RUN_TEST(fetches_plain_200);
+    RUN_TEST(native_redirects_and_protocol_restrictions);
     RUN_TEST(fetches_empty_body);
     RUN_TEST(follows_301_and_302);
     RUN_TEST(detects_redirect_loop);

@@ -16,7 +16,7 @@
 #include <time.h>
 
 #ifdef MT_ENTWARE_KN
-#include "magitrickle/keenetic_rci.h"
+#include "magitrickle/keenetic_ifstate.h"
 #endif
 #include "magitrickle/log.h"
 #include "magitrickle/lookup.h"
@@ -1196,20 +1196,12 @@ mt_err_t mt_app_list_interfaces(const mt_app_t *app, mt_iface_info_t **out, size
     freeifaddrs(ifap);
 
 #ifdef MT_ENTWARE_KN
-    /* Friendly names from Keenetic RCI. Go's interfaces.List logged the
-     * error at debug level and carried on with unnamed interfaces --
-     * an unreachable RCI must never fail the interface list itself. */
-    mt_kn_aliases_t aliases = {0};
-    mt_err_t alias_err = mt_kn_get_iface_aliases(&aliases);
-    if (alias_err != MT_OK) {
-        MT_DEBUG("failed to load interface aliases: %s", mt_err_str(alias_err));
-    } else {
-        for (size_t i = 0; i < n; i++) {
-            const char *alias = mt_kn_aliases_lookup(&aliases, arr[i].id);
-            if (alias) { snprintf(arr[i].name, sizeof(arr[i].name), "%s", alias); }
-        }
+    /* The HTTP path never performs RCI I/O. Names and readiness share the
+     * loop-owned snapshot published by the existing interface worker. */
+    for (size_t i = 0; i < n; i++) {
+        const char *alias = mt_kn_ifstate_alias(app->interface_states, arr[i].id);
+        if (alias) { snprintf(arr[i].name, sizeof(arr[i].name), "%s", alias); }
     }
-    mt_kn_aliases_free(&aliases);
 #endif
 
     *out = arr;
@@ -1260,6 +1252,22 @@ mt_err_t mt_app_reload_config(mt_app_t *app, const char *path) {
             err = clone_reload_group(&next, app->cfg->groups[i]);
         }
     }
+    if (err != MT_OK) { mt_config_clear(&next); return err; }
+    return mt_app_apply_config(app, &next, NULL, NULL);
+}
+
+mt_err_t mt_app_apply_config(mt_app_t *app, mt_config_t *candidate,
+                              const char *path, const char *version) {
+    if (!app || !candidate || candidate == app->cfg || (path && !version)) { return MT_ERR_INVAL; }
+    /* Ownership moves even on failure, so every caller has one cleanup rule. */
+    mt_config_t next = *candidate;
+    memset(candidate, 0, sizeof(*candidate));
+    mt_err_t err = MT_OK;
+#ifdef MT_ENTWARE_KN
+    mt_kn_policy_scope_t checked;
+    err = mt_kn_policy_scope_init(&checked, &next.app.keenetic_policy, app->chain_prefix);
+    if (err != MT_OK) { mt_config_clear(&next); return err; }
+#endif
     /* Absent subscriptions still CLEAR, as before; absent profiles overlay.
      * Recheck after restoring groups omitted from the YAML overlay: a newly
      * loaded subscription might collide with one of those preserved groups. */
@@ -1269,6 +1277,13 @@ mt_err_t mt_app_reload_config(mt_app_t *app, const char *path) {
 
     size_t ng = next.n_groups, ns = next.n_subscriptions;
     app_nf_enter(app);
+#ifdef MT_ENTWARE_KN
+    /* The committer publishes policy_scope under nf_mu. Capture rollback
+     * state only after excluding that writer, like the registries below. */
+    const mt_kn_policy_scope_t old_desired = app->policy_desired;
+    const mt_kn_policy_scope_t old_scope = app->policy_scope;
+    bool policy_touched = false;
+#endif
     /* One immutable size per old registry: allocation, capture, retirement
      * and rollback must describe the same snapshot, including empty sets.
      * Only the loop thread replaces these arrays; nf_mu excludes rebuilds. */
@@ -1280,6 +1295,11 @@ mt_err_t mt_app_reload_config(mt_app_t *app, const char *path) {
     bool *old_subs_enabled = old_ns ? calloc(old_ns, sizeof(*old_subs_enabled)) : NULL;
     mt_ruleset_snapshot_t *snapshot = NULL;
     bool touched = false, swapped = false;
+    /* Old registries remain alive until kernel changes AND persistence pass. */
+    mt_ruleset_t **previous_groups = app->rulesets, **previous_subs = app->sub_rulesets;
+    mt_group_t **previous_synth = app->sub_synth_groups;
+    const size_t old_gcap = app->cap_rulesets, old_scap = app->cap_sub_rulesets;
+    bool registry_swapped = false;
     mt_config_t old = {0};
     if ((ng && !groups) || (ns && (!subs || !synth)) ||
         (old_ng && !old_groups_enabled) || (old_ns && !old_subs_enabled)) {
@@ -1323,14 +1343,28 @@ mt_err_t mt_app_reload_config(mt_app_t *app, const char *path) {
         }
     }
     if (err != MT_OK) { goto done; }
-    for (size_t i = 0; i < old_ng; i++) { mt_ruleset_free(app->rulesets[i]); }
-    for (size_t i = 0; i < old_ns; i++) {
-        mt_ruleset_free(app->sub_rulesets[i]); mt_group_free(app->sub_synth_groups[i]);
+    app->rulesets = groups; app->n_rulesets = ng; app->cap_rulesets = ng;
+    app->sub_rulesets = subs; app->n_sub_rulesets = ns; app->cap_sub_rulesets = ns;
+    app->sub_synth_groups = synth; registry_swapped = true;
+#ifdef MT_ENTWARE_KN
+    if (!mt_kn_policy_config_equal(&old_desired.config, &app->cfg->app.keenetic_policy)) {
+        policy_touched = true;
+        /* nf_mu is recursive. Keep the outer lock through persistence so a
+         * queued committer cannot observe the provisional registry. */
+        err = mt_app_policy_set(app, &app->cfg->app.keenetic_policy, false, 0);
+        if (err != MT_OK) { goto done; }
     }
-    free(app->rulesets); free(app->sub_rulesets); free(app->sub_synth_groups);
-    app->rulesets = groups; app->n_rulesets = ng; app->cap_rulesets = ng; groups = NULL;
-    app->sub_rulesets = subs; app->n_sub_rulesets = ns; app->cap_sub_rulesets = ns; subs = NULL;
-    app->sub_synth_groups = synth; synth = NULL;
+#endif
+    if (path) {
+        err = mt_config_save_file(app->cfg, version, path);
+        if (err != MT_OK) { goto done; }
+    }
+    for (size_t i = 0; i < old_ng; i++) { mt_ruleset_free(previous_groups[i]); }
+    for (size_t i = 0; i < old_ns; i++) {
+        mt_ruleset_free(previous_subs[i]); mt_group_free(previous_synth[i]);
+    }
+    free(previous_groups); free(previous_subs); free(previous_synth);
+    groups = NULL; subs = NULL; synth = NULL; registry_swapped = false;
     for (size_t i = 0; i < ns; i++) {
         app->cfg->subscriptions[i]->revision = ++app->next_sub_revision;
         app->cfg->subscriptions[i]->sync_pending = false;
@@ -1350,6 +1384,14 @@ done:
         if (subs && subs[i]) { mt_ruleset_disable(subs[i]); mt_ruleset_free(subs[i]); }
         if (synth) { mt_group_free(synth[i]); }
     }
+    if (registry_swapped) {
+        app->rulesets = previous_groups; app->n_rulesets = old_ng; app->cap_rulesets = old_gcap;
+        app->sub_rulesets = previous_subs; app->n_sub_rulesets = old_ns; app->cap_sub_rulesets = old_scap;
+        app->sub_synth_groups = previous_synth;
+    }
+#ifdef MT_ENTWARE_KN
+    if (err != MT_OK && policy_touched) { app->policy_scope = old_scope; }
+#endif
     if (swapped) { next = *app->cfg; *app->cfg = old; }
     if (err != MT_OK && touched) {
         for (size_t family = 0; family < 2; family++) {
@@ -1365,12 +1407,9 @@ done:
         }
     }
 #ifdef MT_ENTWARE_KN
-    if (err == MT_OK && !mt_kn_policy_config_equal(&app->policy_desired.config, &app->cfg->app.keenetic_policy)) {
-        mt_kn_policy_config_t policy = app->cfg->app.keenetic_policy;
-        /* Unlock before requesting a pass (test builds may run it synchronously). */
-        app_nf_leave(app);
-        err = mt_app_policy_set(app, &policy, false, 0);
-        app_nf_enter(app);
+    if (err != MT_OK && policy_touched) {
+        mt_err_t restored = mt_app_policy_set(app, &old_desired.config, old_desired.ready, old_desired.mark);
+        if (restored != MT_OK) { MT_ERROR("failed to restore policy after config apply: %s", mt_err_str(restored)); }
     }
 #endif
     free(groups); free(subs); free(synth); free(old_groups_enabled); free(old_subs_enabled);
@@ -1383,8 +1422,8 @@ mt_err_t mt_app_save_config(mt_app_t *app, const char *path, const char *version
     return mt_config_save_file(app->cfg, version, path);
 }
 
-mt_err_t mt_app_config_snapshot(mt_app_t *app, const char *version, char **out, size_t *out_len) {
-    return mt_config_save_buffer(app->cfg, version, out, out_len);
+mt_err_t mt_app_config_snapshot_json(mt_app_t *app, const char *version, cJSON **out) {
+    return mt_config_save_json(app->cfg, version, out);
 }
 
 void mt_app_set_port_remap(mt_app_t *app, mt_port_remap_t *remap) {

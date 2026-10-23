@@ -84,12 +84,12 @@ void mt_base64_encode(const uint8_t *data, size_t len, char *out);
 size_t mt_base64url_encoded_len(size_t in_len);
 void mt_base64url_encode(const uint8_t *data, size_t len, char *out);
 
-/* Decodes URL-safe unpadded base64. out must have room for
- * ((strlen(in)+3)/4)*3 bytes; *out_len set to actual decoded length.
- * Returns 0 on success, -1 on malformed input. */
-int mt_base64url_decode(const char *in, size_t in_len, uint8_t *out, size_t *out_len);
-
-/* Decodes standard padded base64. Same contract as above. */
-int mt_base64_decode(const char *in, size_t in_len, uint8_t *out, size_t *out_len);
+/* Decode into out_cap bytes. No output is written on malformed input or
+ * insufficient capacity; *out_len is zero on error. Returns 0 on success,
+ * -1 on failure. Canonical padding/bits are required (RFC 4648). */
+int mt_base64url_decode(const char *in, size_t in_len, uint8_t *out, size_t out_cap,
+                        size_t *out_len);
+int mt_base64_decode(const char *in, size_t in_len, uint8_t *out, size_t out_cap,
+                     size_t *out_len);
 
 #endif /* MAGITRICKLE_HASH_H */

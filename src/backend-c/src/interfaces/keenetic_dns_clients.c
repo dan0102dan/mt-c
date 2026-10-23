@@ -4,7 +4,8 @@
 #include <stdlib.h>
 #include <string.h>
 #include <cjson/cJSON.h>
-#include <curl/curl.h>
+#include "magitrickle/keenetic_rci.h"
+#include "magitrickle/json.h"
 
 typedef struct { const cJSON *first; bool single; } client_rows_t;
 
@@ -17,19 +18,8 @@ static mt_err_t parse_document(const char *json, size_t len, cJSON **out)
 {
     *out = NULL;
     if (len > MT_DNS_CLIENT_BODY_LIMIT) { return MT_ERR_LIMIT; }
-    if (!json || !len || memchr(json, 0, len)) { return MT_ERR_PROTO; }
-    /* cJSON exposes NUL-terminated strings without their decoded lengths.
-     * Reject encoded NULs before they can truncate a name, address or owner.
-     * Skip escaped characters so a literal backslash followed by u0000 works. */
-    for (size_t i = 0; i < len; i++) {
-        if (json[i] != '\\') { continue; }
-        if (len - i >= 6 && memcmp(json + i, "\\u0000", 6) == 0) { return MT_ERR_PROTO; }
-        if (i + 1 < len) { i++; }
-    }
-    const char *end = NULL;
-    cJSON *root = cJSON_ParseWithLengthOpts(json, len, &end, false);
-    while (end && end < json + len && (*end == ' ' || *end == '\n' || *end == '\r' || *end == '\t')) { end++; }
-    if (!root || end != json + len) { cJSON_Delete(root); return MT_ERR_PROTO; }
+    cJSON *root = mt_json_parse_document(json, len);
+    if (!root) { return MT_ERR_PROTO; }
     if (cJSON_GetObjectItemCaseSensitive(root, "status")) { cJSON_Delete(root); return MT_ERR_UPSTREAM; }
     *out = root;
     return MT_OK;
@@ -199,63 +189,7 @@ mt_err_t mt_dns_clients_parse_hotspot(const char *json, size_t len,
     return mt_dns_clients_parse_keenetic(json, len, NULL, 0, clients, count);
 }
 
-typedef struct { char *data; size_t len; mt_err_t error; } client_response_t;
-static size_t receive_clients(char *data, size_t size, size_t count, void *ud)
-{
-    client_response_t *r = ud;
-    if (count && size > SIZE_MAX / count) { r->error = MT_ERR_LIMIT; return 0; }
-    size_t n = size * count;
-    if (n > MT_DNS_CLIENT_BODY_LIMIT - r->len) { r->error = MT_ERR_LIMIT; return 0; }
-    char *next = realloc(r->data, r->len + n + 1);
-    if (!next) { r->error = MT_ERR_NOMEM; return 0; }
-    r->data = next;
-    memcpy(next + r->len, data, n); r->len += n; next[r->len] = '\0';
-    return n;
-}
-typedef struct { const atomic_bool *stop; } client_progress_t;
-static int fetch_progress(void *ud, curl_off_t total, curl_off_t now, curl_off_t up_total, curl_off_t up_now)
-{
-    (void)total; (void)now; (void)up_total; (void)up_now;
-    const client_progress_t *ctx = ud;
-    return atomic_load(ctx->stop) ? 1 : 0;
-}
-static mt_err_t fetch_response(const char *url, client_response_t *out, const atomic_bool *stop)
-{
-    if (stop && atomic_load(stop)) { return MT_ERR_CANCELED; }
-    CURL *curl = curl_easy_init();
-    if (!curl) { return MT_ERR_NOMEM; }
-    client_response_t response = {0};
-    const client_progress_t progress = {.stop = stop};
-    CURLcode setup = CURLE_OK;
-#define SET(option, value) do { if (setup == CURLE_OK) { setup = curl_easy_setopt(curl, option, value); } } while (0)
-    SET(CURLOPT_URL, url);
-    SET(CURLOPT_PROXY, "");
-    SET(CURLOPT_FOLLOWLOCATION, 0L);
-    SET(CURLOPT_CONNECTTIMEOUT_MS, 500L);
-    SET(CURLOPT_TIMEOUT_MS, 2000L);
-    SET(CURLOPT_NOSIGNAL, 1L);
-    SET(CURLOPT_WRITEFUNCTION, receive_clients);
-    SET(CURLOPT_WRITEDATA, &response);
-    if (stop) {
-        SET(CURLOPT_XFERINFOFUNCTION, fetch_progress);
-        SET(CURLOPT_XFERINFODATA, &progress);
-        SET(CURLOPT_NOPROGRESS, 0L);
-    }
-#undef SET
-    CURLcode result = setup == CURLE_OK ? curl_easy_perform(curl) : setup;
-    long status = 0;
-    (void)curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &status);
-    curl_easy_cleanup(curl);
-    mt_err_t err = response.error;
-    if (err == MT_OK && result != CURLE_OK) {
-        err = result == CURLE_ABORTED_BY_CALLBACK ? MT_ERR_CANCELED :
-              result == CURLE_OPERATION_TIMEDOUT ? MT_ERR_TIMEOUT : MT_ERR_UPSTREAM;
-    }
-    if (err == MT_OK && status != 200) { err = MT_ERR_UPSTREAM; }
-    if (err == MT_OK) { *out = response; }
-    else { free(response.data); }
-    return err;
-}
+typedef struct { char *data; size_t len; } client_response_t;
 mt_err_t mt_dns_clients_fetch_keenetic(mt_dns_client_t **clients, size_t *count,
                                       const atomic_bool *stop, void *ud)
 {
@@ -263,11 +197,13 @@ mt_err_t mt_dns_clients_fetch_keenetic(mt_dns_client_t **clients, size_t *count,
     if (!clients || !count) { return MT_ERR_INVAL; }
     *clients = NULL; *count = 0;
     client_response_t hotspot = {0}, neighbors = {0};
-    mt_err_t err = fetch_response("http://127.0.0.1:79/rci/show/ip/hotspot", &hotspot, stop);
+    mt_err_t err = mt_kn_rci_request(MT_KN_RCI_BASE_URL "/rci/show/ip/hotspot", NULL,
+                                      MT_DNS_CLIENT_BODY_LIMIT, stop, &hotspot.data, &hotspot.len);
     if (err != MT_OK) { return err; }
     /* Explicit hotspot addresses remain useful when neighbour discovery fails.
      * Both documents are fresh on every refresh; no cached joins survive it. */
-    mt_err_t discovery = fetch_response("http://127.0.0.1:79/rci/show/ip/neighbour", &neighbors, stop);
+    mt_err_t discovery = mt_kn_rci_request(MT_KN_RCI_BASE_URL "/rci/show/ip/neighbour", NULL,
+                                            MT_DNS_CLIENT_BODY_LIMIT, stop, &neighbors.data, &neighbors.len);
     if (discovery == MT_ERR_CANCELED || (stop && atomic_load(stop))) { err = MT_ERR_CANCELED; }
     else { err = mt_dns_clients_parse_keenetic(hotspot.data, hotspot.len, neighbors.data, neighbors.len, clients, count); }
     free(hotspot.data); free(neighbors.data);

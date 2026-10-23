@@ -107,7 +107,7 @@ static mt_err_t decode_claims(const char *claims_b64, size_t claims_b64_len,
     uint8_t *decoded = malloc(decoded_cap);
     if (!decoded) { return MT_ERR_NOMEM; }
     size_t decoded_len = 0;
-    if (mt_base64url_decode(claims_b64, claims_b64_len, decoded, &decoded_len) != 0) {
+    if (mt_base64url_decode(claims_b64, claims_b64_len, decoded, decoded_cap, &decoded_len) != 0) {
         free(decoded);
         return MT_ERR_PROTO;
     }

@@ -149,7 +149,11 @@ static mt_err_t load_or_create_secret(const char *state_dir) {
     if (f) {
         char buf[256];
         size_t n = fread(buf, 1, sizeof(buf) - 1, f);
+        bool invalid = ferror(f) || memchr(buf, '\0', n) != NULL;
+        int extra = fgetc(f);
+        invalid = invalid || extra != EOF || ferror(f);
         fclose(f);
+        if (invalid) { return MT_ERR_INVAL; }
         buf[n] = '\0';
         size_t start = 0;
         size_t end = n;
@@ -157,14 +161,14 @@ static mt_err_t load_or_create_secret(const char *state_dir) {
         while (end > start && isspace((unsigned char)buf[end - 1])) { end--; }
         if (end == start) { return MT_ERR_INVAL; }
 
-        uint8_t decoded[64];
+        uint8_t decoded[MT_AUTH_SECRET_LEN];
         size_t decoded_len = 0;
-        if (mt_base64_decode(buf + start, end - start, decoded, &decoded_len) != 0) {
+        if (mt_base64_decode(buf + start, end - start, decoded, sizeof(decoded), &decoded_len) != 0 ||
+            decoded_len != MT_AUTH_SECRET_LEN) {
             return MT_ERR_INVAL;
         }
-        size_t copy_len = decoded_len > sizeof(g_secret) ? sizeof(g_secret) : decoded_len;
-        memcpy(g_secret, decoded, copy_len);
-        g_secret_len = copy_len;
+        memcpy(g_secret, decoded, sizeof(g_secret));
+        g_secret_len = sizeof(g_secret);
         return MT_OK;
     }
     if (errno != ENOENT) { return mt_err_from_errno(errno); }

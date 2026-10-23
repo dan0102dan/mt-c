@@ -378,10 +378,34 @@ TEST incomplete_event_identity_does_not_mutate_cache(void)
     ASSERT_EQ(1u, changes);
     mt_kn_ifstate_free(s); PASS();
 }
+TEST display_aliases_share_snapshot_and_follow_identity_lifetime(void)
+{
+    mt_kn_ifstate_t *s = mt_kn_ifstate_new(NULL, NULL); ASSERT(s);
+    const char *json = "{\"Wireguard0\":{\"system-name\":\"nwg0\",\"description\":\"  Main VPN \\t\",\"interface-name\":\"fallback\"}}";
+    ASSERT_EQ(MT_OK, snapshot(s, json, 0));
+    ASSERT_STR_EQ("Main VPN", mt_kn_ifstate_alias(s, "nwg0"));
+    ASSERT_EQ(MT_OK, snapshot(s, "{\"Wireguard0\":{\"system-name\":\"nwg0\",\"description\":\" \",\"interface-name\":\"Backup\"}}", 0));
+    ASSERT_STR_EQ("Backup", mt_kn_ifstate_alias(s, "nwg0"));
+    ASSERT_EQ(MT_OK, snapshot(s, "{\"Wireguard0\":{\"system-name\":\"nwg0\"}}", 0));
+    ASSERT(mt_kn_ifstate_alias(s, "nwg0") == NULL);
+    ASSERT_EQ(MT_OK, snapshot(s, json, 0));
+    bool sync;
+    ASSERT_EQ(MT_OK, event(s, "{\"kind\":\"destroyed\",\"id\":\"Wireguard0\",\"system_name\":\"nwg0\"}", &sync));
+    ASSERT(mt_kn_ifstate_alias(s, "nwg0") == NULL);
+    ASSERT_EQ(MT_OK, snapshot(s, json, 0)); /* old response cannot restore a deleted alias */
+    ASSERT(mt_kn_ifstate_alias(s, "nwg0") == NULL);
+    ASSERT_EQ(MT_OK, event(s, "{\"kind\":\"created\",\"id\":\"Wireguard0\",\"system_name\":\"nwg0\"}", &sync));
+    ASSERT(mt_kn_ifstate_alias(s, "nwg0") == NULL);
+    ASSERT_EQ(MT_OK, snapshot(s, json, mt_kn_ifstate_revision(s)));
+    ASSERT_STR_EQ("Main VPN", mt_kn_ifstate_alias(s, "nwg0"));
+    mt_kn_ifstate_free(s); PASS();
+}
+
 GREATEST_MAIN_DEFS();
 int main(int argc, char **argv)
 {
     GREATEST_MAIN_BEGIN();
+    RUN_TEST(display_aliases_share_snapshot_and_follow_identity_lifetime);
     RUN_TEST(incomplete_event_identity_does_not_mutate_cache);
     RUN_TEST(shared_kernel_name_is_snapshot_order_independent);
     RUN_TEST(first_modern_event_freezes_legacy_snapshot_until_family_recovery);

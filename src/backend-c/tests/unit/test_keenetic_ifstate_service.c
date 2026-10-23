@@ -16,12 +16,16 @@
 
 static atomic_uint calls, changes;
 static atomic_int answer;
-static atomic_bool hold;
+static atomic_bool hold, loopback;
 typedef struct {
     mt_loop_t *loop;
     mt_httpd_t *http, *ordinary;
     mt_kn_ifstate_t *cache;
     mt_kn_ifstate_service_t *service;
+    mt_config_t config;
+    mt_cache_t *records;
+    mt_app_t *app;
+    mt_system_ctx_t system;
     pthread_t thread;
     char dir[64], socket[128], ordinary_socket[128], marker[128];
 } fixture_t;
@@ -46,7 +50,9 @@ static mt_err_t fetch(mt_kn_ifinfo_t **out, size_t *count, const atomic_bool *st
     *out = calloc(1, sizeof(**out));
     if (!*out) { return MT_ERR_NOMEM; }
     *count = 1;
-    strcpy((*out)->id, "Wireguard0"); strcpy((*out)->name, "nwg0");
+    strcpy((*out)->id, "Wireguard0");
+    strcpy((*out)->name, atomic_load(&loopback) ? "lo" : "nwg0");
+    strcpy((*out)->alias, captured ? "After" : "Before");
     (*out)->layered = true;
     for (size_t i = 0; i < 5; i++) { (*out)->fields[i] = MT_KN_IF_RUNNING; }
     if (captured == 1) { (*out)->fields[MT_KN_IF_CTRL] = MT_KN_IF_BLOCKED; }
@@ -83,6 +89,15 @@ static bool setup(fixture_t *f, bool marker)
         mt_httpd_route(f->http, "GET", "/test/status", status, f) != MT_OK) { return false; }
     if (mt_kn_ifstate_service_create(f->loop, f->cache, marker ? f->marker : NULL, fetch, &f->service) != MT_OK ||
         mt_kn_ifstate_register_hook(f->http, f->service) != MT_OK) { return false; }
+    if (mt_config_init_defaults(&f->config) != MT_OK) { return false; }
+    f->config.app.show_all_interfaces = true;
+    f->records = mt_cache_create(0);
+    mt_app_deps_t deps = {.cfg = &f->config, .cache = f->records};
+    f->app = mt_app_create(&deps);
+    if (!f->records || !f->app) { return false; }
+    mt_app_set_interface_states(f->app, f->cache);
+    f->system = (mt_system_ctx_t){.app = f->app, .interface_service = f->service};
+    mt_system_register_routes(f->http, &f->system);
     return pthread_create(&f->thread, NULL, run_loop, f) == 0;
 }
 static void teardown(fixture_t *f)
@@ -90,6 +105,7 @@ static void teardown(fixture_t *f)
     mt_loop_stop(f->loop); pthread_join(f->thread, NULL);
     mt_httpd_destroy(f->http); mt_httpd_destroy(f->ordinary);
     mt_kn_ifstate_service_destroy(f->service);
+    mt_app_destroy(f->app); mt_cache_destroy(f->records); mt_config_clear(&f->config);
     mt_kn_ifstate_free(f->cache); mt_loop_destroy(f->loop);
     rmdir(f->marker); rmdir(f->dir);
 }
@@ -128,7 +144,7 @@ static bool permitted(fixture_t *f)
 }
 static const char *down = "{\"kind\":\"layer\",\"id\":\"Wireguard0\",\"system_name\":\"nwg0\",\"layer\":\"ctrl\",\"level\":\"disabled\"}";
 static const char *up = "{\"kind\":\"layer\",\"id\":\"Wireguard0\",\"system_name\":\"nwg0\",\"layer\":\"ctrl\",\"level\":\"running\"}";
-static void reset(void) { atomic_store(&calls, 0); atomic_store(&changes, 0); atomic_store(&answer, 0); atomic_store(&hold, false); }
+static void reset(void) { atomic_store(&calls, 0); atomic_store(&changes, 0); atomic_store(&answer, 0); atomic_store(&hold, false); atomic_store(&loopback, false); }
 TEST hook_ingestion_is_bounded_and_ordinary_events_do_not_request_rci(void)
 {
     reset(); fixture_t f; ASSERT(setup(&f, false));
@@ -188,10 +204,60 @@ TEST rci_error_preserves_known_down_and_shutdown_cancels_inflight_work(void)
     ASSERT(now_ms() - start < 500.0);
     PASS();
 }
+
+typedef struct { fixture_t *fixture; char response[4096]; int status; atomic_bool done; } reader_t;
+static void *read_interfaces(void *ud)
+{
+    reader_t *r = ud;
+    r->status = request(r->fixture->socket, "GET", "/api/v1/system/interfaces", NULL,
+                        r->response, sizeof(r->response));
+    atomic_store(&r->done, true);
+    return NULL;
+}
+TEST interface_api_defers_without_blocking_the_shared_event_loop(void)
+{
+    reset(); atomic_store(&hold, true); atomic_store(&loopback, true);
+    fixture_t f; ASSERT(setup(&f, false)); ASSERT(wait_counter(&calls, 1));
+    reader_t reader = {.fixture = &f}; atomic_init(&reader.done, false);
+    pthread_t thread; ASSERT_EQ(0, pthread_create(&thread, NULL, read_interfaces, &reader));
+    pause_ms(50);
+    ASSERT_FALSE(atomic_load(&reader.done));
+    char response[4096]; double start = now_ms();
+    ASSERT_EQ(200, request(f.socket, "GET", "/test/status", NULL, response, sizeof(response)));
+    ASSERT(now_ms() - start < 500.0);
+    atomic_store(&answer, 1); atomic_store(&hold, false);
+    pthread_join(thread, NULL);
+    ASSERT_EQ(200, reader.status);
+    ASSERT(strstr(reader.response, "\"name\":\"After\""));
+    ASSERT(atomic_load(&calls) >= 2u); /* cannot satisfy a new request with the old read */
+    atomic_store(&answer, -1);
+    ASSERT_EQ(200, request(f.socket, "GET", "/api/v1/system/interfaces", NULL, response, sizeof(response)));
+    ASSERT(strstr(response, "\"id\":\"lo\""));
+    ASSERT(strstr(response, "\"name\"") == NULL); /* failed refresh has kernel-only fallback */
+    teardown(&f); PASS();
+}
+TEST disconnected_interface_request_is_safe_during_shutdown(void)
+{
+    reset(); atomic_store(&hold, true);
+    fixture_t f; ASSERT(setup(&f, false)); ASSERT(wait_counter(&calls, 1));
+    int fd = socket(AF_UNIX, SOCK_STREAM, 0); ASSERT(fd >= 0);
+    struct sockaddr_un sa = {.sun_family = AF_UNIX};
+    ASSERT(strlen(f.socket) < sizeof(sa.sun_path)); strcpy(sa.sun_path, f.socket);
+    ASSERT_EQ(0, connect(fd, (const struct sockaddr *)&sa, sizeof(sa)));
+    const char request_text[] = "GET /api/v1/system/interfaces HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n";
+    ASSERT_EQ((ssize_t)(sizeof(request_text)-1), send(fd, request_text, sizeof(request_text)-1, 0));
+    pause_ms(30); close(fd);
+    double start = now_ms(); teardown(&f);
+    ASSERT(now_ms() - start < 500.0);
+    PASS();
+}
+
 GREATEST_MAIN_DEFS();
 int main(int argc, char **argv)
 {
     GREATEST_MAIN_BEGIN();
+    RUN_TEST(interface_api_defers_without_blocking_the_shared_event_loop);
+    RUN_TEST(disconnected_interface_request_is_safe_during_shutdown);
     RUN_TEST(hook_ingestion_is_bounded_and_ordinary_events_do_not_request_rci);
     RUN_TEST(slow_rcI_never_blocks_hook_ack_and_a_late_response_does_not_unblock);
     RUN_TEST(reported_delivery_failure_triggers_resync_without_another_hook);

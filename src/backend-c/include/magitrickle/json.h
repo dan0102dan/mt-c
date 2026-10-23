@@ -20,6 +20,11 @@
 
 #include "magitrickle/err.h"
 
+/* Parse one complete JSON document, rejecting raw/escaped NUL before cJSON
+ * loses decoded string lengths. Caller applies its own size/schema limits.
+ * Literal \\u0000 text is not a NUL. Caller owns the result. */
+cJSON *mt_json_parse_document(const char *text, size_t length);
+
 /* Builds {"error": "<msg>"}, matching api/types.ErrorRes. Caller owns the
  * result (cJSON_Delete). msg is copied. */
 cJSON *mt_json_error(const char *msg);

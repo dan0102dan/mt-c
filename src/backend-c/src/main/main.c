@@ -921,6 +921,10 @@ int main(int argc, char **argv)
     }
 #endif
 
+#ifdef MT_ENTWARE_KN
+    system_ctx.interface_service = d.interface_service;
+#endif
+
     mt_static_ctx_t static_ctx = {
         .skins_dir = MT_APP_SHARE_DIR "/skins",
         .skin_name = static_skin_fn,
