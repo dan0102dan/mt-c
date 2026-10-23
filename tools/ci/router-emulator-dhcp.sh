@@ -12,6 +12,8 @@ DHCP_PID=
 SSE_PID=
 CAPTURE_BEFORE=
 STREAM=0
+DOMAIN=$(uci -q get 'dhcp.@dnsmasq[0].domain' || :)
+HINT_NAME=
 mkdir -p "$DIR"
 log() { echo "mt-c DHCP smoke: $*"; }
 die() { log "FAIL: $*" >&2; exit 1; }
@@ -22,7 +24,11 @@ cleanup() {
   if [ "$result" -ne 0 ]; then
     for file in "$DIR"/*.log "$DIR"/*.json "$DIR"/*.sse; do
       [ -f "$file" ] || continue
-      echo "--- $file ---"; tail -n 50 "$file" || :
+      echo "--- $file ---"
+      case "$file" in
+        */hints.json) cat "$file" || : ;;
+        *) tail -n 50 "$file" || : ;;
+      esac
     done
     logread | tail -n 60 || :
   fi
@@ -147,9 +153,13 @@ acquire() {
     ubus -t 5 call luci-rpc getHostHints '{}' > "$DIR/hints.json" ||
       die "system host-hint provider failed"
     hint=$(jsonfilter -i "$DIR/hints.json" -e "@[\"$MAC\"].name" || :)
-    if [ "$hint" = "$hostname" ] &&
+    # LuCI may return the short DHCP hostname or its local DNS-qualified
+    # name. Validate identity first, then require mt-c to preserve exactly
+    # the name supplied by the system; never accept a stale name on rename.
+    if { [ "$hint" = "$hostname" ] || [ "$hint" = "$hostname${DOMAIN:+.$DOMAIN}" ]; } &&
         jsonfilter -i "$DIR/hints.json" -e "@[\"$MAC\"].ipaddrs[*]" | grep -Fxq "$LEASE_IP"; then
-      log "PASS: actual DHCP lease and system hint: $MAC / $LEASE_IP / $hostname"
+      HINT_NAME=$hint
+      log "PASS: actual DHCP lease and system hint: $MAC / $LEASE_IP / $HINT_NAME"
       return
     fi
     sleep 1
@@ -158,8 +168,7 @@ acquire() {
 }
 
 acquire mtci-dhcp-first
-wait_label mtci-dhcp-first
-DOMAIN=$(uci -q get 'dhcp.@dnsmasq[0].domain' || :)
+wait_label "$HINT_NAME"
 QUERY=mtci-dhcp-first${DOMAIN:+.$DOMAIN}
 ip netns exec "$NS" nslookup "$QUERY" "$(cat "$DIR/dns")" > "$DIR/dns.log" 2>&1 ||
   die "DHCP client's real DNS request failed"
@@ -168,21 +177,21 @@ api "$API/queries?limit=128" > "$DIR/queries.json"
 QUERY_ID=$(jsonfilter -i "$DIR/queries.json" \
   -e "@.queries[@.client=\"$LEASE_IP\" && @.domain=\"$QUERY\" && @.qtype=1].id" | head -n 1)
 case "$QUERY_ID" in ''|*[!0-9]*) die "client DNS request missing from mt-c journal";; esac
-[ "$(jsonfilter -i "$DIR/queries.json" -e "@.queries[@.id=$QUERY_ID].client_name")" = mtci-dhcp-first ] ||
+[ "$(jsonfilter -i "$DIR/queries.json" -e "@.queries[@.id=$QUERY_ID].client_name")" = "$HINT_NAME" ] ||
   die "journal row has an IP but no correct DHCP device name"
 log "PASS: real client DNS request has its DHCP name in the mt-c journal"
 
 # Renew with a new hostname but the same MAC/IP and keep the SAME SSE viewer.
 # Do not edit leases, inject ubus notifications or restart mt-c to force a refresh.
 acquire mtci-dhcp-renamed
-wait_label mtci-dhcp-renamed
+wait_label "$HINT_NAME"
 api "$API/queries?limit=128" > "$DIR/queries.json"
-[ "$(jsonfilter -i "$DIR/queries.json" -e "@.queries[@.id=$QUERY_ID].client_name")" = mtci-dhcp-renamed ] ||
+[ "$(jsonfilter -i "$DIR/queries.json" -e "@.queries[@.id=$QUERY_ID].client_name")" = "$HINT_NAME" ] ||
   die "historical DNS row retained the old name after DHCP rename"
 [ "$(pidof magitrickled)" = "$DAEMON_PID" ] || die "mt-c restarted during DHCP discovery"
 log "PASS: DHCP rename updates live SSE and the existing journal row without restart"
 
 # Closing the last viewer releases discovery; reopening must discover again.
 start_stream
-wait_label mtci-dhcp-renamed
+wait_label "$HINT_NAME"
 log "PASS: device name rediscovered after closing and reopening the journal"
