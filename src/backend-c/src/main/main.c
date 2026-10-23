@@ -28,6 +28,7 @@
 
 #include "magitrickle/app.h"
 #ifdef MT_ENTWARE_KN
+#include "magitrickle/dns_keenetic_hook.h"
 #include "magitrickle/keenetic_policy_api.h"
 #include "magitrickle/keenetic_ifstate_service.h"
 #endif
@@ -896,6 +897,9 @@ int main(int argc, char **argv)
         MT_ERROR("failed to register Keenetic policy routes");
         daemon_teardown(&d); mt_config_clear(&cfg); return 1;
     }
+    if (d.dns_clients && mt_dns_keenetic_register_hook(d.http_unix, d.dns_clients) != MT_OK) {
+        MT_WARN("device-name notifications unavailable; periodic refresh remains active");
+    }
 #endif
     mt_subs_register_routes(d.http_unix, &subs_ctx);
     mt_httpd_route(d.http_unix, "GET", "/api/v1/auth", mt_auth_status_handler, &auth_ctx);
@@ -915,6 +919,10 @@ int main(int argc, char **argv)
         MT_ERROR("failed to start NDM interface notifications");
         daemon_teardown(&d); mt_config_clear(&cfg); return 1;
     }
+#endif
+
+#ifdef MT_ENTWARE_KN
+    system_ctx.interface_service = d.interface_service;
 #endif
 
     mt_static_ctx_t static_ctx = {

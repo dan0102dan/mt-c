@@ -6,6 +6,7 @@
 #include "magitrickle/lookup.h"
 #include "magitrickle/rand.h"
 
+#include <arpa/inet.h>
 #include <ctype.h>
 #include <stdio.h>
 #include <pcre2.h>
@@ -176,8 +177,100 @@ static bool is_valid_regex(const char *p)
     return true;
 }
 
+/* Keep a canonical typed source record as the subscription identity. This
+ * preserves distinct DOMAIN/DOMAIN-KEYWORD records with the same payload,
+ * existing pattern-keyed overrides, and type restoration after a restart.
+ * Only the runtime projection strips the prefix (mt_sub_rule_pattern). */
+typedef struct typed_rule {
+    const char *name;
+    const char *canonical;
+    const char *type;
+} typed_rule_t;
+
+static const typed_rule_t typed_rules[] = {
+    {"DOMAIN", "DOMAIN", MT_RULE_DOMAIN},
+    {"DOMAIN-SUFFIX", "DOMAIN-SUFFIX", MT_RULE_NAMESPACE},
+    {"DOMAIN-KEYWORD", "DOMAIN-KEYWORD", MT_RULE_WILDCARD},
+    {"DOMAIN-WILDCARD", "DOMAIN-WILDCARD", MT_RULE_WILDCARD},
+    {"DOMAIN-REGEX", "DOMAIN-REGEX", MT_RULE_REGEX},
+    {"IP-CIDR", "IP-CIDR", MT_RULE_SUBNET},
+    {"IP-CIDR6", "IP-CIDR6", MT_RULE_SUBNET6},
+    {"IP6-CIDR", "IP-CIDR6", MT_RULE_SUBNET6},
+    {"HOST", "DOMAIN", MT_RULE_DOMAIN},
+    {"HOST-SUFFIX", "DOMAIN-SUFFIX", MT_RULE_NAMESPACE},
+    {"HOST-KEYWORD", "DOMAIN-KEYWORD", MT_RULE_WILDCARD},
+};
+
+static char ascii_lower(char c)
+{
+    return c >= 'A' && c <= 'Z' ? (char)(c + ('a' - 'A')) : c;
+}
+
+static bool ascii_equal(const char *s, size_t len, const char *literal)
+{
+    if (len != strlen(literal)) { return false; }
+    for (size_t i = 0; i < len; i++) {
+        if (ascii_lower(s[i]) != ascii_lower(literal[i])) { return false; }
+    }
+    return true;
+}
+
+static const typed_rule_t *typed_rule(const char *name, size_t len)
+{
+    for (size_t i = 0; i < sizeof(typed_rules) / sizeof(typed_rules[0]); i++) {
+        if (ascii_equal(name, len, typed_rules[i].name)) { return &typed_rules[i]; }
+    }
+    return NULL;
+}
+
+const char *mt_sub_rule_pattern(const char *rule)
+{
+    if (!rule) { return NULL; }
+    const char *comma = strchr(rule, ',');
+    if (comma && typed_rule(rule, (size_t)(comma - rule))) { return comma + 1; }
+    return rule;
+}
+
+/* Project canonical typed records into an existing wildcard rule, without
+ * changing legacy wildcard matching or persisting any additional type.
+ * @mtc: is private to the runtime matcher; the saved source ID is untouched.
+ * Overrides to another rule type use the raw payload instead. */
+char *mt_sub_rule_runtime_pattern(const char *rule, const char *type)
+{
+    const char *pattern = mt_sub_rule_pattern(rule);
+    if (!pattern) { return NULL; }
+    if (!type || strcmp(type, MT_RULE_WILDCARD) != 0) { return strdup(pattern); }
+    size_t len = strlen(pattern);
+    if (strncmp(rule, "DOMAIN-WILDCARD,", 16) == 0) {
+        char *out = malloc(len + 6);
+        if (!out) { return NULL; }
+        memcpy(out, "@mtc:", 5);
+        memcpy(out + 5, pattern, len + 1);
+        return out;
+    }
+    if (strncmp(rule, "DOMAIN-KEYWORD,", 15) == 0) {
+        if (len > (SIZE_MAX - 8) / 2) { return NULL; }
+        char *out = malloc(8 + len * 2);
+        if (!out) { return NULL; }
+        char *dst = out;
+        memcpy(dst, "@mtc:*", 6);
+        dst += 6;
+        for (const char *src = pattern; *src; src++) {
+            if (*src == '*' || *src == '?' || *src == '\\') { *dst++ = '\\'; }
+            *dst++ = *src;
+        }
+        *dst++ = '*';
+        *dst = '\0';
+        return out;
+    }
+    return strdup(pattern);
+}
+
 const char *mt_sub_detect_type(const char *pattern)
 {
+    const char *comma = strchr(pattern, ',');
+    const typed_rule_t *source = comma ? typed_rule(pattern, (size_t)(comma - pattern)) : NULL;
+    if (source) { return comma[1] ? source->type : ""; }
     /* Go re-trims here (callers already trim, harmless to repeat). */
     if (is_valid_subnet6(pattern)) {
         return MT_RULE_SUBNET6;
@@ -217,53 +310,262 @@ static bool canceled(const atomic_bool *cancel) {
     return cancel && atomic_load(cancel);
 }
 
+/* Reserve explicit rule records, not comma-separated legacy host lists.
+ * Unsupported records must never become e.g. a namespace named PROCESS-NAME.
+ * A recognized typed record selects whole-line parsing for the entire source. */
+static bool looks_typed(const char *s, size_t len)
+{
+    if (typed_rule(s, len)) { return true; }
+    /* Complete remaining names from Mihomo rules/parser.go (2026-10-21).
+     * Recognition prevents legacy tokenization; it does NOT implement these rules.
+     * Keep the independent coverage table in test_mihomo_rule_types.c in sync. */
+    static const char *const unsupported[] = {
+        "GEOSITE", "GEOIP", "SRC-GEOIP", "IP-ASN", "SRC-IP-ASN",
+        "IP-SUFFIX", "SRC-IP-CIDR", "SRC-IP-SUFFIX",
+        "SRC-PORT", "DST-PORT", "IN-PORT", "IN-TYPE", "IN-USER", "IN-NAME",
+        "REMATCH-NAME", "PROCESS-NAME", "PROCESS-PATH",
+        "PROCESS-NAME-REGEX", "PROCESS-PATH-REGEX",
+        "PROCESS-NAME-WILDCARD", "PROCESS-PATH-WILDCARD",
+        "NETWORK", "UID", "DSCP", "RULE-SET", "SUB-RULE",
+        "AND", "OR", "NOT", "MATCH",
+        /* Other already-reserved text dialect names, not Mihomo aliases. */
+        "FINAL", "INCLUDE",
+    };
+    for (size_t i = 0; i < sizeof(unsupported) / sizeof(unsupported[0]); i++) {
+        if (ascii_equal(s, len, unsupported[i])) { return true; }
+    }
+    /* Uppercase hyphenated names (e.g. MY-SITE) are valid legacy entries.
+     * Only explicit record names may select typed parsing. Unknown names
+     * are skipped whole if another record already selects that mode. */
+    return false;
+}
+
+static bool line_comment(const char *line)
+{
+    return *line == '#' || *line == ';' || (line[0] == '/' && line[1] == '/');
+}
+
+static bool is_typed_list(const char *list)
+{
+    const char *line = list;
+    while (*line) {
+        size_t len = strcspn(line, "\r\n");
+        const char *end = line + len;
+        while (line < end && isspace((unsigned char)*line)) { line++; }
+        if (line < end && !line_comment(line)) {
+            const char *comma = memchr(line, ',', (size_t)(end - line));
+            if (comma) {
+                const char *name_end = comma;
+                while (name_end > line && isspace((unsigned char)name_end[-1])) { name_end--; }
+                if (looks_typed(line, (size_t)(name_end - line))) { return true; }
+            }
+        }
+        line = *end ? end + 1 : end;
+    }
+    return false;
+}
+
+static bool valid_literal_keyword(const char *value)
+{
+    if (!*value) { return false; }
+    for (const unsigned char *p = (const unsigned char *)value; *p; p++) {
+        if (*p < 0x21 || *p > 0x7e) { return false; }
+    }
+    return true;
+}
+
+static bool valid_typed_domain(const char *value)
+{
+    size_t len = strlen(value);
+    return len && len <= 253 && value[0] != '.' && value[len - 1] != '.' &&
+           !strstr(value, "..") && all_chars_in(value, "_");
+}
+
+static bool typed_ip_family(const char *value, bool *ipv6)
+{
+    const char *slash = strchr(value, '/');
+    size_t len = slash ? (size_t)(slash - value) : strlen(value);
+    char address[INET6_ADDRSTRLEN];
+    if (!len || len >= sizeof(address)) { return false; }
+    memcpy(address, value, len);
+    address[len] = '\0';
+    struct in6_addr storage;
+    if (inet_pton(AF_INET, address, &storage) == 1) { *ipv6 = false; }
+    else if (inet_pton(AF_INET6, address, &storage) == 1) { *ipv6 = true; }
+    else { return false; }
+    if (slash) {
+        int prefix = parse_dec(slash + 1, strlen(slash + 1));
+        if (prefix < 0 || prefix > (*ipv6 ? 128 : 32)) { return false; }
+    }
+    return true;
+}
+
+/* Input is one mutable physical line. Regex payloads are intentionally kept
+ * whole, including commas (quantifiers, classes and literal commas): the
+ * supported regex form is TYPE,expression, not an inline policy rule. */
+static mt_err_t canonical_typed_record(char *line, char *out, size_t out_size,
+                                       const char **type)
+{
+    char *comma = strchr(line, ',');
+    if (!comma) { return MT_ERR_INVAL; }
+    *comma = '\0';
+    const char *name = trim(line);
+    const typed_rule_t *spec = typed_rule(name, strlen(name));
+    if (!spec) { return MT_ERR_INVAL; }
+    char *value = trim(comma + 1);
+    bool ip = strcmp(spec->type, MT_RULE_SUBNET) == 0 || strcmp(spec->type, MT_RULE_SUBNET6) == 0;
+    bool regex = strcmp(spec->type, MT_RULE_REGEX) == 0;
+    if (!regex) {
+        /* Policy labels belong to the upstream client, not mt-c routing.
+         * Accept at most one label and an optional IP-only no-resolve flag.
+         * In particular, never import an IP rule carrying the `src` modifier. */
+        char *extra = strchr(value, ',');
+        if (extra) { *extra++ = '\0'; }
+        value = trim(value);
+        bool policy_seen = false, no_resolve_seen = false;
+        while (extra) {
+            char *next = strchr(extra, ',');
+            if (next) { *next++ = '\0'; }
+            char *field = trim(extra);
+            size_t n = strlen(field);
+            if (!n || ascii_equal(field, n, "src")) {
+                return MT_ERR_INVAL;
+            }
+            if (ascii_equal(field, n, "no-resolve")) {
+                if (!ip || no_resolve_seen || next) {
+                    return MT_ERR_INVAL;
+                }
+                no_resolve_seen = true;
+            } else if (policy_seen || no_resolve_seen) {
+                return MT_ERR_INVAL;
+            } else {
+                policy_seen = true;
+            }
+            extra = next;
+        }
+    }
+    if (!*value) { return MT_ERR_INVAL; }
+    const char *canonical = spec->canonical;
+    *type = spec->type;
+    if (ip) {
+        bool ipv6;
+        if (!typed_ip_family(value, &ipv6)) { return MT_ERR_INVAL; }
+        canonical = ipv6 ? "IP-CIDR6" : "IP-CIDR";
+        *type = ipv6 ? MT_RULE_SUBNET6 : MT_RULE_SUBNET;
+    } else if (strcmp(*type, MT_RULE_DOMAIN) == 0 || strcmp(*type, MT_RULE_NAMESPACE) == 0) {
+        size_t n = strlen(value);
+        if (value[n - 1] == '.') { value[n - 1] = '\0'; }
+        if (!valid_typed_domain(value)) { return MT_ERR_INVAL; }
+    } else if (strcmp(canonical, "DOMAIN-KEYWORD") == 0) {
+        if (!valid_literal_keyword(value)) { return MT_ERR_INVAL; }
+    } else if (strcmp(canonical, "DOMAIN-WILDCARD") == 0) {
+        if (!all_chars_in(value, "_*?")) {
+            return MT_ERR_INVAL;
+        }
+    } else if (!is_valid_regex(value)) {
+        return MT_ERR_INVAL;
+    }
+    size_t name_len = strlen(canonical), value_len = strlen(value);
+    if (name_len + 1 + value_len >= out_size) { return MT_ERR_LIMIT; }
+    memcpy(out, canonical, name_len);
+    out[name_len] = ',';
+    memcpy(out + name_len + 1, value, value_len + 1);
+    if (!regex) {
+        for (size_t i = name_len + 1; i < name_len + 1 + value_len; i++) {
+            out[i] = ascii_lower(out[i]);
+        }
+    }
+    return MT_OK;
+}
+
+typedef struct parse_state {
+    mt_sub_rule_t **rules;
+    size_t n, cap;
+    mt_lookup_t seen, used;
+    mt_id_pool_t pool;
+} parse_state_t;
+
+static mt_err_t append_parsed_rule(parse_state_t *state, const char *text, const char *type)
+{
+    size_t len = strlen(text);
+    if (len > MT_SUB_MAX_LINE_BYTES) { return MT_ERR_LIMIT; }
+    if (mt_lookup_get(&state->seen, text, len, NULL)) { return MT_OK; }
+    if (state->n == MT_SUB_MAX_RULES) { return MT_ERR_LIMIT; }
+    mt_err_t err = mt_lookup_put(&state->seen, text, len, state->n, NULL);
+    if (err != MT_OK) { return err; }
+    mt_sub_rule_t *rule = mt_sub_rule_new();
+    if (!rule) { return MT_ERR_NOMEM; }
+    rule->enable = true;
+    err = mt_id_pool_unique(&state->used, &state->pool, &rule->id);
+    if (err == MT_OK) { err = mt_strset(&rule->rule, text); }
+    if (err == MT_OK) { err = mt_strset(&rule->type, type ? type : mt_sub_detect_type(text)); }
+    if (err != MT_OK) { mt_sub_rule_free(rule); return err; }
+    if (state->n == state->cap) {
+        size_t next = state->cap ? state->cap * 2 : 16;
+        mt_sub_rule_t **grown = realloc(state->rules, next * sizeof(*grown));
+        if (!grown) { mt_sub_rule_free(rule); return MT_ERR_NOMEM; }
+        state->rules = grown;
+        state->cap = next;
+    }
+    state->rules[state->n++] = rule;
+    return MT_OK;
+}
+
 mt_err_t mt_sub_parse_rules_cancel(const char *list, mt_sub_rule_t ***out_rules,
                                    size_t *out_n, const atomic_bool *cancel) {
     *out_rules = NULL; *out_n = 0;
     if (!list) { return MT_ERR_INVAL; }
     if (canceled(cancel)) { return MT_ERR_CANCELED; }
+    if (strncmp(list, "\xef\xbb\xbf", 3) == 0) { list += 3; }
+    bool typed = is_typed_list(list);
     char *copy = strdup(list);
     if (!copy) { return MT_ERR_NOMEM; }
-    mt_sub_rule_t **rules = NULL;
-    size_t n = 0, cap = 0;
-    mt_lookup_t seen = {0}, used = {0};
-    mt_id_pool_t pool = {0};
+    parse_state_t state = {0};
     mt_err_t err = MT_OK;
-    char *saveptr = NULL;
-    for (char *tok = strtok_r(copy, "\n\r,", &saveptr); tok;
-         tok = strtok_r(NULL, "\n\r,", &saveptr)) {
-        if (canceled(cancel)) { err = MT_ERR_CANCELED; break; }
-        char *line = trim(tok);
-        if (!*line || *line == '#') { continue; }
-        size_t len = strlen(line);
-        if (len > MT_SUB_MAX_LINE_BYTES) { err = MT_ERR_LIMIT; break; }
-        /* Detection is deterministic for identical text. Indexing text before
-         * detection is equivalent to the old (detected-type, text) key and also
-         * avoids compiling duplicate regexes. Preserve first occurrence order. */
-        if (mt_lookup_get(&seen, line, len, NULL)) { continue; }
-        if (n == MT_SUB_MAX_RULES) { err = MT_ERR_LIMIT; break; }
-        err = mt_lookup_put(&seen, line, len, n, NULL);
-        if (err != MT_OK) { break; }
-        const char *type = mt_sub_detect_type(line);
-        mt_sub_rule_t *r = mt_sub_rule_new();
-        if (!r) { err = MT_ERR_NOMEM; break; }
-        r->enable = true;
-        err = mt_id_pool_unique(&used, &pool, &r->id);
-        if (err == MT_OK) { err = mt_strset(&r->rule, line); }
-        if (err == MT_OK) { err = mt_strset(&r->type, type); }
-        if (err != MT_OK) { mt_sub_rule_free(r); break; }
-        if (n == cap) {
-            size_t next = cap ? cap * 2 : 16;
-            mt_sub_rule_t **grown = realloc(rules, next * sizeof(*rules));
-            if (!grown) { mt_sub_rule_free(r); err = MT_ERR_NOMEM; break; }
-            rules = grown; cap = next;
+    if (!typed) {
+        /* Preserve legacy tokenization and detection verbatim. */
+        char *save = NULL;
+        for (char *token = strtok_r(copy, "\n\r,", &save); token;
+             token = strtok_r(NULL, "\n\r,", &save)) {
+            if (canceled(cancel)) { err = MT_ERR_CANCELED; break; }
+            char *text = trim(token);
+            if (!*text || *text == '#') { continue; }
+            err = append_parsed_rule(&state, text, NULL);
+            if (err != MT_OK) { break; }
         }
-        rules[n++] = r;
+    } else {
+        char canonical[MT_SUB_MAX_LINE_BYTES + 1];
+        for (char *line = copy; line && *line;) {
+            if (canceled(cancel)) { err = MT_ERR_CANCELED; break; }
+            char *end = strpbrk(line, "\r\n"), *next = NULL;
+            if (end) {
+                next = end + 1;
+                if (*end == '\r' && *next == '\n') { next++; }
+                *end = '\0';
+            }
+            char *text = trim(line);
+            if (*text && !line_comment(text)) {
+                if (strlen(text) > MT_SUB_MAX_LINE_BYTES) { err = MT_ERR_LIMIT; break; }
+                const char *type = NULL;
+                err = canonical_typed_record(text, canonical, sizeof(canonical), &type);
+                if (err == MT_ERR_INVAL) {
+                    /* Unsupported or malformed record: silently skip the WHOLE
+                     * line, never reinterpret its payload through legacy parsing.
+                     * Resource limits, allocation failure and cancellation still
+                     * abort without publishing an incomplete working result. */
+                    err = MT_OK;
+                } else if (err == MT_OK) {
+                    err = append_parsed_rule(&state, canonical, type);
+                }
+                if (err != MT_OK) { break; }
+            }
+            line = next;
+        }
     }
     if (err == MT_OK && canceled(cancel)) { err = MT_ERR_CANCELED; }
-    mt_lookup_clear(&seen); mt_lookup_clear(&used); free(copy);
-    if (err != MT_OK) { mt_sub_rules_free(rules, n); return err; }
-    *out_rules = rules; *out_n = n;
+    mt_lookup_clear(&state.seen); mt_lookup_clear(&state.used); free(copy);
+    if (err != MT_OK) { mt_sub_rules_free(state.rules, state.n); return err; }
+    *out_rules = state.rules; *out_n = state.n;
     return MT_OK;
 }
 

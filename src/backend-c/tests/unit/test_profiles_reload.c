@@ -191,9 +191,42 @@ TEST reload_failure_matrix_restores_exact_old_runtime_flags(void) {
     PASS();
 }
 
+TEST prepared_apply_keeps_original_objects_until_persistence_succeeds(void) {
+    mt_config_t cfg = {0}; ASSERT_EQ(MT_OK, mt_config_init_defaults(&cfg));
+    ASSERT_EQ(MT_OK, mt_config_load_buffer(&cfg, original, strlen(original)));
+    mt_app_deps_t deps = {.cfg = &cfg};
+    mt_app_t *app = mt_app_create(&deps); ASSERT(app);
+    mt_group_t **old_groups = cfg.groups;
+    mt_subscription_t **old_subs = cfg.subscriptions;
+    mt_profile_t **old_profiles = cfg.profiles;
+    mt_ruleset_t *old_group_set = mt_app_user_group_at(app, 0);
+    mt_ruleset_t *old_sub_set = mt_app_subscription_ruleset_at(app, 0);
+    const char *replacement = "configVersion: 0.8\napp: {logLevel: debug}\n"
+        "profiles: []\ngroups: []\nsubscriptions: []\n";
+    mt_config_t next = {0}; ASSERT_EQ(MT_OK, mt_config_init_defaults(&next));
+    ASSERT_EQ(MT_OK, mt_config_load_buffer(&next, replacement, strlen(replacement)));
+    /* A non-directory path fails before any persistent change. */
+    ASSERT(mt_app_apply_config(app, &next, "/dev/null/config", "0.8.6") != MT_OK);
+    ASSERT(!next.groups && !next.subscriptions && !next.profiles && !next.app.log_level);
+    ASSERT(cfg.groups == old_groups); ASSERT(cfg.subscriptions == old_subs); ASSERT(cfg.profiles == old_profiles);
+    ASSERT(mt_app_user_group_at(app, 0) == old_group_set);
+    ASSERT(mt_app_subscription_ruleset_at(app, 0) == old_sub_set);
+    ASSERT_STR_EQ("Old", cfg.profiles[0]->name);
+    ASSERT(strcmp(cfg.app.log_level, "debug") != 0);
+    ASSERT_EQ(MT_OK, mt_config_init_defaults(&next));
+    ASSERT_EQ(MT_OK, mt_config_load_buffer(&next, replacement, strlen(replacement)));
+    ASSERT_EQ(MT_OK, mt_app_apply_config(app, &next, NULL, NULL));
+    ASSERT_EQ(0u, cfg.n_groups); ASSERT_EQ(0u, cfg.n_subscriptions); ASSERT_EQ(0u, cfg.n_profiles);
+    ASSERT_STR_EQ("debug", cfg.app.log_level);
+    ASSERT(!next.app.log_level);
+    mt_app_destroy(app); mt_config_clear(&cfg); mt_config_clear(&next);
+    PASS();
+}
+
 GREATEST_MAIN_DEFS();
 int main(int argc, char **argv) {
     GREATEST_MAIN_BEGIN();
+    RUN_TEST(prepared_apply_keeps_original_objects_until_persistence_succeeds);
     RUN_TEST(failed_apply_restores_definitions_and_all_consumers);
     RUN_TEST(reload_overlay_normalizes_preserved_groups_and_clears_absent_subscriptions);
     RUN_TEST(reload_cardinality_matrix_keeps_config_and_runtime_consistent);

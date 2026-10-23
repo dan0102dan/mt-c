@@ -15,6 +15,7 @@
 #define MAGITRICKLE_YAMLIO_H
 
 #include <stddef.h>
+#include <cjson/cJSON.h>
 
 #include "magitrickle/err.h"
 #include "magitrickle/models.h"
@@ -32,6 +33,9 @@ mt_err_t mt_config_load_file(mt_config_t *cfg, const char *path);
  * passed in — Go writes constant.Version). Returns a malloc'd buffer. */
 mt_err_t mt_config_save_buffer(const mt_config_t *cfg, const char *version,
                                char **out, size_t *out_len);
+
+/* Same field traversal as YAML, directly into a caller-owned JSON tree. */
+mt_err_t mt_config_save_json(const mt_config_t *cfg, const char *version, cJSON **out);
 
 /* Atomic write to path (0600). */
 mt_err_t mt_config_save_file(const mt_config_t *cfg, const char *version,

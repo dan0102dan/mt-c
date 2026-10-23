@@ -2,7 +2,7 @@
 #include <netinet/in.h>
 #include <stdlib.h>
 #include <string.h>
-#include <cjson/cJSON.h>
+#include "magitrickle/json.h"
 
 typedef struct {
     mt_kn_ifinfo_t info;
@@ -42,18 +42,8 @@ static bool unique_keys(const cJSON *object)
 }
 static cJSON *parse_document(const char *body, size_t len)
 {
-    if (!body || !len || memchr(body, '\0', len)) { return NULL; }
-    /* cJSON exposes C strings, so reject escaped NUL before it can hide a
-     * suffix in an identifier/value. Skip escaped backslashes themselves. */
-    for (size_t i = 0; i < len; i++) {
-        if (body[i] != '\\') { continue; }
-        if (len - i >= 6 && !memcmp(body + i, "\\u0000", 6)) { return NULL; }
-        if (i + 1 < len) { i++; }
-    }
-    const char *end = NULL;
-    cJSON *json = cJSON_ParseWithLengthOpts(body, len, &end, false);
-    while (end && end < body + len && strchr(" \r\n\t", *end)) { end++; }
-    if (!cJSON_IsObject(json) || end != body + len ||
+    cJSON *json = mt_json_parse_document(body, len);
+    if (!json || !cJSON_IsObject(json) ||
         cJSON_GetArraySize(json) > (int)MT_KN_IFSTATE_LIMIT) { cJSON_Delete(json); return NULL; }
     if (!unique_keys(json)) { cJSON_Delete(json); return NULL; }
     return json;
@@ -127,6 +117,21 @@ done:
     return err;
 }
 
+static void copy_label(char *out, size_t size, const cJSON *value)
+{
+    out[0] = '\0';
+    if (!cJSON_IsString(value)) { return; }
+    const char *text = value->valuestring;
+    while (*text && strchr(" \t\r\n\v\f", *text)) { text++; }
+    size_t n = strlen(text);
+    while (n && strchr(" \t\r\n\v\f", text[n - 1])) { n--; }
+    if (n >= size) {
+        n = size - 1;
+        while (n && ((unsigned char)text[n] & 0xc0u) == 0x80u) { n--; }
+    }
+    memcpy(out, text, n); out[n] = '\0';
+}
+
 mt_err_t mt_kn_ifinfo_parse(const char *body, size_t len, mt_kn_ifinfo_t **out, size_t *count)
 {
     if (!out || !count) { return MT_ERR_INVAL; }
@@ -155,6 +160,10 @@ mt_err_t mt_kn_ifinfo_parse(const char *body, size_t len, mt_kn_ifinfo_t **out, 
         }
         if (err != MT_OK) { break; }
         strcpy(items[i].id, canonical);
+        copy_label(items[i].alias, sizeof(items[i].alias), cJSON_GetObjectItemCaseSensitive(item, "description"));
+        if (!items[i].alias[0]) {
+            copy_label(items[i].alias, sizeof(items[i].alias), cJSON_GetObjectItemCaseSensitive(item, "interface-name"));
+        }
         if (!copy_string(item, "system-name", items[i].name, sizeof(items[i].name), false, false)) {
             err = MT_ERR_PROTO; break;
         }
@@ -215,9 +224,9 @@ static bool blocked(const entry_t *entry, int family)
     }
     return false;
 }
-bool mt_kn_ifstate_blocks(const mt_kn_ifstate_t *state, const char *name, int family)
+static const entry_t *select_interface(const mt_kn_ifstate_t *state, const char *name)
 {
-    if (!state || !name || (family != AF_INET && family != AF_INET6)) { return false; }
+    if (!state || !name) { return NULL; }
     /* Several NDM records (a switch and its ports, Wi-Fi master and AP)
      * may legitimately share one kernel name. Prefer the parent NDM record
      * rather than whichever child emitted the last notification. */
@@ -232,7 +241,19 @@ bool mt_kn_ifstate_blocks(const mt_kn_ifstate_t *state, const char *name, int fa
         for (const char *p = b; *p; p++) { db += *p == '/'; }
         if (da < db || (da == db && strcmp(a, b) < 0)) { selected = candidate; }
     }
-    return selected ? blocked(selected, family) : false;
+    return selected;
+}
+bool mt_kn_ifstate_blocks(const mt_kn_ifstate_t *state, const char *name, int family)
+{
+    if (family != AF_INET && family != AF_INET6) { return false; }
+    const entry_t *entry = select_interface(state, name);
+    return entry ? blocked(entry, family) : false;
+}
+const char *mt_kn_ifstate_alias(const mt_kn_ifstate_t *state, const char *name)
+{
+    const entry_t *entry = select_interface(state, name);
+    return entry && !entry->removed && entry->info.alias[0] && strcmp(entry->info.alias, name)
+        ? entry->info.alias : NULL;
 }
 static void changed(mt_kn_ifstate_t *state, const char *name)
 {
@@ -312,6 +333,7 @@ mt_err_t mt_kn_ifstate_event(mt_kn_ifstate_t *state, const mt_kn_ifevent_t *even
     map_name(state, entry, event->info.name, revision);
     if (event->kind == MT_KN_IF_CREATED || event->kind == MT_KN_IF_DESTROYED) {
         if (event->kind == MT_KN_IF_CREATED) {
+            entry->info.alias[0] = '\0';
             memset(entry->info.fields, 0, sizeof(entry->info.fields));
             entry->info.layered = false; entry->snapshot = false; entry->layer_baseline = false;
             entry->baseline_revision = revision;
@@ -376,7 +398,10 @@ mt_err_t mt_kn_ifstate_snapshot(mt_kn_ifstate_t *state, const mt_kn_ifinfo_t *it
         if (!entry) { return state->count == MT_KN_IFSTATE_LIMIT ? MT_ERR_LIMIT : MT_ERR_NOMEM; }
         if (entry->lifetime_revision > token) { continue; }
         entry_t before = *entry;
-        if (entry->identity_revision <= token) { map_name(state, entry, items[i].name, token); }
+        if (entry->identity_revision <= token) {
+            map_name(state, entry, items[i].name, token);
+            memcpy(entry->info.alias, items[i].alias, sizeof(entry->info.alias));
+        }
         entry->removed = false;
         entry->snapshot = true;
         if (items[i].layered && entry->baseline_revision <= token) {

@@ -334,3 +334,14 @@ Source: root Makefile, `files/**`, CI workflow.
 zerolog console output to stdout; levels trace…disabled via `logLevel`.
 Log *content* is not part of the contract except: init scripts pipe stdout;
 keep level names and the general "human console line" style. C-verify: MAN.
+
+
+### Post-migration system-integration changes (D-85)
+
+Subscription HTTP redirects now follow libcurl's standard handling (including
+303/307/308), with HTTP/HTTPS only, five redirects, and one 15-second transfer
+budget. This supersedes the historical 301/302-only behavior above. Malformed
+Base64 secrets and RCI JSON with encoded NUL/trailing data are rejected. Config
+preview revisions are opaque and must be refreshed when rejected across upgrade.
+All other configuration field names, canonical YAML output and API routes remain
+unchanged; see D-85 for transaction/async ownership details.

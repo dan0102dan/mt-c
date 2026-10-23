@@ -6,6 +6,21 @@
 
 #include "magitrickle/models.h"
 
+cJSON *mt_json_parse_document(const char *text, size_t length) {
+    if (!text || !length || memchr(text, 0, length)) { return NULL; }
+    for (size_t i = 0; i < length; i++) {
+        if (text[i] != '\\') { continue; }
+        if (length - i >= 6 && memcmp(text + i, "\\u0000", 6) == 0) { return NULL; }
+        if (i + 1 < length) { i++; }
+    }
+    const char *end = NULL;
+    cJSON *root = cJSON_ParseWithLengthOpts(text, length, &end, false);
+    while (end && end < text + length &&
+           (*end == ' ' || *end == '\t' || *end == '\r' || *end == '\n')) { end++; }
+    if (!root || end != text + length) { cJSON_Delete(root); return NULL; }
+    return root;
+}
+
 cJSON *mt_json_error(const char *msg) {
     cJSON *obj = cJSON_CreateObject();
     if (!obj) { return NULL; }

@@ -504,7 +504,7 @@ test.describe("Import/Export", () => {
       groups: [{ ...serverGroups[0], name: "Imported copy" }],
     });
     await dialog
-      .getByRole("button", { name: "Resolve conflict for Imported copy", exact: true })
+      .locator('[data-select-trigger][aria-label="Resolve conflict for Imported copy"]')
       .click();
     await page.getByRole("option", { name: "Create a copy", exact: true }).click();
     await dialog.getByRole("button", { name: "Import", exact: true }).click();
@@ -535,7 +535,7 @@ test.describe("Import/Export", () => {
     const exported = JSON.parse(fs.readFileSync(await download.path(), "utf8"));
     const dialog = await openTransfer(page, exported);
     await dialog
-      .getByRole("button", { name: "Resolve conflict for Existing", exact: true })
+      .locator('[data-select-trigger][aria-label="Resolve conflict for Existing"]')
       .click();
     await page.getByRole("option", { name: "Create a copy", exact: true }).click();
     await dialog.getByRole("button", { name: "Import", exact: true }).click();
@@ -1034,7 +1034,7 @@ test.describe("Import/Export", () => {
       expect(applied).toBe(1);
       const route = page
         .locator(".group-wrapper")
-        .getByRole("button", { name: "Route", exact: true });
+        .locator('[data-select-trigger][aria-label="Route"]');
       await expect(route).toHaveText("mitun0");
       await route.click();
       await page.getByRole("option", { name: "wg0", exact: true }).click();

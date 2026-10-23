@@ -2,16 +2,10 @@
  * Uses libcurl (dependencies.md: "TLS is non-negotiable for https
  * subscription URLs and hand-rolling TLS is out of the question").
  *
- * Replicates Go's exact redirect semantics via libcurl's URL API +
- * FOLLOWLOCATION off, not libcurl's own automatic redirect handling
- * (which follows more status codes and doesn't cap identically):
- * - only HTTP 301/302 are followed as redirects; any other 3xx is
- *   treated as a plain non-2xx terminal failure (a real Go quirk, kept
- *   deliberately -- 303/307/308 are NOT special-cased);
- * - at most MT_SUB_FETCH_MAX_REDIRECTS hops, loop detection against
- *   every URL visited so far (including the original);
- * - only http/https schemes with a non-empty host are accepted, at the
- *   original URL and at every redirect target.
+ * Native libcurl redirect handling: HTTP 301/302/303/307/308, at most five
+ * hops, one 15-second timeout for the complete transfer. Only HTTP/HTTPS is
+ * allowed both initially and on every redirect. Loops exhaust the hop limit.
+ * This intentionally supersedes the old Go 301/302-only quirk (D-85).
  *
  * mt_sub_fetch_list's MT_SUB_FETCH_MAX_BODY_BYTES cap is C-side hardening
  * (dependencies.md's "size bound") -- Go's io.ReadAll has no such limit.
@@ -29,7 +23,9 @@
 #include <stdatomic.h>
 #include <stdbool.h>
 
+#ifndef MT_SUB_FETCH_TIMEOUT_SECONDS
 #define MT_SUB_FETCH_TIMEOUT_SECONDS 15
+#endif
 #define MT_SUB_FETCH_MAX_REDIRECTS 5
 #define MT_SUB_FETCH_MAX_BODY_BYTES ((size_t)8 * 1024 * 1024)
 
@@ -40,11 +36,11 @@
 void mt_sub_fetch_global_init(void);
 void mt_sub_fetch_global_cleanup(void);
 
-/* Fetches `url`, following only 301/302 redirects (see header comment),
+/* Fetches `url`, following native HTTP redirects (see header comment),
  * up to MT_SUB_FETCH_MAX_REDIRECTS hops. On success, *out_body is a
  * NUL-terminated malloc'd buffer of *out_len bytes (caller frees).
  * Errors: MT_ERR_INVAL (malformed URL, unsupported scheme, redirect
- * loop, missing/malformed redirect Location), MT_ERR_LIMIT (too many
+ * target), MT_ERR_LIMIT (too many
  * redirects, or body exceeds MT_SUB_FETCH_MAX_BODY_BYTES), MT_ERR_PROTO
  * (non-2xx terminal response), MT_ERR_IO (network/TLS/timeout
  * failure), MT_ERR_NOMEM. */

@@ -15,11 +15,11 @@
 #include <unistd.h>
 #include <fcntl.h>
 #include <stdio.h>
-#include <yaml.h>
 
 #include <cjson/cJSON.h>
 
 #include "magitrickle/log.h"
+#include "magitrickle/json.h"
 
 static void must_route(mt_httpd_t *h, const char *method, const char *pattern, mt_http_handler_fn fn,
                        void *ud) {
@@ -28,34 +28,64 @@ static void must_route(mt_httpd_t *h, const char *method, const char *pattern, m
     }
 }
 
+static mt_err_t interfaces_json(mt_system_ctx_t *ctx, bool labels, cJSON **result) {
+#ifndef MT_ENTWARE_KN
+    (void)labels;
+#endif
+    *result = NULL;
+    mt_iface_info_t *ifaces = NULL; size_t n = 0;
+    mt_err_t err = mt_app_list_interfaces(ctx->app, &ifaces, &n);
+    if (err != MT_OK) { return err; }
+    cJSON *out = cJSON_CreateObject();
+    cJSON *arr = out ? cJSON_AddArrayToObject(out, "interfaces") : NULL;
+    for (size_t i = 0; arr && i <= n; i++) {
+        cJSON *item = cJSON_CreateObject();
+        bool ok = item && cJSON_AddStringToObject(item, "id", i ? ifaces[i-1].id : "blackhole");
+#ifdef MT_ENTWARE_KN
+        if (ok && labels && i && ifaces[i-1].name[0]) {
+            ok = cJSON_AddStringToObject(item, "name", ifaces[i-1].name) != NULL;
+        }
+#endif
+        if (!ok || !cJSON_AddItemToArray(arr, item)) {
+            cJSON_Delete(item); err = MT_ERR_NOMEM; break;
+        }
+    }
+    free(ifaces);
+    if (!arr || err != MT_OK) { cJSON_Delete(out); return MT_ERR_NOMEM; }
+    *result = out; return MT_OK;
+}
+#ifdef MT_ENTWARE_KN
+typedef struct { mt_system_ctx_t *ctx; mt_http_deferred_t *reply; } interface_request_t;
+static void interfaces_refreshed(void *ud, mt_err_t error) {
+    interface_request_t *request = ud;
+    cJSON *out = NULL;
+    /* A failed refresh affects labels, not enumeration of kernel interfaces. */
+    mt_err_t err = interfaces_json(request->ctx, error == MT_OK, &out);
+    if (err == MT_OK) { mt_http_deferred_json(request->reply, 200, out); }
+    else { mt_http_deferred_error(request->reply, 500, mt_err_str(err)); }
+    free(request);
+}
+#endif
 static void handle_list_interfaces(mt_http_req_t *req, mt_http_res_t *res, void *ud) {
     (void)req;
     mt_system_ctx_t *ctx = ud;
-
-    mt_iface_info_t *ifaces = NULL;
-    size_t n = 0;
-    mt_err_t err = mt_app_list_interfaces(ctx->app, &ifaces, &n);
-    if (err != MT_OK) {
-        mt_http_res_write_error(res, 500, mt_err_str(err));
-        return;
-    }
-
-    cJSON *out = cJSON_CreateObject();
-    cJSON *arr = cJSON_AddArrayToObject(out, "interfaces");
-    cJSON *blackhole = cJSON_CreateObject();
-    cJSON_AddStringToObject(blackhole, "id", "blackhole");
-    cJSON_AddItemToArray(arr, blackhole);
-    for (size_t i = 0; i < n; i++) {
-        cJSON *item = cJSON_CreateObject();
-        cJSON_AddStringToObject(item, "id", ifaces[i].id);
 #ifdef MT_ENTWARE_KN
-        /* Keep the kernel ID; the optional RCI alias only enriches KN responses. */
-        if (ifaces[i].name[0] != '\0') { cJSON_AddStringToObject(item, "name", ifaces[i].name); }
-#endif
-        cJSON_AddItemToArray(arr, item);
+    if (ctx->interface_service) {
+        interface_request_t *request = calloc(1, sizeof(*request));
+        if (request) {
+            request->ctx = ctx;
+            request->reply = mt_http_res_defer(req, res);
+            if (request->reply && mt_kn_ifstate_service_refresh(ctx->interface_service,
+                                                               interfaces_refreshed, request) == MT_OK) { return; }
+            if (request->reply) { mt_http_res_cancel_defer(res); }
+            free(request);
+        }
     }
-    free(ifaces);
-    mt_http_res_write_json(res, 200, out);
+#endif
+    cJSON *out = NULL;
+    mt_err_t err = interfaces_json(ctx, true, &out);
+    if (err == MT_OK) { mt_http_res_write_json(res, 200, out); }
+    else { mt_http_res_write_error(res, 500, mt_err_str(err)); }
 }
 
 static void handle_save_config(mt_http_req_t *req, mt_http_res_t *res, void *ud) {
@@ -75,10 +105,9 @@ static void handle_save_config(mt_http_req_t *req, mt_http_res_t *res, void *ud)
 }
 
 
-/* The portable transfer API works with the live in-memory model, not the
- * possibly stale config file. A revision token binds preview and apply.
- * The serialized candidate is staged and validated before the running app
- * is swapped; on persistence failure the previous live state is reloaded. */
+/* Portable transfer operates on live models, not the possibly stale file.
+ * A revision binds preview/apply; a validated candidate is applied directly.
+ * Old models survive until persistence succeeds, with no temporary reloads. */
 static const char *transfer_version(const mt_system_ctx_t *ctx) {
     const char *version = ctx->config_version;
     return version && strncmp(version, "0.", 2) == 0 ? version : "0.0.0";
@@ -93,63 +122,19 @@ static void config_revision(const char *data, size_t size, char out[17]) {
     snprintf(out, 17, "%016" PRIx64, hash);
 }
 
-static cJSON *yaml_value_to_json(yaml_document_t *doc, yaml_node_t *node) {
-    if (!node) return NULL;
-    if (node->type == YAML_SEQUENCE_NODE) {
-        cJSON *out = cJSON_CreateArray();
-        if (!out) return NULL;
-        for (yaml_node_item_t *item = node->data.sequence.items.start;
-             item < node->data.sequence.items.top; item++) {
-            cJSON *value = yaml_value_to_json(doc, yaml_document_get_node(doc, *item));
-            if (!value || !cJSON_AddItemToArray(out, value)) {
-                cJSON_Delete(value); cJSON_Delete(out); return NULL;
-            }
-        }
-        return out;
-    }
-    if (node->type == YAML_MAPPING_NODE) {
-        cJSON *out = cJSON_CreateObject();
-        if (!out) return NULL;
-        for (yaml_node_pair_t *entry = node->data.mapping.pairs.start;
-             entry < node->data.mapping.pairs.top; entry++) {
-            yaml_node_t *key = yaml_document_get_node(doc, entry->key);
-            if (!key || key->type != YAML_SCALAR_NODE) { cJSON_Delete(out); return NULL; }
-            const char *name = (const char *)key->data.scalar.value;
-            cJSON *value = yaml_value_to_json(doc, yaml_document_get_node(doc, entry->value));
-            if (!value || !cJSON_AddItemToObject(out, name, value)) {
-                cJSON_Delete(value); cJSON_Delete(out); return NULL;
-            }
-        }
-        return out;
-    }
-    if (node->type != YAML_SCALAR_NODE) return NULL;
-    const char *value = (const char *)node->data.scalar.value;
-    if (node->data.scalar.style == YAML_PLAIN_SCALAR_STYLE) {
-        if (strcmp(value, "true") == 0) return cJSON_CreateBool(true);
-        if (strcmp(value, "false") == 0) return cJSON_CreateBool(false);
-        /* Numeric IDs are emitted as quoted strings by mt_config_save_buffer.
-         * Only canonical unsigned decimal values fit for JSON numbers. */
-        if (*value >= '0' && *value <= '9') {
-            const char *p = value;
-            while (*p >= '0' && *p <= '9') p++;
-            if (!*p && (size_t)(p-value) < 16) return cJSON_CreateNumber(strtod(value,NULL));
-        }
-        if (strcmp(value, "null") == 0) return cJSON_CreateNull();
-    }
-    return cJSON_CreateString(value);
-}
-
-static cJSON *snapshot_json(const char *text, size_t length) {
-    yaml_parser_t parser;
-    yaml_document_t doc;
-    if (!yaml_parser_initialize(&parser)) return NULL;
-    yaml_parser_set_input_string(&parser, (const unsigned char *)text, length);
-    int ok = yaml_parser_load(&parser, &doc);
-    yaml_parser_delete(&parser);
-    if (!ok) return NULL;
-    cJSON *result = yaml_value_to_json(&doc, yaml_document_get_root_node(&doc));
-    yaml_document_delete(&doc);
-    return result;
+/* Revision is an opaque token over the canonical JSON snapshot. A preview
+ * made by a previous daemon version must be refreshed, never guessed current. */
+static mt_err_t snapshot_json(mt_system_ctx_t *ctx, cJSON **out, char revision[17]) {
+    *out = NULL;
+    mt_err_t err = mt_app_config_snapshot_json(ctx->app, transfer_version(ctx), out);
+    if (err != MT_OK) { return err; }
+    if (!cJSON_GetObjectItemCaseSensitive(*out, "profiles") &&
+        !cJSON_AddArrayToObject(*out, "profiles")) { cJSON_Delete(*out); *out = NULL; return MT_ERR_NOMEM; }
+    char *text = cJSON_PrintUnformatted(*out);
+    if (!text) { cJSON_Delete(*out); *out = NULL; return MT_ERR_NOMEM; }
+    config_revision(text, strlen(text), revision);
+    free(text);
+    return MT_OK;
 }
 
 /* Ignore neither unsupported keys nor newly introduced fields: applying a
@@ -214,39 +199,56 @@ static bool inherit_cached_subscriptions(cJSON *candidate, const cJSON *current)
     return true;
 }
 
-static int write_stage(const char *content, size_t length, char path[32]) {
-    strcpy(path, "/tmp/mt-c-import-XXXXXX");
-    int fd = mkstemp(path);
-    if (fd < 0) return -1;
-    size_t done = 0;
-    while (done < length) {
-        ssize_t n = write(fd, content + done, length - done);
-        if (n < 0 && errno == EINTR) continue;
-        if (n <= 0) { close(fd); unlink(path); return -1; }
-        done += (size_t)n;
+/* Config snapshots encode integers with 16+ decimal digits as JSON
+ * strings because cJSON (and ordinary JS numbers) cannot hold uint64_t
+ * losslessly. When importing, convert only the two uint64 settings back
+ * into exact JSON numeric literals before passing them to the existing
+ * libyaml model loader. All other quoted strings remain quoted; malformed
+ * or out-of-range integer strings fail instead of being silently rounded. */
+static bool restore_lossless_uint64(cJSON *document)
+{
+    cJSON *app = cJSON_GetObjectItemCaseSensitive(document, "app");
+    cJSON *dns = cJSON_GetObjectItemCaseSensitive(app, "dnsProxy");
+    if (!dns) { return true; }
+    if (!cJSON_IsObject(dns)) { return false; }
+    const char *const keys[] = {"maxIdleConns", "maxConcurrent"};
+    for (size_t i = 0; i < sizeof(keys) / sizeof(keys[0]); i++) {
+        cJSON *field = cJSON_GetObjectItemCaseSensitive(dns, keys[i]);
+        if (!field) { continue; }
+        if (cJSON_IsNumber(field)) {
+            /* Former snapshots used strings for 16+ decimal digits. A
+             * large JSON number can already be rounded by cJSON or JS,
+             * including just below 2^53; reject it rather than guess. */
+            if (field->valuedouble >= 1000000000000000.0) { return false; }
+            continue;
+        }
+        if (!cJSON_IsString(field) || !field->valuestring) { return false; }
+        const char *value = field->valuestring;
+        if (!*value || (value[0] == '0' && value[1])) { return false; }
+        uint64_t parsed = 0;
+        for (const unsigned char *q = (const unsigned char *)value; *q; q++) {
+            if (*q < '0' || *q > '9') { return false; }
+            unsigned digit = (unsigned)(*q - '0');
+            if (parsed > (UINT64_MAX - digit) / 10) { return false; }
+            parsed = parsed * 10 + digit;
+        }
+        cJSON *raw = cJSON_CreateRaw(value);
+        if (!raw) { return false; }
+        if (!cJSON_ReplaceItemInObjectCaseSensitive(dns, keys[i], raw)) {
+            cJSON_Delete(raw);
+            return false;
+        }
     }
-    int sync_status = fsync(fd);
-    int close_status = close(fd);
-    if (sync_status != 0 || close_status != 0) { unlink(path); return -1; }
-    return 0;
+    return true;
 }
 
 static void handle_config_snapshot(mt_http_req_t *req, mt_http_res_t *res, void *ud) {
     (void)req;
     mt_system_ctx_t *ctx = ud;
-    char *yaml = NULL;
-    size_t length = 0;
-    mt_err_t err = mt_app_config_snapshot(ctx->app,
-        transfer_version(ctx), &yaml, &length);
-    if (err != MT_OK) { mt_http_res_write_error(res, 500, mt_err_str(err)); return; }
+    cJSON *config = NULL;
     char revision[17];
-    config_revision(yaml, length, revision);
-    cJSON *config = snapshot_json(yaml, length);
-    free(yaml);
-    if (cJSON_IsObject(config) && !cJSON_GetObjectItemCaseSensitive(config, "profiles")) {
-        cJSON_AddItemToObject(config, "profiles", cJSON_CreateArray());
-    }
-    if (!config) { mt_http_res_write_error(res, 500, "failed to encode configuration"); return; }
+    mt_err_t err = snapshot_json(ctx, &config, revision);
+    if (err != MT_OK) { mt_http_res_write_error(res, 500, mt_err_str(err)); return; }
     cJSON *out = cJSON_CreateObject();
     if (!out) { cJSON_Delete(config); mt_http_res_write_error(res, 500, "out of memory"); return; }
     cJSON_AddStringToObject(out, "revision", revision);
@@ -267,7 +269,7 @@ static void handle_config_apply(mt_http_req_t *req, mt_http_res_t *res, void *ud
         mt_http_res_write_error(res, 400, "invalid import request");
         return;
     }
-    cJSON *request = cJSON_ParseWithLength((const char *)body, body_len);
+    cJSON *request = mt_json_parse_document((const char *)body, body_len);
     const cJSON *base = cJSON_GetObjectItemCaseSensitive(request, "revision");
     const cJSON *config = cJSON_GetObjectItemCaseSensitive(request, "config");
     if (!cJSON_IsObject(request) || !cJSON_IsString(base) ||
@@ -280,91 +282,63 @@ static void handle_config_apply(mt_http_req_t *req, mt_http_res_t *res, void *ud
         mt_http_res_write_error(res, 400, "complete configuration and revision required");
         return;
     }
-#ifndef MT_ENTWARE_KN
-    /* Generic app YAML has exactly six recognized top-level settings.
-     * Reject extra platform-only settings instead of silently dropping them. */
-    if (cJSON_GetArraySize(cJSON_GetObjectItemCaseSensitive(config, "app")) > 6) {
-        cJSON_Delete(request);
-        mt_http_res_write_error(res, 409, "Keenetic policy is unsupported on this platform");
-        return;
-    }
-#endif
-    char *old_yaml = NULL;
-    size_t old_len = 0;
-    mt_err_t err = mt_app_config_snapshot(ctx->app,
-        transfer_version(ctx), &old_yaml, &old_len);
+    cJSON *previous = NULL;
+    char revision[17];
+    mt_err_t err = snapshot_json(ctx, &previous, revision);
     if (err != MT_OK) {
         cJSON_Delete(request);
-        mt_http_res_write_error(res, 500, "failed to snapshot current state");
-        return;
+        mt_http_res_write_error(res, 500, "failed to snapshot current state"); return;
     }
-    char revision[17];
-    config_revision(old_yaml, old_len, revision);
-    cJSON *previous = snapshot_json(old_yaml, old_len);
     const cJSON *previous_app = cJSON_GetObjectItemCaseSensitive(previous, "app");
     if (!settings_fields_supported(previous_app,
             cJSON_GetObjectItemCaseSensitive(config, "app"))) {
         cJSON_Delete(previous);
-        cJSON_Delete(request); free(old_yaml);
+        cJSON_Delete(request);
         mt_http_res_write_error(res, 409, "unsupported application configuration fields");
         return;
     }
     if (strcmp(base->valuestring, revision) != 0) {
-        cJSON_Delete(previous); cJSON_Delete(request); free(old_yaml);
+        cJSON_Delete(previous); cJSON_Delete(request);
         mt_http_res_write_error(res, 409, "configuration changed; refresh import preview");
         return;
     }
     cJSON *document = cJSON_Duplicate(config, 1);
     if (!document) {
-        cJSON_Delete(previous); cJSON_Delete(request); free(old_yaml);
+        cJSON_Delete(previous); cJSON_Delete(request);
         mt_http_res_write_error(res, 500, "out of memory"); return;
     }
     if (!inherit_cached_subscriptions(document, previous)) {
-        cJSON_Delete(document); cJSON_Delete(previous); cJSON_Delete(request); free(old_yaml);
+        cJSON_Delete(document); cJSON_Delete(previous); cJSON_Delete(request);
         mt_http_res_write_error(res, 500, "failed to preserve subscription caches");
         return;
     }
     cJSON_Delete(previous);
     cJSON_DeleteItemFromObjectCaseSensitive(document, "configVersion");
-    cJSON_AddStringToObject(document, "configVersion",
-        transfer_version(ctx));
+    if (!cJSON_AddStringToObject(document, "configVersion", transfer_version(ctx))) {
+        cJSON_Delete(document); cJSON_Delete(request);
+        mt_http_res_write_error(res, 500, "out of memory"); return;
+    }
+    if (!restore_lossless_uint64(document)) {
+        cJSON_Delete(document); cJSON_Delete(request);
+        mt_http_res_write_error(res, 400, "invalid or inexact uint64 configuration field");
+        return;
+    }
     char *serialized = cJSON_PrintUnformatted(document);
     cJSON_Delete(document);
     cJSON_Delete(request);
     if (!serialized) {
-        free(old_yaml); mt_http_res_write_error(res, 500, "out of memory"); return;
+        mt_http_res_write_error(res, 500, "out of memory"); return;
     }
     mt_config_t candidate = {0};
     err = mt_config_init_defaults(&candidate);
     if (err == MT_OK) err = mt_config_load_buffer(&candidate, serialized, strlen(serialized));
-    mt_config_clear(&candidate);
+    free(serialized);
     if (err != MT_OK) {
-        free(serialized); free(old_yaml);
-        mt_http_res_write_error(res, 400, "invalid or unsupported configuration");
-        return;
+        mt_config_clear(&candidate);
+        mt_http_res_write_error(res, 400, "invalid or unsupported configuration"); return;
     }
-    char new_path[32] = {0}, rollback_path[32] = {0};
-    bool staged = write_stage(serialized, strlen(serialized), new_path) == 0;
-    bool backed_up = write_stage(old_yaml, old_len, rollback_path) == 0;
-    free(serialized); free(old_yaml);
-    if (!staged || !backed_up) {
-        if (staged) unlink(new_path);
-        if (backed_up) unlink(rollback_path);
-        mt_http_res_write_error(res, 500, "failed to stage import"); return;
-    }
-    err = mt_app_reload_config(ctx->app, new_path);
-    unlink(new_path);
-    if (err == MT_OK) {
-        err = mt_app_save_config(ctx->app, ctx->config_path,
-            transfer_version(ctx));
-        if (err != MT_OK) {
-            mt_err_t restored = mt_app_reload_config(ctx->app, rollback_path);
-            if (restored != MT_OK) {
-                MT_ERROR("config import rollback failed: %s", mt_err_str(restored));
-            }
-        }
-    }
-    unlink(rollback_path);
+    err = mt_app_apply_config(ctx->app, &candidate, ctx->config_path, transfer_version(ctx));
+    mt_config_clear(&candidate);
     if (err != MT_OK) {
         mt_http_res_write_error(res, 500, "import failed; previous configuration retained or rollback attempted");
         return;

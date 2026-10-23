@@ -1,52 +1,182 @@
-# DNS journal: automatic updates and device labels
+# DNS journal: automatic updates and system device labels
 
-The DNS toolbar has no Refresh action and no manual GET path. DNS records still arrive on the existing SSE connection. Pause freezes the view by closing that subscription; Resume reconnects and receives the current snapshot. Retry is shown only as error recovery and reconnects SSE, not polling.
+DNS records arrive on the existing SSE connection. Pause closes the subscription;
+Resume reconnects and receives a current snapshot. Retry reconnects SSE after a
+failure. The toolbar has no manual Refresh/GET path.
 
 ## Addresses and names
 
-`::ffff:192.168.1.42` is an IPv4-mapped IPv6 representation. JSON responses and the UI now present it as `192.168.1.42`. Actual IPv6 addresses are retained. The compact ring's binary address representation is unchanged.
+`::ffff:192.168.1.42` is presented as `192.168.1.42`; actual IPv6 addresses are
+retained. The ring's binary address representation is unchanged. Optional
+`client_name` values are presentation metadata. Filtering and grouping retain
+normalized IP identity, so distinct addresses named "Phone" are not merged.
 
-API rows may have an additional optional `client_name` string. The table, grouped view and device picker display that label first, with the address as secondary text. Filter values remain normalized addresses; two different devices named "Phone" are not merged. Missing, invalid or ambiguous labels fall back to the address, not a fabricated alias.
+Names describe the router's current inventory, not the device that necessarily
+owned an address when an older query was recorded. Missing, invalid or ambiguous
+names fall back to the IP. Conflicting known owners or interface scopes suppress
+a label even when aliases are equal or one owner has no name. MACs and interface
+information are used only during discovery and are not sent to the browser.
 
-Names describe the router's **current** inventory for an address, not a historical assertion that the same physical device owned that address at the time of every retained request. DHCP reassignment cannot be reconstructed from an IP-only journal.
+The bounded `clients_begin/chunk/end` stream updates labels for already displayed
+queries without replaying DNS history. Changes during a metadata transfer restart
+staging, so viewers never combine portions of different snapshots. Only a changed
+inventory notifies viewers.
 
-## Providers
+## Keenetic `_kn`
 
-- **Keenetic `_kn`:** read-only `GET http://127.0.0.1:79/rci/show/ip/hotspot`. Prefer the Client Lists `name`, then `hostname`. Explicitly inactive hosts are ignored; no MAC-to-name guessing, PTR queries, credentials in URLs, shell commands or router writes are involved. Both array inventory and single-host forms are accepted. Only addresses explicitly present in the host inventory are associated with a name.
-- **OpenWrt:** read the standard dnsmasq `/tmp/dhcp.leases` file, using non-expired named leases (expiry `0` is permanent). This provides DHCP hostnames, not a promise to reconstruct every LuCI alias. Custom lease paths and odhcpd IPv6 leases are not read in this implementation; unavailable names fall back to IP.
-- **Other builds:** no provider is instantiated and no router discovery request is made. The Keenetic provider source is compiled only in `_kn` builds.
+The shared metadata worker reads two local RCI resources with the existing
+libcurl/cJSON:
 
-## Resource and lifecycle constraints
+- `GET http://127.0.0.1:79/rci/show/ip/hotspot`: prefer the Client Lists `name`,
+  then the DHCP `hostname`; ignore explicitly inactive hosts.
+- `GET http://127.0.0.1:79/rci/show/ip/neighbour`: use the firmware's IPv4/IPv6
+  neighbour records and interface IDs. Ignore expired neighbours and IPv6
+  addresses without an active status.
 
-One shared worker fetches metadata off the DNS/event-loop thread, initially when a viewer subscribes and then every 30 seconds while a viewer is connected. There is no per-query lookup request and no frontend polling. RCI connection/total timeouts are 500/2000 ms; redirects and environment proxies are disabled. Inventory input is capped at 1 MiB, at most 2048 entries and 127 UTF-8 bytes per name. The cache grows with actual named devices; names are not copied into the ring's stored records.
+Explicit hotspot IP/name pairs work independently of neighbour discovery.
+Additional addresses join by the exact observed client MAC and compatible
+interface ID. The `via` MAC identifies a different relationship and is not used
+for naming. This supports a device whose hotspot entry only has IPv4 while its
+DNS request arrives from a link-local, ULA or other IPv6 address. It also supports
+IPv6-only clients when hotspot supplies a valid MAC and name.
 
-Only a changed inventory wakes viewers. The existing bounded snapshot protocol then refreshes labels for **already displayed** queries on the same connection. A label change during snapshot transmission restarts staging, avoiding mixed snapshots or duplicated queries. Unchanged inventories do not retransmit history. Failed discovery clears cached labels instead of indefinitely attaching a stale name to a reassigned address. Removing the final viewer releases the inventory; HTTP streams are torn down before the service.
+An unrecognised optional hotspot interface value keeps the explicit IP/name
+pair but is not used to name additional addresses through a MAC join. An absent
+interface field remains supported; known neighbour scopes still participate in
+conflict detection.
 
-The 30-second period is for discovering changes in the router's device inventory, **not** for DNS query delivery. DNS events remain event-driven. No feature here changes routes, policies, config export or persistence.
+RCI neighbour responses normally contain an object indexed by neighbour ID;
+array and single-record forms with the same fields are accepted. IPv6 addresses
+come from `addresses.address`. The `expired` flag accepts booleans and exact
+`"yes"`/`"no"` strings; other present values are rejected. Input validation is
+conservative: an unsupported, malformed or oversized neighbour response drops the entire optional join and
+retains only fresh explicit hotspot labels. Hotspot failure clears all labels.
+No previous response or partial neighbour join survives an error.
+Encoded NUL characters are rejected before cJSON can truncate a decoded name,
+address, MAC or field name; literal text such as `\\u0000` remains valid.
+
+The installed `/opt/etc/ndm/neighbour.d/100-magitrickle` hook uses Keenetic's
+documented `hook` invocation. It reuses the existing socat delivery helper to
+send a constant POST to `/api/v1/system/hooks/ndm-neighbour` over
+`/opt/var/run/magitrickle.sock`. This route is registered only on the Unix server
+in `_kn` builds. It acknowledges immediately and invalidates the whole snapshot;
+it neither performs RCI in the hook handler nor stores event fields as a second
+inventory. Unlike interface hooks, neighbour hooks do not require `system_name`.
+
+The custom netlink neighbour dump/watch, hotspot cache, unknown-MAC cache,
+cooldown and deferred cache retry have been removed. `libndm` is not required.
+No client probing, EUI-64 inference, separate PTR request or router write is used.
+
+## OpenWrt
+
+Use the already packaged `luci-rpc.getHostHints` through native libubus/libubox.
+This API delegates inventory aggregation to the platform: neighbours, configured
+dnsmasq/odhcpd leases, static host definitions, `/etc/ethers` and local interface
+data. It provides both IPv4 and IPv6 host hints, including addresses learned
+outside DHCP. mt-c does not read lease files, implement the ubus protocol or
+spawn a ubus command.
+
+Each MAC-keyed record can contain `name`, `ipaddrs` and `ip6addrs`. Unnamed
+records still participate in ambiguity checks. `getHostHints` includes static
+or inactive hints and does not expose reachability, expiry, provenance or
+interface scope. Labels therefore carry the system's display-hint semantics;
+they are not a verified list of online devices. The system may obtain a name
+from its optional reverse-DNS provider. mt-c does not add a reverse-DNS request
+or require `rpcd-mod-rrdns` or the full LuCI interface.
+
+One worker owns all libubus calls and runs native `uloop`. The control pipe is a
+`uloop_fd`; inventory is an asynchronous ubus request with a two-second response
+deadline. Native `ubus_auto_conn` and automatic object subscriptions handle
+broker and object recovery. No extra polling loop, exponential reconnect
+implementation or lease-expiry scheduler is maintained in mt-c.
+During shutdown, stop socket I/O and let libubus dispatch and release deferred
+messages before shutting down the context. Such messages can be queued while
+the library performs a synchronous lookup; cancelling their timer alone does
+not release them.
+
+Subscribe to dnsmasq instances, `dhcp`, `service` and the inventory provider's
+lifecycle. DHCP notifications invalidate the snapshot. Configuration changes
+arrive as **notifications on the `service` object**, with method `config.change`
+and payload `{"config":"dhcp"}`,
+not as a global `config.change` event. Unrelated notifications are ignored.
+
+Provider or broker failure clears names; recreation reconnects and rediscovers
+them. The native library's synchronous connection, registration and lookup calls
+are not covered by the inventory response timer. A stalled broker can delay
+that worker, including its shutdown; this implementation does not claim a total
+shutdown bound for a hung system ubus service. DNS forwarding remains independent
+of the metadata worker.
+
+## Shared lifecycle and resource limits
+
+Discovery starts with the first journal viewer. Source notifications are
+debounced for one second; a notification received during a fetch remains pending
+for a later snapshot. Both platforms reconcile every **30 seconds** while a
+viewer is connected. This bounds normal discovery staleness after missed hooks,
+alias changes, SLAAC changes or missing DHCP notifications; failed/slow sources
+can take longer. No source provides a complete notification contract for all of
+these changes. There is no per-query lookup or frontend polling.
+
+RCI connect/total timeouts are 500/2000 ms per request, with cancellation;
+redirects and environment proxies are disabled. Responses are capped at 1 MiB
+each, observations at 2048 and names at 127 printable UTF-8 bytes. Snapshot
+failure clears optional labels rather than retaining names indefinitely.
+If the periodic reconciliation timer cannot be created, optional discovery
+does not start; the journal continues to deliver DNS records with IP addresses.
+
+Removing the final viewer stops timers, closes OpenWrt discovery and releases
+the map. A bounded RCI request already in progress may finish, but its result
+cannot enter a later viewer generation. HTTP streams are closed before service
+destruction. Generic Entware builds instantiate no provider and gain no OpenWrt
+dependency. This refactor adds no runtime dependencies to PR #25.
 
 ## Verification
 
-Repository tests added:
+- `test_dns_clients.c`: canonical addresses, UTF-8, alias/hostname precedence,
+  fresh RCI joins, IPv6-only clients, expiry, interface and owner conflicts,
+  encoded NUL rejection, malformed and oversized atomic fallback.
+- `test_dns_client_owners.c`: equal aliases on different MACs, unnamed conflicting
+  owners, scope conflicts, canonical MACs, bounded observations and compaction.
+- `test_dns_client_service.c` and `test_dns_client_events.c`: off-loop discovery,
+  refresh coalescing, rename/failure/recovery, bursts, notifications during an
+  inflight request and closed/reopened viewer generations.
+- `test_dns_stream_bounds.c`: failure to allocate the metadata timer preserves
+  snapshot/live DNS streaming and does not consume subscription slots.
+- `test_dns_keenetic.c`: native libcurl against an isolated local HTTP fixture.
+- `test_dns_keenetic_hook.c`: real Unix/TCP HTTP servers, Unix-only registration,
+  immediate hook acknowledgement and coalesced invalidation.
+- `test_dns_openwrt.c`: native blobmsg parsing and an isolated real ubusd/provider,
+  including host hints, service notifications, provider/broker recreation,
+  request timeout/cancellation, viewer lifecycle and deferred-message cleanup
+  with a stopped broker.
+- `fuzz_dns_clients.c`: mutate both RCI documents under libFuzzer/ASan/UBSan;
+  successful output must remain bounded, valid, sorted and unique by IP.
+- `tools/tests/package_identity.py`: the installed neighbour hook and SDK package
+  inventory, together with existing package checks.
 
-- `tests/unit/test_dns_clients.c`: mapped IPv4/true IPv6, UTF-8 labels, alias preference, hostname fallback, inactive/ambiguous hosts, malformed/oversized responses, lease expiry and unnamed leases.
-- `tests/unit/test_dns_client_service.c`: discovery runs off-loop, concurrent refreshes coalesce, rename/failure/recovery notifications, cache release and generic build isolation.
-- Frontend `tests/unit/dns-client-labels.test.ts`: address normalization, optional names, address-keyed filtering, atomic name replacement/removal and event size bounds.
-- Frontend `tests/e2e/dns-client-names.spec.ts`: real open mock SSE responses, no Refresh/manual GET, identical aliases on different addresses, renaming/fallback while filtered, desktop/mobile viewports.
+Run backend builds/tests with separate `BUILD` directories for generic,
+`ENTWARE_KN=1` and `PLATFORM=openwrt`, using `CFLAGS_EXTRA=-Werror`. For OpenWrt
+host tests, `tools/ci/openwrt-host-libs.sh` builds the official pinned native
+libraries and broker; set `MT_TEST_UBUSD` and `LD_LIBRARY_PATH` to that prefix.
+The broker fixture needs root or fakeroot for isolated ACL ownership checks.
+Sanitizer builds cover the same parser and lifecycle code. Target SDK builds
+use their own libraries; host results do not establish physical-router firmware
+behaviour. Frontend and DNS forwarding code are unchanged by this refactor.
 
-These tests must also be run in the full target checkout. Local isolated verification used the actual changed modules, the installed cJSON/curl libraries, a test-only loop adapter and a Node runner for the pure TypeScript tests; it is not a full firmware/Svelte build or a test on physical Keenetic/OpenWrt hardware.
+The RCI fixtures combine published hotspot JSON, a working neighbour consumer
+and the official CLI's address/status examples. They are not complete captures
+from a router. CLI output alone does not establish every JSON field type;
+verification on a specific Keenetic firmware still requires its actual hotspot
+and neighbour responses. An unsupported neighbour shape falls back to explicit
+hotspot labels, so a passing fixture suite alone cannot establish IPv6 naming
+on that firmware.
 
-## References
+## Sources
 
-Keenetic distinguishes the user-defined `name` from the DHCP `hostname`:
-https://support.keenetic.ru/eaeu/ultra/kn-1811/ru/45307-accessing-a-network-device-by-its-hostname.html
-
-IPv4-mapped IPv6 format: RFC 4291, section 2.5.5.2:
-https://www.rfc-editor.org/rfc/rfc4291.html#section-2.5.5.2
-
-## Independent metadata stream
-
-Client inventories now travel as bounded `clients_begin/chunk/end` events. A
-rename or inventory failure atomically updates the client-name map without
-serializing the DNS history again. DNS rows carry canonical IP identity, not a
-copy of the name in every event. Labels describe the current inventory and
-never prove which device owned that IP at the recorded time.
+- [Keenetic OPKG hook contract](https://support.keenetic.com/peak/kn-2710/en/42407-opkg-component-description.html)
+- [Keenetic CLI reference: `show ip neighbour` and RCI](https://storage.googleapis.com/docs.help.keenetic.com/cli/4.1/en/cli_manual_kn-2210.pdf)
+- [Published KeeneticOS 4.2.6.3 hotspot response](https://forum.keenetic.ru/topic/20770-4263-%D1%81%D0%BF%D0%B8%D1%81%D0%BE%D0%BA-%D0%BA%D0%BB%D0%B8%D0%B5%D0%BD%D1%82%D0%BE%D0%B2/)
+- [Working consumer of the RCI neighbour address fields](https://blog.rvb.name/posts/pbr-keenetic)
+- [OpenWrt 24.10 host-hint implementation](https://github.com/openwrt/luci/blob/0e6537981036ea221a73e497920192179e9f74c3/libs/rpcd-mod-luci/src/luci.c)
+- [procd service notifications](https://github.com/openwrt/procd/blob/42d3937654508b04da64969f9d764ac2ec411904/service/service.c)
+- [Native ubus subscriber API](https://github.com/openwrt/ubus/blob/afa57cce0aff82f4a7a0e509d4387ebc23dd3be7/libubus-sub.c)

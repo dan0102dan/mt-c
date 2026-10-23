@@ -28,6 +28,7 @@ COMMAND_TIMEOUT = 180
 API_HOST_PORT = 18881
 GUEST_PACKAGE = "/tmp/mt-c-ci.apk"
 ROUTING_SCRIPT = Path(__file__).with_name("router-emulator-routing.sh")
+DHCP_SCRIPT = Path(__file__).with_name("router-emulator-dhcp.sh")
 
 
 class SmokeFailure(RuntimeError):
@@ -43,6 +44,8 @@ def serve_package(package):
                 payload = package
             elif self.path == "/routing.sh":
                 payload = ROUTING_SCRIPT
+            elif self.path == "/dhcp.sh":
+                payload = DHCP_SCRIPT
             else:
                 self.send_error(404)
                 return
@@ -255,6 +258,18 @@ def run_test(emulator, package, preset, log_dir):
             # The forwarding test requires isolated client/server network
             # namespaces, and fails rather than degrading to a rule-only test.
             serial.run("apk add ip-full kmod-veth ipset uhttpd curl", timeout=240)
+            # Exercise discovery against a real dnsmasq lease and the exact
+            # SSE/JSON interfaces used by the journal, before changing fw4.
+            serial.run(f"wget -T 30 -O /tmp/mtci-dhcp.sh http://10.0.2.2:{http_port}/dhcp.sh", timeout=60)
+            serial.run("rm -f /tmp/mtci-dhcp-status /tmp/mtci-dhcp.log")
+            serial.run("(sh /tmp/mtci-dhcp.sh > /tmp/mtci-dhcp.log 2>&1; echo $? > /tmp/mtci-dhcp-status) </dev/null >/dev/null 2>&1 &")
+            serial.run(
+                "for i in $(seq 1 240); do test -f /tmp/mtci-dhcp-status && break; sleep 1; done; test -f /tmp/mtci-dhcp-status",
+                timeout=255,
+            )
+            serial.run("cat /tmp/mtci-dhcp.log", show_output=True)
+            serial.run("test \"$(cat /tmp/mtci-dhcp-status)\" = 0")
+            print("PASS: real DHCP device discovery, rename and journal reconnect", flush=True)
             serial.run(f"wget -T 30 -O /tmp/mtci-routing.sh http://10.0.2.2:{http_port}/routing.sh", timeout=60)
             serial.run("chmod 700 /tmp/mtci-routing.sh")
             serial.run("rm -f /tmp/mtci-status /tmp/mtci-routing.log")
@@ -279,6 +294,7 @@ def run_test(emulator, package, preset, log_dir):
                     "cat /etc/magitrickle/state/config.yaml | head -n 45",
                     "pidof magitrickled || true",
                     "cat /tmp/mtci-routing.log 2>/dev/null || true",
+                    "cat /tmp/mtci-dhcp.log 2>/dev/null || true",
                 ):
                     try:
                         serial.run(diagnostic, timeout=15, check=False, show_output=True)

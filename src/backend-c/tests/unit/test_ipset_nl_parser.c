@@ -114,10 +114,34 @@ TEST parses_every_ipv4_entry_in_a_kernel_dump(void) {
     PASS();
 }
 
+TEST ignores_invalid_or_wrong_family_rows_without_fabricating_addresses(void) {
+    for (unsigned which = 0; which < 4; which++) {
+        uint8_t buf[512] = {0};
+        struct nlmsghdr *h = mnl_nlmsg_put_header(buf);
+        (void)mnl_nlmsg_put_extra_header(h, sizeof(struct nfgenmsg));
+        struct nlattr *adt = mnl_attr_nest_start(h, IPSET_ATTR_ADT);
+        struct nlattr *row = mnl_attr_nest_start(h, IPSET_ATTR_DATA);
+        if (which != 0) {
+            struct nlattr *ip = mnl_attr_nest_start(h, IPSET_ATTR_IP);
+            uint8_t bytes[16] = {192, 0, 2, 1};
+            mnl_attr_put(h, which == 1 ? IPSET_ATTR_IPADDR_IPV6 : IPSET_ATTR_IPADDR_IPV4,
+                         which == 1 ? 16u : which == 2 ? 3u : 4u, bytes);
+            mnl_attr_nest_end(h, ip);
+        }
+        mnl_attr_put_u8(h, IPSET_ATTR_CIDR, which == 3 ? 33 : 32);
+        mnl_attr_nest_end(h, row); mnl_attr_nest_end(h, adt);
+        mt_ipset_entry4_t *a = NULL; mt_ipset_entry6_t *b = NULL; size_t n = 99;
+        ASSERT_EQ(MT_OK, mt_ipset_nl_parse_list_message(h, 4, &a, &b, &n));
+        ASSERT_EQ(0u, n); ASSERT(!a); ASSERT(!b);
+    }
+    PASS();
+}
+
 GREATEST_MAIN_DEFS();
 
 int main(int argc, char **argv) {
     GREATEST_MAIN_BEGIN();
+    RUN_TEST(ignores_invalid_or_wrong_family_rows_without_fabricating_addresses);
     RUN_TEST(parses_nested_ipv4_entry);
     RUN_TEST(parses_nested_ipv6_entry);
     RUN_TEST(parses_every_ipv4_entry_in_a_kernel_dump);

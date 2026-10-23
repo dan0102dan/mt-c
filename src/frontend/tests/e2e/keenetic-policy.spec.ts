@@ -124,7 +124,7 @@ test.describe("Keenetic policy settings", { tag: "@entware_kn" }, () => {
       await panel(page)
         .getByRole("switch", { name: "Use policy based filter", exact: true })
         .click();
-      const picker = panel(page).getByRole("button", { name: "Router policy", exact: true });
+      const picker = panel(page).locator('[data-select-trigger][aria-label="Router policy"]');
       await expect(picker).toHaveText("mt");
       await expect(save(page)).toBeEnabled();
       await expect(save(page)).toHaveAccessibleName("Save Changes");
@@ -189,7 +189,7 @@ test.describe("Keenetic policy settings", { tag: "@entware_kn" }, () => {
     await toggle.click();
     await expect(panel(page).getByRole("switch")).toHaveCount(2);
     await expect(save(page)).toBeEnabled();
-    await panel(page).getByRole("button", { name: "Router policy", exact: true }).click();
+    await panel(page).locator('[data-select-trigger][aria-label="Router policy"]').click();
     await page.getByRole("option", { name: "VPN", exact: true }).nth(0).click();
     expect(state.writes).toBe(0);
     await save(page).click();
@@ -237,7 +237,7 @@ test.describe("Keenetic policy settings", { tag: "@entware_kn" }, () => {
           panel(page).getByRole("switch", { name: "Use policy based filter", exact: true }),
         ).toBeChecked();
         await expect(
-          panel(page).getByRole("button", { name: "Router policy", exact: true }),
+          panel(page).locator('[data-select-trigger][aria-label="Router policy"]'),
         ).toContainText(policyId);
         await panel(page).getByRole("switch", { name: "Processing mode", exact: true }).click();
         await save(page).click();
@@ -255,7 +255,7 @@ test.describe("Keenetic policy settings", { tag: "@entware_kn" }, () => {
     await openSettings(page);
     await page.getByRole("tab", { name: "Keenetic", exact: true }).click();
     await expect(
-      panel(page).getByRole("button", { name: "Router policy", exact: true }),
+      panel(page).locator('[data-select-trigger][aria-label="Router policy"]'),
     ).toContainText("Policy0");
     await expect(save(page)).toBeDisabled();
     expect(state.settings.policy_id).toBe("Policy0");
@@ -300,7 +300,7 @@ test.describe("Keenetic policy settings", { tag: "@entware_kn" }, () => {
     await openSettings(page);
     await page.getByRole("tab", { name: "Keenetic", exact: true }).click();
     await panel(page).getByRole("switch", { name: "Processing mode", exact: true }).click();
-    await panel(page).getByRole("button", { name: "Router policy", exact: true }).click();
+    await panel(page).locator('[data-select-trigger][aria-label="Router policy"]').click();
     await page.getByRole("option", { name: "VPN", exact: true }).nth(1).click();
     await expect.poll(() => state.settingsReads, { timeout: 7000 }).toBeGreaterThan(1);
     await expect(
@@ -310,7 +310,7 @@ test.describe("Keenetic policy settings", { tag: "@entware_kn" }, () => {
       }),
     ).toBeChecked();
     await expect(
-      panel(page).getByRole("button", { name: "Router policy", exact: true }),
+      panel(page).locator('[data-select-trigger][aria-label="Router policy"]'),
     ).toContainText("VPN");
     await save(page).click();
     await expect.poll(() => state.settings.policy_id).toBe("Policy1");

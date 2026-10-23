@@ -792,7 +792,7 @@ for (const width of [390, 1280]) {
         await expect(name).toHaveValue(value);
         await expect(profilesTab).toBeFocused();
         await draft
-          .getByRole("button", { name: ru ? "Добавить интерфейс" : "Add interface", exact: true })
+          .locator(`[data-select-trigger][aria-label="${ru ? "Добавить интерфейс" : "Add interface"}"]`)
           .click();
         await page.getByRole("option", { name: "tun1", exact: true }).click();
         await expect(save).toBeEnabled();

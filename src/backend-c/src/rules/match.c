@@ -48,6 +48,43 @@ static rule_kind_t kind_of(const char *type)
     return RK_NEVER;
 }
 
+/* DNS names are ASCII (IDNs use A-labels). Do not use locale-dependent
+ * tolower(), allocate in the query path, or route literal keywords via PCRE2. */
+static unsigned char fold_ascii(unsigned char c)
+{
+    return c >= 'A' && c <= 'Z' ? (unsigned char)(c + ('a' - 'A')) : c;
+}
+
+/* Imported wildcard dialect: literal dots, ASCII case folding and '*'/'?'
+ * operators; backslash escapes literal metacharacters in source keywords.
+ * The internal @mtc: marker selects this path. Legacy go-wildcard remains
+ * unchanged and no new configured rule type is introduced. */
+static bool domain_wildcard_match(const char *pattern, const char *domain)
+{
+    const char *star = NULL, *retry = NULL;
+    while (*domain) {
+        if (*pattern == '*') {
+            star = pattern++;
+            retry = domain;
+        } else if (*pattern == '?' ||
+                   (unsigned char)*pattern == fold_ascii((unsigned char)*domain)) {
+            pattern++;
+            domain++;
+        } else if (*pattern == '\\' && pattern[1] != '\0' &&
+                   (unsigned char)pattern[1] == fold_ascii((unsigned char)*domain)) {
+            pattern += 2;
+            domain++;
+        } else if (star) {
+            pattern = star + 1;
+            domain = ++retry;
+        } else {
+            return false;
+        }
+    }
+    while (*pattern == '*') { pattern++; }
+    return *pattern == '\0';
+}
+
 mt_rule_matcher_t *mt_rule_matcher_new(const char *type, const char *rule)
 {
     mt_rule_matcher_t *m = calloc(1, sizeof(*m));
@@ -62,6 +99,12 @@ mt_rule_matcher_t *mt_rule_matcher_new(const char *type, const char *rule)
     }
     m->rule_len = strlen(m->rule);
     m->compile_ok = true;
+    if (m->kind == RK_WILDCARD && strncmp(m->rule, "@mtc:", 5) == 0) {
+        m->compile_ok = m->rule_len > 5;
+        for (size_t i = 5; i < m->rule_len; i++) {
+            m->rule[i] = (char)fold_ascii((unsigned char)m->rule[i]);
+        }
+    }
 
     if (m->kind == RK_REGEX) {
         int errcode = 0;
@@ -137,6 +180,9 @@ bool mt_rule_matcher_match(mt_rule_matcher_t *m, const char *domain)
     case RK_NAMESPACE:
         return namespace_match(m->rule, m->rule_len, domain, domain_len);
     case RK_WILDCARD:
+        if (strncmp(m->rule, "@mtc:", 5) == 0) {
+            return m->compile_ok && domain_wildcard_match(m->rule + 5, domain);
+        }
         return mt_wildcard_match(m->rule, domain);
     case RK_REGEX: {
         if (m->re == NULL) {
@@ -396,7 +442,7 @@ static bool ns_trie_match(const ns_trie_t *t, const char *domain)
 struct mt_matcher {
     exact_set_t exact;
     ns_trie_t ns;
-    mt_rule_matcher_t **scan; /* wildcard + regex */
+    mt_rule_matcher_t **scan; /* native keyword/glob, legacy wildcard, regex */
     size_t n_scan;
 };
 

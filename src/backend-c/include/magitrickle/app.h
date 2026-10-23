@@ -309,7 +309,13 @@ mt_err_t mt_app_reload_config(mt_app_t *app, const char *path);
 
 mt_err_t mt_app_save_config(mt_app_t *app, const char *path, const char *version);
 /* Read the live in-memory configuration without persisting it. */
-mt_err_t mt_app_config_snapshot(mt_app_t *app, const char *version, char **out, size_t *out_len);
+mt_err_t mt_app_config_snapshot_json(mt_app_t *app, const char *version, cJSON **out);
+/* Apply a complete prepared model. Consumes/zeros candidate on every valid
+ * call (success or failure). Optional path/version persist before retiring old
+ * models and registries; failure restores them without serialization/reparse.
+ * File reload supplies its overlay semantics before calling this same operation. */
+mt_err_t mt_app_apply_config(mt_app_t *app, mt_config_t *candidate,
+                              const char *path, const char *version);
 
 /* Called from the netfilterd webhook to bring the netfilter tables back
  * in line with the live groups.

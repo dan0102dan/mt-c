@@ -63,6 +63,9 @@ TEST malformed_or_ambiguous_inventory_never_becomes_an_empty_success(void)
         "{\"P\":{\"mark\":\"zzzz\"}}", "{\"P\":{\"mark\":\"ffffffff\"}}",
         "{\"P\":{\"mark\":\" 0\"}}", "{\"P\":{\"mark\":1.5}}",
         "{\"P\":{\"mark\":-1}}", "{\"P\":{\"mark\":true}}",
+        "{\"P\\u0000suffix\":{}}", "{\"P\":{\"mark\":\"01\\u0000garbage\"}}",
+        "{\"P\":{\"description\":\"Home\\u0000other\"}}",
+        "{\"P\":{\"mark\\u0000suffix\":1}}",
     };
     for (size_t i = 0; i < sizeof(bad)/sizeof(*bad); i++) {
         mt_kn_policy_entry_t *entries = NULL; size_t count = 42;

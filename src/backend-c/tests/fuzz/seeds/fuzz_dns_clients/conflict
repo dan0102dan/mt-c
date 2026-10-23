@@ -1,0 +1,2 @@
+{"host":[{"mac":"02:00:00:00:00:01","name":"Client"},{"mac":"02:00:00:00:00:02","name":"Client"}]}
+[{"mac":"02:00:00:00:00:01","address-family":"ipv6","addresses":{"address":{"address":"fe80::1","status":"active"}}},{"mac":"02:00:00:00:00:02","address-family":"ipv6","addresses":{"address":{"address":"fe80::1","status":"active"}}}]

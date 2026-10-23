@@ -1,0 +1,2 @@
+{"host":[{"ip":"192.0.2.1","mac":"02:00:00:00:00:01","name":"Client","active":true,"interface":{"id":"Bridge0"}}]}
+{"first":{"mac":"02:00:00:00:00:01","address-family":"ipv4","address":"192.0.2.1","interface":"Bridge0","expired":false},"second":{"mac":"02:00:00:00:00:01","address-family":"ipv6","interface":"Bridge0","expired":false,"addresses":{"address":[{"address":"fe80::1","status":"active"},{"address":"fd00::1","status":"expired"}]}}}

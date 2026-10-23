@@ -6,7 +6,6 @@
 #include "magitrickle/ipset.h"
 #include "magitrickle/ipset_nl_parser.h"
 #include "magitrickle/log.h"
-#include "magitrickle/nlattr_iter.h"
 
 #include <arpa/inet.h>
 #include <errno.h>
@@ -229,100 +228,80 @@ static bool list_ctx_grow(list_ctx_t *ctx) {
     return true;
 }
 
-static int parse_ip_attr_cb(const struct nlattr *attr, void *data) {
-    uint8_t *out_addr = data;
-    uint16_t type = mnl_attr_get_type(attr);
-    if (type == IPSET_ATTR_IPADDR_IPV4 && mnl_attr_get_payload_len(attr) == 4) {
-        memcpy(out_addr, mnl_attr_get_payload(attr), 4);
-    } else if (type == IPSET_ATTR_IPADDR_IPV6 && mnl_attr_get_payload_len(attr) == 16) {
-        memcpy(out_addr, mnl_attr_get_payload(attr), 16);
+typedef struct entry_fields {
+    uint8_t address[16], iplen, cidr;
+    uint32_t timeout;
+    bool has_address, has_timeout;
+} entry_fields_t;
+
+static int parse_ip_attr_cb(const struct nlattr *attr, void *ud) {
+    entry_fields_t *e = ud;
+    uint16_t expected = e->iplen == 4 ? IPSET_ATTR_IPADDR_IPV4 : IPSET_ATTR_IPADDR_IPV6;
+    if (mnl_attr_get_type(attr) != expected) { return MNL_CB_OK; }
+    if (mnl_attr_validate2(attr, MNL_TYPE_BINARY, e->iplen) != 0 ||
+        mnl_attr_get_payload_len(attr) != e->iplen) { return MNL_CB_ERROR; }
+    memcpy(e->address, mnl_attr_get_payload(attr), e->iplen);
+    e->has_address = true;
+    return MNL_CB_OK;
+}
+
+static int entry_field_cb(const struct nlattr *attr, void *ud) {
+    entry_fields_t *e = ud;
+    switch (mnl_attr_get_type(attr)) {
+    case IPSET_ATTR_IP:
+        /* get_type strips flags; the wire NESTED bit belongs to nla_type. */
+        if (!(attr->nla_type & NLA_F_NESTED) ||
+            mnl_attr_validate(attr, MNL_TYPE_NESTED) != 0) { return MNL_CB_ERROR; }
+        return mnl_attr_parse_nested(attr, parse_ip_attr_cb, e);
+    case IPSET_ATTR_CIDR:
+        if (mnl_attr_validate(attr, MNL_TYPE_U8) != 0) { return MNL_CB_ERROR; }
+        e->cidr = mnl_attr_get_u8(attr);
+        if (e->cidr > (e->iplen == 4 ? 32u : 128u)) { return MNL_CB_ERROR; }
+        break;
+    case IPSET_ATTR_TIMEOUT:
+        if (mnl_attr_validate(attr, MNL_TYPE_U32) != 0) { return MNL_CB_ERROR; }
+        e->timeout = ntohl(mnl_attr_get_u32(attr));
+        e->has_timeout = e->timeout != 0; /* zero is permanent */
+        break;
+    default:
+        break;
     }
     return MNL_CB_OK;
 }
 
-/* Parses one IPSET_ATTR_DATA entry (nested) into a single output row. */
-static void parse_one_entry(const struct nlattr *entry_attr, list_ctx_t *ctx) {
-    uint8_t addr[16] = {0};
-    bool has_timeout = false;
-    uint32_t timeout = 0;
-    uint8_t cidr = (uint8_t)(ctx->iplen == 4 ? 32 : 128);
-
-    mt_nlattr_iter_t child_it;
-    const struct nlattr *child;
-    if (!mt_nlattr_iter_init_nested(&child_it, entry_attr)) { return; }
-    while (mt_nlattr_iter_next(&child_it, &child)) {
-        uint16_t ctype = mnl_attr_get_type(child);
-        /* mnl_attr_get_type() intentionally strips NLA_F_NESTED and
-         * NLA_F_NET_BYTEORDER. Inspect the raw UAPI field when a flag is
-         * required; checking the normalized type made every IP child look
-         * non-nested and silently produced an all-zero address. */
-        bool nested = (child->nla_type & NLA_F_NESTED) != 0;
-        switch (ctype) {
-        case IPSET_ATTR_IP:
-            if (nested) { mnl_attr_parse_nested(child, parse_ip_attr_cb, addr); }
-            break;
-        case IPSET_ATTR_CIDR:
-            if (mnl_attr_get_payload_len(child) == 1) {
-                cidr = *(const uint8_t *)mnl_attr_get_payload(child);
-            }
-            break;
-        case IPSET_ATTR_TIMEOUT:
-            if (mnl_attr_get_payload_len(child) == 4) {
-                has_timeout = true;
-                timeout = ntohl(*(const uint32_t *)mnl_attr_get_payload(child));
-            }
-            break;
-        default:
-            break;
-        }
+static int list_entry_cb(const struct nlattr *attr, void *ud) {
+    list_ctx_t *ctx = ud;
+    if (mnl_attr_get_type(attr) != IPSET_ATTR_DATA ||
+        !(attr->nla_type & NLA_F_NESTED)) { return MNL_CB_OK; }
+    entry_fields_t e = {.iplen = ctx->iplen, .cidr = ctx->iplen == 4 ? 32 : 128};
+    if (mnl_attr_validate(attr, MNL_TYPE_NESTED) != 0 ||
+        mnl_attr_parse_nested(attr, entry_field_cb, &e) < 0 || !e.has_address) {
+        return MNL_CB_OK; /* Never synthesize an all-zero address from invalid data. */
     }
-
-    if (!list_ctx_grow(ctx)) {
-        ctx->oom = true;
-        return;
-    }
-    /* Go: `if entry.Timeout != nil && *entry.Timeout == 0 { addresses[subnet] = nil }` --
-     * a reported timeout of exactly 0 collapses to "no timeout" (permanent). */
-    if (has_timeout && timeout == 0) { has_timeout = false; }
-
+    if (!list_ctx_grow(ctx)) { ctx->oom = true; return MNL_CB_ERROR; }
     if (ctx->iplen == 4) {
-        mt_ipset_entry4_t *e = &ctx->out4[ctx->n++];
-        memcpy(e->subnet.addr, addr, 4);
-        e->subnet.cidr = cidr;
-        e->has_timeout = has_timeout;
-        e->timeout = timeout;
+        mt_ipset_entry4_t *out = &ctx->out4[ctx->n++];
+        memcpy(out->subnet.addr, e.address, 4); out->subnet.cidr = e.cidr;
+        out->has_timeout = e.has_timeout; out->timeout = e.timeout;
     } else {
-        mt_ipset_entry6_t *e = &ctx->out6[ctx->n++];
-        memcpy(e->subnet.addr, addr, 16);
-        e->subnet.cidr = cidr;
-        e->has_timeout = has_timeout;
-        e->timeout = timeout;
+        mt_ipset_entry6_t *out = &ctx->out6[ctx->n++];
+        memcpy(out->subnet.addr, e.address, 16); out->subnet.cidr = e.cidr;
+        out->has_timeout = e.has_timeout; out->timeout = e.timeout;
     }
+    return MNL_CB_OK;
+}
+
+static int list_attr_cb(const struct nlattr *attr, void *ud) {
+    if (mnl_attr_get_type(attr) != IPSET_ATTR_ADT ||
+        !(attr->nla_type & NLA_F_NESTED)) { return MNL_CB_OK; }
+    if (mnl_attr_validate(attr, MNL_TYPE_NESTED) != 0) { return MNL_CB_ERROR; }
+    return mnl_attr_parse_nested(attr, list_entry_cb, ud);
 }
 
 static void list_msg_cb(const struct nlmsghdr *h, void *ud) {
     list_ctx_t *ctx = ud;
-    if (ctx->oom) { return; }
-
-    mt_nlattr_iter_t top_it;
-    const struct nlattr *top;
-    if (!mt_nlattr_iter_init_nlmsg(&top_it, h, sizeof(struct nfgenmsg))) { return; }
-    while (mt_nlattr_iter_next(&top_it, &top)) {
-        uint16_t ttype = mnl_attr_get_type(top);
-        bool nested = (top->nla_type & NLA_F_NESTED) != 0;
-        if (ttype != IPSET_ATTR_ADT || !nested) { continue; }
-
-        mt_nlattr_iter_t entry_it;
-        const struct nlattr *entry;
-        if (!mt_nlattr_iter_init_nested(&entry_it, top)) { continue; }
-        while (mt_nlattr_iter_next(&entry_it, &entry)) {
-            uint16_t etype = mnl_attr_get_type(entry);
-            bool enested = (entry->nla_type & NLA_F_NESTED) != 0;
-            if (etype != IPSET_ATTR_DATA || !enested) { continue; }
-            parse_one_entry(entry, ctx);
-            if (ctx->oom) { return; }
-        }
-    }
+    if (ctx->oom || h->nlmsg_len < sizeof(*h) + sizeof(struct nfgenmsg)) { return; }
+    (void)mnl_attr_parse(h, sizeof(struct nfgenmsg), list_attr_cb, ctx);
 }
 
 mt_err_t mt_ipset_nl_parse_list_message(const struct nlmsghdr *h, uint8_t iplen,

@@ -1,15 +1,8 @@
 #include "dns_clients_internal.h"
 #include <arpa/inet.h>
-#include <errno.h>
 #include <limits.h>
-#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#ifdef MT_PLATFORM_OPENWRT
-#include <sys/stat.h>
-#include <time.h>
-#include <unistd.h>
-#endif
 
 bool mt_dns_client_address(const char *address, char *out, size_t size)
 {
@@ -58,109 +51,111 @@ bool mt_dns_client_label(const char *name, char out[MT_DNS_CLIENT_NAME_LEN])
     return true;
 }
 
-mt_err_t mt_dns_client_table_add(mt_dns_client_table_t *t, const char *ip, const char *name)
+static int hex_digit(unsigned char c)
 {
-    mt_dns_client_t row = {0};
-    if (!mt_dns_client_address(ip, row.ip, sizeof(row.ip)) ||
-        !mt_dns_client_label(name, row.name) ||
-        strcmp(row.ip, "0.0.0.0") == 0 || strcmp(row.ip, "::") == 0) { return MT_OK; }
+    if (c >= '0' && c <= '9') { return c - '0'; }
+    if (c >= 'a' && c <= 'f') { return c - 'a' + 10; }
+    if (c >= 'A' && c <= 'F') { return c - 'A' + 10; }
+    return -1;
+}
+bool mt_dns_client_mac(const char *text, char out[18])
+{
+    if (!text || !out || strnlen(text, 18) != 17) { return false; }
+    const char hex[] = "0123456789abcdef";
+    unsigned any = 0;
+    for (size_t i = 0; i < 6; i++) {
+        int hi = hex_digit((unsigned char)text[3 * i]);
+        int lo = hex_digit((unsigned char)text[3 * i + 1]);
+        if (hi < 0 || lo < 0 || (i < 5 && text[3 * i + 2] != ':')) { return false; }
+        unsigned byte = (unsigned)(hi * 16 + lo);
+        if (!i && (byte & 1u)) { return false; }
+        any |= byte;
+        out[3 * i] = hex[hi]; out[3 * i + 1] = hex[lo];
+        if (i < 5) { out[3 * i + 2] = ':'; }
+    }
+    out[17] = '\0';
+    return any != 0;
+}
+mt_err_t mt_dns_client_table_add_owned(mt_dns_client_table_t *t, const char *ip,
+    const char *name, const char *owner, const char *scope)
+{
+    mt_dns_client_observation_t row = {0};
+    if (!mt_dns_client_address(ip, row.client.ip, sizeof(row.client.ip)) ||
+        strcmp(row.client.ip, "0.0.0.0") == 0 || strcmp(row.client.ip, "::") == 0) { return MT_OK; }
+    struct in_addr v4;
+    struct in6_addr v6;
+    if ((inet_pton(AF_INET, row.client.ip, &v4) == 1 &&
+         (IN_MULTICAST(ntohl(v4.s_addr)) || v4.s_addr == INADDR_BROADCAST)) ||
+        (inet_pton(AF_INET6, row.client.ip, &v6) == 1 && IN6_IS_ADDR_MULTICAST(&v6))) { return MT_OK; }
+    if (owner && *owner && !mt_dns_client_mac(owner, row.owner)) { return MT_OK; }
+    if (scope && *scope) {
+        size_t len = strnlen(scope, sizeof(row.scope));
+        if (len >= sizeof(row.scope)) { return MT_ERR_LIMIT; }
+        memcpy(row.scope, scope, len + 1);
+    }
+    bool named = mt_dns_client_label(name, row.client.name);
+    if (!named && !row.owner[0] && !row.scope[0]) { return MT_OK; }
     if (t->count == MT_DNS_CLIENT_LIMIT) { return MT_ERR_LIMIT; }
     if (t->count == t->capacity) {
         size_t cap = t->capacity ? t->capacity * 2 : 16;
         if (cap > MT_DNS_CLIENT_LIMIT) { cap = MT_DNS_CLIENT_LIMIT; }
-        mt_dns_client_t *items = realloc(t->items, cap * sizeof(*items));
+        mt_dns_client_observation_t *items = realloc(t->items, cap * sizeof(*items));
         if (!items) { return MT_ERR_NOMEM; }
         t->items = items; t->capacity = cap;
     }
     t->items[t->count++] = row;
     return MT_OK;
 }
+mt_err_t mt_dns_client_table_add(mt_dns_client_table_t *t, const char *ip, const char *name)
+{
+    return mt_dns_client_table_add_owned(t, ip, name, NULL, NULL);
+}
 static int compare_clients(const void *a, const void *b)
 {
-    return strcmp(((const mt_dns_client_t *)a)->ip, ((const mt_dns_client_t *)b)->ip);
+    return strcmp(((const mt_dns_client_observation_t *)a)->client.ip,
+                  ((const mt_dns_client_observation_t *)b)->client.ip);
 }
 void mt_dns_client_table_finish(mt_dns_client_table_t *t, mt_dns_client_t **out, size_t *count)
 {
     if (t->count > 1) { qsort(t->items, t->count, sizeof(*t->items), compare_clients); }
     size_t n = 0;
     for (size_t i = 0; i < t->count;) {
-        size_t end = i + 1;
+        size_t end = i;
         bool ambiguous = false;
-        while (end < t->count && strcmp(t->items[i].ip, t->items[end].ip) == 0) {
-            if (strcmp(t->items[i].name, t->items[end].name) != 0) { ambiguous = true; }
+        const char *name = NULL, *owner = NULL, *scope = NULL;
+        while (end < t->count && strcmp(t->items[i].client.ip, t->items[end].client.ip) == 0) {
+            const mt_dns_client_observation_t *row = &t->items[end];
+            if (row->client.name[0]) {
+                if (name && strcmp(name, row->client.name)) { ambiguous = true; }
+                name = row->client.name;
+            }
+            if (row->owner[0]) {
+                if (owner && strcmp(owner, row->owner)) { ambiguous = true; }
+                owner = row->owner;
+            }
+            if (row->scope[0]) {
+                if (scope && strcmp(scope, row->scope)) { ambiguous = true; }
+                scope = row->scope;
+            }
             end++;
         }
         /* An ambiguous address must fall back to IP, not an arbitrary device. */
-        if (!ambiguous) { t->items[n++] = t->items[i]; }
+        if (!ambiguous && name) {
+            mt_dns_client_t client = t->items[i].client;
+            memcpy(client.name, name, strlen(name) + 1);
+            /* Compact into the same allocation only after consuming the group.
+             * Output records are smaller, so no unread observation is touched. */
+            memcpy((unsigned char *)t->items + n * sizeof(client), &client, sizeof(client));
+            n++;
+        }
         i = end;
     }
-    if (!n) { free(t->items); t->items = NULL; }
+    mt_dns_client_t *items = (mt_dns_client_t *)t->items;
+    if (!n) { free(items); items = NULL; }
     else {
-        mt_dns_client_t *small = realloc(t->items, n * sizeof(*small));
-        if (small) { t->items = small; }
+        mt_dns_client_t *small = realloc(items, n * sizeof(*small));
+        if (small) { items = small; }
     }
-    *out = t->items; *count = n;
+    *out = items; *count = n;
     *t = (mt_dns_client_table_t){0};
 }
-
-mt_err_t mt_dns_clients_parse_leases(const char *text, size_t len, int64_t now,
-                                    mt_dns_client_t **clients, size_t *count)
-{
-    if (!clients || !count) { return MT_ERR_INVAL; }
-    *clients = NULL; *count = 0;
-    if (len > MT_DNS_CLIENT_BODY_LIMIT) { return MT_ERR_LIMIT; }
-    if (!text && len) { return MT_ERR_INVAL; }
-    if (!len) { return MT_OK; }
-    if (memchr(text, 0, len)) { return MT_ERR_PROTO; }
-    char *copy = malloc(len + 1);
-    if (!copy) { return MT_ERR_NOMEM; }
-    memcpy(copy, text, len); copy[len] = '\0';
-    mt_dns_client_table_t table = {0};
-    mt_err_t err = MT_OK;
-    char *lines = NULL;
-    for (char *line = strtok_r(copy, "\n", &lines); line; line = strtok_r(NULL, "\n", &lines)) {
-        char *fields = NULL;
-        char *expires = strtok_r(line, " \t\r", &fields);
-        char *mac = strtok_r(NULL, " \t\r", &fields);
-        char *ip = strtok_r(NULL, " \t\r", &fields);
-        char *name = strtok_r(NULL, " \t\r", &fields);
-        if (!expires || !mac || !ip || !name || *expires < '0' || *expires > '9') { continue; }
-        errno = 0; char *end = NULL;
-        unsigned long long expiry = strtoull(expires, &end, 10);
-        if (errno || !end || *end || expiry > INT64_MAX || (expiry && (int64_t)expiry <= now)) { continue; }
-        err = mt_dns_client_table_add(&table, ip, name);
-        if (err != MT_OK) { break; }
-    }
-    free(copy);
-    if (err != MT_OK) { free(table.items); return err; }
-    mt_dns_client_table_finish(&table, clients, count);
-    return MT_OK;
-}
-
-#ifdef MT_PLATFORM_OPENWRT
-mt_err_t mt_dns_clients_fetch_openwrt(mt_dns_client_t **clients, size_t *count,
-                                     const atomic_bool *stop, void *ud)
-{
-    (void)ud;
-    *clients = NULL; *count = 0;
-    if (stop && atomic_load(stop)) { return MT_ERR_CANCELED; }
-    /* Read only dnsmasq's standard IPv4 lease file. No ubus or shell process,
-     * and no guesses for IPv6, missing files or customized lease paths. */
-    FILE *file = fopen("/tmp/dhcp.leases", "r");
-    if (!file) { return MT_ERR_NOENT; }
-    struct stat st;
-    if (fstat(fileno(file), &st) != 0 || !S_ISREG(st.st_mode) || st.st_size < 0 ||
-        (uintmax_t)st.st_size > MT_DNS_CLIENT_BODY_LIMIT) { fclose(file); return MT_ERR_LIMIT; }
-    size_t size = (size_t)st.st_size;
-    char *text = malloc(size + 1);
-    if (!text) { fclose(file); return MT_ERR_NOMEM; }
-    size_t len = fread(text, 1, size + 1, file);
-    bool failed = ferror(file) != 0 || len != size;
-    fclose(file);
-    mt_err_t err = failed ? MT_ERR_IO :
-        stop && atomic_load(stop) ? MT_ERR_CANCELED :
-        mt_dns_clients_parse_leases(text, len, (int64_t)time(NULL), clients, count);
-    free(text);
-    return err;
-}
-#endif
