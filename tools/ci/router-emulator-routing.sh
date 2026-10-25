@@ -5,6 +5,7 @@ set -eu
 CLIENT=mtci-client
 SERVER=mtci-server
 DEST=198.51.100.77
+DEST6=2001:db8:77::77
 LAN=br-lan
 OUT=mtci-out
 SERVER_PID=
@@ -20,6 +21,9 @@ cleanup() {
     wait "$SERVER_PID" 2>/dev/null || :
   fi
   ip -4 route del blackhole "$DEST"/32 2>/dev/null || :
+  ip -6 route del blackhole "$DEST6"/128 from 2001:db8:1::/64 2>/dev/null || :
+  ip -6 route del 2001:db8:77::/64 via 2001:db8:2::2 dev "$OUT" 2>/dev/null || :
+  ip -6 addr del 2001:db8:1::1/64 dev "$LAN" 2>/dev/null || :
   ip netns del "$CLIENT" 2>/dev/null || :
   ip netns del "$SERVER" 2>/dev/null || :
   ip link del mtci-lan 2>/dev/null || :
@@ -27,6 +31,7 @@ cleanup() {
   rm -rf /etc/netns/"$CLIENT"
   uci -q delete firewall.mtci_smoke 2>/dev/null || :
   uci -q delete firewall.mtci_forward 2>/dev/null || :
+  uci -q delete firewall.mtci_ndp 2>/dev/null || :
   uci -q commit firewall 2>/dev/null || :
   /etc/init.d/firewall reload >/dev/null 2>&1 || :
   if [ "$DNSMASQ_TOUCHED" -eq 1 ]; then
@@ -52,6 +57,9 @@ ip -n "$CLIENT" link set lo up
 ip -n "$CLIENT" link set mtci-client0 up
 ip -n "$CLIENT" addr add 192.168.1.250/24 dev mtci-client0
 ip -n "$CLIENT" route add default via 192.168.1.1
+ip -6 addr add 2001:db8:1::1/64 dev "$LAN" nodad
+ip -n "$CLIENT" -6 addr add 2001:db8:1::250/64 dev mtci-client0 nodad
+ip -n "$CLIENT" -6 route add default via 2001:db8:1::1
 mkdir -p /etc/netns/"$CLIENT"
 printf 'nameserver 192.168.1.1\n' > /etc/netns/"$CLIENT"/resolv.conf
 
@@ -64,6 +72,13 @@ ip -n "$SERVER" link set mtci-server0 up
 ip -n "$SERVER" addr add 192.0.2.2/30 dev mtci-server0
 ip -n "$SERVER" addr add "$DEST"/32 dev mtci-server0
 ip -n "$SERVER" route add default via 192.0.2.1
+ip -6 addr add 2001:db8:2::1/64 dev "$OUT" nodad
+ip -n "$SERVER" -6 addr add 2001:db8:2::2/64 dev mtci-server0 nodad
+ip -n "$SERVER" -6 addr add "$DEST6"/128 dev mtci-server0 nodad
+ip -n "$SERVER" -6 route add default via 2001:db8:2::1
+# Keep the server subnet reachable for IPv6 neighbor discovery/source
+# validation. The source-specific blackhole below still blocks LAN clients.
+ip -6 route add 2001:db8:77::/64 via 2001:db8:2::2 dev "$OUT"
 
 # The temporary egress needs explicit fw4 LAN forwarding permission.
 # This does not add a route or mark: policy selection is still mt-c's job.
@@ -76,6 +91,15 @@ uci -q set firewall.mtci_smoke.forward=REJECT
 uci -q set firewall.mtci_forward=forwarding
 uci -q set firewall.mtci_forward.src=lan
 uci -q set firewall.mtci_forward.dest=mtci_smoke
+# Like a real IPv6 WAN zone, the isolated server zone must allow neighbor
+# discovery even though other input to the router is rejected.
+uci -q set firewall.mtci_ndp=rule
+uci -q set firewall.mtci_ndp.src=mtci_smoke
+uci -q set firewall.mtci_ndp.family=ipv6
+uci -q set firewall.mtci_ndp.proto=icmp
+uci -q add_list firewall.mtci_ndp.icmp_type=neighbour-solicitation
+uci -q add_list firewall.mtci_ndp.icmp_type=neighbour-advertisement
+uci -q set firewall.mtci_ndp.target=ACCEPT
 uci commit firewall
 /etc/init.d/firewall reload
 nft list chain inet fw4 forward_lan | grep -q mtci_smoke ||
@@ -83,13 +107,13 @@ nft list chain inet fw4 forward_lan | grep -q mtci_smoke ||
 
 # The DNS proxy intercepts the client's port-53 request. Local dnsmasq
 # returns a deterministic A record, and never forwards AAAA or other
-# example.com types to public upstream resolvers (dnsmasq 2.86+).
+# mtci.test types to public upstream resolvers (dnsmasq 2.86+).
 if OLD_CONFDIR=$(uci -q get 'dhcp.@dnsmasq[0].confdir'); then
   OLD_CONFDIR_PRESENT=1
 fi
 DNSMASQ_TOUCHED=1
 mkdir -p /etc/dnsmasq.d
-printf 'address=/example.com/%s\nlocal=/example.com/\n' "$DEST" \
+printf 'address=/mtci.test/%s\nlocal=/mtci.test/\n' "$DEST" \
   > /etc/dnsmasq.d/mtci-routing.conf
 uci set 'dhcp.@dnsmasq[0].confdir=/etc/dnsmasq.d'
 /etc/init.d/dnsmasq restart
@@ -97,7 +121,7 @@ uci set 'dhcp.@dnsmasq[0].confdir=/etc/dnsmasq.d'
 # Run the HTTP server in foreground under a tracked PID for reliable cleanup.
 mkdir -p /tmp/mtci-www
 printf 'route-ok\n' > /tmp/mtci-www/index.html
-ip netns exec "$SERVER" uhttpd -f -p "$DEST":18080 -h /tmp/mtci-www \
+ip netns exec "$SERVER" uhttpd -f -p "$DEST":18080 -p "[$DEST6]:18080" -h /tmp/mtci-www \
   > /tmp/mtci-uhttpd.log 2>&1 &
 SERVER_PID=$!
 sleep 1
@@ -108,96 +132,136 @@ ip netns exec "$SERVER" wget -T 5 -q -O /tmp/mtci-local-body \
 grep -q 'route-ok' /tmp/mtci-local-body ||
   die "test server returned unexpected content"
 
-# A main-table blackhole makes the negative control deterministic and
-# makes the positive result depend on mt-c's marked policy route taking
-# precedence over main. No fake mark, extra route or ipset entry is added.
+# Main-table blackholes make success depend on mt-c's policy routing,
+# rather than the router's connected route or a permissive firewall.
 ip -4 route add blackhole "$DEST"/32
-if ip netns exec "$CLIENT" wget -T 3 -q -O /tmp/mtci-before \
-  "http://$DEST:18080/"; then
-  die "destination reachable before the mt-c rule was created"
-fi
-log "PASS: destination blocked before adding domain group"
+ip -6 route add blackhole "$DEST6"/128 from 2001:db8:1::/64
+API=http://127.0.0.1:8080/api/v1/groups
 
-# Configure the real application's live HTTP API from inside the router.
-# This removes the incidental QEMU host-port-forward dependency after fw4
-# reload; external API reachability was checked before this scenario.
-# A fixed ID in the disposable router gives deterministic ipset/chain names.
-GROUP_ID=c1c0ffee
-cat > /tmp/mtci-group-request.json <<EOF
-{"id":"$GROUP_ID","name":"CI example.com policy","interface":"mtci-out","enable":true,"rules":[{"name":"example.com","type":"domain","rule":"example.com","enable":true}]}
+client_http() {
+  ip netns exec "$CLIENT" curl -"$FAMILY" --noproxy '*' \
+    --silent --show-error --fail --connect-timeout 2 --max-time 5 \
+    -o /tmp/mtci-body "$1"
+}
+expect_blocked() {
+  if client_http "$URL"; then
+    die "$TYPE: destination reachable $1"
+  fi
+  log "PASS: $TYPE destination blocked $1"
+}
+resolve() {
+  ip netns exec "$CLIENT" nslookup "$1" 192.168.1.1 \
+    > /tmp/mtci-dns.out 2>&1 ||
+    { cat /tmp/mtci-dns.out; die "$TYPE: client DNS failed for $1"; }
+  grep -Fq "$DEST" /tmp/mtci-dns.out ||
+    { cat /tmp/mtci-dns.out; die "$TYPE: unexpected DNS answer for $1"; }
+}
+
+# Run each type alone. Shared destination addresses must not let an earlier
+# successful rule mask a broken matcher, subnet sync or IPv6 route.
+while IFS='|' read -r TYPE GROUP_ID RULE QUERY MISS FAMILY; do
+  SET_NAME=mt_"$GROUP_ID"_"$FAMILY"
+  CHAIN_NAME=MT_"$GROUP_ID"
+  if [ "$FAMILY" = 6 ]; then
+    TARGET=$DEST6
+    URL="http://[$DEST6]:18080/"
+    IPTABLES=ip6tables
+    # Prove the IPv6 server is listening before relying on a negative control.
+    ip netns exec "$SERVER" curl -6 --noproxy '*' --silent --show-error \
+      --fail --max-time 5 "http://[$DEST6]:18080/" | grep -q '^route-ok$' ||
+      die "$TYPE: IPv6 test server is not listening"
+  else
+    TARGET=$DEST
+    URL="http://$DEST:18080/"
+    IPTABLES=iptables
+  fi
+  expect_blocked 'before group creation'
+
+  cat > /tmp/mtci-group-request.json <<EOF
+{"id":"$GROUP_ID","name":"CI $TYPE policy","interface":"$OUT","enable":true,"rules":[{"name":"CI $TYPE","type":"$TYPE","rule":"$RULE","enable":true}]}
 EOF
-# curl is installed solely for the integration fixture, not as a runtime
-# dependency of mt-c. Unlike uclient-fetch's wget compatibility frontend,
-# it reports the HTTP status and response body reliably for POST failures.
-curl --silent --show-error --connect-timeout 5 --max-time 12 --fail \
-  -o /tmp/mtci-groups-before \
-  http://127.0.0.1:8080/api/v1/groups ||
-  die "local HTTP API not reachable after fw4 reload"
-if ! curl --silent --show-error --connect-timeout 5 --max-time 35 \
-  --dump-header /tmp/mtci-post-headers \
-  --output /tmp/mtci-group-response.json \
-  --header 'Content-Type: application/json' \
-  --data-binary @/tmp/mtci-group-request.json \
-  http://127.0.0.1:8080/api/v1/groups; then
-  cat /tmp/mtci-post-headers 2>/dev/null || :
-  cat /tmp/mtci-group-response.json 2>/dev/null || :
-  die "HTTP POST request could not be transmitted to mt-c"
-fi
-if ! grep -Eq '^HTTP/[0-9.]+ 200([[:space:]]|$)' /tmp/mtci-post-headers; then
-  cat /tmp/mtci-post-headers
-  cat /tmp/mtci-group-response.json
-  die "mt-c API refused example.com group creation"
-fi
-grep -q "$GROUP_ID" /tmp/mtci-group-response.json ||
-  die "group creation response did not confirm requested ID"
-log "PASS: group $GROUP_ID created through mt-c HTTP API"
-SET_NAME=mt_"$GROUP_ID"_4
-CHAIN_NAME=MT_"$GROUP_ID"
+  curl --silent --show-error --fail --connect-timeout 5 --max-time 35 \
+    --dump-header /tmp/mtci-post-headers \
+    --output /tmp/mtci-group-response.json \
+    --header 'Content-Type: application/json' \
+    --data-binary @/tmp/mtci-group-request.json "$API" ||
+    { cat /tmp/mtci-group-response.json; die "$TYPE: group creation failed"; }
+  grep -Eq '^HTTP/[0-9.]+ 200([[:space:]]|$)' /tmp/mtci-post-headers &&
+    grep -q "$GROUP_ID" /tmp/mtci-group-response.json ||
+    { cat /tmp/mtci-group-response.json; die "$TYPE: unexpected group response"; }
 
-ip netns exec "$CLIENT" nslookup example.com 192.168.1.1 \
-  > /tmp/mtci-dns.out 2>&1 ||
-  { cat /tmp/mtci-dns.out; die "client DNS failed"; }
-grep -q "$DEST" /tmp/mtci-dns.out ||
-  { cat /tmp/mtci-dns.out; die "unexpected DNS answer"; }
-ipset test "$SET_NAME" "$DEST" ||
-  die "example.com IP missing from its own group's ipset"
+  if [ "$QUERY" != '-' ]; then
+    # A nearby nonmatching domain resolves to the SAME IP. It must not add
+    # that address to this group's set or make the destination reachable.
+    resolve "$MISS"
+    if ipset test "$SET_NAME" "$TARGET"; then
+      die "$TYPE: nonmatching domain populated the group ipset"
+    fi
+    expect_blocked 'after nonmatching DNS request'
+    resolve "$QUERY"
+    URL="http://$QUERY:18080/"
+  fi
+  # subnet/subnet6 must populate their ipsets without any DNS request.
+  for attempt in $(seq 1 15); do
+    ipset test "$SET_NAME" "$TARGET" 2>/dev/null && break
+    sleep 1
+  done
+  ipset test "$SET_NAME" "$TARGET" || die "$TYPE: target missing from group ipset"
 
-# Match the exact group chain and mark, rather than unrelated mt_* sets or
-# any other fwmark policy rule present in OpenWrt.
-MANGLE_RULES=$(iptables -t mangle -S "$CHAIN_NAME") ||
-  die "group-specific mangle chain missing"
-printf '%s\n' "$MANGLE_RULES" | grep -F -- "--match-set $SET_NAME dst" |
-  grep -q -- '-j MARK' || die "group-specific packet mark rule missing"
-MARK=$(printf '%s\n' "$MANGLE_RULES" | awk '/-j MARK / {
-  for (i = 1; i <= NF; i++)
-    if ($i == "--set-mark" || $i == "--set-xmark") {
-      split($(i+1), value, "/"); print value[1]; exit
-    }
-}')
-[ -n "$MARK" ] || die "group mark not found in mangle chain"
-MARK_DEC=$(printf '%u' "$MARK")
-MARK_HEX=$(printf '0x%x' "$MARK")
-ip -4 rule show | grep -F -q "fwmark $MARK_HEX" ||
-  die "group-specific policy rule missing"
-ip -4 route show table "$MARK_DEC" | grep -q "default dev $OUT" ||
-  die "group policy table does not use selected egress"
+  MANGLE_RULES=$($IPTABLES -t mangle -S "$CHAIN_NAME") ||
+    die "$TYPE: group-specific mangle chain missing"
+  printf '%s\n' "$MANGLE_RULES" | grep -F -- "--match-set $SET_NAME dst" |
+    grep -q -- '-j MARK' || die "$TYPE: group-specific packet mark rule missing"
+  MARK=$(printf '%s\n' "$MANGLE_RULES" | awk '/-j MARK / {
+    for (i = 1; i <= NF; i++)
+      if ($i == "--set-mark" || $i == "--set-xmark") {
+        split($(i+1), value, "/"); print value[1]; exit
+      }
+  }')
+  [ -n "$MARK" ] || die "$TYPE: group mark not found"
+  MARK_DEC=$(printf '%u' "$MARK")
+  MARK_HEX=$(printf '0x%x' "$MARK")
+  ip -"$FAMILY" rule show | grep -Fq "fwmark $MARK_HEX" ||
+    die "$TYPE: group-specific policy rule missing"
+  ROUTES=$(ip -"$FAMILY" route show table "$MARK_DEC")
+  printf '%s\n' "$ROUTES" | grep '^default ' |
+    grep -Eq "(^|[[:space:]])dev $OUT([[:space:]]|$)" ||
+    { printf '%s\n' "$ROUTES"; die "$TYPE: group policy table does not use selected egress"; }
 
-# A real domain HTTP request from a separate LAN namespace must override
-# the main-table blackhole through mt-c's PREROUTING fwmark policy.
-if ! ip netns exec "$CLIENT" wget -T 8 -q -O /tmp/mtci-body \
-  "http://example.com:18080/"; then
-  log "forwarding diagnostics:"
-  ip -4 rule show >&2 || :
-  ip -4 route show table "$MARK_DEC" >&2 || :
-  ip -4 route show table main >&2 || :
-  ip -s link show dev "$OUT" >&2 || :
-  ip -n "$SERVER" -s link show dev mtci-server0 >&2 || :
-  nft -a list chain inet fw4 forward_lan >&2 || :
-  iptables -t mangle -nvL PREROUTING >&2 || :
-  iptables -t filter -nvL FORWARD >&2 || :
-  cat /tmp/mtci-uhttpd.log >&2 || :
-  die "client HTTP packet did not reach selected egress"
-fi
-grep -q 'route-ok' /tmp/mtci-body ||
-  die "unexpected HTTP response"
-log "PASS: client DNS, group ipset, fwmark and HTTP egress via $OUT"
+  if ! client_http "$URL"; then
+    log "forwarding diagnostics for $TYPE:"
+    ip -"$FAMILY" rule show >&2 || :
+    ip -"$FAMILY" route show table "$MARK_DEC" >&2 || :
+    ip -"$FAMILY" route show table main >&2 || :
+    ip -"$FAMILY" neigh show >&2 || :
+    ip -n "$SERVER" -"$FAMILY" route show >&2 || :
+    ip -s link show dev "$OUT" >&2 || :
+    $IPTABLES -t mangle -nvL PREROUTING >&2 || :
+    $IPTABLES -t filter -nvL FORWARD >&2 || :
+    $IPTABLES -t mangle -nvL "$CHAIN_NAME" >&2 || :
+    $IPTABLES -t filter -nvL "$CHAIN_NAME" >&2 || :
+    $IPTABLES -t nat -nvL "$CHAIN_NAME" >&2 || :
+    nft list chain inet fw4 forward_lan >&2 || :
+    cat /proc/sys/net/ipv6/conf/all/forwarding >&2 || :
+    cat /tmp/mtci-uhttpd.log >&2 || :
+    die "$TYPE: client HTTP packet did not reach selected egress"
+  fi
+  grep -qx 'route-ok' /tmp/mtci-body || die "$TYPE: unexpected HTTP response"
+  log "PASS: $TYPE ipset, fwmark and IPv$FAMILY client HTTP egress via $OUT"
+
+  curl --silent --show-error --fail --connect-timeout 5 --max-time 35 \
+    -X DELETE "$API/$GROUP_ID" > /tmp/mtci-delete-response.json ||
+    die "$TYPE: group deletion failed"
+  if ipset list "$SET_NAME" >/dev/null 2>&1; then
+    die "$TYPE: group deletion left its ipset behind"
+  fi
+  expect_blocked 'after group deletion'
+done <<'CASES'
+domain|c1c0ff01|exact.mtci.test|exact.mtci.test|child.exact.mtci.test|4
+namespace|c1c0ff02|ns.mtci.test|child.ns.mtci.test|notns.mtci.test|4
+wildcard|c1c0ff03|wild*.mtci.test|wildcard.mtci.test|other.mtci.test|4
+regex|c1c0ff04|^regex[0-9]+[.]mtci[.]test$|regex42.mtci.test|regexxx.mtci.test|4
+subnet|c1c0ff05|198.51.100.0/24|-|-|4
+subnet6|c1c0ff06|2001:db8:77::/64|-|-|6
+CASES
+log "PASS: all six rule types forwarded real client traffic and stopped after deletion"

@@ -28,3 +28,5 @@ jobs:
         run: python3 tools/tests/frontend_variants.py
       - name: Test SDK acquisition and source fallback
         run: python3 tools/ci/tests/test_openwrt_sdk.py
+      - name: Test router-emulator package-manager orchestration
+        run: python3 tools/ci/tests/test_router_emulator.py
