@@ -1,16 +1,24 @@
 <script lang="ts">
   import { fly } from "svelte/transition";
 
+  import { t } from "../../data/locale.svelte";
+
   import { ToTop } from "../ui/icons";
 
-  let visible = $state(false);
+  let scrollY = $state(0);
+  let innerWidth = $state(0);
+  const visible = $derived(scrollY > 0 && innerWidth > 668);
 </script>
 
-<!-- TODO: Move "is_desktop" to const -->
-<svelte:window onscroll={() => (visible = window.pageYOffset > 0 && window.innerWidth > 668)} />
+<svelte:window bind:scrollY bind:innerWidth />
 
 {#if visible}
-  <button transition:fly onclick={() => window.scrollTo({ top: 0, behavior: "smooth" })}>
+  <button
+    type="button"
+    aria-label={t("Back to top")}
+    transition:fly
+    onclick={() => window.scrollTo({ top: 0, behavior: "smooth" })}
+  >
     <ToTop size={20} />
   </button>
 {/if}

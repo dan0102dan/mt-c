@@ -1,11 +1,11 @@
 import assert from "node:assert/strict";
 
-import { createDnsHistory } from "../../src/modules/settings/dns-history.ts";
+import { createDnsHistory } from "../../src/modules/settings/dns/history.ts";
 import {
   createSnapshotReceiver,
   subscribeDnsQueries,
   type StreamEvent,
-} from "../../src/modules/settings/dns-query-stream.ts";
+} from "../../src/modules/settings/dns/stream.ts";
 
 const event = (name: string, value: unknown): StreamEvent => ({
   event: name,

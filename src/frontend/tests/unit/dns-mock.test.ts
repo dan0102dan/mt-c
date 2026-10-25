@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { Hono } from "hono";
 
 import { registerMockDnsRoutes } from "../../dev/dns-mock.ts";
-import { parseCaptureState } from "../../src/modules/settings/dns-capture.ts";
+import { parseCaptureState } from "../../src/modules/settings/dns/history.ts";
 
 const base = "/api/v1/system/dns";
 function fixture() {

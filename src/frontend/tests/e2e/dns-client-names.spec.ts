@@ -2,7 +2,7 @@ import { createServer, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
 import { test as base, expect, type Page } from "@playwright/test";
 
-import type { DnsQuery } from "../../src/modules/settings/dns-query-data";
+import type { DnsQuery } from "../../src/modules/settings/dns/data";
 
 const frame = (event: string, data: unknown) =>
   `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;

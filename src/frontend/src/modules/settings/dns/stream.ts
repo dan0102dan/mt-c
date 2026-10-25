@@ -1,10 +1,11 @@
-import { MAX_DNS_CAPACITY } from "./dns-query-limits";
 import {
   isDnsClientName,
+  MAX_DNS_CAPACITY,
   normalizeDnsClient,
   normalizeDnsClientAddress,
-} from "./dns-client-labels";
-import type { DnsQuery, DnsQueryResponse } from "./dns-query-data";
+  type DnsQuery,
+  type DnsQueryResponse,
+} from "./data";
 
 // snapshot is an internal, already decoded value; never serialized back
 // into a giant JSON string after receiving the bounded wire chunks.
@@ -17,7 +18,7 @@ export type StreamEvent = {
 };
 export type StreamState = "connecting" | "live" | "reconnecting" | "unavailable";
 export const MAX_EVENT_SIZE = 64 * 1024;
-export { MAX_DNS_CAPACITY } from "./dns-query-limits";
+export { MAX_DNS_CAPACITY } from "./data";
 const SNAPSHOT_BATCH = 32;
 
 /** Incremental SSE parser: TCP/UTF-8 chunks are not event boundaries. */
@@ -99,8 +100,7 @@ function objectData(event: StreamEvent): Record<string, unknown> {
  * Size limits apply to each event and retained row count, not total JSON bytes. */
 export function createSnapshotReceiver(): (event: StreamEvent) => StreamEvent | null {
   let pending:
-    | { capacity: number; count: number; through: number; queries: DnsQuery[] }
-    | undefined;
+    { capacity: number; count: number; through: number; queries: DnsQuery[] } | undefined;
   let clients: { count: number; rows: DnsClientLabel[]; seen: Set<string> } | undefined;
   let enabled: boolean | undefined;
   return (event) => {

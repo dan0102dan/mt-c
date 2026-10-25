@@ -5,7 +5,7 @@
 
   import PageControls from "../../components/layout/PageControls.svelte";
   import { t } from "../../data/locale.svelte";
-  import DnsQueryLog from "./DnsQueryLog.svelte";
+  import DnsQueryLog from "./dns/DnsQueryLog.svelte";
   import ProfilesPanel from "./ProfilesPanel.svelte";
 
   import { toast } from "../../utils/events";

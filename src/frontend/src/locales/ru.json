@@ -1,4 +1,5 @@
 {
+  "Back to top": "Наверх",
   "Update could not be confirmed; check the package manager from CLI": "Обновление не подтверждено. Проверьте пакетный менеджер через CLI.",
   "Cannot start package manager": "Не удалось запустить пакетный менеджер",
   "Cannot prepare update": "Не удалось подготовить обновление",

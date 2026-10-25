@@ -1,13 +1,14 @@
 import assert from "node:assert/strict";
 
-import { groupDnsBursts } from "../../src/modules/settings/dns-query-bursts";
-import { groupDnsQueries, type DnsQuery } from "../../src/modules/settings/dns-query-data";
 import {
+  groupDnsBursts,
+  groupDnsQueries,
   nextDnsTimeSort,
   sortDnsByCount,
   sortDnsByTime,
+  type DnsQuery,
   type DnsTimeSort,
-} from "../../src/modules/settings/dns-query-sort";
+} from "../../src/modules/settings/dns/data";
 
 const query = (id: number, time_ms: number, domain = `host${id}.example`): DnsQuery => ({
   id,

@@ -87,4 +87,12 @@
     text-align: center;
     font-variant-numeric: tabular-nums;
   }
+
+  /* The fixed 52px scroll-to-top button sits 20px from the right edge.
+   * Reduce the reserve as the gutter beside the 1000px page grows. */
+  @media (min-width: 669px) {
+    .pagination {
+      padding-right: calc(0.5rem + clamp(0px, calc(72px - (100vw - 1000px) / 2), 72px));
+    }
+  }
 </style>
