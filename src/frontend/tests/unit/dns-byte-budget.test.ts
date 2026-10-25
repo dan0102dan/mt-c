@@ -1,15 +1,8 @@
 import assert from "node:assert/strict";
 
-import { parseCaptureState } from "../../src/modules/settings/dns-capture";
-import { createDnsHistory } from "../../src/modules/settings/dns-history";
-import {
-  DNS_HISTORY_MEMORY_LIMIT,
-  MAX_DNS_CAPACITY,
-} from "../../src/modules/settings/dns-query-limits";
-import {
-  createSnapshotReceiver,
-  type StreamEvent,
-} from "../../src/modules/settings/dns-query-stream";
+import { DNS_HISTORY_MEMORY_LIMIT, MAX_DNS_CAPACITY } from "../../src/modules/settings/dns/data";
+import { createDnsHistory, parseCaptureState } from "../../src/modules/settings/dns/history";
+import { createSnapshotReceiver, type StreamEvent } from "../../src/modules/settings/dns/stream";
 
 const event = (name: string, value: unknown): StreamEvent => ({
   event: name,

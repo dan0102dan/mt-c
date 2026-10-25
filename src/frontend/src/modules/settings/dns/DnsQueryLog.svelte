@@ -2,14 +2,14 @@
   import { Popover } from "bits-ui";
   import { onMount, untrack } from "svelte";
 
-  import Pagination from "../../components/Pagination.svelte";
-  import Button from "../../components/ui/Button.svelte";
-  import GenericDialog from "../../components/ui/GenericDialog.svelte";
-  import Placeholder from "../../components/ui/Placeholder.svelte";
-  import Select from "../../components/ui/Select.svelte";
-  import Tooltip from "../../components/ui/Tooltip.svelte";
-  import { token } from "../../data/auth.svelte";
-  import { locales, t } from "../../data/locale.svelte";
+  import Pagination from "../../../components/Pagination.svelte";
+  import Button from "../../../components/ui/Button.svelte";
+  import GenericDialog from "../../../components/ui/GenericDialog.svelte";
+  import Placeholder from "../../../components/ui/Placeholder.svelte";
+  import Select from "../../../components/ui/Select.svelte";
+  import Tooltip from "../../../components/ui/Tooltip.svelte";
+  import { token } from "../../../data/auth.svelte";
+  import { locales, t } from "../../../data/locale.svelte";
 
   import {
     Clear,
@@ -23,25 +23,26 @@
     SortCountDesc,
     SortDesc,
     SortNeutral,
-  } from "../../components/ui/icons";
-  import { API_BASE, fetcher } from "../../utils/fetcher";
-  import { parseCaptureState, type CaptureState } from "./dns-capture";
-  import captureTranslations from "./dns-capture.ru.json";
-  import { createDnsHistory } from "./dns-history";
-  import { groupDnsBursts } from "./dns-query-bursts";
-  import { dnsQueryType, filterDnsQueries, groupDnsQueries, type DnsQuery } from "./dns-query-data";
+  } from "../../../components/ui/icons";
+  import { API_BASE, fetcher } from "../../../utils/fetcher";
+  import { settingsSection } from "../section-controls";
   import {
+    dnsQueryType,
+    filterDnsQueries,
+    groupDnsBursts,
+    groupDnsQueries,
     nextDnsTimeSort,
     sortDnsByCount,
     sortDnsByTime,
+    type DnsQuery,
     type DnsTimeSort,
-  } from "./dns-query-sort";
-  import { subscribeDnsQueries, type StreamState } from "./dns-query-stream";
-  import streamTranslations from "./dns-query-stream.ru.json";
-  import { settingsSection } from "./section-controls";
+  } from "./data";
+  import { createDnsHistory, parseCaptureState, type CaptureState } from "./history";
+  import translations from "./ru.json";
+  import { subscribeDnsQueries, type StreamState } from "./stream";
 
   let { active = true }: { active?: boolean } = $props();
-  Object.assign(locales.ru, streamTranslations, captureTranslations);
+  Object.assign(locales.ru, translations);
   const section = settingsSection();
   const pageSize = 30;
   let queries = $state.raw<DnsQuery[]>([]);

@@ -946,13 +946,17 @@ jobs:
           if-no-files-found: error
           compression-level: 0
 
-      # One real OpenWrt 25.12.5 boot per run. The APK is the exact
-      # cross-built SDK artifact above, not a host-repacked copy.
+      # Boot OpenWrt 24.10.4/opkg and 25.12.5/apk using the exact
+      # cross-built SDK artifacts above, not host-repacked copies.
       # Push-only smoke gate; release/workflow_dispatch triggers stay unchanged.
-      - name: Install and smoke-test APK in router emulator
-        if: github.event_name == 'push' && matrix.name == 'aarch64_cortex-a53' && matrix.openwrt_version == '25.12.5' && steps.package_outputs.outputs.package_1_path != ''
+      - name: Install and test IPK/APK in router emulator
+        if: github.event_name == 'push' && matrix.name == 'aarch64_cortex-a53' && (matrix.openwrt_version == '24.10.4' || matrix.openwrt_version == '25.12.5') && steps.package_outputs.outputs.package_1_path != ''
         env:
-          APK: ${{ steps.package_outputs.outputs.package_1_path }}
+          PACKAGE: ${{ steps.package_outputs.outputs.package_1_path }}
+          OPENWRT_VERSION: ${{ matrix.openwrt_version }}
+          # WR3000P's OpenWrt U-Boot images are absent in 24.10.4.
+          PRESET: ${{ matrix.openwrt_version == '24.10.4' && 'cudy-tr3000-v1' || 'cudy-wr3000p-v1' }}
+          PROFILE: ${{ matrix.openwrt_version == '24.10.4' && 'cudy_tr3000-v1' || 'cudy_wr3000p-v1' }}
         run: |
           set -euo pipefail
           sudo apt-get update
@@ -979,18 +983,20 @@ jobs:
             tar -xzf emulator.tar.gz
             unzip -q presets.zip
             cd Router-Emulator
-            tools/prepare-nand.sh cudy_wr3000p-v1 25.12.5
+            tools/prepare-nand.sh "$PROFILE" "$OPENWRT_VERSION"
           )
 
           python3 tools/ci/router-emulator-smoke.py \
             --emulator-dir "$test_root/Router-Emulator" \
-            --package "$APK"
+            --package "$PACKAGE" \
+            --preset "$PRESET" \
+            --openwrt-version "$OPENWRT_VERSION"
 
       - name: Upload router-emulator smoke logs
-        if: always() && github.event_name == 'push' && matrix.name == 'aarch64_cortex-a53' && matrix.openwrt_version == '25.12.5'
+        if: always() && github.event_name == 'push' && matrix.name == 'aarch64_cortex-a53' && (matrix.openwrt_version == '24.10.4' || matrix.openwrt_version == '25.12.5')
         uses: actions/upload-artifact@v6
         with:
-          name: router-emulator-smoke-25.12.5-aarch64_cortex-a53
+          name: router-emulator-smoke-${{ matrix.openwrt_version }}-aarch64_cortex-a53
           path: |
             .build/router-emulator-smoke/Router-Emulator/work/*.log
             .build/router-emulator-smoke/Router-Emulator/work/logs/

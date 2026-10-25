@@ -2,7 +2,7 @@ import { createServer, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
 import { test as base, expect, type Page } from "@playwright/test";
 
-import type { DnsQuery } from "../../src/modules/settings/dns-query-data";
+import type { DnsQuery } from "../../src/modules/settings/dns/data";
 
 const sample: DnsQuery[] = [
   {
@@ -339,6 +339,72 @@ test("shared pagination and empty-search state remain functional", async ({ page
   await region.getByRole("searchbox").fill("");
   await expect(region.locator(".page-number")).toHaveText("1 / 3");
   await expect(region.locator("tbody tr")).toHaveCount(30);
+});
+
+for (const width of [390, 700, 1000, 1160, 1280]) {
+  test(`scroll-to-top leaves pagination accessible (${width}px)`, async ({ page, dns }) => {
+    await page.setViewportSize({ width, height: 844 });
+    seedHistory(dns, 65);
+    const region = await setup(page, dns);
+    const next = region.getByRole("button", { name: "Next Page", exact: true });
+    await next.scrollIntoViewIfNeeded();
+    const toTop = page.getByRole("button", { name: "Back to top", exact: true });
+    if (width > 668) {
+      await expect(toTop).toBeVisible();
+      await expect(async () => {
+        const paginationBox = await region.locator(".controls").boundingBox();
+        const topBox = await toTop.boundingBox();
+        expect(paginationBox).not.toBeNull();
+        expect(topBox).not.toBeNull();
+        expect(paginationBox!.x + paginationBox!.width).toBeLessThan(topBox!.x);
+      }).toPass();
+    } else {
+      await expect(toTop).toBeHidden();
+    }
+    await next.click();
+    await expect(region.locator(".page-number")).toHaveText("2 / 3");
+    await region.getByRole("button", { name: "Previous Page", exact: true }).click();
+    await expect(region.locator(".page-number")).toHaveText("1 / 3");
+    if (width > 668) {
+      await toTop.click();
+      await expect.poll(() => page.evaluate(() => window.scrollY)).toBe(0);
+      await expect(toTop).toBeHidden();
+      await next.scrollIntoViewIfNeeded();
+      await expect(toTop).toBeVisible();
+      await page.setViewportSize({ width: 390, height: 844 });
+      await expect(toTop).toBeHidden();
+    }
+    expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(
+      width,
+    );
+  });
+}
+
+test("pagination uses the growing page gutter without a sudden horizontal jump", async ({
+  page,
+  dns,
+}) => {
+  seedHistory(dns, 65);
+  const region = await setup(page, dns);
+  const controls = region.locator(".controls");
+  const toTop = page.getByRole("button", { name: "Back to top", exact: true });
+  let previousRight: number | undefined;
+  for (const width of [1040, 1080, 1120, 1140, 1160, 1161, 1200]) {
+    await page.setViewportSize({ width, height: 844 });
+    await controls.scrollIntoViewIfNeeded();
+    await expect(toTop).toBeVisible();
+    const box = await controls.boundingBox();
+    const button = await toTop.boundingBox();
+    expect(box).not.toBeNull();
+    expect(button).not.toBeNull();
+    const right = box!.x + box!.width;
+    expect(right).toBeLessThan(button!.x);
+    if (previousRight !== undefined) {
+      expect(right).toBeGreaterThan(previousRight);
+      expect(right - previousRight).toBeLessThanOrEqual(41);
+    }
+    previousRight = right;
+  }
 });
 
 for (const width of [1280, 390]) {

@@ -1,7 +1,7 @@
 import type { Hono } from "hono";
 import { streamSSE } from "hono/streaming";
 
-import type { DnsQuery } from "../src/modules/settings/dns-query-data.ts";
+import type { DnsQuery } from "../src/modules/settings/dns/data.ts";
 
 const API_BASE = "/api/v1";
 

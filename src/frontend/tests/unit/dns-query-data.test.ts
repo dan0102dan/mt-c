@@ -5,7 +5,7 @@ import {
   filterDnsQueries,
   groupDnsQueries,
   type DnsQuery,
-} from "../../src/modules/settings/dns-query-data";
+} from "../../src/modules/settings/dns/data";
 
 const rows: DnsQuery[] = [
   { id: 3, time_ms: 300, client: "192.168.1.2", domain: "EXAMPLE.com", qtype: 1, protocol: "udp" },
@@ -14,8 +14,14 @@ const rows: DnsQuery[] = [
 ];
 
 Deno.test("DNS journal filters clients and domain search together", () => {
-  assert.deepEqual(filterDnsQueries(rows, "EXAMPLE", "192.168.1.2").map((row) => row.id), [3]);
-  assert.deepEqual(filterDnsQueries(rows, " example ", "").map((row) => row.id), [3, 2]);
+  assert.deepEqual(
+    filterDnsQueries(rows, "EXAMPLE", "192.168.1.2").map((row) => row.id),
+    [3],
+  );
+  assert.deepEqual(
+    filterDnsQueries(rows, " example ", "").map((row) => row.id),
+    [3, 2],
+  );
   assert.equal(filterDnsQueries(rows, "", "").length, 3);
 });
 

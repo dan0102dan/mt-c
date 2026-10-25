@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Install and exercise a built OpenWrt mt-c APK in stavultras/router-emulator.
+"""Install and exercise a built OpenWrt mt-c IPK/APK in stavultras/router-emulator.
 
 The emulator and its prepared flash folder are supplied by the calling CI job.
 This is a guest integration test, not a host binary/package extraction test:
@@ -26,7 +26,6 @@ import urllib.request
 BOOT_TIMEOUT = 720
 COMMAND_TIMEOUT = 180
 API_HOST_PORT = 18881
-GUEST_PACKAGE = "/tmp/mt-c-ci.apk"
 ROUTING_SCRIPT = Path(__file__).with_name("router-emulator-routing.sh")
 DHCP_SCRIPT = Path(__file__).with_name("router-emulator-dhcp.sh")
 
@@ -40,7 +39,7 @@ def serve_package(package):
     """Expose exactly one package to QEMU's 10.0.2.2 host gateway."""
     class PackageHandler(BaseHTTPRequestHandler):
         def do_GET(self):
-            if self.path == "/mt-c.apk":
+            if self.path == f"/mt-c{package.suffix}":
                 payload = package
             elif self.path == "/routing.sh":
                 payload = ROUTING_SCRIPT
@@ -202,7 +201,21 @@ def stop_emulator(process, monitor_path):
         process.wait(timeout=10)
 
 
-def run_test(emulator, package, preset, log_dir):
+def run_package_command(serial, command, timeout):
+    # Early-boot networking and release mirrors can interrupt downloads.
+    # Retry a whole operation, but never ignore a persistent package failure.
+    for attempt in range(1, 5):
+        if serial.run(command, timeout=timeout, check=False, show_output=True) == 0:
+            return
+        if attempt == 4:
+            raise SmokeFailure(f"{command} failed after 4 attempts (see guest output)")
+        print(f"{command} attempt {attempt}/4 failed; retrying in 5s", flush=True)
+        time.sleep(5)
+
+
+def run_test(emulator, package, preset, log_dir, openwrt_version):
+    manager = "opkg" if package.suffix == ".ipk" else "apk"
+    guest_package = f"/tmp/mt-c-ci{package.suffix}"
     log_dir.mkdir(parents=True, exist_ok=True)
     work = emulator / "work"
     work.mkdir(parents=True, exist_ok=True)
@@ -217,7 +230,7 @@ def run_test(emulator, package, preset, log_dir):
            "-S", str(console_path), "-m", str(monitor_path),
            "-L", str(log_dir)]
     with serve_package(package) as http_port, (work / "ci-emulator-launch.log").open("wb") as launcher:
-        print(f"Starting emulated OpenWrt ({preset}), package bytes: {package.stat().st_size}", flush=True)
+        print(f"Starting emulated OpenWrt {openwrt_version} ({preset}), package bytes: {package.stat().st_size}", flush=True)
         process = subprocess.Popen(cmd, cwd=emulator, stdout=launcher, stderr=subprocess.STDOUT)
         serial = None
         try:
@@ -236,26 +249,24 @@ def run_test(emulator, package, preset, log_dir):
                 f"test \"$(date +%s)\" -ge {host_epoch - 2} && date -u",
                 timeout=20,
             )
-            serial.run("command -v apk && grep -q '25.12.5' /etc/openwrt_release")
+            serial.run(
+                f"command -v {manager} && "
+                f'grep -Fxq "DISTRIB_RELEASE=\'{openwrt_version}\'" /etc/openwrt_release'
+            )
             serial.run("for i in $(seq 1 30); do ip -4 route show default | grep -q '^default ' && break; sleep 2; done; ip -4 route show default | grep -q '^default '", timeout=75)
-            serial.run(f"wget -T 30 -O {GUEST_PACKAGE} http://10.0.2.2:{http_port}/mt-c.apk", timeout=120)
+            serial.run(f"wget -T 30 -O {guest_package} http://10.0.2.2:{http_port}/mt-c{package.suffix}", timeout=120)
             package_sha256 = hashlib.sha256(package.read_bytes()).hexdigest()
             serial.run(
-                f"printf '%s  %s\\n' '{package_sha256}' '{GUEST_PACKAGE}' | sha256sum -c -"
+                f"printf '%s  %s\\n' '{package_sha256}' '{guest_package}' | sha256sum -c -"
             )
-            # Early boot can briefly disrupt external feed downloads while
-            # netifd/dnsmasq finish initializing. Retry failed index updates,
-            # but never proceed with a partial index or hide a persistent error.
-            for attempt in range(1, 5):
-                result = serial.run("apk update", timeout=180, check=False, show_output=True)
-                if result == 0:
-                    break
-                if attempt == 4:
-                    raise SmokeFailure("apk update failed after 4 attempts (see guest output)")
-                print(f"apk update attempt {attempt}/4 failed; retrying in 5s", flush=True)
-                time.sleep(5)
-            serial.run(f"apk add --allow-untrusted {GUEST_PACKAGE}", timeout=240)
-            serial.run("apk info -e mt-c && test -x /usr/bin/magitrickled && test -x /etc/init.d/magitrickle")
+            run_package_command(serial, f"{manager} update", timeout=180)
+            if manager == "opkg":
+                run_package_command(serial, f"opkg install {guest_package}", timeout=240)
+                serial.run("opkg list-installed mt-c | grep -q '^mt-c - '")
+            else:
+                run_package_command(serial, f"apk add --allow-untrusted {guest_package}", timeout=240)
+                serial.run("apk info -e mt-c")
+            serial.run("test -x /usr/bin/magitrickled && test -x /etc/init.d/magitrickle")
             serial.run("grep -A 3 '^  link:' /etc/magitrickle/state/config.yaml | grep -q 'br-lan'")
             serial.run("/etc/init.d/magitrickle restart", timeout=90)
             # Detect immediate startup failures before waiting for the API.
@@ -264,10 +275,11 @@ def run_test(emulator, package, preset, log_dir):
             # Verify the service survives the API request, not just a
             # momentary procd spawn immediately after package install.
             serial.run("sleep 3; pidof magitrickled", timeout=20)
-            print("PASS: APK installed, procd service running, HTTP API responding", flush=True)
+            print(f"PASS: {package.suffix[1:].upper()} installed via {manager}, procd service running, HTTP API responding", flush=True)
             # The forwarding test requires isolated client/server network
             # namespaces, and fails rather than degrading to a rule-only test.
-            serial.run("apk add ip-full kmod-veth ipset uhttpd curl", timeout=240)
+            install = "opkg install" if manager == "opkg" else "apk add"
+            run_package_command(serial, f"{install} ip-full kmod-veth ipset uhttpd curl", timeout=240)
             # Exercise discovery against a real dnsmasq lease and the exact
             # SSE/JSON interfaces used by the journal, before changing fw4.
             serial.run(f"wget -T 30 -O /tmp/mtci-dhcp.sh http://10.0.2.2:{http_port}/dhcp.sh", timeout=60)
@@ -289,12 +301,12 @@ def run_test(emulator, package, preset, log_dir):
             # still working after a full fw4 reload.
             serial.run("(sh /tmp/mtci-routing.sh > /tmp/mtci-routing.log 2>&1; echo $? > /tmp/mtci-status) </dev/null >/dev/null 2>&1 &")
             serial.run(
-                "for i in $(seq 1 120); do test -f /tmp/mtci-status && break; sleep 1; done; test -f /tmp/mtci-status",
-                timeout=135,
+                "for i in $(seq 1 360); do test -f /tmp/mtci-status && break; sleep 1; done; test -f /tmp/mtci-status",
+                timeout=375,
             )
             serial.run("cat /tmp/mtci-routing.log", show_output=True)
             serial.run("test \"$(cat /tmp/mtci-status)\" = 0")
-            print("PASS: client DNS and HTTP traffic routed over selected interface", flush=True)
+            print("PASS: all six rule types route client HTTP traffic over selected interface (IPv4 and IPv6)", flush=True)
         except Exception:
             if serial is not None:
                 for diagnostic in (
@@ -323,15 +335,19 @@ def main():
     parser.add_argument("--emulator-dir", type=Path, required=True)
     parser.add_argument("--package", type=Path, required=True)
     parser.add_argument("--preset", default="cudy-wr3000p-v1")
+    parser.add_argument("--openwrt-version", required=True)
     args = parser.parse_args()
     emulator = args.emulator_dir.resolve()
     package = args.package.resolve()
-    if not package.is_file() or package.suffix != ".apk":
-        parser.error("--package must be an existing OpenWrt APK")
+    if not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", args.openwrt_version):
+        parser.error("--openwrt-version must be a release version, e.g. 24.10.4")
+    expected_suffix = ".ipk" if int(args.openwrt_version.split(".")[0]) < 25 else ".apk"
+    if not package.is_file() or package.suffix != expected_suffix:
+        parser.error(f"--package must be an existing OpenWrt {expected_suffix} for {args.openwrt_version}")
     if not (emulator / "emulator.sh").is_file():
         parser.error("--emulator-dir does not contain emulator.sh")
     try:
-        run_test(emulator, package, args.preset, emulator / "work" / "logs")
+        run_test(emulator, package, args.preset, emulator / "work" / "logs", args.openwrt_version)
     except (SmokeFailure, OSError, subprocess.SubprocessError) as error:
         print(f"FAIL: {error}", file=sys.stderr, flush=True)
         return 1
