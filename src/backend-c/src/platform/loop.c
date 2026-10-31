@@ -37,6 +37,7 @@ typedef struct watch {
     watch_kind_t kind;
     bool removed;
     bool one_shot;
+    bool reusable;
     int fd;
     int id; /* timer id */
     mt_fd_cb fd_cb;
@@ -99,7 +100,7 @@ static void watch_unlink(mt_loop_t *loop, watch_t *w)
 
 static void watch_release(mt_loop_t *loop, watch_t *w)
 {
-    if (w->kind == WATCH_TIMER && w->fd >= 0) {
+    if (w->kind == WATCH_TIMER && w->reusable && w->fd >= 0) {
         w->next = loop->idle_timers;
         loop->idle_timers = w;
     } else {
@@ -313,53 +314,50 @@ static int next_timer_id(mt_loop_t *loop)
     return id;
 }
 
-mt_err_t mt_loop_add_timer(mt_loop_t *loop, uint64_t initial_ms,
-                           uint64_t interval_ms, mt_timer_cb cb, void *ud,
-                           int *out_id)
+static void timer_settings(struct itimerspec *its, uint64_t initial_ms,
+                            uint64_t interval_ms)
 {
-    struct itimerspec its;
-    memset(&its, 0, sizeof(its));
-    its.it_value.tv_sec = (time_t)(initial_ms / 1000);
-    its.it_value.tv_nsec = (long)(initial_ms % 1000) * 1000000L;
+    memset(its, 0, sizeof(*its));
+    its->it_value.tv_sec = (time_t)(initial_ms / 1000);
+    its->it_value.tv_nsec = (long)(initial_ms % 1000) * 1000000L;
     if (initial_ms == 0) {
         /* fire "immediately": timerfd disarms on all-zero, so use 1 ns */
-        its.it_value.tv_nsec = 1;
+        its->it_value.tv_nsec = 1;
     }
-    its.it_interval.tv_sec = (time_t)(interval_ms / 1000);
-    its.it_interval.tv_nsec = (long)(interval_ms % 1000) * 1000000L;
-    watch_t *w = loop->idle_timers;
-    bool reused = w != NULL;
-    if (reused) {
-        loop->idle_timers = w->next;
-        loop->cached_timers--;
-    } else {
-        w = calloc(1, sizeof(*w));
-        if (w == NULL) {
-            return MT_ERR_NOMEM;
-        }
-        w->fd = timerfd_create(CLOCK_MONOTONIC, TFD_CLOEXEC | TFD_NONBLOCK);
-        if (w->fd < 0) {
-            mt_err_t err = mt_err_from_errno(errno);
-            free(w);
-            return err;
-        }
+    its->it_interval.tv_sec = (time_t)(interval_ms / 1000);
+    its->it_interval.tv_nsec = (long)(interval_ms % 1000) * 1000000L;
+}
+
+static mt_err_t add_new_timer(mt_loop_t *loop, uint64_t initial_ms,
+                              uint64_t interval_ms, mt_timer_cb cb, void *ud,
+                              int *out_id, bool reusable)
+{
+    /* Preserve the original fresh-timer call order for ordinary callers:
+     * create, arm, allocate the watch, then register it with epoll. */
+    int tfd = timerfd_create(CLOCK_MONOTONIC, TFD_CLOEXEC | TFD_NONBLOCK);
+    if (tfd < 0) {
+        return mt_err_from_errno(errno);
     }
-    if (timerfd_settime(w->fd, 0, &its, NULL) != 0) {
+    struct itimerspec its;
+    timer_settings(&its, initial_ms, interval_ms);
+    if (timerfd_settime(tfd, 0, &its, NULL) != 0) {
         mt_err_t err = mt_err_from_errno(errno);
-        close(w->fd);
-        free(w);
+        close(tfd);
         return err;
     }
+    watch_t *w = calloc(1, sizeof(*w));
+    if (w == NULL) {
+        close(tfd);
+        return MT_ERR_NOMEM;
+    }
     w->kind = WATCH_TIMER;
-    w->removed = false;
     w->one_shot = interval_ms == 0;
+    w->reusable = reusable;
+    w->fd = tfd;
     w->id = next_timer_id(loop);
     w->timer_cb = cb;
     w->ud = ud;
-    mt_err_t err = w->id == 0 ? MT_ERR_LIMIT : MT_OK;
-    if (err == MT_OK && !reused) {
-        err = watch_register(loop, w, EPOLLIN);
-    }
+    mt_err_t err = w->id == 0 ? MT_ERR_LIMIT : watch_register(loop, w, EPOLLIN);
     if (err != MT_OK) {
         close(w->fd);
         free(w);
@@ -372,19 +370,65 @@ mt_err_t mt_loop_add_timer(mt_loop_t *loop, uint64_t initial_ms,
     return MT_OK;
 }
 
+mt_err_t mt_loop_add_timer(mt_loop_t *loop, uint64_t initial_ms,
+                           uint64_t interval_ms, mt_timer_cb cb, void *ud,
+                           int *out_id)
+{
+    return add_new_timer(loop, initial_ms, interval_ms, cb, ud, out_id, false);
+}
+
+mt_err_t mt_loop_add_reusable_timer(mt_loop_t *loop, uint64_t initial_ms,
+                                    uint64_t interval_ms, mt_timer_cb cb,
+                                    void *ud, int *out_id)
+{
+    watch_t *w = loop->idle_timers;
+    if (w == NULL) {
+        return add_new_timer(loop, initial_ms, interval_ms, cb, ud, out_id, true);
+    }
+    loop->idle_timers = w->next;
+    loop->cached_timers--;
+    struct itimerspec its;
+    timer_settings(&its, initial_ms, interval_ms);
+    if (timerfd_settime(w->fd, 0, &its, NULL) != 0) {
+        mt_err_t err = mt_err_from_errno(errno);
+        close(w->fd);
+        free(w);
+        return err;
+    }
+    w->removed = false;
+    w->one_shot = interval_ms == 0;
+    w->id = next_timer_id(loop);
+    w->timer_cb = cb;
+    w->ud = ud;
+    if (w->id == 0) {
+        close(w->fd);
+        free(w);
+        return MT_ERR_LIMIT;
+    }
+    watch_link(loop, w);
+    if (out_id != NULL) {
+        *out_id = w->id;
+    }
+    return MT_OK;
+}
+
 mt_err_t mt_loop_del_timer(mt_loop_t *loop, int timer_id)
 {
     for (watch_t *w = loop->watches; w != NULL; w = w->next) {
         if (w->kind == WATCH_TIMER && w->id == timer_id) {
-            struct itimerspec disarmed;
-            memset(&disarmed, 0, sizeof(disarmed));
+            bool cached = false;
             /* settime disarms AND clears unread expirations. Keep the
              * independent kernel timer and its epoll watch for reuse. A
              * failed disarm must close it, never leave a live idle timer. */
-            if (loop->cached_timers < MT_LOOP_IDLE_TIMERS &&
-                timerfd_settime(w->fd, 0, &disarmed, NULL) == 0) {
-                loop->cached_timers++;
-            } else {
+            if (w->reusable && loop->cached_timers < MT_LOOP_IDLE_TIMERS) {
+                struct itimerspec disarmed;
+                memset(&disarmed, 0, sizeof(disarmed));
+                if (timerfd_settime(w->fd, 0, &disarmed, NULL) == 0) {
+                    loop->cached_timers++;
+                    cached = true;
+                }
+            }
+            if (!cached) {
                 (void)epoll_ctl(loop->epfd, EPOLL_CTL_DEL, w->fd, NULL);
                 close(w->fd);
                 w->fd = -1;

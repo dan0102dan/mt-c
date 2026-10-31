@@ -22,12 +22,23 @@ struct probe {
     int fail_ctl;
     bool fake_timer_reads;
     uint64_t expirations;
+    char calls[32];
+    size_t call_count;
     int (*wait_script)(struct epoll_event *events, int count);
 };
 static struct probe probe;
 
+static void record_call(char call)
+{
+    if (probe.call_count + 1 < sizeof(probe.calls)) {
+        probe.calls[probe.call_count++] = call;
+        probe.calls[probe.call_count] = '\0';
+    }
+}
+
 static void *probe_calloc(size_t n, size_t size)
 {
+    record_call('A');
     probe.allocs++;
     if (probe.fail_alloc) {
         probe.fail_alloc = false;
@@ -38,18 +49,20 @@ static void *probe_calloc(size_t n, size_t size)
 
 static void probe_free(void *p)
 {
-    if (p != NULL) { probe.frees++; }
+    if (p != NULL) { probe.frees++; record_call('F'); }
     free(p);
 }
 
 static int probe_close(int fd)
 {
+    record_call('X');
     probe.closes++;
     return close(fd);
 }
 
 static int probe_timerfd_create(int clockid, int flags)
 {
+    record_call('C');
     probe.creates++;
     if (probe.fail_create) {
         probe.fail_create = false;
@@ -63,6 +76,7 @@ static int probe_timerfd_settime(int fd, int flags,
                                 const struct itimerspec *value,
                                 struct itimerspec *old)
 {
+    record_call('S');
     probe.sets++;
     if (probe.fail_set) {
         probe.fail_set = false;
@@ -74,8 +88,8 @@ static int probe_timerfd_settime(int fd, int flags,
 
 static int probe_epoll_ctl(int epfd, int op, int fd, struct epoll_event *ev)
 {
-    if (op == EPOLL_CTL_ADD) { probe.adds++; }
-    if (op == EPOLL_CTL_DEL) { probe.dels++; }
+    if (op == EPOLL_CTL_ADD) { probe.adds++; record_call('E'); }
+    if (op == EPOLL_CTL_DEL) { probe.dels++; record_call('D'); }
     if (probe.fail_ctl == op) {
         probe.fail_ctl = 0;
         errno = EIO;
@@ -175,7 +189,7 @@ TEST warm_timer_churn_reuses_fd_watch_and_kernel_registration(void)
     int previous = 0;
     for (unsigned i = 0; i < 1000; i++) {
         int id = 0;
-        ASSERT_EQ(MT_OK, mt_loop_add_timer(loop, 60000, 0, count_cb, &calls, &id));
+        ASSERT_EQ(MT_OK, mt_loop_add_reusable_timer(loop, 60000, 0, count_cb, &calls, &id));
         ASSERT(id > previous);
         ASSERT_EQ(MT_ERR_NOENT, mt_loop_del_timer(loop, previous));
         ASSERT_EQ(MT_OK, mt_loop_del_timer(loop, id));
@@ -198,6 +212,64 @@ TEST warm_timer_churn_reuses_fd_watch_and_kernel_registration(void)
     PASS();
 }
 
+TEST ordinary_timers_never_consume_or_refill_a_warm_reuse_pool(void)
+{
+    reset_probe();
+    mt_loop_t *loop = NULL;
+    ASSERT_EQ(MT_OK, mt_loop_create(&loop));
+    unsigned calls = 0;
+    int cached_id;
+    ASSERT_EQ(MT_OK, mt_loop_add_reusable_timer(loop, 60000, 0, count_cb, &calls, &cached_id));
+    watch_t *reserved = timer_watch(loop, cached_id);
+    ASSERT_EQ(MT_OK, mt_loop_del_timer(loop, cached_id));
+    ASSERT_EQ(1u, loop->cached_timers);
+    int base = fd_count(); ASSERT(base >= 0);
+    reset_probe();
+    for (unsigned i = 0; i < 64; i++) {
+        int id;
+        ASSERT_EQ(MT_OK, mt_loop_add_timer(loop, 60000, 0, count_cb, &calls, &id));
+        watch_t *w = timer_watch(loop, id);
+        ASSERT(w != NULL && w != reserved && !w->reusable);
+        ASSERT(w->fd != reserved->fd);
+        ASSERT_EQ(MT_OK, mt_loop_del_timer(loop, id));
+        if (i == 0) { ASSERT_STR_EQ("CSAEDXF", probe.calls); }
+        ASSERT_EQ(1u, loop->cached_timers);
+        ASSERT_EQ(reserved, loop->idle_timers);
+    }
+    ASSERT_EQ(64u, probe.creates); ASSERT_EQ(64u, probe.sets);
+    ASSERT_EQ(64u, probe.allocs); ASSERT_EQ(64u, probe.adds);
+    ASSERT_EQ(64u, probe.dels); ASSERT_EQ(64u, probe.closes);
+    ASSERT_EQ(64u, probe.frees); ASSERT_EQ(base, fd_count());
+    reset_probe();
+    int reused_id;
+    ASSERT_EQ(MT_OK, mt_loop_add_reusable_timer(loop, 60000, 0, count_cb, &calls, &reused_id));
+    ASSERT_EQ(reserved, timer_watch(loop, reused_id));
+    ASSERT_EQ(0u, probe.creates); ASSERT_EQ(0u, probe.adds); ASSERT_EQ(0u, probe.allocs);
+    ASSERT_EQ(MT_OK, mt_loop_del_timer(loop, reused_id));
+    mt_loop_destroy(loop);
+    PASS();
+}
+
+TEST ordinary_allocation_failure_preserves_warm_pool_and_original_call_order(void)
+{
+    reset_probe();
+    mt_loop_t *loop = NULL;
+    ASSERT_EQ(MT_OK, mt_loop_create(&loop));
+    unsigned calls = 0;
+    int id;
+    ASSERT_EQ(MT_OK, mt_loop_add_reusable_timer(loop, 60000, 0, count_cb, &calls, &id));
+    ASSERT_EQ(MT_OK, mt_loop_del_timer(loop, id));
+    watch_t *reserved = loop->idle_timers;
+    int base = fd_count(); ASSERT(base >= 0);
+    reset_probe(); probe.fail_alloc = true; id = -123;
+    ASSERT_EQ(MT_ERR_NOMEM, mt_loop_add_timer(loop, 60000, 0, count_cb, &calls, &id));
+    ASSERT_EQ(-123, id); ASSERT_STR_EQ("CSAX", probe.calls);
+    ASSERT_EQ(reserved, loop->idle_timers); ASSERT_EQ(1u, loop->cached_timers);
+    ASSERT(loop->watches == NULL); ASSERT_EQ(base, fd_count());
+    mt_loop_destroy(loop);
+    PASS();
+}
+
 TEST idle_fd_retention_is_bounded_and_destroy_closes_every_timer(void)
 {
     reset_probe();
@@ -208,7 +280,7 @@ TEST idle_fd_retention_is_bounded_and_destroy_closes_every_timer(void)
     unsigned calls = 0;
     reset_probe();
     for (size_t i = 0; i < 70; i++) {
-        ASSERT_EQ(MT_OK, mt_loop_add_timer(loop, 60000, 5, count_cb, &calls, &ids[i]));
+        ASSERT_EQ(MT_OK, mt_loop_add_reusable_timer(loop, 60000, 5, count_cb, &calls, &ids[i]));
     }
     for (size_t i = 0; i < 70; i++) {
         ASSERT_EQ(MT_OK, mt_loop_del_timer(loop, ids[i]));
@@ -218,7 +290,7 @@ TEST idle_fd_retention_is_bounded_and_destroy_closes_every_timer(void)
     ASSERT_EQ(38u, probe.dels);
     ASSERT_EQ(102u, probe.sets);
     for (size_t i = 0; i < 32; i++) {
-        ASSERT_EQ(MT_OK, mt_loop_add_timer(loop, 60000, 0, count_cb, &calls, &ids[i]));
+        ASSERT_EQ(MT_OK, mt_loop_add_reusable_timer(loop, 60000, 0, count_cb, &calls, &ids[i]));
     }
     ASSERT_EQ(70u, probe.creates);
     ASSERT_EQ(70u, probe.allocs);
@@ -240,7 +312,7 @@ TEST disarming_clears_unread_expirations_before_reuse(void)
     ASSERT_EQ(MT_OK, mt_loop_create(&loop));
     unsigned calls = 0;
     int old_id = 0, new_id = 0;
-    ASSERT_EQ(MT_OK, mt_loop_add_timer(loop, 0, 1, count_cb, &calls, &old_id));
+    ASSERT_EQ(MT_OK, mt_loop_add_reusable_timer(loop, 0, 1, count_cb, &calls, &old_id));
     watch_t *old = timer_watch(loop, old_id);
     ASSERT(old != NULL);
     int fd = old->fd;
@@ -259,7 +331,7 @@ TEST disarming_clears_unread_expirations_before_reuse(void)
     ASSERT_EQ(0, value.it_interval.tv_nsec);
     struct epoll_event event;
     ASSERT_EQ(0, epoll_wait(loop->epfd, &event, 1, 0));
-    ASSERT_EQ(MT_OK, mt_loop_add_timer(loop, 60000, 0, count_cb, &calls, &new_id));
+    ASSERT_EQ(MT_OK, mt_loop_add_reusable_timer(loop, 60000, 0, count_cb, &calls, &new_id));
     ASSERT_EQ(old, timer_watch(loop, new_id));
     ASSERT(new_id != old_id);
     ASSERT_EQ(-1, read(fd, &ticks, sizeof(ticks)));
@@ -277,7 +349,7 @@ struct ordering_ctx {
     int old_id, child_id;
     unsigned old_calls, child_calls;
     mt_err_t cancel_error, add_error;
-    bool inside_callback, recursive, quarantined;
+    bool inside_callback, recursive, quarantined, reusable_child;
     char trace[16];
     size_t trace_len;
 };
@@ -304,7 +376,9 @@ static void add_child(mt_loop_t *loop, struct ordering_ctx *ctx)
 {
     ctx->inside_callback = true;
     ctx->cancel_error = mt_loop_del_timer(loop, ctx->old_id);
-    ctx->add_error = mt_loop_add_timer(loop, 0, 0, child_cb, ctx, &ctx->child_id);
+    ctx->add_error = ctx->reusable_child ?
+        mt_loop_add_reusable_timer(loop, 0, 0, child_cb, ctx, &ctx->child_id) :
+        mt_loop_add_timer(loop, 0, 0, child_cb, ctx, &ctx->child_id);
     ctx->child = timer_watch(loop, ctx->child_id);
     ctx->quarantined = ctx->old->removed && ctx->child != ctx->old;
     trace(ctx, 'R');
@@ -356,17 +430,22 @@ static int ordering_wait(struct epoll_event *events, int count)
     return -1;
 }
 
-static greatest_test_res check_ordering(bool from_timer)
+static greatest_test_res check_ordering(bool from_timer, bool reusable_old,
+                                         bool reusable_child)
 {
     reset_probe();
     struct ordering_ctx ctx = {0};
+    ctx.reusable_child = reusable_child;
     ASSERT_EQ(MT_OK, mt_loop_create(&ctx.loop));
     int first_pipe[2], last_pipe[2];
     ASSERT_EQ(0, pipe(first_pipe));
     ASSERT_EQ(0, pipe(last_pipe));
     ASSERT_EQ(MT_OK, mt_loop_add_fd(ctx.loop, last_pipe[0], EPOLLIN, sentinel_cb, &ctx));
     ctx.sentinel = find_fd_watch(ctx.loop, last_pipe[0]);
-    ASSERT_EQ(MT_OK, mt_loop_add_timer(ctx.loop, 0, 0, count_cb, &ctx.old_calls, &ctx.old_id));
+    mt_err_t err = reusable_old ?
+        mt_loop_add_reusable_timer(ctx.loop, 0, 0, count_cb, &ctx.old_calls, &ctx.old_id) :
+        mt_loop_add_timer(ctx.loop, 0, 0, count_cb, &ctx.old_calls, &ctx.old_id);
+    ASSERT_EQ(MT_OK, err);
     ctx.old = timer_watch(ctx.loop, ctx.old_id);
     if (from_timer) {
         int first_id;
@@ -401,12 +480,22 @@ static greatest_test_res check_ordering(bool from_timer)
 
 TEST fd_callback_cannot_reuse_a_cancelled_timer_from_the_same_ready_batch(void)
 {
-    return check_ordering(false);
+    for (unsigned old = 0; old < 2; old++) {
+        for (unsigned child = 0; child < 2; child++) {
+            CHECK_CALL(check_ordering(false, old != 0, child != 0));
+        }
+    }
+    PASS();
 }
 
 TEST timer_callback_cannot_insert_a_child_into_the_current_ready_batch(void)
 {
-    return check_ordering(true);
+    for (unsigned old = 0; old < 2; old++) {
+        for (unsigned child = 0; child < 2; child++) {
+            CHECK_CALL(check_ordering(true, old != 0, child != 0));
+        }
+    }
+    PASS();
 }
 
 struct self_free_result { unsigned calls; mt_err_t own_error, peer_error; };
@@ -443,7 +532,7 @@ TEST callback_can_cancel_itself_and_a_ready_peer_then_free_its_userdata(void)
     ctx->result = &result;
     unsigned peer_calls = 0, stop_calls = 0;
     int stop_id;
-    ASSERT_EQ(MT_OK, mt_loop_add_timer(loop, 0, 5, self_free_cb, ctx, &ctx->own_id));
+    ASSERT_EQ(MT_OK, mt_loop_add_reusable_timer(loop, 0, 5, self_free_cb, ctx, &ctx->own_id));
     ASSERT_EQ(MT_OK, mt_loop_add_timer(loop, 0, 0, count_cb, &peer_calls, &ctx->peer_id));
     ASSERT_EQ(MT_OK, mt_loop_add_timer(loop, 0, 0, stop_cb, &stop_calls, &stop_id));
     self_free_events[0] = timer_watch(loop, ctx->own_id);
@@ -464,6 +553,32 @@ TEST callback_can_cancel_itself_and_a_ready_peer_then_free_its_userdata(void)
     PASS();
 }
 
+static void free_oneshot_cb(mt_loop_t *loop, void *ud)
+{
+    unsigned **calls = ud;
+    (**calls)++;
+    free(calls);
+    mt_loop_stop(loop);
+}
+
+TEST reusable_oneshot_callback_may_free_userdata_without_deleting_itself(void)
+{
+    reset_probe();
+    mt_loop_t *loop = NULL;
+    ASSERT_EQ(MT_OK, mt_loop_create(&loop));
+    unsigned calls = 0;
+    unsigned **ud = malloc(sizeof(*ud)); ASSERT(ud != NULL); *ud = &calls;
+    int base = fd_count(); ASSERT(base >= 0);
+    int id;
+    ASSERT_EQ(MT_OK, mt_loop_add_reusable_timer(loop, 0, 0, free_oneshot_cb, ud, &id));
+    ASSERT_EQ(MT_OK, mt_loop_run(loop));
+    ASSERT_EQ(1u, calls); ASSERT_EQ(MT_ERR_NOENT, mt_loop_del_timer(loop, id));
+    ASSERT(loop->watches == NULL); ASSERT(loop->retired == NULL);
+    ASSERT(loop->idle_timers == NULL); ASSERT_EQ(base, fd_count());
+    mt_loop_destroy(loop);
+    PASS();
+}
+
 TEST allocation_and_kernel_registration_failures_leave_no_live_timer(void)
 {
     reset_probe();
@@ -480,7 +595,7 @@ TEST allocation_and_kernel_registration_failures_leave_no_live_timer(void)
         int id = -123;
         mt_err_t expected = fault == 0 ? MT_ERR_NOMEM :
                             fault == 1 ? mt_err_from_errno(EMFILE) : MT_ERR_IO;
-        ASSERT_EQ(expected, mt_loop_add_timer(loop, 60000, 0, count_cb, &calls, &id));
+        ASSERT_EQ(expected, mt_loop_add_reusable_timer(loop, 60000, 0, count_cb, &calls, &id));
         ASSERT_EQ(-123, id);
         ASSERT_EQ(base, fd_count());
         ASSERT(loop->watches == NULL);
@@ -498,12 +613,12 @@ TEST failed_rearm_discards_cached_timer_and_preserves_other_active_timer(void)
     unsigned calls = 0;
     int active_id = 0, old_id = 0, new_id = -123;
     ASSERT_EQ(MT_OK, mt_loop_add_timer(loop, 60000, 0, count_cb, &calls, &active_id));
-    ASSERT_EQ(MT_OK, mt_loop_add_timer(loop, 60000, 0, count_cb, &calls, &old_id));
+    ASSERT_EQ(MT_OK, mt_loop_add_reusable_timer(loop, 60000, 0, count_cb, &calls, &old_id));
     ASSERT_EQ(MT_OK, mt_loop_del_timer(loop, old_id));
     int base = fd_count(); ASSERT(base >= 0);
     reset_probe();
     probe.fail_set = true;
-    ASSERT_EQ(MT_ERR_IO, mt_loop_add_timer(loop, 0, 0, count_cb, &calls, &new_id));
+    ASSERT_EQ(MT_ERR_IO, mt_loop_add_reusable_timer(loop, 0, 0, count_cb, &calls, &new_id));
     ASSERT_EQ(-123, new_id);
     ASSERT_EQ(0u, probe.creates);
     ASSERT_EQ(1u, probe.closes);
@@ -524,7 +639,7 @@ TEST failed_disarm_closes_timer_even_if_epoll_delete_also_fails(void)
     int base = fd_count(); ASSERT(base >= 0);
     unsigned calls = 0;
     int id;
-    ASSERT_EQ(MT_OK, mt_loop_add_timer(loop, 0, 1, count_cb, &calls, &id));
+    ASSERT_EQ(MT_OK, mt_loop_add_reusable_timer(loop, 0, 1, count_cb, &calls, &id));
     reset_probe();
     probe.fail_set = true;
     probe.fail_ctl = EPOLL_CTL_DEL;
@@ -556,7 +671,7 @@ TEST epoll_wait_error_releases_idle_timers_but_preserves_live_ids(void)
     unsigned calls = 0;
     int active, idle;
     ASSERT_EQ(MT_OK, mt_loop_add_timer(loop, 60000, 0, count_cb, &calls, &active));
-    ASSERT_EQ(MT_OK, mt_loop_add_timer(loop, 60000, 0, count_cb, &calls, &idle));
+    ASSERT_EQ(MT_OK, mt_loop_add_reusable_timer(loop, 60000, 0, count_cb, &calls, &idle));
     ASSERT_EQ(MT_OK, mt_loop_del_timer(loop, idle));
     probe.wait_script = error_wait;
     ASSERT_EQ(MT_ERR_IO, mt_loop_run(loop));
@@ -578,14 +693,14 @@ TEST timer_id_wrap_avoids_signed_overflow_and_live_id_collisions(void)
     ASSERT_EQ(MT_OK, mt_loop_create(&loop));
     unsigned calls = 0;
     int first, second, last, wrapped;
-    ASSERT_EQ(MT_OK, mt_loop_add_timer(loop, 60000, 0, count_cb, &calls, &first));
+    ASSERT_EQ(MT_OK, mt_loop_add_reusable_timer(loop, 60000, 0, count_cb, &calls, &first));
     ASSERT_EQ(MT_OK, mt_loop_add_timer(loop, 60000, 0, count_cb, &calls, &second));
     ASSERT_EQ(1, first);
     ASSERT_EQ(2, second);
     loop->next_timer_id = INT_MAX;
-    ASSERT_EQ(MT_OK, mt_loop_add_timer(loop, 60000, 0, count_cb, &calls, &last));
+    ASSERT_EQ(MT_OK, mt_loop_add_reusable_timer(loop, 60000, 0, count_cb, &calls, &last));
     ASSERT_EQ(INT_MAX, last);
-    ASSERT_EQ(MT_OK, mt_loop_add_timer(loop, 60000, 0, count_cb, &calls, &wrapped));
+    ASSERT_EQ(MT_OK, mt_loop_add_reusable_timer(loop, 60000, 0, count_cb, &calls, &wrapped));
     ASSERT_EQ(3, wrapped);
     ASSERT(timer_watch(loop, first) != NULL);
     ASSERT(timer_watch(loop, second) != NULL);
@@ -611,7 +726,7 @@ TEST delayed_periodic_expirations_coalesce_without_changing_kernel_interval(void
     ASSERT_EQ(MT_OK, mt_loop_create(&loop));
     unsigned calls = 0;
     int id;
-    ASSERT_EQ(MT_OK, mt_loop_add_timer(loop, 1, 5, stop_cb, &calls, &id));
+    ASSERT_EQ(MT_OK, mt_loop_add_reusable_timer(loop, 1, 5, stop_cb, &calls, &id));
     periodic_watch = timer_watch(loop, id);
     struct timespec delay = {.tv_sec = 0, .tv_nsec = 40000000L};
     while (nanosleep(&delay, &delay) != 0 && errno == EINTR) { }
@@ -634,11 +749,14 @@ int main(int argc, char **argv)
 {
     GREATEST_MAIN_BEGIN();
     RUN_TEST(warm_timer_churn_reuses_fd_watch_and_kernel_registration);
+    RUN_TEST(ordinary_timers_never_consume_or_refill_a_warm_reuse_pool);
+    RUN_TEST(ordinary_allocation_failure_preserves_warm_pool_and_original_call_order);
     RUN_TEST(idle_fd_retention_is_bounded_and_destroy_closes_every_timer);
     RUN_TEST(disarming_clears_unread_expirations_before_reuse);
     RUN_TEST(fd_callback_cannot_reuse_a_cancelled_timer_from_the_same_ready_batch);
     RUN_TEST(timer_callback_cannot_insert_a_child_into_the_current_ready_batch);
     RUN_TEST(callback_can_cancel_itself_and_a_ready_peer_then_free_its_userdata);
+    RUN_TEST(reusable_oneshot_callback_may_free_userdata_without_deleting_itself);
     RUN_TEST(allocation_and_kernel_registration_failures_leave_no_live_timer);
     RUN_TEST(failed_rearm_discards_cached_timer_and_preserves_other_active_timer);
     RUN_TEST(failed_disarm_closes_timer_even_if_epoll_delete_also_fails);

@@ -297,6 +297,7 @@ $(BUILDDIR)/tests/test_dns_fastpath: tests/unit/test_dns_fastpath.c src/dns/prox
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -Itests/vendor -Itests/unit $(LDFLAGS) \
 	    -Wl,--wrap=mt_dns_msg_pack -Wl,--wrap=mt_dns_msg_parse -Wl,--wrap=sendmsg \
+	    -Wl,--wrap=mt_loop_add_timer -Wl,--wrap=mt_loop_add_reusable_timer \
 	    -o $@ $< $(filter-out $(BUILDDIR)/src/dns/proxy.o,$(LIB_OBJS)) $(TEST_SUPPORT_OBJS) $(LDLIBS) $(DEP_LIBS)
 
 $(BUILDDIR)/tests/test_loop_timer_queue: tests/unit/test_loop_timer_queue.c src/platform/loop.c $(LIB_OBJS) $(TEST_SUPPORT_OBJS)

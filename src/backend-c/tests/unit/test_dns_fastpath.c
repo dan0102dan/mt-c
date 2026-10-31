@@ -7,8 +7,22 @@ mt_err_t __real_mt_dns_msg_pack(const mt_dns_msg_t *msg, uint8_t **out, size_t *
 mt_err_t __real_mt_dns_msg_parse(const uint8_t *data, size_t len, mt_dns_msg_t **out);
 mt_err_t __wrap_mt_dns_msg_pack(const mt_dns_msg_t *msg, uint8_t **out, size_t *len);
 mt_err_t __wrap_mt_dns_msg_parse(const uint8_t *data, size_t len, mt_dns_msg_t **out);
+mt_err_t __real_mt_loop_add_timer(mt_loop_t *loop, uint64_t initial_ms,
+                                 uint64_t interval_ms, mt_timer_cb cb,
+                                 void *ud, int *out_id);
+mt_err_t __real_mt_loop_add_reusable_timer(mt_loop_t *loop, uint64_t initial_ms,
+                                          uint64_t interval_ms, mt_timer_cb cb,
+                                          void *ud, int *out_id);
+mt_err_t __wrap_mt_loop_add_timer(mt_loop_t *loop, uint64_t initial_ms,
+                                 uint64_t interval_ms, mt_timer_cb cb,
+                                 void *ud, int *out_id);
+mt_err_t __wrap_mt_loop_add_reusable_timer(mt_loop_t *loop, uint64_t initial_ms,
+                                          uint64_t interval_ms, mt_timer_cb cb,
+                                          void *ud, int *out_id);
 ssize_t __wrap_sendmsg(int fd, const struct msghdr *msg, int flags);
 static unsigned packs, parses, callbacks, original_aaaa;
+static unsigned ordinary_timers, reusable_timers;
+static unsigned fail_ordinary_at, fail_reusable_at;
 static bool fail_pack;
 static uint8_t delivered[MT_DNS_MAX_MSG + 2];
 static size_t delivered_len;
@@ -20,6 +34,23 @@ mt_err_t __wrap_mt_dns_msg_pack(const mt_dns_msg_t *msg, uint8_t **out, size_t *
 }
 mt_err_t __wrap_mt_dns_msg_parse(const uint8_t *data, size_t len, mt_dns_msg_t **out)
 { parses++; return __real_mt_dns_msg_parse(data, len, out); }
+mt_err_t __wrap_mt_loop_add_timer(mt_loop_t *loop, uint64_t initial_ms,
+                                 uint64_t interval_ms, mt_timer_cb cb,
+                                 void *ud, int *out_id)
+{
+    ordinary_timers++;
+    if (ordinary_timers == fail_ordinary_at) { return MT_ERR_NOMEM; }
+    return __real_mt_loop_add_timer(loop, initial_ms, interval_ms, cb, ud, out_id);
+}
+mt_err_t __wrap_mt_loop_add_reusable_timer(mt_loop_t *loop, uint64_t initial_ms,
+                                          uint64_t interval_ms, mt_timer_cb cb,
+                                          void *ud, int *out_id)
+{
+    reusable_timers++;
+    if (reusable_timers == fail_reusable_at) { return MT_ERR_NOMEM; }
+    return __real_mt_loop_add_reusable_timer(loop, initial_ms, interval_ms, cb,
+                                            ud, out_id);
+}
 ssize_t __wrap_sendmsg(int fd, const struct msghdr *msg, int flags)
 {
     (void)fd; (void)flags;
@@ -37,7 +68,11 @@ static void response_hook(const mt_dns_msg_t *msg, const char *client,
     }
 }
 static void reset(void)
-{ packs = parses = callbacks = original_aaaa = 0; delivered_len = 0; fail_pack = false; }
+{
+    packs = parses = callbacks = original_aaaa = 0;
+    ordinary_timers = reusable_timers = fail_ordinary_at = fail_reusable_at = 0;
+    delivered_len = 0; fail_pack = false;
+}
 static size_t response(uint8_t *buf, bool aaaa, bool additional, bool trailing)
 {
     static const uint8_t a[] = {
@@ -80,16 +115,35 @@ static int run_response(const uint8_t *buf, size_t len, bool tcp, bool disabled,
     else { ASSERT(delivered_len >= MT_DNS_HEADER_LEN); }
     mt_loop_destroy(loop); return GREATEST_TEST_RES_PASS;
 }
-TEST unchanged_compressed_response_is_verbatim_on_both_transports(void)
+static greatest_test_res assert_baseline_pack(const uint8_t *buf, size_t len)
+{
+    mt_dns_msg_t *parsed = NULL;
+    ASSERT_EQ(MT_OK, __real_mt_dns_msg_parse(buf, len, &parsed));
+    uint8_t *packed = NULL;
+    size_t packed_len = 0;
+    ASSERT_EQ(MT_OK, __real_mt_dns_msg_pack(parsed, &packed, &packed_len));
+    ASSERT_EQ(packed_len, delivered_len);
+    ASSERT_EQ(0, memcmp(packed, delivered, packed_len));
+    free(packed); mt_dns_msg_free(parsed);
+    PASS();
+}
+TEST unchanged_udp_is_verbatim_and_tcp_retains_baseline_filtering_pack(void)
 {
     for (unsigned tcp = 0; tcp < 2; tcp++) {
         for (unsigned disabled = 0; disabled < 2; disabled++) {
             for (unsigned trailing = 0; trailing < 2; trailing++) {
                 uint8_t buf[128]; size_t n = response(buf, false, false, trailing != 0);
-                reset(); fail_pack = true; /* unchanged replies must not need allocation by pack */
-                ASSERT_EQ(GREATEST_TEST_RES_PASS, run_response(buf, n, tcp != 0, disabled != 0, false, 0));
-                ASSERT_EQ(1u, callbacks); ASSERT_EQ(n, delivered_len);
-                ASSERT_EQ(0, memcmp(buf, delivered, n));
+                bool normalized = tcp && !disabled;
+                reset(); fail_pack = !normalized;
+                ASSERT_EQ(GREATEST_TEST_RES_PASS,
+                    run_response(buf, n, tcp != 0, disabled != 0, false, normalized ? 1u : 0u));
+                ASSERT_EQ(1u, callbacks);
+                if (normalized) {
+                    CHECK_CALL(assert_baseline_pack(buf, n));
+                    ASSERT(delivered_len > n); /* uncompressed answer owner */
+                } else {
+                    ASSERT_EQ(n, delivered_len); ASSERT_EQ(0, memcmp(buf, delivered, n));
+                }
             }
         }
     }
@@ -102,21 +156,23 @@ TEST answer_filter_keeps_original_hook_and_additional_records(void)
             for (unsigned additional = 0; additional < 2; additional++) {
                 uint8_t buf[128]; size_t n = response(buf, true, additional != 0, false);
                 reset(); bool modified = !disabled && !additional;
-                ASSERT_EQ(GREATEST_TEST_RES_PASS, run_response(buf, n, tcp != 0, disabled != 0, false, modified ? 1u : 0u));
+                bool normalized = !disabled && (tcp || !additional);
+                ASSERT_EQ(GREATEST_TEST_RES_PASS, run_response(buf, n, tcp != 0, disabled != 0, false, normalized ? 1u : 0u));
                 ASSERT_EQ(1u, callbacks); ASSERT_EQ(additional ? 0u : 1u, original_aaaa);
                 mt_dns_msg_t *parsed = NULL;
                 ASSERT_EQ(MT_OK, __real_mt_dns_msg_parse(delivered, delivered_len, &parsed));
                 ASSERT_EQ(additional || modified ? 1u : 2u, parsed->n_answers);
                 ASSERT_EQ(additional ? 1u : 0u, parsed->n_additional);
                 ASSERT_EQ(60u, parsed->answers[0].ttl); ASSERT_EQ(1u, parsed->answers[0].rclass);
-                if (!modified) { ASSERT_EQ(n, delivered_len); ASSERT_EQ(0, memcmp(buf, delivered, n)); }
+                if (!modified && normalized) { CHECK_CALL(assert_baseline_pack(buf, n)); }
+                if (!normalized) { ASSERT_EQ(n, delivered_len); ASSERT_EQ(0, memcmp(buf, delivered, n)); }
                 mt_dns_msg_free(parsed);
             }
         }
     }
     PASS();
 }
-TEST compressed_cname_multi_a_and_authority_remain_verbatim(void)
+TEST compressed_cname_multi_a_and_authority_preserve_transport_policy(void)
 {
     /* CNAME target at offset 40, authority NS target at offset 93. Both
      * answer owners and the additional AAAA owner use compression pointers. */
@@ -131,12 +187,18 @@ TEST compressed_cname_multi_a_and_authority_remain_verbatim(void)
         0x20,1,0x0d,0xb8,0,0,0,0,0,0,0,0,0,0,0,1
     };
     for (unsigned tcp = 0; tcp < 2; tcp++) {
-        reset(); fail_pack = true;
+      for (unsigned disabled = 0; disabled < 2; disabled++) {
+        bool normalized = tcp && !disabled;
+        reset(); fail_pack = !normalized;
         ASSERT_EQ(GREATEST_TEST_RES_PASS,
-            run_response(buf, sizeof(buf), tcp != 0, false, false, 0));
+            run_response(buf, sizeof(buf), tcp != 0, disabled != 0, false, normalized ? 1u : 0u));
         ASSERT_EQ(1u, callbacks); ASSERT_EQ(0u, original_aaaa);
-        ASSERT_EQ(sizeof(buf), delivered_len);
-        ASSERT_EQ(0, memcmp(buf, delivered, sizeof(buf)));
+        if (normalized) {
+            CHECK_CALL(assert_baseline_pack(buf, sizeof(buf)));
+        } else {
+            ASSERT_EQ(sizeof(buf), delivered_len);
+            ASSERT_EQ(0, memcmp(buf, delivered, sizeof(buf)));
+        }
         mt_dns_msg_t *parsed = NULL;
         ASSERT_EQ(MT_OK, __real_mt_dns_msg_parse(delivered, delivered_len, &parsed));
         ASSERT_EQ(3u, parsed->n_answers); ASSERT_EQ(1u, parsed->n_authority);
@@ -149,6 +211,7 @@ TEST compressed_cname_multi_a_and_authority_remain_verbatim(void)
         ASSERT_EQ(30u, parsed->answers[1].ttl); ASSERT_EQ(15u, parsed->answers[2].ttl);
         ASSERT_EQ(1u, parsed->answers[1].rdata[3]); ASSERT_EQ(2u, parsed->answers[2].rdata[3]);
         mt_dns_msg_free(parsed);
+      }
     }
     PASS();
 }
@@ -166,6 +229,10 @@ TEST malformed_and_pack_failure_drop_and_release_exchange(void)
         ASSERT_EQ(GREATEST_TEST_RES_PASS, run_response(buf, n, tcp != 0, false, true, 0));
         ASSERT_EQ(0u, callbacks);
     }
+    uint8_t a[128]; size_t n = response(a, false, false, false);
+    reset(); fail_pack = true;
+    ASSERT_EQ(GREATEST_TEST_RES_PASS, run_response(a, n, true, false, true, 1));
+    ASSERT_EQ(1u, callbacks); ASSERT_EQ(0u, original_aaaa);
     PASS();
 }
 TEST header_only_response_retains_historical_normalization(void)
@@ -176,6 +243,118 @@ TEST header_only_response_retains_historical_normalization(void)
         ASSERT_EQ(12u, delivered_len);
         for (size_t i = 4; i < 12; i++) { ASSERT_EQ(0u, delivered[i]); }
     }
+    PASS();
+}
+static int bound_endpoint(int type, struct sockaddr_in *address)
+{
+    int fd = socket(AF_INET, type | SOCK_NONBLOCK | SOCK_CLOEXEC, 0);
+    if (fd < 0) { return -1; }
+    memset(address, 0, sizeof(*address));
+    address->sin_family = AF_INET;
+    address->sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    socklen_t len = (socklen_t)sizeof(*address);
+    if (bind(fd, (struct sockaddr *)address, len) != 0 ||
+        getsockname(fd, (struct sockaddr *)address, &len) != 0 ||
+        (type == SOCK_STREAM && listen(fd, 4) != 0)) {
+        close(fd); return -1;
+    }
+    return fd;
+}
+static void set_upstream(mt_dnsproxy_t *p, const struct sockaddr_in *address)
+{
+    p->family = AF_INET;
+    memcpy(&p->upstream_sa, address, sizeof(*address));
+    p->upstream_sa_len = (socklen_t)sizeof(*address);
+    p->cfg.timeout_ms = 60000;
+    p->cfg.max_concurrent = 8;
+}
+TEST upstream_deadline_selects_reuse_only_for_udp_and_releases_on_failure(void)
+{
+    static const uint8_t query[] = {0x12,0x34,1,0,0,1,0,0,0,0,0,0,1,'a',0,0,1,0,1};
+    for (unsigned tcp = 0; tcp < 2; tcp++) {
+        for (unsigned fail = 0; fail < 2; fail++) {
+            struct sockaddr_in address;
+            int upstream = bound_endpoint(tcp ? SOCK_STREAM : SOCK_DGRAM, &address);
+            ASSERT(upstream >= 0);
+            mt_loop_t *loop = NULL; ASSERT_EQ(MT_OK, mt_loop_create(&loop));
+            mt_dnsproxy_t p = {.loop = loop, .udp_fd = -1};
+            set_upstream(&p, &address);
+            exchange_t *ex = exchange(&p, tcp != 0);
+            ex->req = malloc(sizeof(query)); ASSERT(ex->req != NULL);
+            memcpy(ex->req, query, sizeof(query)); ex->req_len = sizeof(query);
+            reset();
+            if (fail) {
+                if (tcp) { fail_ordinary_at = 1; } else { fail_reusable_at = 1; }
+            }
+            start_upstream(&p, ex);
+            ASSERT_EQ(tcp ? 1u : 0u, ordinary_timers);
+            ASSERT_EQ(tcp ? 0u : 1u, reusable_timers);
+            if (!fail) {
+                ASSERT(p.exchanges == ex); ASSERT(ex->timer_id > 0);
+                ASSERT(ex->upstream_fd >= 0);
+                exchange_finish(ex, false);
+            }
+            ASSERT(p.exchanges == NULL); ASSERT_EQ(0u, mt_dnsproxy_inflight(&p));
+            close(upstream); mt_loop_destroy(loop);
+        }
+    }
+    PASS();
+}
+static greatest_test_res check_tcp_deadlines(bool ptr, unsigned fail_at)
+{
+    struct sockaddr_in upstream_address, client_address;
+    int upstream = bound_endpoint(SOCK_STREAM, &upstream_address);
+    int listener = bound_endpoint(SOCK_STREAM, &client_address);
+    ASSERT(upstream >= 0); ASSERT(listener >= 0);
+    int client = socket(AF_INET, SOCK_STREAM | SOCK_CLOEXEC, 0);
+    ASSERT(client >= 0);
+    ASSERT_EQ(0, connect(client, (struct sockaddr *)&client_address,
+                         (socklen_t)sizeof(client_address)));
+    mt_loop_t *loop = NULL; ASSERT_EQ(MT_OK, mt_loop_create(&loop));
+    mt_dnsproxy_t p = {.loop = loop, .udp_fd = -1};
+    set_upstream(&p, &upstream_address);
+    reset(); fail_ordinary_at = fail_at;
+    on_tcp_accept(loop, listener, EPOLLIN, &p);
+    ASSERT_EQ(1u, ordinary_timers); ASSERT_EQ(0u, reusable_timers);
+    if (fail_at == 1) {
+        ASSERT(p.exchanges == NULL); ASSERT_EQ(0u, mt_dnsproxy_inflight(&p));
+    } else {
+        exchange_t *ex = p.exchanges; ASSERT(ex != NULL);
+        ASSERT(ex->timer_id > 0); int read_timer = ex->timer_id;
+        uint8_t frame[] = {0,19,0x12,0x34,1,0,0,1,0,0,0,0,0,0,1,'a',0,0,1,0,1};
+        if (ptr) { frame[18] = MT_DNS_TYPE_PTR; }
+        ASSERT_EQ(1, send(client, frame, 1, MSG_NOSIGNAL));
+        on_tcp_client_read(loop, ex->client_fd, EPOLLIN, ex);
+        ASSERT(p.exchanges == ex); ASSERT_EQ(read_timer, ex->timer_id);
+        ASSERT_EQ(1u, ordinary_timers); ASSERT_EQ(0u, reusable_timers);
+        ASSERT_EQ((ssize_t)(sizeof(frame) - 1),
+                  send(client, frame + 1, sizeof(frame) - 1, MSG_NOSIGNAL));
+        on_tcp_client_read(loop, ex->client_fd, EPOLLIN, ex);
+        ASSERT_EQ(2u, ordinary_timers); ASSERT_EQ(0u, reusable_timers);
+        if (fail_at == 2) {
+            ASSERT(p.exchanges == NULL);
+        } else {
+            ASSERT(p.exchanges == ex); ASSERT(ex->timer_id != read_timer);
+            ASSERT(ex->timer_id > 0);
+            if (ptr) { ASSERT(ex->out_len > 2); ASSERT_EQ(-1, ex->upstream_fd); }
+            else { ASSERT(ex->upstream_fd >= 0); ASSERT_EQ(0u, ex->out_len); }
+            exchange_finish(ex, false);
+        }
+        ASSERT(p.exchanges == NULL); ASSERT_EQ(0u, mt_dnsproxy_inflight(&p));
+    }
+    close(client); close(listener); close(upstream); mt_loop_destroy(loop);
+    PASS();
+}
+TEST tcp_accept_partial_read_and_processing_keep_ordinary_deadlines(void)
+{
+    CHECK_CALL(check_tcp_deadlines(false, 0));
+    CHECK_CALL(check_tcp_deadlines(true, 0));
+    PASS();
+}
+TEST tcp_read_and_processing_deadline_failures_release_exchange(void)
+{
+    CHECK_CALL(check_tcp_deadlines(false, 1));
+    CHECK_CALL(check_tcp_deadlines(false, 2));
     PASS();
 }
 TEST parsed_request_decides_ptr_without_a_second_detection_parse(void)
@@ -213,6 +392,7 @@ TEST ptr_eligibility_preserves_qr_class_and_question_count(void)
                 reset();
                 ASSERT_EQ(tcp ? REQ_REPLIED_ASYNC : REQ_DROP, handle_request_common(&p, &ex));
                 ASSERT_EQ(1u, parses);
+                ASSERT_EQ(0u, ordinary_timers); ASSERT_EQ(0u, reusable_timers);
                 const uint8_t *wire = tcp ? ex.out + 2 : delivered;
                 size_t len = tcp ? ex.out_len - 2 : delivered_len;
                 mt_dns_msg_t *ptr = NULL;
@@ -242,11 +422,14 @@ GREATEST_MAIN_DEFS();
 int main(int argc, char **argv)
 {
     GREATEST_MAIN_BEGIN();
-    RUN_TEST(unchanged_compressed_response_is_verbatim_on_both_transports);
+    RUN_TEST(unchanged_udp_is_verbatim_and_tcp_retains_baseline_filtering_pack);
     RUN_TEST(answer_filter_keeps_original_hook_and_additional_records);
-    RUN_TEST(compressed_cname_multi_a_and_authority_remain_verbatim);
+    RUN_TEST(compressed_cname_multi_a_and_authority_preserve_transport_policy);
     RUN_TEST(malformed_and_pack_failure_drop_and_release_exchange);
     RUN_TEST(header_only_response_retains_historical_normalization);
+    RUN_TEST(upstream_deadline_selects_reuse_only_for_udp_and_releases_on_failure);
+    RUN_TEST(tcp_accept_partial_read_and_processing_keep_ordinary_deadlines);
+    RUN_TEST(tcp_read_and_processing_deadline_failures_release_exchange);
     RUN_TEST(parsed_request_decides_ptr_without_a_second_detection_parse);
     RUN_TEST(ptr_eligibility_preserves_qr_class_and_question_count);
     GREATEST_MAIN_END();

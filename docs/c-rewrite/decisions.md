@@ -3981,14 +3981,15 @@ normal on-device/cross-build validation; host tests are not a substitute.
 
 The response hook still parses every upstream message and populates the cache
 and routing sets before client-side AAAA filtering. When filtering removes no
-Answer-section AAAA record, the proxy now forwards the original validated bytes
-instead of allocating and packing an equivalent message. Authority and Additional
+Answer-section AAAA record in a UDP response, the proxy now forwards the original
+validated bytes instead of allocating and packing an equivalent message. TCP
+retains the historical packing path when filtering is enabled. Authority and Additional
 AAAA records remain untouched, as before. The existing 12-byte/header-only
 special case still runs through the packer when filtering is enabled, preserving
 its normalization of section counts.
 
 This intentionally preserves upstream compression and parser-tolerated trailing
-bytes on unchanged responses; the old filtered path rewrote that representation.
+bytes on unchanged UDP responses; the old filtered path rewrote that representation.
 It does not remove validation, change DNS data/TTL, disable fake PTR, or cache DNS
 responses. Request-side PTR eligibility uses the already parsed question instead
 of decoding its name a second time. The fake response builder is unchanged.
@@ -4024,10 +4025,15 @@ Tests compare seeded mixed messages against the unbatched per-record stream,
 check cache and final routing values, exercise buffer boundaries, warm/cold CNAME
 chains, reloads, and invoke the real daemon sink with failing writes.
 
-## D-88 — Reuse a bounded pool of inactive kernel timers (2026-10-31)
+## D-88 — Explicitly reuse a bounded pool of UDP kernel timers (2026-10-31)
 
-The loop retains at most 32 disarmed timerfds and their watch allocations for
-reuse. Every active logical timer still has its own monotonic kernel timer;
+The new opt-in mt_loop_add_reusable_timer API retains at most 32 disarmed
+timerfds and their watch allocations for reuse. Only UDP upstream deadlines
+use it. The existing mt_loop_add_timer API retains its fresh timerfd, immediate
+settime, watch allocation and epoll registration path, and closes on deletion;
+it never consumes or fills the reusable pool. TCP read/processing deadlines,
+including fake-PTR replies and the defensive upstream fallback, use that existing
+API. Every active logical timer still has its own monotonic kernel timer;
 arming and error reporting remain immediate. There is no shared timer heap,
 userspace deadline approximation, or end-of-batch timer rearm. Unread expirations
 are cleared by disarming before reuse. A failed disarm closes the descriptor.
@@ -4044,8 +4050,11 @@ Operation-count tests verify that repeated warm add/cancel pairs reuse the
 kernel object and epoll registration. Other tests cover the retention bound,
 periodic timers, missed ticks, cancellation from callbacks, stale ready events,
 allocation/syscall failures, ID wrap, and complete descriptor cleanup. This
-narrower implementation replaces the abandoned shared-queue experiment; only
-new measurements of this implementation are applicable to the PR.
+narrower implementation replaces the abandoned shared-queue experiment. A later
+all-transports pool also showed an adverse TCP capacity-test p99 direction, even
+when the old proxy object was restored. Final reuse and wire fast paths are
+therefore explicitly limited to UDP. Both those experiments remain documented;
+only measurements of the final source state apply to the final implementation.
 
 ## D-89 — Scan cached names once per bounded block of rules (2026-10-31)
 

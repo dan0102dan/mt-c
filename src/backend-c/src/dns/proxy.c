@@ -298,10 +298,11 @@ static void deliver_response(exchange_t *ex, const uint8_t *resp,
     if (!p->cfg.disable_drop_aaaa) {
         size_t answers_before = msg->n_answers;
         mt_dns_msg_strip_aaaa(msg);
-        /* Keep the already validated upstream representation when filtering
-         * did not change it. Header-only messages retain the codec's historic
-         * normalization of section counts (D-86). */
-        if (msg->n_answers != answers_before || resp_len == 12) {
+        /* UDP can retain an unchanged upstream representation. TCP keeps its
+         * existing packing path; header-only messages retain the codec's
+         * historic normalization of section counts (D-86). */
+        if (ex->is_tcp || msg->n_answers != answers_before ||
+            resp_len == MT_DNS_HEADER_LEN) {
             if (mt_dns_msg_pack(msg, &packed, &out_len) != MT_OK) {
                 mt_dns_msg_free(msg);
                 exchange_finish(ex, false);
@@ -573,10 +574,18 @@ static void start_upstream(mt_dnsproxy_t *p, exchange_t *ex)
 
     /* TCP already has a processing deadline, including local PTR replies.
      * UDP arms its processing deadline here. */
-    if (ex->timer_id == 0 &&
-        mt_loop_add_timer(p->loop, p->cfg.timeout_ms, 0, on_timeout, ex,
-                          &ex->timer_id) != MT_OK) {
-        exchange_finish(ex, false);
+    if (ex->timer_id == 0) {
+        mt_err_t err;
+        if (ex->is_tcp) {
+            err = mt_loop_add_timer(p->loop, p->cfg.timeout_ms, 0,
+                                     on_timeout, ex, &ex->timer_id);
+        } else {
+            err = mt_loop_add_reusable_timer(p->loop, p->cfg.timeout_ms, 0,
+                                              on_timeout, ex, &ex->timer_id);
+        }
+        if (err != MT_OK) {
+            exchange_finish(ex, false);
+        }
     }
 }
 

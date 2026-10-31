@@ -43,12 +43,20 @@ mt_err_t mt_loop_del_fd(mt_loop_t *loop, int fd);
  * when initial_ms is zero. Timers added by a callback become eligible in a
  * later epoll_wait result, never through an event already being dispatched.
  * Independent kernel timers retain periodic cadence and coalesce missed
- * ticks. The loop may keep up to 32 disarmed timerfds for reuse; these are
- * closed before mt_loop_run returns or when the loop is destroyed.
+ * ticks. This API always creates a fresh timerfd and closes it on deletion.
  * All registration/deletion is loop-thread-only. */
 mt_err_t mt_loop_add_timer(mt_loop_t *loop, uint64_t initial_ms,
                            uint64_t interval_ms, mt_timer_cb cb, void *ud,
                            int *out_id);
+
+/* Opt-in reuse for frequently cancelled deadlines, with the same callback
+ * semantics as mt_loop_add_timer. Only timers created through this API may
+ * use the loop's reserve of up to 32 disarmed timerfds. Retired watches are
+ * reusable after the current epoll batch; idle fds close before mt_loop_run
+ * returns or when the loop is destroyed. */
+mt_err_t mt_loop_add_reusable_timer(mt_loop_t *loop, uint64_t initial_ms,
+                                    uint64_t interval_ms, mt_timer_cb cb,
+                                    void *ud, int *out_id);
 mt_err_t mt_loop_del_timer(mt_loop_t *loop, int timer_id);
 
 /* Subscribe to signals (also blocks them for the calling thread). */
