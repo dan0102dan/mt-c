@@ -353,6 +353,52 @@ mt_err_t mt_ruleset_on_addr_change(mt_ruleset_t *rs) {
 
 /* ---- sync ------------------------------------------------------------------ */
 
+static mt_err_t sync_collect_addresses(mt_cache_t *cache, const char *name, int64_t now,
+                                       new4_list_t *new4, new6_list_t *new6) {
+    mt_cache_addr_t *addrs = NULL;
+    size_t n_addrs = 0;
+    mt_err_t err = mt_cache_get_addresses(cache, name, now, &addrs, &n_addrs);
+    if (err != MT_OK) { return err; }
+
+    for (size_t a = 0; a < n_addrs; a++) {
+        int64_t remain = addrs[a].deadline - now;
+        if (remain <= 0) { continue; }
+        uint32_t ttl = (uint32_t)remain;
+        if (addrs[a].addr_len == 4) {
+            mt_ipv4_subnet_t subnet = {.cidr = 0};
+            memcpy(subnet.addr, addrs[a].addr, 4);
+            err = new4_upsert(new4, subnet, true, ttl, true);
+        } else if (addrs[a].addr_len == 16) {
+            mt_ipv6_subnet_t subnet = {.cidr = 0};
+            memcpy(subnet.addr, addrs[a].addr, 16);
+            err = new6_upsert(new6, subnet, true, ttl, true);
+        }
+        if (err != MT_OK) { break; }
+    }
+    free(addrs);
+    return err;
+}
+
+/* Limit the extra index to a block of rules, not an entire subscription.
+ * Storage also depends on the lengths and kinds of these rules. Each block
+ * scans the cache once; exact/namespace rules use the existing hash/trie. */
+#define SYNC_MATCH_RULES 4096u
+
+static mt_err_t sync_flush_matches(mt_matcher_t **matcher, char **known, size_t n_known,
+                                   mt_cache_t *cache, int64_t now,
+                                   new4_list_t *new4, new6_list_t *new6) {
+    if (!*matcher) { return MT_OK; }
+    mt_err_t err = MT_OK;
+    for (size_t k = 0; k < n_known && err == MT_OK; k++) {
+        if (mt_matcher_match(*matcher, known[k])) {
+            err = sync_collect_addresses(cache, known[k], now, new4, new6);
+        }
+    }
+    mt_matcher_free(*matcher);
+    *matcher = NULL;
+    return err;
+}
+
 static void sync_build_new_lists(mt_ruleset_t *rs, mt_cache_t *cache, int64_t now,
                                  new4_list_t *new4, new6_list_t *new6, mt_err_t *err) {
     char **known = NULL;
@@ -361,11 +407,30 @@ static void sync_build_new_lists(mt_ruleset_t *rs, mt_cache_t *cache, int64_t no
     if (*err != MT_OK) { return; }
 
     const mt_group_t *g = rs->group;
+    mt_matcher_t *matcher = NULL;
+    size_t n_indexed = 0;
     for (size_t i = 0; i < g->n_rules && *err == MT_OK; i++) {
         const mt_rule_t *rule = g->rules[i];
         if (!rule->enable) { continue; }
 
-        if (strcmp(rule->type, MT_RULE_SUBNET) == 0) {
+        bool subnet4 = strcmp(rule->type, MT_RULE_SUBNET) == 0;
+        bool subnet6 = strcmp(rule->type, MT_RULE_SUBNET6) == 0;
+        /* The aggregate trie strips a leading dot from a namespace pattern;
+         * the legacy single-rule suffix matcher does not. Preserve sync's
+         * existing semantics for those patterns instead of changing matching. */
+        bool legacy_namespace = strcmp(rule->type, MT_RULE_NAMESPACE) == 0 &&
+                                rule->rule[0] == '.';
+        if (subnet4 || subnet6 || legacy_namespace || n_indexed == SYNC_MATCH_RULES) {
+            /* Static /32 and /128 keys differ from DNS's implicit-host cidr=0
+             * in these lists, though the kernel treats them as the same host.
+             * Flush before static rules to retain their relative write order.
+             * Within a dynamic block, TTL=max is commutative. */
+            *err = sync_flush_matches(&matcher, known, n_known, cache, now, new4, new6);
+            n_indexed = 0;
+            if (*err != MT_OK) { break; }
+        }
+
+        if (subnet4) {
             mt_ipv4_subnet_t subnet;
             if (!parse_ipv4_rule(rule->rule, &subnet)) { continue; }
             if (subnet.cidr == 0) {
@@ -381,7 +446,7 @@ static void sync_build_new_lists(mt_ruleset_t *rs, mt_cache_t *cache, int64_t no
             continue;
         }
 
-        if (strcmp(rule->type, MT_RULE_SUBNET6) == 0) {
+        if (subnet6) {
             mt_ipv6_subnet_t subnet;
             if (!parse_ipv6_rule(rule->rule, &subnet)) { continue; }
             if (subnet.cidr == 0) {
@@ -398,39 +463,33 @@ static void sync_build_new_lists(mt_ruleset_t *rs, mt_cache_t *cache, int64_t no
             continue;
         }
 
-        mt_rule_matcher_t *rm = mt_rule_matcher_new(rule->type, rule->rule);
-        if (!rm) {
-            *err = MT_ERR_NOMEM;
+        if (n_known == 0) { continue; }
+        if (legacy_namespace) {
+            mt_rule_matcher_t *rm = mt_rule_matcher_new(rule->type, rule->rule);
+            if (!rm) {
+                *err = MT_ERR_NOMEM;
+                break;
+            }
+            for (size_t k = 0; k < n_known && *err == MT_OK; k++) {
+                if (mt_rule_matcher_match(rm, known[k])) {
+                    *err = sync_collect_addresses(cache, known[k], now, new4, new6);
+                }
+            }
+            mt_rule_matcher_free(rm);
             continue;
         }
-        for (size_t k = 0; k < n_known && *err == MT_OK; k++) {
-            if (!mt_rule_matcher_match(rm, known[k])) { continue; }
-
-            mt_cache_addr_t *addrs = NULL;
-            size_t n_addrs = 0;
-            *err = mt_cache_get_addresses(cache, known[k], now, &addrs, &n_addrs);
-            if (*err != MT_OK) { break; }
-
-            for (size_t a = 0; a < n_addrs; a++) {
-                int64_t remain = addrs[a].deadline - now;
-                if (remain <= 0) { continue; }
-                uint32_t ttl = (uint32_t)remain;
-                if (addrs[a].addr_len == 4) {
-                    mt_ipv4_subnet_t subnet = {.cidr = 0};
-                    memcpy(subnet.addr, addrs[a].addr, 4);
-                    *err = new4_upsert(new4, subnet, true, ttl, true);
-                } else if (addrs[a].addr_len == 16) {
-                    mt_ipv6_subnet_t subnet = {.cidr = 0};
-                    memcpy(subnet.addr, addrs[a].addr, 16);
-                    *err = new6_upsert(new6, subnet, true, ttl, true);
-                }
-                if (*err != MT_OK) { break; }
-            }
-            free(addrs);
+        if (!matcher) {
+            matcher = mt_matcher_new();
+            if (!matcher) { *err = MT_ERR_NOMEM; break; }
         }
-        mt_rule_matcher_free(rm);
+        *err = mt_matcher_add(matcher, rule->type, rule->rule);
+        n_indexed++;
     }
 
+    if (*err == MT_OK) {
+        *err = sync_flush_matches(&matcher, known, n_known, cache, now, new4, new6);
+    }
+    mt_matcher_free(matcher);
     mt_cache_free_strings(known, n_known);
 }
 

@@ -296,13 +296,19 @@ static void deliver_response(exchange_t *ex, const uint8_t *resp,
     size_t out_len = resp_len;
     uint8_t *packed = NULL;
     if (!p->cfg.disable_drop_aaaa) {
+        size_t answers_before = msg->n_answers;
         mt_dns_msg_strip_aaaa(msg);
-        if (mt_dns_msg_pack(msg, &packed, &out_len) != MT_OK) {
-            mt_dns_msg_free(msg);
-            exchange_finish(ex, false);
-            return;
+        /* Keep the already validated upstream representation when filtering
+         * did not change it. Header-only messages retain the codec's historic
+         * normalization of section counts (D-86). */
+        if (msg->n_answers != answers_before || resp_len == 12) {
+            if (mt_dns_msg_pack(msg, &packed, &out_len) != MT_OK) {
+                mt_dns_msg_free(msg);
+                exchange_finish(ex, false);
+                return;
+            }
+            out = packed;
         }
-        out = packed;
     }
 
     if (ex->is_tcp) {
@@ -609,10 +615,11 @@ static request_disp_t handle_request_common(mt_dnsproxy_t *p, exchange_t *ex)
                 q->name, q->name_len, q->qtype, ex->is_tcp, seen_ms);
         }
     }
+    bool single_ptr = req_msg->n_questions == 1 &&
+                      req_msg->questions[0].qtype == MT_DNS_TYPE_PTR;
     mt_dns_msg_free(req_msg);
 
-    if (!p->cfg.disable_fake_ptr &&
-        mt_dns_is_single_ptr_query(ex->req, ex->req_len)) {
+    if (!p->cfg.disable_fake_ptr && single_ptr) {
         uint8_t *resp = NULL;
         size_t rlen = 0;
         if (mt_dns_make_fake_ptr_response(ex->req, ex->req_len, &resp,

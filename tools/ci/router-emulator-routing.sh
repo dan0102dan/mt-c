@@ -55,7 +55,9 @@ ip link set mtci-lan master "$LAN"
 ip link set mtci-lan up
 ip -n "$CLIENT" link set lo up
 ip -n "$CLIENT" link set mtci-client0 up
-ip -n "$CLIENT" addr add 192.168.1.250/24 dev mtci-client0
+# Emulator v3.7 reserves .248-.250 for its LAN-side user-mode network;
+# keep the isolated client distinct from the host/gateway addresses.
+ip -n "$CLIENT" addr add 192.168.1.252/24 dev mtci-client0
 ip -n "$CLIENT" route add default via 192.168.1.1
 ip -6 addr add 2001:db8:1::1/64 dev "$LAN" nodad
 ip -n "$CLIENT" -6 addr add 2001:db8:1::250/64 dev mtci-client0 nodad

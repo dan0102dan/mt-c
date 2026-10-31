@@ -261,15 +261,21 @@ static void on_match(const mt_match_action_t *action, void *ud)
     }
 
     uint32_t ttl = action->ttl_seconds;
-    mt_err_t err;
-    if (action->addr_len == 4) {
-        mt_ipv4_subnet_t subnet = {.cidr = 0};
-        memcpy(subnet.addr, action->addr, 4);
-        err = mt_ruleset_add_ipv4(rs, subnet, &ttl);
-    } else {
-        mt_ipv6_subnet_t subnet = {.cidr = 0};
-        memcpy(subnet.addr, action->addr, 16);
-        err = mt_ruleset_add_ipv6(rs, subnet, &ttl);
+    mt_err_t err = MT_OK;
+    unsigned attempts = action->attempts == 0 ? 1u : action->attempts;
+    for (unsigned i = 0; i < attempts; i++) {
+        if (action->addr_len == 4) {
+            mt_ipv4_subnet_t subnet = {.cidr = 0};
+            memcpy(subnet.addr, action->addr, 4);
+            err = mt_ruleset_add_ipv4(rs, subnet, &ttl);
+        } else {
+            mt_ipv6_subnet_t subnet = {.cidr = 0};
+            memcpy(subnet.addr, action->addr, 16);
+            err = mt_ruleset_add_ipv6(rs, subnet, &ttl);
+        }
+        /* Coalescing does not turn several chances to write into just one
+         * on a transient kernel error. Retry only the final desired TTL. */
+        if (err == MT_OK) { break; }
     }
 
     if (err != MT_OK) {

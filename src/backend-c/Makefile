@@ -285,6 +285,28 @@ $(BUILDDIR)/tests/%: tests/unit/%.c $(LIB_OBJS) $(TEST_SUPPORT_OBJS)
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -Itests/vendor -Itests/unit $(LDFLAGS) -o $@ $< $(LIB_OBJS) $(TEST_SUPPORT_OBJS) $(LDLIBS) $(DEP_LIBS)
 
+# Exercise production dispatch/lifetime code without exposing test-only APIs.
+$(BUILDDIR)/tests/test_dns_pipeline: tests/unit/test_dns_pipeline.c $(MAIN_SRC) $(LIB_OBJS) $(TEST_SUPPORT_OBJS)
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) -Itests/vendor -Itests/unit $(LDFLAGS) \
+	    -Wl,--wrap=mt_app_find_group_by_id -Wl,--wrap=mt_app_find_subscription_ruleset_by_id \
+	    -Wl,--wrap=mt_ruleset_add_ipv4 -Wl,--wrap=mt_ruleset_add_ipv6 \
+	    -o $@ $< $(LIB_OBJS) $(TEST_SUPPORT_OBJS) $(LDLIBS) $(DEP_LIBS)
+
+$(BUILDDIR)/tests/test_dns_fastpath: tests/unit/test_dns_fastpath.c src/dns/proxy.c $(LIB_OBJS) $(TEST_SUPPORT_OBJS)
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) -Itests/vendor -Itests/unit $(LDFLAGS) \
+	    -Wl,--wrap=mt_dns_msg_pack -Wl,--wrap=mt_dns_msg_parse -Wl,--wrap=sendmsg \
+	    -o $@ $< $(filter-out $(BUILDDIR)/src/dns/proxy.o,$(LIB_OBJS)) $(TEST_SUPPORT_OBJS) $(LDLIBS) $(DEP_LIBS)
+
+$(BUILDDIR)/tests/test_loop_timer_queue: tests/unit/test_loop_timer_queue.c src/platform/loop.c $(LIB_OBJS) $(TEST_SUPPORT_OBJS)
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) -Itests/vendor -Itests/unit $(LDFLAGS) -o $@ $< $(filter-out $(BUILDDIR)/src/platform/loop.o,$(LIB_OBJS)) $(TEST_SUPPORT_OBJS) $(LDLIBS) $(DEP_LIBS)
+
+$(BUILDDIR)/tests/test_dns_cache: tests/unit/test_dns_cache.c $(LIB_OBJS) $(TEST_SUPPORT_OBJS)
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) -Itests/vendor -Itests/unit $(LDFLAGS) -Wl,--wrap=strdup -Wl,--wrap=realloc -o $@ $< $(LIB_OBJS) $(TEST_SUPPORT_OBJS) $(LDLIBS) $(DEP_LIBS)
+
 # Include the native source to exercise shutdown with a real deferred ubus
 # notification, without adding a production-only testing API.
 $(BUILDDIR)/tests/test_dns_openwrt: tests/unit/test_dns_openwrt.c src/platform/dns_openwrt.c $(LIB_OBJS) $(TEST_SUPPORT_OBJS)

@@ -7,6 +7,7 @@
 #include "magitrickle/loop.h"
 
 #include <errno.h>
+#include <limits.h>
 #include <pthread.h>
 #include <stdatomic.h>
 #include <stdbool.h>
@@ -23,6 +24,7 @@
 
 #define MT_LOOP_MAX_EVENTS 64
 #define MT_LOOP_POST_CAP 1024
+#define MT_LOOP_IDLE_TIMERS 32
 
 typedef enum watch_kind {
     WATCH_FD = 0,
@@ -55,8 +57,11 @@ struct mt_loop {
     _Atomic bool stopping;
     watch_t *watches;      /* singly-linked; loop-thread only */
     watch_t *retired;      /* removed watches in the current epoll batch */
+    watch_t *idle_timers;  /* disarmed timerfds, still registered in epoll */
+    unsigned cached_timers; /* idle + retired timers reserved for reuse */
     bool dispatching;
     int next_timer_id;
+    bool timer_ids_wrapped;
     mt_queue_t *posts;     /* bounded cross-thread post queue */
     watch_t wakeup_watch;
     int sigfd;             /* -1 until signals subscribed */
@@ -92,9 +97,21 @@ static void watch_unlink(mt_loop_t *loop, watch_t *w)
     }
 }
 
+static void watch_release(mt_loop_t *loop, watch_t *w)
+{
+    if (w->kind == WATCH_TIMER && w->fd >= 0) {
+        w->next = loop->idle_timers;
+        loop->idle_timers = w;
+    } else {
+        free(w);
+    }
+}
+
 /* epoll_wait has already copied pointers for the entire ready batch.
  * EPOLL_CTL_DEL cannot revoke those pointers. Invalidate now, free only
- * after every event in that batch has been considered. */
+ * after every event in that batch has been considered. Cached timers must
+ * also wait: reusing their watch now could run a new timer through an old
+ * event in this batch. */
 static void watch_retire(mt_loop_t *loop, watch_t *w)
 {
     watch_unlink(loop, w);
@@ -103,7 +120,7 @@ static void watch_retire(mt_loop_t *loop, watch_t *w)
         w->next = loop->retired;
         loop->retired = w;
     } else {
-        free(w);
+        watch_release(loop, w);
     }
 }
 
@@ -112,8 +129,19 @@ static void collect_retired(mt_loop_t *loop)
     while (loop->retired) {
         watch_t *w = loop->retired;
         loop->retired = w->next;
+        watch_release(loop, w);
+    }
+}
+
+static void clear_idle_timers(mt_loop_t *loop)
+{
+    while (loop->idle_timers != NULL) {
+        watch_t *w = loop->idle_timers;
+        loop->idle_timers = w->next;
+        close(w->fd); /* closing also removes the epoll registration */
         free(w);
     }
+    loop->cached_timers = 0;
 }
 
 mt_err_t mt_loop_create(mt_loop_t **out)
@@ -176,6 +204,7 @@ void mt_loop_destroy(mt_loop_t *loop)
         w = next;
     }
     collect_retired(loop);
+    clear_idle_timers(loop);
     if (loop->posts != NULL) {
         /* drain unexecuted posts: post items are loop-owned wrappers */
         void *item;
@@ -252,14 +281,42 @@ mt_err_t mt_loop_del_fd(mt_loop_t *loop, int fd)
     return MT_OK;
 }
 
+static bool timer_id_in_use(const mt_loop_t *loop, int id)
+{
+    for (const watch_t *w = loop->watches; w != NULL; w = w->next) {
+        if (w->kind == WATCH_TIMER && w->id == id) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static int next_timer_id(mt_loop_t *loop)
+{
+    int id = loop->next_timer_id;
+    /* Before the first wrap every generated ID is new. Avoid adding an
+     * active-watch scan to the normal registration path. */
+    if (loop->timer_ids_wrapped) {
+        while (timer_id_in_use(loop, id)) {
+            id = id == INT_MAX ? 1 : id + 1;
+            if (id == loop->next_timer_id) {
+                return 0;
+            }
+        }
+    }
+    if (id == INT_MAX) {
+        loop->next_timer_id = 1;
+        loop->timer_ids_wrapped = true;
+    } else {
+        loop->next_timer_id = id + 1;
+    }
+    return id;
+}
+
 mt_err_t mt_loop_add_timer(mt_loop_t *loop, uint64_t initial_ms,
                            uint64_t interval_ms, mt_timer_cb cb, void *ud,
                            int *out_id)
 {
-    int tfd = timerfd_create(CLOCK_MONOTONIC, TFD_CLOEXEC | TFD_NONBLOCK);
-    if (tfd < 0) {
-        return mt_err_from_errno(errno);
-    }
     struct itimerspec its;
     memset(&its, 0, sizeof(its));
     its.it_value.tv_sec = (time_t)(initial_ms / 1000);
@@ -270,26 +327,41 @@ mt_err_t mt_loop_add_timer(mt_loop_t *loop, uint64_t initial_ms,
     }
     its.it_interval.tv_sec = (time_t)(interval_ms / 1000);
     its.it_interval.tv_nsec = (long)(interval_ms % 1000) * 1000000L;
-    if (timerfd_settime(tfd, 0, &its, NULL) != 0) {
-        mt_err_t e = mt_err_from_errno(errno);
-        close(tfd);
-        return e;
+    watch_t *w = loop->idle_timers;
+    bool reused = w != NULL;
+    if (reused) {
+        loop->idle_timers = w->next;
+        loop->cached_timers--;
+    } else {
+        w = calloc(1, sizeof(*w));
+        if (w == NULL) {
+            return MT_ERR_NOMEM;
+        }
+        w->fd = timerfd_create(CLOCK_MONOTONIC, TFD_CLOEXEC | TFD_NONBLOCK);
+        if (w->fd < 0) {
+            mt_err_t err = mt_err_from_errno(errno);
+            free(w);
+            return err;
+        }
     }
-
-    watch_t *w = calloc(1, sizeof(*w));
-    if (w == NULL) {
-        close(tfd);
-        return MT_ERR_NOMEM;
+    if (timerfd_settime(w->fd, 0, &its, NULL) != 0) {
+        mt_err_t err = mt_err_from_errno(errno);
+        close(w->fd);
+        free(w);
+        return err;
     }
     w->kind = WATCH_TIMER;
+    w->removed = false;
     w->one_shot = interval_ms == 0;
-    w->fd = tfd;
-    w->id = loop->next_timer_id++;
+    w->id = next_timer_id(loop);
     w->timer_cb = cb;
     w->ud = ud;
-    mt_err_t err = watch_register(loop, w, EPOLLIN);
+    mt_err_t err = w->id == 0 ? MT_ERR_LIMIT : MT_OK;
+    if (err == MT_OK && !reused) {
+        err = watch_register(loop, w, EPOLLIN);
+    }
     if (err != MT_OK) {
-        close(tfd);
+        close(w->fd);
         free(w);
         return err;
     }
@@ -304,8 +376,22 @@ mt_err_t mt_loop_del_timer(mt_loop_t *loop, int timer_id)
 {
     for (watch_t *w = loop->watches; w != NULL; w = w->next) {
         if (w->kind == WATCH_TIMER && w->id == timer_id) {
-            (void)epoll_ctl(loop->epfd, EPOLL_CTL_DEL, w->fd, NULL);
-            close(w->fd);
+            struct itimerspec disarmed;
+            memset(&disarmed, 0, sizeof(disarmed));
+            /* settime disarms AND clears unread expirations. Keep the
+             * independent kernel timer and its epoll watch for reuse. A
+             * failed disarm must close it, never leave a live idle timer. */
+            if (loop->cached_timers < MT_LOOP_IDLE_TIMERS &&
+                timerfd_settime(w->fd, 0, &disarmed, NULL) == 0) {
+                loop->cached_timers++;
+            } else {
+                (void)epoll_ctl(loop->epfd, EPOLL_CTL_DEL, w->fd, NULL);
+                close(w->fd);
+                w->fd = -1;
+            }
+            w->id = 0;
+            w->timer_cb = NULL;
+            w->ud = NULL;
             watch_retire(loop, w);
             return MT_OK;
         }
@@ -422,7 +508,9 @@ mt_err_t mt_loop_run(mt_loop_t *loop)
             if (errno == EINTR) {
                 continue;
             }
-            return mt_err_from_errno(errno);
+            mt_err_t err = mt_err_from_errno(errno);
+            clear_idle_timers(loop);
+            return err;
         }
         loop->dispatching = true;
         for (int i = 0; i < n; i++) {
@@ -449,5 +537,6 @@ mt_err_t mt_loop_run(mt_loop_t *loop)
         loop->dispatching = false;
         collect_retired(loop);
     }
+    clear_idle_timers(loop);
     return MT_OK;
 }

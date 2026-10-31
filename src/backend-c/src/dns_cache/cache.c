@@ -396,19 +396,16 @@ mt_err_t mt_cache_get_aliases(mt_cache_t *c, const char *domain, char ***out,
                               size_t *out_n)
 {
     str_list_t result = {0};
-    str_list_t queue = {0}; /* BFS queue, not freed of its string copies
-                              * (shares ownership conceptually with result
-                              * via duplicate strdup — simplicity over a
-                              * shared-pointer scheme for a small list). */
+    /* The owned result is already in BFS order, so it is also the queue.
+     * Growing its pointer array does not move the separately owned strings. */
     mt_err_t err;
-    if ((err = str_list_push(&result, domain)) != MT_OK ||
-        (err = str_list_push(&queue, domain)) != MT_OK) {
+    if ((err = str_list_push(&result, domain)) != MT_OK) {
         goto fail;
     }
 
     size_t head = 0;
-    while (head < queue.n) {
-        const char *cur = queue.items[head++];
+    while (head < result.n) {
+        const char *cur = result.items[head++];
         rev_node_t *rn = rev_find(c, cur);
         if (rn == NULL) {
             continue;
@@ -418,21 +415,18 @@ mt_err_t mt_cache_get_aliases(mt_cache_t *c, const char *domain, char ***out,
             if (str_list_contains(&result, pointing)) {
                 continue;
             }
-            if ((err = str_list_push(&result, pointing)) != MT_OK ||
-                (err = str_list_push(&queue, pointing)) != MT_OK) {
+            if ((err = str_list_push(&result, pointing)) != MT_OK) {
                 goto fail;
             }
         }
     }
 
-    mt_cache_free_strings(queue.items, queue.n);
     *out = result.items;
     *out_n = result.n;
     return MT_OK;
 
 fail:
     mt_cache_free_strings(result.items, result.n);
-    mt_cache_free_strings(queue.items, queue.n);
     *out = NULL;
     *out_n = 0;
     return err;

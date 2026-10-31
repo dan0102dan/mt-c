@@ -2,17 +2,15 @@
  * of src/backend/dns.go's handleMessage/processARecord/processAAAARecord/
  * processCNameRecord (compatibility-contract.md §4-7).
  *
- * Owns no cache or snapshot; both are injected so the daemon controls
- * their lifetime (the cache persists across config reloads, the snapshot
- * is replaced on each reload — decisions.md D-17).
+ * Borrows the cache and owns the injected snapshot. The cache persists
+ * across reloads; the snapshot is replaced on the loop thread (D-17).
  *
  * Only successful responses (Rcode == 0) are processed, matching Go; A/AAAA
  * with the wrong rdata length are skipped (Go logs and returns); Answer-
- * section records only (Authority/Additional ignored). Each matching
- * (group, record) pair is reported once via the sink callback instead of
- * replaying Go's per-rule loop — see decisions.md D-18 for why this is
- * state-equivalent. The sink is a stub in Phase 4 (main.c logs it); Phase 5
- * replaces its body with a real ipset add.
+ * section records only (Authority/Additional ignored). Repeated writes to
+ * the same (group, address family, address) within one response are coalesced
+ * in bounded chunks. The final write wins, including a lower or zero TTL;
+ * no writes are suppressed across responses. See decisions.md D-87.
  */
 #ifndef MAGITRICKLE_DNSPIPELINE_H
 #define MAGITRICKLE_DNSPIPELINE_H
@@ -29,6 +27,9 @@ typedef struct mt_match_action {
     const uint8_t *addr;
     uint8_t addr_len; /* 4 or 16 */
     uint32_t ttl_seconds;
+    uint8_t attempts; /* represented writes, 1..32; zero means one for callers
+                      * constructing actions directly. Sink may retry the
+                      * final value after failure up to this budget. */
     const char *record_domain; /* domain the DNS answer was about */
     const char *matched_name;  /* alias that satisfied a rule, for logs */
     const char *record_kind;   /* "A" | "AAAA" | "CNAME" */

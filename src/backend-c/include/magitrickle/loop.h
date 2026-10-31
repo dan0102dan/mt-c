@@ -39,7 +39,13 @@ mt_err_t mt_loop_del_fd(mt_loop_t *loop, int fd);
 /* Returns a timer id (>0) via *out_id. interval_ms==0 -> one-shot after
  * initial_ms; otherwise fires every interval_ms after initial_ms. A one-shot
  * is removed automatically after its callback; explicit deletion in that
- * callback remains supported. All registration/deletion is loop-thread-only. */
+ * callback remains supported. Registration never invokes callbacks, even
+ * when initial_ms is zero. Timers added by a callback become eligible in a
+ * later epoll_wait result, never through an event already being dispatched.
+ * Independent kernel timers retain periodic cadence and coalesce missed
+ * ticks. The loop may keep up to 32 disarmed timerfds for reuse; these are
+ * closed before mt_loop_run returns or when the loop is destroyed.
+ * All registration/deletion is loop-thread-only. */
 mt_err_t mt_loop_add_timer(mt_loop_t *loop, uint64_t initial_ms,
                            uint64_t interval_ms, mt_timer_cb cb, void *ud,
                            int *out_id);
