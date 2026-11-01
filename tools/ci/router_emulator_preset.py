@@ -3,9 +3,13 @@
 
 Router Emulator >=4.1 specifies flash-type/flash-id/dump-dir. Refuse unsupported
 or unsafe presets rather than silently preparing a different flash chip.
+The CLI also checks QEMU compatibility and, if needed, builds the selected
+release on this host. Build dependencies are installed only when explicitly
+allowed (the default on GitHub Actions, never on a local developer machine).
 """
 import argparse
 import configparser
+import os
 from pathlib import Path
 import re
 import subprocess
@@ -104,7 +108,17 @@ def main():
     parser.add_argument("--profile", required=True)
     parser.add_argument("--openwrt-version", required=True)
     parser.add_argument("--expected-version", help="version resolved via latest stable GitHub release")
+    parser.add_argument("--install-build-deps", action=argparse.BooleanOptionalAction,
+                        default=os.environ.get("GITHUB_ACTIONS") == "true",
+                        help="install native QEMU build tools (default: on only in GitHub Actions)")
     args = parser.parse_args()
+    # Validate all caller inputs before downloading/building host tooling.
+    read_board_preset(args.emulator_dir, args.preset, args.profile, args.expected_version)
+    if not re.fullmatch(r"[0-9]+(?:\.[0-9]+){2}", args.openwrt_version):
+        parser.error("an explicit OpenWrt release version is required")
+    from router_emulator_runtime import ensure_runtime
+    ensure_runtime(args.emulator_dir, args.expected_version,
+                   install_build_deps=args.install_build_deps)
     prepare_board(args.emulator_dir, args.preset, args.profile, args.openwrt_version, args.expected_version)
 
 

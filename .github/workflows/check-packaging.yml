@@ -34,6 +34,8 @@ jobs:
         run: python3 tools/ci/tests/test_router_emulator.py
       - name: Test Router Emulator preset and flash preparation
         run: python3 tools/ci/tests/test_router_emulator_preset.py
+      - name: Test Router Emulator host runtime compatibility and same-release rebuild
+        run: python3 tools/ci/tests/test_router_emulator_runtime.py
       - name: Test automatic latest-stable release selection and SHA256 checks
         run: python3 tools/ci/tests/test_router_emulator_release.py
       - name: Test fresh source staging for package comparisons
