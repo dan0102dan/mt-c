@@ -123,6 +123,21 @@ int main(void)
         ok = test_transport(MT_IPT_PROTO_IPV4, false);
         if (ok) { ok = test_transport(MT_IPT_PROTO_IPV6, true); }
     }
+    if (ok) {
+        /* A prematurely closed restore stream must be an I/O error even
+         * when the child incorrectly reports exit(0). */
+        const char successful_exit[] = "#!/bin/sh\nsleep 1\nexit 0\n";
+        int fd = open(path4, O_WRONLY | O_TRUNC);
+        if (fd < 0 ||
+            write(fd, successful_exit, sizeof(successful_exit) - 1) !=
+                (ssize_t)(sizeof(successful_exit) - 1)) {
+            ok = check(false, "prepare early-success fixture");
+        }
+        if (fd >= 0 && close(fd) != 0) {
+            ok = check(false, "close early-success fixture");
+        }
+        if (ok) { ok = test_transport(MT_IPT_PROTO_IPV4, false); }
+    }
     if (sigaction(SIGPIPE, NULL, &observed) != 0 ||
         observed.sa_handler != SIG_DFL) {
         ok = check(false, "restore SIGPIPE disposition must remain default");

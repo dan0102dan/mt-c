@@ -503,6 +503,13 @@ static mt_err_t real_restore(mt_ipt_executable_t *self, const uint8_t *data, siz
     } else {
         mt_err_t wait_err = wait_child(pid, e->restore_cmd, &err_buf, data, len);
         if (err == MT_OK) { err = wait_err; }
+        /* A child can close stdin early yet exit successfully. Do not
+         * report that incomplete netfilter transcript as committed. */
+        if (err == MT_OK && written != len) {
+            MT_ERROR("%s consumed only %zu of %zu restore bytes",
+                     e->restore_cmd, written, len);
+            err = MT_ERR_IO;
+        }
     }
 
     mt_bytebuf_free(&err_buf);
