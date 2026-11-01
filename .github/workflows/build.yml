@@ -948,7 +948,7 @@ jobs:
 
       # Boot OpenWrt 24.10.4/opkg and 25.12.5/apk using the exact
       # cross-built SDK artifacts above, not host-repacked copies.
-      # Push-only smoke gate; release/workflow_dispatch triggers stay unchanged.
+      # Push-only smoke gate, pinned to Router Emulator 4.1; release/workflow_dispatch unchanged.
       - name: Install and test IPK/APK in router emulator
         if: github.event_name == 'push' && matrix.name == 'aarch64_cortex-a53' && (matrix.openwrt_version == '24.10.4' || matrix.openwrt_version == '25.12.5') && steps.package_outputs.outputs.package_1_path != ''
         env:
@@ -964,26 +964,31 @@ jobs:
 
           test_root="$GITHUB_WORKSPACE/.build/router-emulator-smoke"
           mkdir -p "$test_root"
-          base="https://github.com/stavultras/router-emulator/releases/download/v3.7"
+          base="https://github.com/stavultras/router-emulator/releases/download/v4.1"
           curl --fail --location --retry 5 --retry-delay 5 --connect-timeout 30 \
             --output "$test_root/emulator.tar.gz" \
-            "$base/Router-Emulator-3.7-linux-x86_64.tar.gz"
+            "$base/Router-Emulator-4.1-linux-x86_64.tar.gz"
           curl --fail --location --retry 5 --retry-delay 5 --connect-timeout 30 \
             --output "$test_root/presets.zip" \
-            "$base/Router-Emulator-3.7-presets.zip"
+            "$base/Router-Emulator-4.1-presets.zip"
 
           (
             cd "$test_root"
             printf '%s  %s\n' \
-              '32367c4a1e5aabffd20152d3336a949075be16af6a7d2b0a0ee98cae02a7b053' emulator.tar.gz |
+              '8ae277cc0fecfb99da3a452fb4226f272ee6d571f362898ca2176513f3adb0b7' emulator.tar.gz |
               sha256sum -c -
             printf '%s  %s\n' \
-              '5852aa6ed5731e3a422b921e3cab2ef6b19d27308f425e4e0d096fcb99abdfc4' presets.zip |
+              '8146b505a9d75407c4504bf90638d7e3d3e3ccfc529d09c45a40b2b6868604a2' presets.zip |
               sha256sum -c -
             tar -xzf emulator.tar.gz
             unzip -q presets.zip
             cd Router-Emulator
-            tools/prepare-nand.sh "$PROFILE" "$OPENWRT_VERSION"
+            # Read the board-specific flash type/ID and dump-dir from 4.1
+            # presets. The legacy NAND options are no longer accepted.
+            python3 "$GITHUB_WORKSPACE/tools/ci/router_emulator_preset.py" \
+              --emulator-dir "$PWD" \
+              --preset "$PRESET" --profile "$PROFILE" \
+              --openwrt-version "$OPENWRT_VERSION"
           )
 
           python3 tools/ci/router-emulator-smoke.py \

@@ -5,7 +5,6 @@ Uses CI's existing DHCP/LAN-routing fixtures. Detailed DNS and load clients run
 inside the guest. QEMU measurements are not physical-router speed estimates.
 """
 import argparse
-import configparser
 from contextlib import contextmanager
 import fcntl
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -28,7 +27,9 @@ import urllib.parse
 import urllib.request
 
 HERE = Path(__file__).resolve().parent
+sys.path.insert(0, str(HERE))
 sys.path.insert(0, str(HERE.parent / "bench"))
+from router_emulator_preset import read_board_preset, EMULATOR_VERSION
 from dns_compare import config, sha256, summary, validate_load
 
 spec = importlib.util.spec_from_file_location("mtc_smoke", HERE / "router-emulator-smoke.py")
@@ -494,9 +495,10 @@ def main():
     qrun = [str(loader), "--library-path", str(qemu.parent / "lib"), str(qemu)] if os.access(loader, os.X_OK) else [str(qemu)]
     metadata["qemu_version"] = subprocess.check_output(qrun + ["--version"], text=True).strip()
     metadata["preset_sha256"] = sha256(args.emulator_dir / "presets" / (args.preset + ".ini"))
-    preset = configparser.ConfigParser(interpolation=None, delimiters=("=",))
-    preset.read(args.emulator_dir / "presets" / (args.preset + ".ini"))
-    nand = args.emulator_dir / preset["preset"]["nand-dir"]
+    board = read_board_preset(args.emulator_dir, args.preset)
+    nand = board["dump_dir"]
+    metadata["emulator_version"] = EMULATOR_VERSION
+    metadata["flash_chip_id"] = board["flash_id"]
     metadata["nand_before_boot_sha256"] = {p.name:sha256(p) for p in sorted(nand.glob("*")) if p.is_file()}
     metadata["official_firmware_sha256"] = {str(p.relative_to(args.emulator_dir)):sha256(p)
         for p in sorted((args.emulator_dir / "firmware" / args.openwrt_version).glob("*")) if p.is_file()}

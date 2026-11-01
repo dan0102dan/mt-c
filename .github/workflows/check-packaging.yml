@@ -32,6 +32,8 @@ jobs:
         run: python3 tools/ci/tests/test_openwrt_sdk.py
       - name: Test router-emulator package-manager orchestration
         run: python3 tools/ci/tests/test_router_emulator.py
+      - name: Test Router Emulator 4.1 preset and flash preparation
+        run: python3 tools/ci/tests/test_router_emulator_preset.py
       - name: Test fresh source staging for package comparisons
         run: python3 tools/ci/tests/test_build_emulator_package.py
       - name: Test DNS comparison correctness gates
