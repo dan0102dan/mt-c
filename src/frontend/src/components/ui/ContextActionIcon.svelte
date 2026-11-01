@@ -50,19 +50,16 @@
     opacity: 1;
   }
   .record .dot {
-    animation: dot-bounce 380ms cubic-bezier(0.2, 0, 0.2, 1);
+    transition: none;
+    animation: dot-bounce 320ms cubic-bezier(0.2, 0, 0.2, 1);
   }
   @keyframes dot-bounce {
     0% {
       transform: scale(0);
       opacity: 0;
     }
-    45% {
-      transform: scale(0.5);
-      opacity: 1;
-    }
-    72% {
-      transform: scale(1.16);
+    70% {
+      transform: scale(1.1);
       opacity: 1;
     }
     100% {
