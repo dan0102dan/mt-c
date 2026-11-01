@@ -20,6 +20,7 @@ export { default as ScrollToBottom } from "@lucide/svelte/icons/arrow-down-to-li
 export { default as Clear } from "@lucide/svelte/icons/eraser";
 export { default as Play } from "@lucide/svelte/icons/play";
 export { default as Pause } from "@lucide/svelte/icons/pause";
+export { default as ContextActionIcon } from "./ContextActionIcon.svelte";
 export { default as Filter } from "@lucide/svelte/icons/filter";
 export { default as Sigma } from "@lucide/svelte/icons/sigma";
 export { default as Bug } from "@lucide/svelte/icons/bug";

@@ -145,14 +145,16 @@ test("recording is off by default; cancelling consent never sends PUT", async ({
   await expect(region.getByText("DNS recording is off", { exact: true })).toBeVisible();
   dns.emit(1, 1000);
   expect(dns.state.queries).toHaveLength(0);
-  await region.getByRole("button", { name: "Start recording" }).click();
+  await page.locator(".settings-toolbar").getByRole("button", { name: "Start recording" }).click();
   const dialog = page.getByRole("dialog", { name: "Enable DNS recording?", exact: true });
   await expect(dialog).toBeVisible();
   expect(dns.state.writes).toBe(0);
   await dialog.getByRole("button", { name: "Cancel" }).click();
   await expect(dialog).not.toBeVisible();
-  await expect(region.getByRole("button", { name: "Start recording" })).toBeFocused();
-  await region.getByRole("button", { name: "Start recording" }).click();
+  await expect(
+    page.locator(".settings-toolbar").getByRole("button", { name: "Start recording" }),
+  ).toBeFocused();
+  await page.locator(".settings-toolbar").getByRole("button", { name: "Start recording" }).click();
   await page.keyboard.press("Escape");
   await expect(dialog).not.toBeVisible();
   expect(dns.state.writes).toBe(0);
@@ -178,9 +180,9 @@ test("explicit capture combines related DNS types but preserves all raw records"
   await expect(region.getByText("Stored requests: 3", { exact: true })).toBeVisible();
   await expect(region.getByRole("button", { name: "Combine related queries" })).toHaveCount(0);
   await expect(page.locator(".dns-query-popover .raw-query")).toHaveCount(3);
-  await expect(region.locator(".capture-toolbar")).not.toContainText("1024 / 1024 KiB");
+  await expect(page.locator(".settings-toolbar")).not.toContainText("1024 / 1024 KiB");
   await expect(
-    region.locator(".capture-toolbar").getByRole("button", { name: "History RAM" }),
+    page.locator(".settings-toolbar").getByRole("button", { name: "History RAM" }),
   ).toHaveCount(0);
   await expect(region.locator(".dns-summary").getByRole("button")).toHaveCount(0);
   await page.reload();
@@ -200,7 +202,7 @@ test("stop frees history for all viewers and does not resume on reload", async (
   const other = await context.newPage();
   const otherRegion = await setup(other, dns);
   await expect(otherRegion.locator("tbody tr")).toHaveCount(1);
-  await region.getByRole("button", { name: "Stop recording" }).click();
+  await page.locator(".settings-toolbar").getByRole("button", { name: "Stop recording" }).click();
   await page
     .getByRole("dialog", { name: "Stop recording?", exact: true })
     .getByRole("button", { name: "Stop recording", exact: true })

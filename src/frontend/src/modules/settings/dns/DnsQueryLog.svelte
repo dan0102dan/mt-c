@@ -330,6 +330,13 @@
     canSave: false,
     onSave: async () => {},
     saveLabel: t("Save Changes"),
+    contextAction: {
+      label: capture?.enabled ? t("Stop recording") : t("Start recording"),
+      icon: capture?.enabled ? "stop" : "record",
+      pressed: capture?.enabled ?? false,
+      disabled: changing || clearing || streamState === "unavailable",
+      onclick: () => (confirmation = capture?.enabled ? "stop" : "start"),
+    },
   })}
 >
   <h2 id="dns-query-title" class="sr-only">{t("DNS queries")}</h2>
@@ -339,21 +346,11 @@
     )}
   </p>
   <div class="dns-panel">
-    <div class="capture-toolbar">
-      <Button
-        small
-        type="button"
-        disabled={changing || clearing || streamState === "unavailable"}
-        onclick={() => (confirmation = capture?.enabled ? "stop" : "start")}
-      >
-        {capture?.enabled ? t("Stop recording") : t("Start recording")}
-      </Button>
-      {#if capture?.enabled}
-        {#if capture.dropped}<span class="dropped-count"
-            >{t("Queries not recorded")}: {capture.dropped}</span
-          >{/if}
-      {/if}
-    </div>
+    {#if capture?.enabled && capture.dropped}
+      <div class="capture-toolbar">
+        <span class="dropped-count">{t("Queries not recorded")}: {capture.dropped}</span>
+      </div>
+    {/if}
     {#if captureFailed}
       <div class="dns-message">
         <Placeholder variant="error" compact minHeight="auto"
@@ -648,7 +645,6 @@
     border-bottom: 1px solid var(--bg-light-extra);
   }
   .dropped-count {
-    margin-left: auto;
     color: var(--text-2);
     font-size: 0.85rem;
   }
