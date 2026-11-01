@@ -14,8 +14,10 @@
  * Parsed messages carry *decompressed* names and canonical (uncompressed)
  * rdata for the RFC-compressible types, matching what miekg/dns produces
  * via ToRFC3597 — that equivalence is what the differential suite checks.
- * The packer emits without compression; comparisons are semantic
- * (spec §21: no byte-for-byte requirement when only compression differs).
+ * The packer compresses owner names and RFC 1035-eligible RDATA names;
+ * RDATA whose specifications forbid pointers (e.g. SRV/DNAME) remains
+ * uncompressed. Comparisons are semantic (spec §21: no byte-for-byte
+ * requirement when only compression differs).
  */
 #ifndef MAGITRICKLE_DNSWIRE_H
 #define MAGITRICKLE_DNSWIRE_H
@@ -80,7 +82,7 @@ mt_err_t mt_dns_msg_parse(const uint8_t *buf, size_t len,
                           mt_dns_msg_t **out);
 void mt_dns_msg_free(mt_dns_msg_t *msg);
 
-/* Pack without compression. Caller frees *out. */
+/* Pack with safe DNS name compression. Caller frees *out. */
 mt_err_t mt_dns_msg_pack(const mt_dns_msg_t *msg, uint8_t **out,
                          size_t *out_len);
 

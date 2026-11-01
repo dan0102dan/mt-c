@@ -140,7 +140,7 @@ TEST unchanged_udp_is_verbatim_and_tcp_retains_baseline_filtering_pack(void)
                 ASSERT_EQ(1u, callbacks);
                 if (normalized) {
                     CHECK_CALL(assert_baseline_pack(buf, n));
-                    ASSERT(delivered_len > n); /* uncompressed answer owner */
+                    ASSERT(delivered_len <= n); /* preserve compression when repacking */
                 } else {
                     ASSERT_EQ(n, delivered_len); ASSERT_EQ(0, memcmp(buf, delivered, n));
                 }
@@ -215,6 +215,63 @@ TEST compressed_cname_multi_a_and_authority_preserve_transport_policy(void)
     }
     PASS();
 }
+
+static size_t repeated_answer_response(uint8_t *buf, size_t answer_count,
+                                       bool add_aaaa)
+{
+    size_t p = 0;
+    const uint16_t count = (uint16_t)(answer_count + (add_aaaa ? 1u : 0u));
+    uint8_t header[] = {0x12,0x34,0x81,0x80,0,1,
+                        (uint8_t)(count >> 8), (uint8_t)count,0,0,0,0};
+    memcpy(buf + p, header, sizeof(header)); p += sizeof(header);
+    static const uint8_t qname[] = {
+        18,'l','o','n','g','-','s','e','r','v','i','c','e','-','l','a','b','e','l',
+        7,'e','x','a','m','p','l','e',3,'c','o','m',0
+    };
+    memcpy(buf + p, qname, sizeof(qname)); p += sizeof(qname);
+    buf[p++] = 0; buf[p++] = 1; buf[p++] = 0; buf[p++] = 1;
+    static const uint8_t answer[] = {
+        0xc0,12,0,1,0,1,0,0,0,60,0,4,192,0,2,1
+    };
+    for (size_t i = 0; i < answer_count; i++) {
+        memcpy(buf + p, answer, sizeof(answer));
+        buf[p + 15] = (uint8_t)(i + 1);
+        p += sizeof(answer);
+    }
+    if (add_aaaa) {
+        static const uint8_t v6[] = {
+            0xc0,12,0,28,0,1,0,0,0,60,0,16,0x20,1,0x0d,0xb8,
+            0,0,0,0,0,0,0,0,0,0,0,1
+        };
+        memcpy(buf + p, v6, sizeof(v6)); p += sizeof(v6);
+    }
+    return p;
+}
+TEST compressed_large_replies_survive_real_udp_filter_and_tcp_repacking(void)
+{
+    uint8_t *buf = malloc(33000);
+    ASSERT(buf != NULL);
+    for (unsigned tcp = 0; tcp < 2; tcp++) {
+        const size_t count = tcp ? 2000 : 20;
+        size_t n = repeated_answer_response(buf, count, tcp == 0);
+        ASSERT(n < 33000);
+        reset();
+        ASSERT_EQ(GREATEST_TEST_RES_PASS,
+                  run_response(buf, n, tcp != 0, false, false, 1));
+        ASSERT_EQ(1u, callbacks);
+        ASSERT_EQ(tcp ? 0u : 1u, original_aaaa);
+        if (!tcp) { ASSERT(delivered_len <= 512); }
+        mt_dns_msg_t *parsed = NULL;
+        ASSERT_EQ(MT_OK, __real_mt_dns_msg_parse(delivered, delivered_len, &parsed));
+        ASSERT_EQ(count, parsed->n_answers);
+        ASSERT_EQ(MT_DNS_TYPE_A, parsed->answers[count - 1].rtype);
+        ASSERT_EQ((uint8_t)count, parsed->answers[count - 1].rdata[3]);
+        mt_dns_msg_free(parsed);
+    }
+    free(buf);
+    PASS();
+}
+
 TEST malformed_and_pack_failure_drop_and_release_exchange(void)
 {
     for (unsigned tcp = 0; tcp < 2; tcp++) {
@@ -425,6 +482,7 @@ int main(int argc, char **argv)
     RUN_TEST(unchanged_udp_is_verbatim_and_tcp_retains_baseline_filtering_pack);
     RUN_TEST(answer_filter_keeps_original_hook_and_additional_records);
     RUN_TEST(compressed_cname_multi_a_and_authority_preserve_transport_policy);
+    RUN_TEST(compressed_large_replies_survive_real_udp_filter_and_tcp_repacking);
     RUN_TEST(malformed_and_pack_failure_drop_and_release_exchange);
     RUN_TEST(header_only_response_retains_historical_normalization);
     RUN_TEST(upstream_deadline_selects_reuse_only_for_udp_and_releases_on_failure);

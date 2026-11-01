@@ -327,6 +327,12 @@ $(BUILDDIR)/tests/test_dns_query_alloc: tests/unit/test_dns_query_alloc.c $(LIB_
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -Itests/vendor -Itests/unit $(LDFLAGS) -Wl,--wrap=malloc -Wl,--wrap=calloc -Wl,--wrap=memmove -Wl,--wrap=realloc -o $@ $< $(LIB_OBJS) $(TEST_SUPPORT_OBJS) $(LDLIBS) $(DEP_LIBS)
 
+# Exercise SIGPIPE when a restore child exits between poll(POLLOUT) and write.
+# The wrapper is linker-local to this test; the daemon uses the real write().
+$(BUILDDIR)/tests/test_iptables_sigpipe: tests/unit/test_iptables_sigpipe.c $(LIB_OBJS) $(TEST_SUPPORT_OBJS)
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) -Itests/vendor -Itests/unit $(LDFLAGS) -Wl,--wrap=write -o $@ $< $(LIB_OBJS) $(TEST_SUPPORT_OBJS) $(LDLIBS) $(DEP_LIBS)
+
 # Exercise the total redirect deadline with a short test-only timeout.
 $(BUILDDIR)/tests/test_sub_fetch_timeout: tests/unit/test_sub_fetch_timeout.c src/subscriptions/fetch.c $(LIB_OBJS) $(TEST_SUPPORT_OBJS)
 	@mkdir -p $(dir $@)

@@ -32,12 +32,14 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <poll.h>
+#include <pthread.h>
 #include <signal.h>
 #include <stdbool.h>
 #include <stdlib.h>
 #include <string.h>
 #include <spawn.h>
 #include <sys/wait.h>
+#include <time.h>
 #include <unistd.h>
 
 extern char **environ;
@@ -325,6 +327,49 @@ static mt_err_t real_save(mt_ipt_executable_t *self, uint8_t **out, size_t *out_
     return MT_OK;
 }
 
+
+/* A writable poll() event does not guarantee that the restore child still
+ * has its pipe reader open. write() to an orphaned pipe raises SIGPIPE, whose
+ * default action would kill the daemon before errno == EPIPE is observable.
+ *
+ * Block only this thread's SIGPIPE around the individual write (never set
+ * process-wide SIG_IGN, which would also affect the other I/O threads and
+ * child processes). If this write generates a pending SIGPIPE, consume it
+ * with a zero-timeout sigtimedwait() *before* restoring the caller's mask.
+ * An already-pending SIGPIPE belongs to the caller and must not be stolen.
+ * Both successful and failed writes restore the original mask. */
+static ssize_t restore_write_no_sigpipe(int fd, const uint8_t *data, size_t len)
+{
+    sigset_t set, old, pending;
+    if (sigemptyset(&set) != 0 || sigaddset(&set, SIGPIPE) != 0) {
+        return -1;
+    }
+    int rc = pthread_sigmask(SIG_BLOCK, &set, &old);
+    if (rc != 0) { errno = rc; return -1; }
+
+    if (sigpending(&pending) != 0) {
+        int saved = errno;
+        (void)pthread_sigmask(SIG_SETMASK, &old, NULL);
+        errno = saved;
+        return -1;
+    }
+    bool already_pending = sigismember(&pending, SIGPIPE) == 1;
+
+    ssize_t n = write(fd, data, len);
+    int saved = errno;
+    if (n < 0 && saved == EPIPE && !already_pending) {
+        const struct timespec no_wait = {0, 0};
+        int signal_number;
+        do {
+            signal_number = sigtimedwait(&set, NULL, &no_wait);
+        } while (signal_number < 0 && errno == EINTR);
+    }
+    rc = pthread_sigmask(SIG_SETMASK, &old, NULL);
+    if (rc != 0) { errno = rc; return -1; }
+    errno = saved;
+    return n;
+}
+
 static mt_err_t real_restore(mt_ipt_executable_t *self, const uint8_t *data, size_t len) {
     exe_real_t *e = (exe_real_t *)self;
     const char *argv[] = {e->restore_cmd, "--noflush", NULL};
@@ -393,7 +438,7 @@ static mt_err_t real_restore(mt_ipt_executable_t *self, const uint8_t *data, siz
 
         if (idx_in >= 0 && pfds[idx_in].revents != 0) {
             if (pfds[idx_in].revents & POLLOUT) {
-                ssize_t wn = write(stdin_wr, data + written, len - written);
+                ssize_t wn = restore_write_no_sigpipe(stdin_wr, data + written, len - written);
                 if (wn < 0) {
                     if (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR) {
                         /* retry next iteration */
