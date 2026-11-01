@@ -297,89 +297,174 @@ static void exact_set_clear(exact_set_t *set)
     memset(set, 0, sizeof(*set));
 }
 
-/* reversed-label trie for namespace rules:
- * "example.com" is stored as com -> example; a lookup walks the domain's
- * labels right-to-left and matches when it passes through a terminal node
- * at a label boundary. Also covers the exact-match and leading-dot cases
- * of namespace_match. */
-typedef struct trie_node {
-    char *label;
-    struct trie_node **children;
-    size_t n_children, cap_children;
-    mt_lookup_t child_index;
+/* Reversed-label namespace trie. Node 0 is the implicit root. Edges are
+ * indexed by (parent ID, label bytes) in one open-addressing table. IDs and
+ * label offsets survive realloc; no pointer into these arrays escapes.
+ *
+ * Each label is owned once, with no per-node allocations or per-parent
+ * hash tables. Slots contain IDs, never fingerprints: parent, length AND
+ * every label byte are checked, including on hash collisions. */
+typedef struct ns_node {
+    uint32_t parent;
+    uint32_t offset;
+    uint32_t length;
+    uint32_t first_child, next_sibling;
+    uint8_t child_count; /* exact through 8; 9 means use the hash index */
     bool terminal;
-} trie_node_t;
+} ns_node_t;
 
 typedef struct ns_trie {
-    trie_node_t root;
-    bool has_empty_rule; /* namespace rule "" (matches domains ending in '.')*/
+    ns_node_t *nodes;
+    char *labels;
+    uint32_t *slots;
+    size_t n_nodes, cap_nodes;
+    size_t n_labels, cap_labels;
+    size_t cap_slots;
+    uint32_t first_child; /* implicit root */
+    uint8_t child_count;
+    bool has_empty_rule;
 } ns_trie_t;
 
-/* Most namespace nodes have only one or two children. Keep those inline in
- * the small vector; allocate a hash table only for a branching node. This
- * bounds lookup work without spending a kilobyte on every DNS label. */
-static const trie_node_t *trie_find(const trie_node_t *node, const char *label, size_t len) {
-    size_t index;
-    if (node->child_index.cap) {
-        return mt_lookup_get(&node->child_index, label, len, &index) ? node->children[index] : NULL;
+static uint32_t ns_hash(uint32_t parent, const char *label, size_t len)
+{
+    uint32_t hash = UINT32_C(2166136261) ^ parent;
+    for (size_t i = 0; i < len; i++) {
+        hash ^= (unsigned char)label[i];
+        hash *= UINT32_C(16777619);
     }
-    for (size_t i = 0; i < node->n_children; i++) {
-        if (strlen(node->children[i]->label) == len && !memcmp(node->children[i]->label, label, len)) {
-            return node->children[i];
-        }
-    }
-    return NULL;
+    hash ^= hash >> 16;
+    hash *= UINT32_C(0x7feb352d);
+    hash ^= hash >> 15;
+    return hash;
 }
 
-static trie_node_t *trie_child(trie_node_t *node, const char *label,
-                               size_t len, bool create)
+static size_t ns_slot(const ns_trie_t *t, uint32_t parent,
+                       const char *label, size_t len, uint32_t hash)
 {
-    const trie_node_t *found = trie_find(node, label, len);
-    if (found) { return (trie_node_t *)found; }
-    if (!create) {
-        return NULL;
+    size_t slot = (size_t)hash & (t->cap_slots - 1);
+    while (t->slots[slot] != 0) {
+        const ns_node_t *node = &t->nodes[t->slots[slot] - 1];
+        if (node->parent == parent && node->length == len &&
+            (len == 0 || memcmp(t->labels + node->offset, label, len) == 0)) {
+            break;
+        }
+        slot = (slot + 1) & (t->cap_slots - 1);
     }
-    trie_node_t *child = calloc(1, sizeof(*child));
-    if (child == NULL) {
-        return NULL;
-    }
-    child->label = strndup(label, len);
-    if (child->label == NULL) {
-        free(child);
-        return NULL;
-    }
-    if (node->n_children == node->cap_children) {
-        size_t cap = node->cap_children ? node->cap_children * 2 : 8;
-        trie_node_t **grown = realloc(node->children, cap * sizeof(*grown));
-        if (!grown) { free(child->label); free(child); return NULL; }
-        node->children = grown;
-        node->cap_children = cap;
-    }
-    if (node->n_children == 8) {
-        for (size_t i = 0; i < node->n_children; i++) {
-            const char *old = node->children[i]->label;
-            if (mt_lookup_put(&node->child_index, old, strlen(old), i, NULL) != MT_OK) {
-                free(child->label); free(child); return NULL;
+    return slot;
+}
+
+/* Most suffix paths have only one child. Follow the packed sibling list
+ * for small fanouts, avoiding a hash computation/probe for each DNS label.
+ * Every edge is also indexed, so crossing the 8-child threshold is atomic
+ * and needs no separate migration/allocation. */
+static uint32_t ns_find(const ns_trie_t *t, uint32_t parent,
+                        const char *label, size_t len)
+{
+    uint8_t count = parent ? t->nodes[parent - 1].child_count : t->child_count;
+    if (count <= 8) {
+        uint32_t child = parent ? t->nodes[parent - 1].first_child : t->first_child;
+        while (child != 0) {
+            const ns_node_t *node = &t->nodes[child - 1];
+            if (node->length == len &&
+                (len == 0 || memcmp(t->labels + node->offset, label, len) == 0)) {
+                return child;
             }
+            child = node->next_sibling;
         }
+        return 0;
     }
-    if (node->n_children >= 8 &&
-        mt_lookup_put(&node->child_index, label, len, node->n_children, NULL) != MT_OK) {
-        free(child->label); free(child); return NULL;
-    }
-    node->children[node->n_children++] = child;
-    return child;
+    return t->slots[ns_slot(t, parent, label, len, ns_hash(parent, label, len))];
 }
 
-static void trie_node_clear(trie_node_t *node)
+static mt_err_t ns_grow_slots(ns_trie_t *t)
 {
-    for (size_t i = 0; i < node->n_children; i++) {
-        trie_node_clear(node->children[i]);
-        free(node->children[i]);
+    if (t->cap_slots > SIZE_MAX / 2 / sizeof(*t->slots)) {
+        return MT_ERR_NOMEM;
     }
-    mt_lookup_clear(&node->child_index);
-    free(node->children);
-    free(node->label);
+    size_t cap = t->cap_slots ? t->cap_slots * 2 : 8;
+    uint32_t *slots = calloc(cap, sizeof(*slots));
+    if (slots == NULL) { return MT_ERR_NOMEM; }
+    for (size_t i = 0; i < t->n_nodes; i++) {
+        const ns_node_t *node = &t->nodes[i];
+        const char *label = node->length ? t->labels + node->offset : "";
+        size_t slot = (size_t)ns_hash(node->parent, label, node->length) & (cap - 1);
+        while (slots[slot] != 0) { slot = (slot + 1) & (cap - 1); }
+        slots[slot] = (uint32_t)i + 1;
+    }
+    free(t->slots);
+    t->slots = slots;
+    t->cap_slots = cap;
+    return MT_OK;
+}
+
+/* Checked geometric growth, including on 32-bit router targets. */
+static size_t ns_capacity(size_t current, size_t needed, size_t limit, size_t initial)
+{
+    if (needed > limit) { return 0; }
+    size_t cap = current ? current : initial;
+    if (cap > limit) { cap = limit; }
+    while (cap < needed) { cap = cap > limit / 2 ? limit : cap * 2; }
+    return cap;
+}
+
+static mt_err_t ns_child(ns_trie_t *t, uint32_t parent,
+                         const char *label, size_t len, uint32_t *out)
+{
+    uint32_t id = ns_find(t, parent, label, len);
+    if (id != 0) { *out = id; return MT_OK; }
+    /* Exhaustion is an error, never truncation, eviction, or a false success.
+     * Limits describe the representation, not a small configured rule cap. */
+    if (t->n_nodes >= UINT32_MAX || len > UINT32_MAX - t->n_labels) {
+        return MT_ERR_NOMEM;
+    }
+    if (t->cap_slots == 0 || t->n_nodes >= t->cap_slots / 2) {
+        mt_err_t err = ns_grow_slots(t);
+        if (err != MT_OK) { return err; }
+    }
+    if (t->n_nodes == t->cap_nodes) {
+        size_t limit = SIZE_MAX / sizeof(*t->nodes);
+        if (limit > UINT32_MAX) { limit = UINT32_MAX; }
+        size_t cap = ns_capacity(t->cap_nodes, t->n_nodes + 1, limit, 4);
+        if (cap == 0) { return MT_ERR_NOMEM; }
+        ns_node_t *nodes = realloc(t->nodes, cap * sizeof(*nodes));
+        if (nodes == NULL) { return MT_ERR_NOMEM; }
+        t->nodes = nodes;
+        t->cap_nodes = cap;
+    }
+    size_t needed = t->n_labels + len;
+    if (needed > t->cap_labels) {
+        size_t cap = ns_capacity(t->cap_labels, needed, UINT32_MAX, 32);
+        if (cap == 0) { return MT_ERR_NOMEM; }
+        char *labels = realloc(t->labels, cap);
+        if (labels == NULL) { return MT_ERR_NOMEM; }
+        t->labels = labels;
+        t->cap_labels = cap;
+    }
+    /* Publish an edge only after its storage is ready. A failed insertion
+     * may leave nonterminal prefixes/capacity, but cannot create a match or
+     * remove any previously accepted rule. Retrying the insertion is safe. */
+    size_t slot = ns_slot(t, parent, label, len, ns_hash(parent, label, len));
+    uint32_t *first = parent ? &t->nodes[parent - 1].first_child : &t->first_child;
+    uint8_t *count = parent ? &t->nodes[parent - 1].child_count : &t->child_count;
+    ns_node_t *node = &t->nodes[t->n_nodes];
+    *node = (ns_node_t){.parent = parent, .offset = (uint32_t)t->n_labels,
+                        .length = (uint32_t)len, .next_sibling = *first};
+    if (len != 0) { memcpy(t->labels + t->n_labels, label, len); }
+    t->n_labels = needed;
+    t->n_nodes++;
+    *out = (uint32_t)t->n_nodes;
+    t->slots[slot] = *out;
+    *first = *out;
+    if (*count <= 8) { (*count)++; }
+    return MT_OK;
+}
+
+static void ns_trie_clear(ns_trie_t *t)
+{
+    free(t->nodes);
+    free(t->labels);
+    free(t->slots);
+    memset(t, 0, sizeof(*t));
 }
 
 static mt_err_t ns_trie_insert(ns_trie_t *t, const char *rule)
@@ -389,51 +474,33 @@ static mt_err_t ns_trie_insert(ns_trie_t *t, const char *rule)
         t->has_empty_rule = true;
         return MT_OK;
     }
-    /* walk labels right to left */
-    trie_node_t *node = &t->root;
+    uint32_t node = 0;
     const char *end = rule + len;
     while (end > rule) {
         const char *start = end;
-        while (start > rule && start[-1] != '.') {
-            start--;
-        }
-        node = trie_child(node, start, (size_t)(end - start), true);
-        if (node == NULL) {
-            return MT_ERR_NOMEM;
-        }
+        while (start > rule && start[-1] != '.') { start--; }
+        mt_err_t err = ns_child(t, node, start, (size_t)(end - start), &node);
+        if (err != MT_OK) { return err; }
         end = start > rule ? start - 1 : rule;
     }
-    node->terminal = true;
+    t->nodes[node - 1].terminal = true;
     return MT_OK;
 }
 
 static bool ns_trie_match(const ns_trie_t *t, const char *domain)
 {
     size_t len = strlen(domain);
-    if (t->has_empty_rule) {
-        /* namespace rule "": matches "" or any domain ending with '.' */
-        if (len == 0 || domain[len - 1] == '.') {
-            return true;
-        }
-    }
-    const trie_node_t *node = &t->root;
+    if (t->has_empty_rule && (len == 0 || domain[len - 1] == '.')) { return true; }
+    if (t->cap_slots == 0) { return false; }
+    uint32_t node = 0;
     const char *end = domain + len;
     while (end > domain) {
         const char *start = end;
-        while (start > domain && start[-1] != '.') {
-            start--;
-        }
-        size_t lab_len = (size_t)(end - start);
-        const trie_node_t *next = trie_find(node, start, lab_len);
-        if (next == NULL) {
-            return false;
-        }
-        if (next->terminal) {
-            /* matched full rule; must be exact or at a dot boundary
-             * (start == domain covers exact and ".rule" via empty label) */
-            return true;
-        }
-        node = next;
+        while (start > domain && start[-1] != '.') { start--; }
+        size_t label_len = (size_t)(end - start);
+        node = ns_find(t, node, start, label_len);
+        if (node == 0) { return false; }
+        if (t->nodes[node - 1].terminal) { return true; }
         end = start > domain ? start - 1 : domain;
     }
     return false;
@@ -457,7 +524,7 @@ void mt_matcher_free(mt_matcher_t *m)
         return;
     }
     exact_set_clear(&m->exact);
-    trie_node_clear(&m->ns.root);
+    ns_trie_clear(&m->ns);
     for (size_t i = 0; i < m->n_scan; i++) {
         mt_rule_matcher_free(m->scan[i]);
     }
