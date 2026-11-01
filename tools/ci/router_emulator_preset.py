@@ -11,6 +11,14 @@ import re
 import subprocess
 
 MIN_EMULATOR_VERSION = (4, 1)
+# Hardware capacities of the two fixed Cudy smoke fixtures, independent of the
+# Router Emulator release. The prebuilt release omits QEMU's flash-chip table:
+# prepare-nand.sh requires --flash-mb when --flash-id is supplied. Fail closed
+# for an unfamiliar board rather than guess its capacity.
+NAND_FIXTURE_SIZE_MIB = {
+    "cudy_tr3000-v1": 128,
+    "cudy_wr3000p-v1": 128,
+}
 VERSION_PATTERN = re.compile(r"[0-9]+(?:\.[0-9]+)+\Z")
 
 
@@ -51,6 +59,16 @@ def read_board_preset(emulator_dir, name, expected_profile=None, expected_versio
         raise ValueError(f"{filename}: invalid NAND chip ID")
     if expected_profile is not None and preset["openwrt"] != expected_profile:
         raise ValueError(f"{filename}: OpenWrt profile does not match {expected_profile}")
+    size_mib = NAND_FIXTURE_SIZE_MIB.get(preset["openwrt"])
+    if size_mib is None:
+        raise ValueError(f"{filename}: unsupported NAND fixture: {preset['openwrt']}")
+    # A future upstream preset may specify flash-mb explicitly. Never produce
+    # a different-sized NAND dump from the board's known hardware capacity.
+    advertised = preset.get("flash-mb")
+    if advertised is not None:
+        if not advertised.isdecimal() or int(advertised) != size_mib:
+            raise ValueError(f"{filename}: flash-mb conflicts with the board capacity")
+
 
     relative = Path(preset["dump-dir"].strip())
     if relative.is_absolute() or any(part in (".", "..") for part in relative.parts):
@@ -58,7 +76,8 @@ def read_board_preset(emulator_dir, name, expected_profile=None, expected_versio
     dump_dir = (root / relative).resolve()
     if not dump_dir.is_relative_to(root) or dump_dir == root:
         raise ValueError(f"{filename}: dump-dir escapes the emulator")
-    return {"flash_type": "nand", "flash_id": flash_id.lower(), "dump_dir": dump_dir,
+    return {"flash_type": "nand", "flash_id": flash_id.lower(), "flash_mb": size_mib,
+            "dump_dir": dump_dir,
             "dump_dir_relative": str(relative), "openwrt_profile": preset["openwrt"],
             "emulator_version": emulator_version}
 
@@ -70,6 +89,7 @@ def prepare_board(emulator_dir, preset, profile, openwrt_version, expected_versi
         raise ValueError("an explicit OpenWrt release version is required")
     command = [str(root / "tools/prepare-nand.sh"),
                "--flash-type", board["flash_type"], "--flash-id", board["flash_id"],
+               "--flash-mb", str(board["flash_mb"]),
                profile, openwrt_version, board["dump_dir_relative"]]
     subprocess.run(command, cwd=root, check=True)
     if not board["dump_dir"].is_dir() or not any(board["dump_dir"].iterdir()):

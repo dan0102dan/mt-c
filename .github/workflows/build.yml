@@ -948,7 +948,8 @@ jobs:
 
       # Boot OpenWrt 24.10.4/opkg and 25.12.5/apk using the exact
       # cross-built SDK artifacts above, not host-repacked copies.
-      # Push-only smoke gate, pinned to Router Emulator 4.1; release/workflow_dispatch unchanged.
+      # Push-only smoke gate, fetching the latest stable Router Emulator;
+      # release/workflow_dispatch triggers stay unchanged.
       # Resolve latest once per package smoke job. Both archives and their
       # SHA256 digests must come from the SAME stable GitHub release.
       - name: Resolve and download latest stable Router Emulator
@@ -985,8 +986,8 @@ jobs:
             tar -xzf emulator.tar.gz
             unzip -q presets.zip
             cd Router-Emulator
-            # Read the board-specific flash type/ID and dump-dir from 4.1
-            # presets. The legacy NAND options are no longer accepted.
+            # Resolve NAND type/ID/dump-dir from the release preset and use
+            # the known fixture capacity (prebuilt tar lacks QEMU chip table).
             python3 "$GITHUB_WORKSPACE/tools/ci/router_emulator_preset.py" \
               --emulator-dir "$PWD" \
               --preset "$PRESET" --profile "$PROFILE" \

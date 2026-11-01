@@ -42,6 +42,7 @@ class RouterEmulatorPresetTests(unittest.TestCase):
                 board = preset.read_board_preset(self.root, name, expected_profile=profile)
                 self.assertEqual(board["flash_type"], "nand")
                 self.assertEqual(board["flash_id"], chip)
+                self.assertEqual(board["flash_mb"], 128)
                 self.assertEqual(board["dump_dir"], self.root / directory)
                 self.assertEqual(board["dump_dir_relative"], directory)
                 self.assertEqual(board["emulator_version"], "4.1")
@@ -55,7 +56,7 @@ class RouterEmulatorPresetTests(unittest.TestCase):
                 def build(command, **kwargs):
                     self.assertEqual(command, [
                         str(self.root / "tools/prepare-nand.sh"), "--flash-type", "nand",
-                        "--flash-id", chip, profile, "25.12.5", directory,
+                        "--flash-id", chip, "--flash-mb", "128", profile, "25.12.5", directory,
                     ])
                     self.assertEqual(kwargs, {"cwd": self.root, "check": True})
                     folder = self.root / directory
@@ -112,6 +113,46 @@ class RouterEmulatorPresetTests(unittest.TestCase):
             preset.read_board_preset(self.root, "cudy-tr3000-v1", expected_version="4.2")
         with self.assertRaises(ValueError):
             preset.read_board_preset(self.root, "cudy-tr3000-v1", expected_version="evil")
+
+    def test_prebuilt_release_without_chip_table_uses_verified_fixture_size(self):
+        # A release tarball has neither src/qemu/.../flash_chips.h nor
+        # qemu-patches/*.patch. An actual executable stub reproduces the
+        # upstream prepare-nand.sh contract: an explicit flash size is needed.
+        script = self.root / "tools/prepare-nand.sh"
+        script.write_text("""#!/bin/sh
+set -eu
+test "$1" = "--flash-type" && test "$2" = "nand"; shift 2
+test "$1" = "--flash-id"; shift 2
+test "$1" = "--flash-mb" && test "$2" = "128"; shift 2
+test "$1" = "cudy_tr3000-v1" && test "$2" = "24.10.4" && test "$3" = "nand-tr3000"
+mkdir -p "$3"
+printf x > "$3/mt7981.mtd0.BL2.bin"
+""")
+        script.chmod(0o755)
+        self.assertFalse((self.root / "src/qemu/hw/arm/filogic/flash_chips.h").exists())
+        self.assertFalse((self.root / "qemu-patches").exists())
+        self.assertEqual(preset.prepare_board(self.root, "cudy-tr3000-v1",
+                                              "cudy_tr3000-v1", "24.10.4"),
+                         self.root / "nand-tr3000")
+
+    def test_wrong_flash_size_or_unknown_board_fails_before_execution(self):
+        path = self.root / "presets/cudy-tr3000-v1.ini"
+        original = path.read_text()
+        path.write_text(original + "flash-mb=256\n")
+        with patch.object(preset.subprocess, "run") as runner:
+            with self.assertRaisesRegex(ValueError, "flash-mb conflicts"):
+                preset.prepare_board(self.root, "cudy-tr3000-v1",
+                                     "cudy_tr3000-v1", "24.10.4")
+            runner.assert_not_called()
+        path.write_text(original + "flash-mb=128\n")
+        board = preset.read_board_preset(self.root, "cudy-tr3000-v1")
+        self.assertEqual(board["flash_mb"], 128)
+        self.write_preset("unknown-board", "unknown_board-v1", "efaa21", "nand-unknown")
+        with patch.object(preset.subprocess, "run") as runner:
+            with self.assertRaisesRegex(ValueError, "unsupported NAND fixture"):
+                preset.prepare_board(self.root, "unknown-board",
+                                     "unknown_board-v1", "24.10.4")
+            runner.assert_not_called()
 
     def test_success_exit_requires_nonempty_generated_dump_directory(self):
         with patch.object(preset.subprocess, "run") as runner:
