@@ -1,14 +1,25 @@
+<script module lang="ts">
+  export type ContextAction = {
+    label: string;
+    icon: "record" | "stop";
+    pressed: boolean;
+    disabled: boolean;
+    onclick: () => void;
+  };
+</script>
+
 <script lang="ts">
   import { getContext, type Snippet } from "svelte";
 
   import Button from "../ui/Button.svelte";
   import Tooltip from "../ui/Tooltip.svelte";
 
-  import { Add, Export, Import, Save } from "../ui/icons";
+  import { ContextActionIcon, Export, Import, Save } from "../ui/icons";
   import { PAGE_CONTROLS_MOTION, type PageControlsMotion } from "./page-controls-motion";
 
   type Props = {
     search?: Snippet;
+    contextAction?: ContextAction;
     addLabel?: string;
     canSave: boolean;
     canAdd?: boolean;
@@ -29,6 +40,7 @@
 
   let {
     search,
+    contextAction,
     addLabel,
     actionsClass = "",
     canSave,
@@ -48,7 +60,9 @@
   }: Props = $props();
 
   const motion = getContext<PageControlsMotion | undefined>(PAGE_CONTROLS_MOTION);
-  const hasAdd = $derived(Boolean(onAdd && addLabel));
+  const hasAdd = $derived(Boolean(contextAction || (onAdd && addLabel)));
+  const targetIconMode = $derived(contextAction?.icon ?? "add");
+  let iconMode = $state<"add" | "record" | "stop">("add");
   let showAdd = $state(false);
   let resetting = $state(false);
 
@@ -56,9 +70,15 @@
     if (!active) return;
     const next = hasAdd;
     const previous = motion?.hasAdd ?? next;
-    if (motion) motion.hasAdd = next;
+    const nextIconMode = targetIconMode;
+    const previousIconMode = motion?.iconMode ?? nextIconMode;
+    if (motion) {
+      motion.hasAdd = next;
+      motion.iconMode = nextIconMode;
+    }
     resetting = true;
     showAdd = previous;
+    iconMode = previousIconMode;
 
     // Hidden tab panels keep their own controls mounted. Paint the previous
     // visible row's geometry before animating this row to its new Add state.
@@ -66,6 +86,7 @@
       frame = requestAnimationFrame(() => {
         resetting = false;
         showAdd = next;
+        iconMode = nextIconMode;
       });
     });
     return () => cancelAnimationFrame(frame);
@@ -129,13 +150,20 @@
       class="context-add"
       class:resetting
       class:present={showAdd}
-      inert={!onAdd}
-      aria-hidden={!onAdd}
+      class:recording={contextAction?.pressed}
+      inert={!hasAdd}
+      aria-hidden={!hasAdd}
     >
       <div class="context-add-motion">
-        <Tooltip value={addLabel ?? ""}>
-          <Button onclick={onAdd} aria-label={addLabel} disabled={!onAdd || !canAdd}>
-            <Add size={22} />
+        <Tooltip value={contextAction?.label ?? addLabel ?? ""}>
+          <Button
+            type="button"
+            onclick={contextAction?.onclick ?? onAdd}
+            aria-label={contextAction?.label ?? addLabel}
+            aria-pressed={contextAction?.pressed}
+            disabled={contextAction ? contextAction.disabled : !onAdd || !canAdd}
+          >
+            <ContextActionIcon mode={iconMode} />
           </Button>
         </Tooltip>
       </div>
@@ -208,8 +236,15 @@
   .context-add.resetting .context-add-motion {
     transition: none;
   }
+  .context-add.resetting :global(svg *) {
+    transition: none;
+    animation: none;
+  }
   .context-add :global(button) {
     flex-shrink: 0;
+  }
+  .context-add.recording :global(button) {
+    color: var(--red);
   }
   @media (prefers-reduced-motion: reduce) {
     .context-add {

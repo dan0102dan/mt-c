@@ -1,5 +1,7 @@
 import { getContext } from "svelte";
 
+import type { ContextAction } from "../../components/layout/PageControls.svelte";
+
 export type SectionControls = {
   canSave: boolean;
   dirty: boolean;
@@ -8,6 +10,7 @@ export type SectionControls = {
   addLabel?: string;
   canAdd?: boolean;
   onAdd?: () => void;
+  contextAction?: ContextAction;
 };
 export type SettingsSection = {
   element: HTMLElement;

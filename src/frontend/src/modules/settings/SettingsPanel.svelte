@@ -93,6 +93,7 @@
       addLabel={visibleControls?.addLabel}
       canAdd={visibleControls?.canAdd ?? false}
       onAdd={visibleControls?.onAdd}
+      contextAction={visibleControls?.contextAction}
     >
       {#snippet search()}
         <Tabs.List class="settings-tabs" aria-label={t("Settings")}>

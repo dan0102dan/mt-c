@@ -140,10 +140,12 @@ for (const width of [320, 390, 1280]) {
           "aria-selected",
           "true",
         );
-        await expect(actions.getByRole("button")).toHaveCount(label === profiles ? 4 : 3);
+        await expect(actions.getByRole("button")).toHaveCount(
+          label === profiles || label === dns ? 4 : 3,
+        );
         await expect(save).toBeEnabled();
         await expect(save).toBeInViewport();
-        const offset = label === profiles ? 0 : shift;
+        const offset = label === profiles || label === dns ? 0 : shift;
         await expect
           .poll(async () => Math.abs((await save.boundingBox())!.x - positions[0].x - offset))
           .toBeLessThan(1);
@@ -176,7 +178,7 @@ for (const width of [320, 390, 1280]) {
   }
 }
 
-test("Add slides right and fades while the other actions move with it", async ({
+test("recording replaces Add without shifting the toolbar during tab changes", async ({
   page,
   dnsUrl,
 }) => {
@@ -184,20 +186,24 @@ test("Add slides right and fades while the other actions move with it", async ({
   await page.emulateMedia({ reducedMotion: "no-preference" });
   await setup(page, dnsUrl, "en");
   await expect(page.getByRole("button", { name: "Add profile", exact: true })).toBeVisible();
+  const icon = page.locator(".settings-toolbar .context-add svg");
+  const iconNode = await icon.elementHandle();
+  const plusLine = icon.locator("path").first();
+  const initialLineWidth = (await plusLine.boundingBox())!.width;
   const [frames] = await Promise.all([
     page.evaluate(async () => {
-      const add = document.querySelector<HTMLElement>(
-        '.app-tab-content[data-state="active"] .context-add-motion',
-      )!;
-      const save = document.querySelector("#save-settings")!;
-      const frames: { opacity: number; x: number; saveX: number; width: number }[] = [];
+      const row = document.querySelector(".settings-toolbar .page-controls-actions")!;
+      const frames: { positions: number[]; width: number; count: number; lineWidth: number }[] = [];
       const until = performance.now() + 450;
       while (performance.now() < until) {
         await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
         frames.push({
-          opacity: Number(getComputedStyle(add).opacity),
-          x: add.getBoundingClientRect().x,
-          saveX: save.getBoundingClientRect().x,
+          positions: Array.from(
+            row.querySelectorAll("button"),
+            (button) => button.getBoundingClientRect().x,
+          ),
+          count: row.querySelectorAll("button").length,
+          lineWidth: row.querySelector(".context-add svg path")!.getBoundingClientRect().width,
           width: document.documentElement.scrollWidth,
         });
       }
@@ -205,24 +211,38 @@ test("Add slides right and fades while the other actions move with it", async ({
     }),
     page.getByRole("tab", { name: "DNS queries", exact: true }).click(),
   ]);
-  expect(frames.some((frame) => frame.opacity > 0 && frame.opacity < 1)).toBe(true);
-  expect(frames.at(-1)!.opacity).toBe(0);
-  expect(frames.at(-1)!.x - frames[0].x).toBeGreaterThan(10);
-  expect(frames.at(-1)!.saveX - frames[0].saveX).toBeGreaterThan(40);
-  expect(
-    frames.some(
-      (frame) => frame.saveX > frames[0].saveX + 2 && frame.saveX < frames.at(-1)!.saveX - 2,
-    ),
-  ).toBe(true);
   for (const frame of frames) {
-    expect(frame.saveX).toBeGreaterThanOrEqual(frames[0].saveX - 1);
+    expect(frame.count).toBe(4);
+    frame.positions.forEach((position, index) => {
+      expect(Math.abs(position - frames[0].positions[index])).toBeLessThan(1);
+    });
     expect(frame.width).toBeLessThanOrEqual(390);
   }
+  expect(
+    frames.some((frame) => frame.lineWidth > 0.1 && frame.lineWidth < initialLineWidth - 0.1),
+  ).toBe(true);
+  expect(frames.at(-1)!.lineWidth).toBeLessThan(0.1);
+  const actions = page.locator(".settings-toolbar .page-controls-actions");
+  await expect(actions.getByRole("button", { name: "Start recording", exact: true })).toBeVisible();
+  await expect(actions.getByRole("button", { name: "Add profile", exact: true })).toHaveCount(0);
+  await page.getByRole("tab", { name: "Profiles", exact: true }).click();
+  await expect(actions.getByRole("button", { name: "Add profile", exact: true })).toBeVisible();
+  await expect(actions.getByRole("button", { name: "Start recording", exact: true })).toHaveCount(
+    0,
+  );
+  await expect
+    .poll(async () => Math.abs((await plusLine.boundingBox())!.width - initialLineWidth))
+    .toBeLessThan(0.1);
+  expect(
+    await iconNode!.evaluate(
+      (node) => node === document.querySelector(".settings-toolbar .context-add svg"),
+    ),
+  ).toBe(true);
 });
 
 for (const width of [390, 1280]) {
   for (const section of ["Groups", "Subscriptions"]) {
-    test(`Add transition follows ${section} and Settings (${width}px)`, async ({
+    test(`context action keeps its position between ${section} and Settings (${width}px)`, async ({
       page,
       dnsUrl,
     }) => {
@@ -233,14 +253,27 @@ for (const width of [390, 1280]) {
       const activeRow = page.locator(
         '.app-tab-content[data-state="active"] .page-controls-actions',
       );
-      await expect(activeRow.locator(".context-add-motion")).toHaveCSS("opacity", "0");
+      await expect(
+        activeRow.getByRole("button", { name: "Start recording", exact: true }),
+      ).toBeVisible();
+      await expect(activeRow.locator(".context-add-motion")).toHaveCSS("opacity", "1");
+      await expect(activeRow.locator(".context-add svg .dot")).toHaveCSS(
+        "transform",
+        "matrix(1, 0, 0, 1, 0, 0)",
+      );
 
       async function switchSection(name: string) {
         const menu = page.getByRole("button", { name: "Open menu", exact: true });
         if (await menu.isVisible()) await menu.click();
         const [frames] = await Promise.all([
           page.evaluate(async () => {
-            const frames: { x: number; opacity: number; width: number }[] = [];
+            const frames: {
+              positions: number[];
+              count: number;
+              width: number;
+              lineWidth: number;
+              dotWidth: number;
+            }[] = [];
             const until = performance.now() + 450;
             while (performance.now() < until) {
               await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
@@ -248,10 +281,14 @@ for (const width of [390, 1280]) {
                 '.app-tab-content[data-state="active"] .page-controls-actions',
               )!;
               frames.push({
-                x: row.querySelector("button")!.getBoundingClientRect().x,
-                opacity: Number(
-                  getComputedStyle(row.querySelector(".context-add-motion")!).opacity,
+                positions: Array.from(
+                  row.querySelectorAll("button"),
+                  (button) => button.getBoundingClientRect().x,
                 ),
+                count: row.querySelectorAll("button").length,
+                lineWidth: row.querySelector(".context-add svg path")!.getBoundingClientRect()
+                  .width,
+                dotWidth: row.querySelector(".context-add svg .dot")!.getBoundingClientRect().width,
                 width: document.documentElement.scrollWidth,
               });
             }
@@ -259,23 +296,28 @@ for (const width of [390, 1280]) {
           }),
           page.getByRole("tab", { name, exact: true }).click(),
         ]);
-        expect(frames.some((frame) => frame.opacity > 0 && frame.opacity < 1)).toBe(true);
-        expect(
-          frames.some(
-            (frame) =>
-              Math.abs(frame.x - frames[0].x) > 2 && Math.abs(frame.x - frames.at(-1)!.x) > 2,
-          ),
-        ).toBe(true);
-        for (const frame of frames) expect(frame.width).toBeLessThanOrEqual(width);
-        return frames;
+        for (const frame of frames) {
+          expect(frame.count).toBe(4);
+          frame.positions.forEach((position, index) => {
+            expect(Math.abs(position - frames[0].positions[index])).toBeLessThan(1);
+          });
+          expect(frame.width).toBeLessThanOrEqual(width);
+        }
+        expect(frames.some((frame) => frame.lineWidth > 0.1 && frame.lineWidth < 7)).toBe(true);
+        if (name === "Settings") {
+          expect(frames.at(-1)!.lineWidth).toBeLessThan(0.1);
+          expect(frames.some((frame) => frame.dotWidth > frames.at(-1)!.dotWidth + 0.1)).toBe(true);
+        } else {
+          expect(frames.at(-1)!.lineWidth).toBeGreaterThan(7);
+          expect(frames.at(-1)!.dotWidth).toBeLessThan(0.1);
+        }
       }
 
-      const entering = await switchSection(section);
-      expect(entering.at(-1)!.opacity).toBe(1);
-      expect(entering.at(-1)!.x - entering[0].x).toBeLessThan(-40);
-      const leaving = await switchSection("Settings");
-      expect(leaving.at(-1)!.opacity).toBe(0);
-      expect(leaving.at(-1)!.x - leaving[0].x).toBeGreaterThan(40);
+      await switchSection(section);
+      await switchSection("Settings");
+      await expect(
+        activeRow.getByRole("button", { name: "Start recording", exact: true }),
+      ).toBeVisible();
       await expect(page.getByRole("tab", { name: "DNS queries", exact: true })).toHaveAttribute(
         "aria-selected",
         "true",
