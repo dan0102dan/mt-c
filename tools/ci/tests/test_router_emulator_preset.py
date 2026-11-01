@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Offline regression tests for Router Emulator 4.1's preset/flash migration."""
+"""Offline tests for Router Emulator >=4.1 preset/flash schema."""
 import importlib.util
 from pathlib import Path
 import tempfile
@@ -32,7 +32,7 @@ class RouterEmulatorPresetTests(unittest.TestCase):
             f"dump-dir={dump_dir}\n"
         )
 
-    def test_both_openwrt_fixtures_use_release_41_chip_id_and_dump_dir(self):
+    def test_both_openwrt_fixtures_use_board_specific_chip_id_and_dump_dir(self):
         expected = [
             ("cudy-tr3000-v1", "cudy_tr3000-v1", "efaa21", "nand-tr3000"),
             ("cudy-wr3000p-v1", "cudy_wr3000p-v1", "c8017f7f7f", "nand-wr3000p"),
@@ -44,6 +44,7 @@ class RouterEmulatorPresetTests(unittest.TestCase):
                 self.assertEqual(board["flash_id"], chip)
                 self.assertEqual(board["dump_dir"], self.root / directory)
                 self.assertEqual(board["dump_dir_relative"], directory)
+                self.assertEqual(board["emulator_version"], "4.1")
 
     def test_prepare_uses_chip_identity_from_selected_board_not_a_default(self):
         for name, profile, chip, directory in [
@@ -83,8 +84,8 @@ class RouterEmulatorPresetTests(unittest.TestCase):
                     runner.assert_not_called()
         (self.root / "presets/cudy-tr3000-v1.ini").write_text(original)
 
-    def test_incorrect_profile_version_and_preset_paths_are_rejected(self):
-        for version in ("3.7", "4.0", "4.2", ""):
+    def test_incorrect_profile_unsupported_version_and_preset_paths_are_rejected(self):
+        for version in ("3.7", "4.0", "", "invalid"):
             with self.subTest(version=version):
                 (self.root / "VERSION").write_text(version)
                 with self.assertRaises(ValueError):
@@ -97,6 +98,20 @@ class RouterEmulatorPresetTests(unittest.TestCase):
                 preset.read_board_preset(self.root, name)
         with self.assertRaises(ValueError):
             preset.prepare_board(self.root, "cudy-tr3000-v1", "cudy_tr3000-v1", "snapshot")
+
+    def test_later_versions_use_same_flash_schema_without_manual_bump(self):
+        for version in ("4.1", "4.1.0", "4.2", "5.0"):
+            with self.subTest(version=version):
+                (self.root / "VERSION").write_text(version + "\n")
+                board = preset.read_board_preset(self.root, "cudy-tr3000-v1", expected_version=version)
+                self.assertEqual(board["emulator_version"], version)
+        (self.root / "VERSION").write_text("4.1\n")
+        self.assertEqual(preset.read_board_preset(self.root, "cudy-tr3000-v1",
+                                                 expected_version="4.1.0")["emulator_version"], "4.1")
+        with self.assertRaisesRegex(ValueError, "version mismatch"):
+            preset.read_board_preset(self.root, "cudy-tr3000-v1", expected_version="4.2")
+        with self.assertRaises(ValueError):
+            preset.read_board_preset(self.root, "cudy-tr3000-v1", expected_version="evil")
 
     def test_success_exit_requires_nonempty_generated_dump_directory(self):
         with patch.object(preset.subprocess, "run") as runner:

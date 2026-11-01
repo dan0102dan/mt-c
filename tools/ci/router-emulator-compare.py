@@ -29,7 +29,7 @@ import urllib.request
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 sys.path.insert(0, str(HERE.parent / "bench"))
-from router_emulator_preset import read_board_preset, EMULATOR_VERSION
+from router_emulator_preset import read_board_preset
 from dns_compare import config, sha256, summary, validate_load
 
 spec = importlib.util.spec_from_file_location("mtc_smoke", HERE / "router-emulator-smoke.py")
@@ -497,7 +497,7 @@ def main():
     metadata["preset_sha256"] = sha256(args.emulator_dir / "presets" / (args.preset + ".ini"))
     board = read_board_preset(args.emulator_dir, args.preset)
     nand = board["dump_dir"]
-    metadata["emulator_version"] = EMULATOR_VERSION
+    metadata["emulator_version"] = board["emulator_version"]
     metadata["flash_chip_id"] = board["flash_id"]
     metadata["nand_before_boot_sha256"] = {p.name:sha256(p) for p in sorted(nand.glob("*")) if p.is_file()}
     metadata["official_firmware_sha256"] = {str(p.relative_to(args.emulator_dir)):sha256(p)

@@ -949,11 +949,24 @@ jobs:
       # Boot OpenWrt 24.10.4/opkg and 25.12.5/apk using the exact
       # cross-built SDK artifacts above, not host-repacked copies.
       # Push-only smoke gate, pinned to Router Emulator 4.1; release/workflow_dispatch unchanged.
+      # Resolve latest once per package smoke job. Both archives and their
+      # SHA256 digests must come from the SAME stable GitHub release.
+      - name: Resolve and download latest stable Router Emulator
+        id: emulator_release
+        if: github.event_name == 'push' && matrix.name == 'aarch64_cortex-a53' && (matrix.openwrt_version == '24.10.4' || matrix.openwrt_version == '25.12.5') && steps.package_outputs.outputs.package_1_path != ''
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          test_root="$GITHUB_WORKSPACE/.build/router-emulator-smoke"
+          python3 tools/ci/router_emulator_release.py \
+            --destination "$test_root" --github-output "$GITHUB_OUTPUT"
       - name: Install and test IPK/APK in router emulator
         if: github.event_name == 'push' && matrix.name == 'aarch64_cortex-a53' && (matrix.openwrt_version == '24.10.4' || matrix.openwrt_version == '25.12.5') && steps.package_outputs.outputs.package_1_path != ''
         env:
           PACKAGE: ${{ steps.package_outputs.outputs.package_1_path }}
           OPENWRT_VERSION: ${{ matrix.openwrt_version }}
+          EMULATOR_VERSION: ${{ steps.emulator_release.outputs.version }}
           # WR3000P's OpenWrt U-Boot images are absent in 24.10.4.
           PRESET: ${{ matrix.openwrt_version == '24.10.4' && 'cudy-tr3000-v1' || 'cudy-wr3000p-v1' }}
           PROFILE: ${{ matrix.openwrt_version == '24.10.4' && 'cudy_tr3000-v1' || 'cudy_wr3000p-v1' }}
@@ -964,22 +977,11 @@ jobs:
 
           test_root="$GITHUB_WORKSPACE/.build/router-emulator-smoke"
           mkdir -p "$test_root"
-          base="https://github.com/stavultras/router-emulator/releases/download/v4.1"
-          curl --fail --location --retry 5 --retry-delay 5 --connect-timeout 30 \
-            --output "$test_root/emulator.tar.gz" \
-            "$base/Router-Emulator-4.1-linux-x86_64.tar.gz"
-          curl --fail --location --retry 5 --retry-delay 5 --connect-timeout 30 \
-            --output "$test_root/presets.zip" \
-            "$base/Router-Emulator-4.1-presets.zip"
-
+          # Archives have been fetched and hash-verified by the previous step.
+          # Preserve the resolved version alongside the CI logs.
+          test -s "$test_root/router-emulator-release.json"
           (
             cd "$test_root"
-            printf '%s  %s\n' \
-              '8ae277cc0fecfb99da3a452fb4226f272ee6d571f362898ca2176513f3adb0b7' emulator.tar.gz |
-              sha256sum -c -
-            printf '%s  %s\n' \
-              '8146b505a9d75407c4504bf90638d7e3d3e3ccfc529d09c45a40b2b6868604a2' presets.zip |
-              sha256sum -c -
             tar -xzf emulator.tar.gz
             unzip -q presets.zip
             cd Router-Emulator
@@ -988,7 +990,8 @@ jobs:
             python3 "$GITHUB_WORKSPACE/tools/ci/router_emulator_preset.py" \
               --emulator-dir "$PWD" \
               --preset "$PRESET" --profile "$PROFILE" \
-              --openwrt-version "$OPENWRT_VERSION"
+              --openwrt-version "$OPENWRT_VERSION" \
+              --expected-version "$EMULATOR_VERSION"
           )
 
           python3 tools/ci/router-emulator-smoke.py \
@@ -1005,6 +1008,7 @@ jobs:
           path: |
             .build/router-emulator-smoke/Router-Emulator/work/*.log
             .build/router-emulator-smoke/Router-Emulator/work/logs/
+            .build/router-emulator-smoke/router-emulator-release.json
           if-no-files-found: warn
           retention-days: 7
 
