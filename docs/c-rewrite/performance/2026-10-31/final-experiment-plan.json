@@ -1,0 +1,74 @@
+{
+  "declared_unix": 1793467204.143115,
+  "baseline_commit": "6a94817a3764dbf9280a9fe657c2afd943725cb4",
+  "candidate_scope": "explicit reusable timer API and unchanged-response forwarding for UDP only; original ordinary timers and TCP repacking retained",
+  "native": {
+    "rules": 1000,
+    "names": 32,
+    "concurrency": 10,
+    "compressed_upstream": true,
+    "readiness": "same scenario protocol for upstream and proxy, both variants",
+    "affinity": {
+      "proxy": 0,
+      "upstream": 1,
+      "loader": 2
+    },
+    "GOMAXPROCS": 1,
+    "udp": {
+      "shapes": [
+        "1A",
+        "4A",
+        "2CNAME+4A"
+      ],
+      "pairs": 5,
+      "duration_seconds": 8,
+      "warmup_seconds": 1
+    },
+    "tcp_capacity": {
+      "shape": "1A",
+      "pairs": 5,
+      "duration_seconds": 12,
+      "warmup_seconds": 1
+    },
+    "tcp_paced": {
+      "shape": "1A",
+      "pairs": 5,
+      "duration_seconds": 12,
+      "warmup_seconds": 1,
+      "qps_selection": "7000 if <=80% minimum final baseline capacity, else integer 50% final baseline median"
+    }
+  },
+  "guest_correctness": {
+    "firmware": [
+      "25.12.5",
+      "24.10.4"
+    ],
+    "both_variants": "fresh package installation, binary identity and detailed DNS/kernel gates",
+    "candidate": "full LAN/DHCP smoke",
+    "baseline": "prior completed LAN/DHCP smoke may be reused only after payload/runtime/fixture hash validation"
+  },
+  "guest_benchmark": {
+    "firmware": "25.12.5",
+    "rules": 1000,
+    "names": 32,
+    "concurrency": 10,
+    "pairs": 3,
+    "duration_seconds": 10,
+    "warmup_seconds": 2,
+    "shapes": [
+      "UDP1A",
+      "UDP2CNAME+4A",
+      "TCP2CNAME+4A"
+    ],
+    "affinity": {
+      "QEMU": [
+        4,
+        5
+      ],
+      "upstream": 6
+    },
+    "loader": "guest loopback GOMAXPROCS1"
+  },
+  "timing_gate": "all known builds/tests/emulators/other loads stopped; root confirms quiet phase",
+  "earlier_results": "preserved as experimental; no unfavorable sample is replaced"
+}

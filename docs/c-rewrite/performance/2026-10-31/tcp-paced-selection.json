@@ -1,0 +1,6 @@
+{
+  "predeclared_rule": "7000 if <=80% minimum baseline capacity, else integer 50% baseline median",
+  "baseline_min_rps": 13434.74802468575,
+  "baseline_median_rps": 13619.979918068222,
+  "selected_qps": 7000
+}

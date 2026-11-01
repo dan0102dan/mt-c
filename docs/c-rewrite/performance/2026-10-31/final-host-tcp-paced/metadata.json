@@ -1,0 +1,48 @@
+{
+  "scope": "host production transport/pipeline with counting sink; no kernel writes",
+  "parameters": {
+    "baseline": "/workspace/scratch/20a964511d08/mt-c/.build/perf/final-host-baseline",
+    "candidate": "/workspace/scratch/20a964511d08/mt-c/.build/perf/final-host-candidate",
+    "baseline_source": null,
+    "candidate_source": null,
+    "candidate_loop_object": null,
+    "candidate_proxy_object": null,
+    "build_only": false,
+    "dnsstub": "/workspace/scratch/20a964511d08/mt-c/.build/perf/dnsstub",
+    "dnsload": "/workspace/scratch/20a964511d08/mt-c/.build/perf/dnsload",
+    "output": "/workspace/scratch/20a964511d08/mt-c/docs/c-rewrite/performance/2026-10-31/final-host-tcp-paced",
+    "repeats": 5,
+    "duration": 12.0,
+    "warmup": 1.0,
+    "rules": 1000,
+    "names": 32,
+    "concurrency": 10,
+    "proxy_cpu": 0,
+    "stub_cpu": 1,
+    "loader_cpu": 2,
+    "port": 13553,
+    "upstream_port": 15399,
+    "tcp_only": true,
+    "udp_only": false,
+    "qps": 7000.0
+  },
+  "sha256": {
+    "/workspace/scratch/20a964511d08/mt-c/.build/perf/final-host-baseline": "e51712131ab2ae0cbd8af3656becc12c8431617e9c6a0bda706c4648cfabe9af",
+    "/workspace/scratch/20a964511d08/mt-c/.build/perf/final-host-candidate": "53475f1743e90cbdf9ea13e7a167ccd0c7b3345d399af9220f20f65e4cc9b5b2",
+    "/workspace/scratch/20a964511d08/mt-c/.build/perf/dnsstub": "f8df544548a7858cf07e91d60d8c4f94a8170777cf2df1c6bcdeb8270f02edb6",
+    "/workspace/scratch/20a964511d08/mt-c/.build/perf/dnsload": "4f4007be0abed58fe5f079bc63ee0d8dcd058a80b211e55b31467d60f8c6daeb",
+    "/workspace/scratch/20a964511d08/mt-c/docs/c-rewrite/performance/2026-10-31/final-host-tcp-paced/config.yaml": "254305bfddba63facdea52ec5fb9bd64857b9deaf37c1c5774a0fc755b1b574a",
+    "/workspace/scratch/20a964511d08/mt-c/tools/bench/dns_compare.py": "039307348145edd79867dc5bdadbd900e3a6f6228e5eb9b649961796c5bbf159",
+    "/workspace/scratch/20a964511d08/mt-c/tools/bench/dns-proxy-host.c": "7733cf507571a40274d9a568d08f017cb67b70766178d0ec25a9184bce1a4d4f",
+    "/workspace/scratch/20a964511d08/mt-c/tools/bench/run_dns_host_compare.py": "7255e3c2f0cb1a769e812dcf274e95b574554cf55dca2e760801cd49f42a2ce8"
+  },
+  "start_unix": 1793469229.4376814,
+  "clock_ticks_per_second": 100,
+  "uname": [
+    "Linux",
+    "592d36fa040a",
+    "6.18.57",
+    "#1 SMP Tue Oct 20 21:56:04 UTC 2026",
+    "x86_64"
+  ]
+}

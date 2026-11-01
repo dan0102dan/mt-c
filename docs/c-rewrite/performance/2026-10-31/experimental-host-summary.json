@@ -1,0 +1,898 @@
+{
+  "scope": "Native production transport/pipeline objects with counting netfilter callback; no real kernel writes, no physical router, no direct firc comparison",
+  "baseline_commit": "6a94817a3764dbf9280a9fe657c2afd943725cb4",
+  "main_experiments": 3,
+  "main_measured_runs": 50,
+  "main_successful_queries": 18487046,
+  "main_errors": 0,
+  "experiments": [
+    {
+      "measured_runs": 30,
+      "successful_queries": 15999074,
+      "errors": 0,
+      "timeouts": 0,
+      "invalid": 0,
+      "workloads": [
+        {
+          "proto": "udp",
+          "cnames": 0,
+          "addresses": 1,
+          "baseline": {
+            "rps": {
+              "median": 73434.9038096034,
+              "min": 70230.14804862232,
+              "max": 74518.10280744142
+            },
+            "p95_ms": {
+              "median": 0.249,
+              "min": 0.242,
+              "max": 0.256
+            },
+            "p99_ms": {
+              "median": 0.435,
+              "min": 0.409,
+              "max": 0.439
+            },
+            "cpu_ticks_per_query": {
+              "median": 0.0010802432895756523,
+              "min": 0.0010567016498955306,
+              "max": 0.0011337626324651239
+            }
+          },
+          "candidate": {
+            "rps": {
+              "median": 79476.18808273812,
+              "min": 73647.77408940128,
+              "max": 83072.87293861619
+            },
+            "p95_ms": {
+              "median": 0.246,
+              "min": 0.233,
+              "max": 0.276
+            },
+            "p99_ms": {
+              "median": 0.411,
+              "min": 0.377,
+              "max": 0.449
+            },
+            "cpu_ticks_per_query": {
+              "median": 0.0009243187665312303,
+              "min": 0.0009011998697742597,
+              "max": 0.0009691205273645013
+            }
+          },
+          "change_pct": {
+            "rps": 8.226720482671457,
+            "p95_ms": -1.2048192771084376,
+            "p99_ms": -5.517241379310345,
+            "cpu_ticks_per_query": -14.434204271305695
+          },
+          "paired_candidate_minus_baseline": {
+            "rps": {
+              "differences_in_repetition_order": [
+                12842.724889993871,
+                10158.53936713231,
+                2073.831727718236,
+                6041.284273134719,
+                -870.3287180401385
+              ],
+              "median_difference": 6041.284273134719,
+              "median_percent_change": 8.226720482671457,
+              "positive_pairs": 4,
+              "pairs": 5
+            },
+            "p95_ms": {
+              "differences_in_repetition_order": [
+                -0.015000000000000013,
+                -0.022999999999999993,
+                0.008000000000000007,
+                0.0020000000000000018,
+                0.03400000000000003
+              ],
+              "median_difference": 0.0020000000000000018,
+              "median_percent_change": 0.8196721311475308,
+              "positive_pairs": 3,
+              "pairs": 5
+            },
+            "p99_ms": {
+              "differences_in_repetition_order": [
+                -0.055999999999999994,
+                -0.057999999999999996,
+                -0.009000000000000008,
+                -0.02400000000000002,
+                0.040000000000000036
+              ],
+              "median_difference": -0.02400000000000002,
+              "median_percent_change": -5.517241379310345,
+              "positive_pairs": 1,
+              "pairs": 5
+            },
+            "cpu_ticks_per_query": {
+              "differences_in_repetition_order": [
+                -0.0002264431371333805,
+                -0.00013238288336430023,
+                -0.00016725507835509265,
+                -0.00017797478289831477,
+                -0.00011112276221115103
+              ],
+              "median_difference": -0.00016725507835509265,
+              "median_percent_change": -15.100367335271548,
+              "positive_pairs": 0,
+              "pairs": 5
+            }
+          },
+          "sink_callbacks_per_response": {
+            "baseline": {
+              "min": 1.0,
+              "max": 1.0
+            },
+            "candidate": {
+              "min": 1.0,
+              "max": 1.0
+            }
+          }
+        },
+        {
+          "proto": "udp",
+          "cnames": 0,
+          "addresses": 4,
+          "baseline": {
+            "rps": {
+              "median": 67387.35668571298,
+              "min": 62174.91896761038,
+              "max": 68125.37112464315
+            },
+            "p95_ms": {
+              "median": 0.278,
+              "min": 0.27,
+              "max": 0.301
+            },
+            "p99_ms": {
+              "median": 0.467,
+              "min": 0.437,
+              "max": 0.527
+            },
+            "cpu_ticks_per_query": {
+              "median": 0.0012172922093298603,
+              "min": 0.0011927087101124263,
+              "max": 0.0012625551865284557
+            }
+          },
+          "candidate": {
+            "rps": {
+              "median": 72322.38369416771,
+              "min": 71332.38820683472,
+              "max": 75103.37698767646
+            },
+            "p95_ms": {
+              "median": 0.275,
+              "min": 0.255,
+              "max": 0.279
+            },
+            "p99_ms": {
+              "median": 0.444,
+              "min": 0.404,
+              "max": 0.455
+            },
+            "cpu_ticks_per_query": {
+              "median": 0.0010169079673324557,
+              "min": 0.0009903351584536254,
+              "max": 0.0010455721056545437
+            }
+          },
+          "change_pct": {
+            "rps": 7.323372292923058,
+            "p95_ms": -1.0791366906474864,
+            "p99_ms": -4.925053533190582,
+            "cpu_ticks_per_query": -16.461474119490127
+          },
+          "paired_candidate_minus_baseline": {
+            "rps": {
+              "differences_in_repetition_order": [
+                4348.065789547618,
+                5735.883828239515,
+                10147.464726557337,
+                4322.177103936454,
+                7716.020301963479
+              ],
+              "median_difference": 5735.883828239515,
+              "median_percent_change": 8.744191298875359,
+              "positive_pairs": 5,
+              "pairs": 5
+            },
+            "p95_ms": {
+              "differences_in_repetition_order": [
+                0.007000000000000006,
+                -0.006000000000000005,
+                -0.022999999999999965,
+                0.0,
+                -0.02300000000000002
+              ],
+              "median_difference": -0.006000000000000005,
+              "median_percent_change": -2.135231316725983,
+              "positive_pairs": 1,
+              "pairs": 5
+            },
+            "p99_ms": {
+              "differences_in_repetition_order": [
+                -0.025999999999999968,
+                -0.01200000000000001,
+                -0.07300000000000001,
+                -0.016000000000000014,
+                -0.032999999999999974
+              ],
+              "median_difference": -0.025999999999999968,
+              "median_percent_change": -5.531914893617018,
+              "positive_pairs": 0,
+              "pairs": 5
+            },
+            "cpu_ticks_per_query": {
+              "differences_in_repetition_order": [
+                -0.0001813577999689067,
+                -0.00024133019756617164,
+                -0.0002722200280748303,
+                -0.00015624291024427623,
+                -0.0001758007427799706
+              ],
+              "median_difference": -0.0001813577999689067,
+              "median_percent_change": -14.898460581518647,
+              "positive_pairs": 0,
+              "pairs": 5
+            }
+          },
+          "sink_callbacks_per_response": {
+            "baseline": {
+              "min": 4.0,
+              "max": 4.0
+            },
+            "candidate": {
+              "min": 4.0,
+              "max": 4.0
+            }
+          }
+        },
+        {
+          "proto": "udp",
+          "cnames": 2,
+          "addresses": 4,
+          "baseline": {
+            "rps": {
+              "median": 53628.89269747021,
+              "min": 50141.23837744405,
+              "max": 53803.27820153155
+            },
+            "p95_ms": {
+              "median": 0.342,
+              "min": 0.311,
+              "max": 0.39
+            },
+            "p99_ms": {
+              "median": 0.551,
+              "min": 0.517,
+              "max": 0.655
+            },
+            "cpu_ticks_per_query": {
+              "median": 0.001597818345391161,
+              "min": 0.0015228036351697786,
+              "max": 0.0016222377091020122
+            }
+          },
+          "candidate": {
+            "rps": {
+              "median": 56664.12202695066,
+              "min": 50779.16339943409,
+              "max": 59695.632443874754
+            },
+            "p95_ms": {
+              "median": 0.329,
+              "min": 0.296,
+              "max": 0.398
+            },
+            "p99_ms": {
+              "median": 0.541,
+              "min": 0.477,
+              "max": 0.685
+            },
+            "cpu_ticks_per_query": {
+              "median": 0.0014153950675328065,
+              "min": 0.0013211408439758568,
+              "max": 0.0014295134785860652
+            }
+          },
+          "change_pct": {
+            "rps": 5.6596904705877416,
+            "p95_ms": -3.801169590643283,
+            "p99_ms": -1.814882032667875,
+            "cpu_ticks_per_query": -11.417022365811903
+          },
+          "paired_candidate_minus_baseline": {
+            "rps": {
+              "differences_in_repetition_order": [
+                6066.7397464045425,
+                4100.130015230665,
+                2805.754531822022,
+                3311.1468242292394,
+                637.925021990035
+              ],
+              "median_difference": 3311.1468242292394,
+              "median_percent_change": 6.206114676169627,
+              "positive_pairs": 5,
+              "pairs": 5
+            },
+            "p95_ms": {
+              "differences_in_repetition_order": [
+                -0.015000000000000013,
+                -0.0040000000000000036,
+                -0.019999999999999962,
+                -0.02400000000000002,
+                0.008000000000000007
+              ],
+              "median_difference": -0.015000000000000013,
+              "median_percent_change": -4.823151125401937,
+              "positive_pairs": 1,
+              "pairs": 5
+            },
+            "p99_ms": {
+              "differences_in_repetition_order": [
+                -0.040000000000000036,
+                -0.010000000000000009,
+                -0.017999999999999905,
+                -0.0050000000000000044,
+                0.030000000000000027
+              ],
+              "median_difference": -0.010000000000000009,
+              "median_percent_change": -1.814882032667875,
+              "positive_pairs": 1,
+              "pairs": 5
+            },
+            "cpu_ticks_per_query": {
+              "differences_in_repetition_order": [
+                -0.00028630510041091216,
+                -0.00024935976470929024,
+                -9.329015658371344e-05,
+                -0.0001771820591638326,
+                -0.00019998897257259246
+              ],
+              "median_difference": -0.00019998897257259246,
+              "median_percent_change": -12.380274139612258,
+              "positive_pairs": 0,
+              "pairs": 5
+            }
+          },
+          "sink_callbacks_per_response": {
+            "baseline": {
+              "min": 11.999407230399818,
+              "max": 11.999474844863839
+            },
+            "candidate": {
+              "min": 4.0,
+              "max": 4.0
+            }
+          }
+        }
+      ],
+      "name": "host-udp",
+      "raw": "host-udp/results.jsonl",
+      "metadata": "host-udp/metadata.json",
+      "diagnostic": false
+    },
+    {
+      "measured_runs": 10,
+      "successful_queries": 1647972,
+      "errors": 0,
+      "timeouts": 0,
+      "invalid": 0,
+      "workloads": [
+        {
+          "proto": "tcp",
+          "cnames": 0,
+          "addresses": 1,
+          "baseline": {
+            "rps": {
+              "median": 13619.979918068222,
+              "min": 13434.74802468575,
+              "max": 13828.368659433536
+            },
+            "p95_ms": {
+              "median": 1.397,
+              "min": 1.371,
+              "max": 1.414
+            },
+            "p99_ms": {
+              "median": 3.221,
+              "min": 2.706,
+              "max": 3.257
+            },
+            "cpu_ticks_per_query": {
+              "median": 0.0055615719241570456,
+              "min": 0.005533357549340114,
+              "max": 0.005652543343196158
+            }
+          },
+          "candidate": {
+            "rps": {
+              "median": 13927.779444221262,
+              "min": 13549.207231178427,
+              "max": 13975.08849187345
+            },
+            "p95_ms": {
+              "median": 1.403,
+              "min": 1.37,
+              "max": 1.419
+            },
+            "p99_ms": {
+              "median": 3.493,
+              "min": 3.432,
+              "max": 3.574
+            },
+            "cpu_ticks_per_query": {
+              "median": 0.00533672021275327,
+              "min": 0.00507432862030337,
+              "max": 0.00551041654201917
+            }
+          },
+          "change_pct": {
+            "rps": 2.2599117473346197,
+            "p95_ms": 0.42949176807445255,
+            "p99_ms": 8.444582427817448,
+            "cpu_ticks_per_query": -4.042952504616859
+          },
+          "paired_candidate_minus_baseline": {
+            "rps": {
+              "differences_in_repetition_order": [
+                228.0338632986186,
+                114.45920649267646,
+                355.10857380522793,
+                163.00185664458695,
+                103.25236118300745
+              ],
+              "median_difference": 163.00185664458695,
+              "median_percent_change": 1.1841953537389704,
+              "positive_pairs": 5,
+              "pairs": 5
+            },
+            "p95_ms": {
+              "differences_in_repetition_order": [
+                0.02200000000000002,
+                -0.0009999999999998899,
+                0.02200000000000002,
+                0.01200000000000001,
+                -0.03499999999999992
+              ],
+              "median_difference": 0.01200000000000001,
+              "median_percent_change": 0.8565310492505418,
+              "positive_pairs": 3,
+              "pairs": 5
+            },
+            "p99_ms": {
+              "differences_in_repetition_order": [
+                0.516,
+                0.7949999999999999,
+                0.2610000000000001,
+                0.3169999999999997,
+                0.246
+              ],
+              "median_difference": 0.3169999999999997,
+              "median_percent_change": 9.732883021185135,
+              "positive_pairs": 5,
+              "pairs": 5
+            },
+            "cpu_ticks_per_query": {
+              "differences_in_repetition_order": [
+                -0.0005041799598861519,
+                -0.0004404707205178217,
+                -0.00022485171140377517,
+                -2.294100732094448e-05,
+                -0.00031115506075455115
+              ],
+              "median_difference": -0.00031115506075455115,
+              "median_percent_change": -5.50469128430624,
+              "positive_pairs": 0,
+              "pairs": 5
+            }
+          },
+          "sink_callbacks_per_response": {
+            "baseline": {
+              "min": 1.0,
+              "max": 1.0
+            },
+            "candidate": {
+              "min": 1.0,
+              "max": 1.0
+            }
+          }
+        }
+      ],
+      "name": "host-tcp",
+      "raw": "host-tcp/results.jsonl",
+      "metadata": "host-tcp/metadata.json",
+      "diagnostic": false
+    },
+    {
+      "measured_runs": 10,
+      "successful_queries": 840000,
+      "errors": 0,
+      "timeouts": 0,
+      "invalid": 0,
+      "workloads": [
+        {
+          "proto": "tcp",
+          "cnames": 0,
+          "addresses": 1,
+          "baseline": {
+            "rps": {
+              "median": 6999.917286060716,
+              "min": 6999.693288022813,
+              "max": 6999.940067679798
+            },
+            "p95_ms": {
+              "median": 1.252,
+              "min": 1.046,
+              "max": 1.339
+            },
+            "p99_ms": {
+              "median": 2.538,
+              "min": 2.173,
+              "max": 2.868
+            },
+            "cpu_ticks_per_query": {
+              "median": 0.006154761904761905,
+              "min": 0.00575,
+              "max": 0.006380952380952381
+            }
+          },
+          "candidate": {
+            "rps": {
+              "median": 6999.919740670233,
+              "min": 6999.399968271753,
+              "max": 6999.979588642851
+            },
+            "p95_ms": {
+              "median": 1.15,
+              "min": 1.043,
+              "max": 1.527
+            },
+            "p99_ms": {
+              "median": 2.291,
+              "min": 2.15,
+              "max": 3.48
+            },
+            "cpu_ticks_per_query": {
+              "median": 0.005833333333333334,
+              "min": 0.005345238095238096,
+              "max": 0.006011904761904762
+            }
+          },
+          "change_pct": {
+            "rps": 3.5066264603145214e-05,
+            "p95_ms": -8.146964856230044,
+            "p99_ms": -9.732072498029943,
+            "cpu_ticks_per_query": -5.222437137330759
+          },
+          "paired_candidate_minus_baseline": {
+            "rps": {
+              "differences_in_repetition_order": [
+                -0.18573280787313706,
+                -0.5267232459882507,
+                0.062302582135089324,
+                0.2607076961967323,
+                0.04834580743590777
+              ],
+              "median_difference": 0.04834580743590777,
+              "median_percent_change": 0.0006906670809936344,
+              "positive_pairs": 3,
+              "pairs": 5
+            },
+            "p95_ms": {
+              "differences_in_repetition_order": [
+                0.22199999999999998,
+                0.18999999999999995,
+                0.06199999999999983,
+                -0.0030000000000001137,
+                -0.20100000000000007
+              ],
+              "median_difference": 0.06199999999999983,
+              "median_percent_change": 5.698529411764697,
+              "positive_pairs": 3,
+              "pairs": 5
+            },
+            "p99_ms": {
+              "differences_in_repetition_order": [
+                0.3530000000000002,
+                0.7189999999999999,
+                -0.02300000000000013,
+                0.07799999999999985,
+                -0.609
+              ],
+              "median_difference": 0.07799999999999985,
+              "median_percent_change": 3.5246272028919945,
+              "positive_pairs": 3,
+              "pairs": 5
+            },
+            "cpu_ticks_per_query": {
+              "differences_in_repetition_order": [
+                -0.00036904761904761954,
+                -0.00028571428571428584,
+                -0.00042857142857142833,
+                -0.0004047619047619043,
+                -0.00047619047619047554
+              ],
+              "median_difference": -0.0004047619047619043,
+              "median_percent_change": -7.039337474120078,
+              "positive_pairs": 0,
+              "pairs": 5
+            }
+          },
+          "sink_callbacks_per_response": {
+            "baseline": {
+              "min": 1.0,
+              "max": 1.0
+            },
+            "candidate": {
+              "min": 1.0,
+              "max": 1.0
+            }
+          }
+        }
+      ],
+      "name": "host-tcp-paced",
+      "raw": "host-tcp-paced/results.jsonl",
+      "metadata": "host-tcp-paced/metadata.json",
+      "diagnostic": false
+    },
+    {
+      "measured_runs": 10,
+      "successful_queries": 1676394,
+      "errors": 0,
+      "timeouts": 0,
+      "invalid": 0,
+      "workloads": [
+        {
+          "proto": "tcp",
+          "cnames": 0,
+          "addresses": 1,
+          "baseline": {
+            "rps": {
+              "median": 13951.131770340271,
+              "min": 13862.483508123833,
+              "max": 14115.667076110482
+            },
+            "p95_ms": {
+              "median": 1.316,
+              "min": 1.289,
+              "max": 1.404
+            },
+            "p99_ms": {
+              "median": 3.589,
+              "min": 3.034,
+              "max": 3.836
+            },
+            "cpu_ticks_per_query": {
+              "median": 0.005733582325531446,
+              "min": 0.005650527422379911,
+              "max": 0.005927048017504629
+            }
+          },
+          "candidate": {
+            "rps": {
+              "median": 13973.18752036452,
+              "min": 13848.535821314208,
+              "max": 14098.059655033256
+            },
+            "p95_ms": {
+              "median": 1.371,
+              "min": 1.242,
+              "max": 1.451
+            },
+            "p99_ms": {
+              "median": 3.68,
+              "min": 3.638,
+              "max": 3.923
+            },
+            "cpu_ticks_per_query": {
+              "median": 0.005650957045610873,
+              "min": 0.00553745732918174,
+              "max": 0.005722434832839916
+            }
+          },
+          "change_pct": {
+            "rps": 0.1580929087856342,
+            "p95_ms": 4.1793313069908855,
+            "p99_ms": 2.535525215937584,
+            "cpu_ticks_per_query": -1.4410760189601746
+          },
+          "paired_candidate_minus_baseline": {
+            "rps": {
+              "differences_in_repetition_order": [
+                -118.5582741504004,
+                22.055750024248482,
+                27.020956519605534,
+                161.86177302959368,
+                -63.02820774011525
+              ],
+              "median_difference": 22.055750024248482,
+              "median_percent_change": 0.1580929087856342,
+              "positive_pairs": 3,
+              "pairs": 5
+            },
+            "p95_ms": {
+              "differences_in_repetition_order": [
+                -0.07400000000000007,
+                0.08899999999999997,
+                0.16200000000000014,
+                -0.07399999999999984,
+                0.03600000000000003
+              ],
+              "median_difference": 0.03600000000000003,
+              "median_percent_change": 2.696629213483148,
+              "positive_pairs": 3,
+              "pairs": 5
+            },
+            "p99_ms": {
+              "differences_in_repetition_order": [
+                0.15100000000000025,
+                0.04899999999999993,
+                0.6460000000000004,
+                0.23499999999999988,
+                -0.1759999999999997
+              ],
+              "median_difference": 0.15100000000000025,
+              "median_percent_change": 4.234436343241743,
+              "positive_pairs": 4,
+              "pairs": 5
+            },
+            "cpu_ticks_per_query": {
+              "differences_in_repetition_order": [
+                -1.1147492691529481e-05,
+                2.095592993788236e-05,
+                -0.0003895906883228887,
+                -0.00030977645125000643,
+                -1.0467342789996156e-05
+              ],
+              "median_difference": -1.1147492691529481e-05,
+              "median_percent_change": -0.1944245684219137,
+              "positive_pairs": 1,
+              "pairs": 5
+            }
+          },
+          "sink_callbacks_per_response": {
+            "baseline": {
+              "min": 1.0,
+              "max": 1.0
+            },
+            "candidate": {
+              "min": 1.0,
+              "max": 1.0
+            }
+          }
+        }
+      ],
+      "name": "host-tcp-timer-isolation",
+      "raw": "host-tcp-timer-isolation/results.jsonl",
+      "metadata": "host-tcp-timer-isolation/metadata.json",
+      "diagnostic": true
+    },
+    {
+      "measured_runs": 10,
+      "successful_queries": 1640938,
+      "errors": 0,
+      "timeouts": 0,
+      "invalid": 0,
+      "workloads": [
+        {
+          "proto": "tcp",
+          "cnames": 0,
+          "addresses": 1,
+          "baseline": {
+            "rps": {
+              "median": 13872.229801786605,
+              "min": 12515.531474068568,
+              "max": 13945.91034225106
+            },
+            "p95_ms": {
+              "median": 1.342,
+              "min": 1.295,
+              "max": 1.474
+            },
+            "p99_ms": {
+              "median": 3.556,
+              "min": 2.865,
+              "max": 3.968
+            },
+            "cpu_ticks_per_query": {
+              "median": 0.005802742787118632,
+              "min": 0.005764258008906766,
+              "max": 0.0060190024701879605
+            }
+          },
+          "candidate": {
+            "rps": {
+              "median": 13931.662684480738,
+              "min": 13038.919582912002,
+              "max": 13955.14955463783
+            },
+            "p95_ms": {
+              "median": 1.439,
+              "min": 1.328,
+              "max": 1.589
+            },
+            "p99_ms": {
+              "median": 3.773,
+              "min": 3.683,
+              "max": 3.813
+            },
+            "cpu_ticks_per_query": {
+              "median": 0.005714626936971905,
+              "min": 0.005606706552502418,
+              "max": 0.005758467278989667
+            }
+          },
+          "change_pct": {
+            "rps": 0.42843063835691364,
+            "p95_ms": 7.2280178837555775,
+            "p99_ms": 6.102362204724421,
+            "cpu_ticks_per_query": -1.5185206958049813
+          },
+          "paired_candidate_minus_baseline": {
+            "rps": {
+              "differences": [
+                1438.5014226815492,
+                -691.8701919090236,
+                59.432882694132786,
+                9.239212386770305,
+                -52.373270744308684
+              ],
+              "median_difference": 9.239212386770305,
+              "positive_pairs": 3,
+              "pairs": 5
+            },
+            "p95_ms": {
+              "differences": [
+                -0.09499999999999997,
+                0.29400000000000004,
+                0.013000000000000123,
+                0.07499999999999996,
+                0.09699999999999998
+              ],
+              "median_difference": 0.07499999999999996,
+              "positive_pairs": 4,
+              "pairs": 5
+            },
+            "p99_ms": {
+              "differences": [
+                -0.2330000000000001,
+                0.23999999999999977,
+                0.9079999999999999,
+                0.3200000000000003,
+                0.04400000000000004
+              ],
+              "median_difference": 0.23999999999999977,
+              "positive_pairs": 4,
+              "pairs": 5
+            },
+            "cpu_ticks_per_query": {
+              "differences": [
+                -0.00041229591768554216,
+                -0.00030777819149818003,
+                -4.427550812896499e-05,
+                -6.347483410292908e-05,
+                -1.4196422562711558e-05
+              ],
+              "median_difference": -6.347483410292908e-05,
+              "positive_pairs": 0,
+              "pairs": 5
+            }
+          }
+        }
+      ],
+      "name": "host-tcp-proxy-isolation",
+      "raw": "host-tcp-proxy-isolation/results.jsonl",
+      "metadata": "host-tcp-proxy-isolation/metadata.json",
+      "diagnostic": true,
+      "variant_meanings": {
+        "baseline": "pristine6a94817",
+        "candidate": "candidate4fefbaf except pristine6a94817 dns/proxy.o"
+      }
+    }
+  ]
+}

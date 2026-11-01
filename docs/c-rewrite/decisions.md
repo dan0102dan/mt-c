@@ -4053,8 +4053,9 @@ allocation/syscall failures, ID wrap, and complete descriptor cleanup. This
 narrower implementation replaces the abandoned shared-queue experiment. A later
 all-transports pool also showed an adverse TCP capacity-test p99 direction, even
 when the old proxy object was restored. Final reuse and wire fast paths are
-therefore explicitly limited to UDP. Both those experiments remain documented;
-only measurements of the final source state apply to the final implementation.
+therefore explicitly limited to UDP. The all-transports measurements are retained
+separately from the final results.
+Only measurements of the final source state apply to the final implementation.
 
 ## D-89 — Scan cached names once per bounded block of rules (2026-10-31)
 

@@ -1,0 +1,460 @@
+{
+  "measured_runs": 18,
+  "successful_queries": 185074,
+  "errors": 0,
+  "timeouts": 0,
+  "invalid": 0,
+  "workloads": [
+    {
+      "proto": "tcp",
+      "cnames": 2,
+      "addresses": 4,
+      "baseline": {
+        "rps": {
+          "median": 335.54798688657564,
+          "min": 320.402661121006,
+          "max": 339.4528463781255
+        },
+        "p95_ms": {
+          "median": 46.96,
+          "min": 46.738,
+          "max": 50.12
+        },
+        "p99_ms": {
+          "median": 56.925,
+          "min": 56.134,
+          "max": 61.372
+        },
+        "cpu_ticks_per_query": {
+          "median": 0.17294117647058824,
+          "min": 0.17271105826397146,
+          "max": 0.1763789342474291
+        }
+      },
+      "candidate": {
+        "rps": {
+          "median": 331.1891191370643,
+          "min": 299.999860991745,
+          "max": 349.7061827452729
+        },
+        "p95_ms": {
+          "median": 50.769,
+          "min": 45.601,
+          "max": 54.552
+        },
+        "p99_ms": {
+          "median": 62.797,
+          "min": 56.105,
+          "max": 66.701
+        },
+        "cpu_ticks_per_query": {
+          "median": 0.17773083886541943,
+          "min": 0.16471595775049958,
+          "max": 0.1896838602329451
+        }
+      },
+      "change_pct": {
+        "rps": -1.2990296231414233,
+        "p95_ms": 8.111158432708688,
+        "p99_ms": 10.315327184892409,
+        "cpu_ticks_per_query": 2.7695326772833484
+      },
+      "paired_candidate_minus_baseline": {
+        "rps": {
+          "differences_in_repetition_order": [
+            10.786458016058305,
+            10.25333636714737,
+            -35.54812589483066
+          ],
+          "percent_changes_in_repetition_order": [
+            3.3665319689665685,
+            3.0205480603706425,
+            -10.594051308329533
+          ],
+          "median_difference": 10.25333636714737,
+          "median_percent_change": 3.0205480603706425,
+          "positive_pairs": 2,
+          "negative_pairs": 1,
+          "pairs": 3
+        },
+        "p95_ms": {
+          "differences_in_repetition_order": [
+            0.6490000000000009,
+            -1.1370000000000005,
+            7.591999999999999
+          ],
+          "percent_changes_in_repetition_order": [
+            1.2948922585794165,
+            -2.432710000427918,
+            16.16695059625213
+          ],
+          "median_difference": 0.6490000000000009,
+          "median_percent_change": 1.2948922585794165,
+          "positive_pairs": 2,
+          "negative_pairs": 1,
+          "pairs": 3
+        },
+        "p99_ms": {
+          "differences_in_repetition_order": [
+            1.4249999999999972,
+            -0.029000000000003467,
+            9.775999999999996
+          ],
+          "percent_changes_in_repetition_order": [
+            2.321905755067455,
+            -0.05166209427441837,
+            17.173473869126042
+          ],
+          "median_difference": 1.4249999999999972,
+          "median_percent_change": 2.321905755067455,
+          "positive_pairs": 2,
+          "negative_pairs": 1,
+          "pairs": 3
+        },
+        "cpu_ticks_per_query": {
+          "differences_in_repetition_order": [
+            0.0013519046179903405,
+            -0.008225218720088662,
+            0.016972801968973633
+          ],
+          "percent_changes_in_repetition_order": [
+            0.7664773708712103,
+            -4.756078851751944,
+            9.827281553120027
+          ],
+          "median_difference": 0.0013519046179903405,
+          "median_percent_change": 0.7664773708712103,
+          "positive_pairs": 2,
+          "negative_pairs": 1,
+          "pairs": 3
+        }
+      },
+      "after_snapshot_ranges": {
+        "baseline": {
+          "RSS": {
+            "min": 2692,
+            "max": 2768
+          },
+          "TIMERS": {
+            "min": 2,
+            "max": 2
+          }
+        },
+        "candidate": {
+          "RSS": {
+            "min": 2648,
+            "max": 2716
+          },
+          "TIMERS": {
+            "min": 2,
+            "max": 2
+          }
+        }
+      }
+    },
+    {
+      "proto": "udp",
+      "cnames": 0,
+      "addresses": 1,
+      "baseline": {
+        "rps": {
+          "median": 1216.2421438678223,
+          "min": 1140.4632244550373,
+          "max": 1357.5106565505869
+        },
+        "p95_ms": {
+          "median": 12.532,
+          "min": 11.226,
+          "max": 14.263
+        },
+        "p99_ms": {
+          "median": 17.654,
+          "min": 15.096,
+          "max": 48.842
+        },
+        "cpu_ticks_per_query": {
+          "median": 0.0687812144046263,
+          "min": 0.06278984173721015,
+          "max": 0.06886350562905744
+        }
+      },
+      "candidate": {
+        "rps": {
+          "median": 1954.018828840864,
+          "min": 1892.998644002397,
+          "max": 2036.3964275754795
+        },
+        "p95_ms": {
+          "median": 10.036,
+          "min": 9.622,
+          "max": 10.979
+        },
+        "p99_ms": {
+          "median": 12.991,
+          "min": 12.792,
+          "max": 13.773
+        },
+        "cpu_ticks_per_query": {
+          "median": 0.03685905898505571,
+          "min": 0.036475208640157096,
+          "max": 0.037703995498030385
+        }
+      },
+      "change_pct": {
+        "rps": 60.66034536731373,
+        "p95_ms": -19.917012448132787,
+        "p99_ms": -26.413277444205285,
+        "cpu_ticks_per_query": -46.41115411510307
+      },
+      "paired_candidate_minus_baseline": {
+        "rps": {
+          "differences_in_repetition_order": [
+            813.5556043858267,
+            676.7565001345747,
+            678.8857710248926
+          ],
+          "percent_changes_in_repetition_order": [
+            71.33554041381551,
+            55.643237125659304,
+            50.009608966896124
+          ],
+          "median_difference": 678.8857710248926,
+          "median_percent_change": 55.643237125659304,
+          "positive_pairs": 3,
+          "negative_pairs": 0,
+          "pairs": 3
+        },
+        "p95_ms": {
+          "differences_in_repetition_order": [
+            -4.227,
+            -1.5530000000000008,
+            -1.604000000000001
+          ],
+          "percent_changes_in_repetition_order": [
+            -29.6361214330786,
+            -12.392275774018524,
+            -14.288259397826486
+          ],
+          "median_difference": -1.604000000000001,
+          "median_percent_change": -14.288259397826486,
+          "positive_pairs": 0,
+          "negative_pairs": 3,
+          "pairs": 3
+        },
+        "p99_ms": {
+          "differences_in_repetition_order": [
+            -35.851,
+            -3.8810000000000002,
+            -2.3040000000000003
+          ],
+          "percent_changes_in_repetition_order": [
+            -73.40199009049589,
+            -21.983686416676107,
+            -15.262321144674084
+          ],
+          "median_difference": -3.8810000000000002,
+          "median_percent_change": -21.983686416676107,
+          "positive_pairs": 0,
+          "negative_pairs": 3,
+          "pairs": 3
+        },
+        "cpu_ticks_per_query": {
+          "differences_in_repetition_order": [
+            -0.031077218906595913,
+            -0.032004446644001726,
+            -0.026314633097053057
+          ],
+          "percent_changes_in_repetition_order": [
+            -45.18271329694002,
+            -46.47519226859869,
+            -41.90906103440396
+          ],
+          "median_difference": -0.031077218906595913,
+          "median_percent_change": -45.18271329694002,
+          "positive_pairs": 0,
+          "negative_pairs": 3,
+          "pairs": 3
+        }
+      },
+      "after_snapshot_ranges": {
+        "baseline": {
+          "RSS": {
+            "min": 2640,
+            "max": 2704
+          },
+          "TIMERS": {
+            "min": 2,
+            "max": 2
+          }
+        },
+        "candidate": {
+          "RSS": {
+            "min": 2672,
+            "max": 2760
+          },
+          "TIMERS": {
+            "min": 21,
+            "max": 21
+          }
+        }
+      }
+    },
+    {
+      "proto": "udp",
+      "cnames": 2,
+      "addresses": 4,
+      "baseline": {
+        "rps": {
+          "median": 902.5902446410245,
+          "min": 895.3127853920356,
+          "max": 995.4462939562903
+        },
+        "p95_ms": {
+          "median": 14.603,
+          "min": 13.382,
+          "max": 14.719
+        },
+        "p99_ms": {
+          "median": 19.276,
+          "min": 18.639,
+          "max": 20.638
+        },
+        "cpu_ticks_per_query": {
+          "median": 0.09044614192405624,
+          "min": 0.08813491266813893,
+          "max": 0.09252232142857143
+        }
+      },
+      "candidate": {
+        "rps": {
+          "median": 1429.6664384158141,
+          "min": 1164.5875344994781,
+          "max": 1533.12608044255
+        },
+        "p95_ms": {
+          "median": 11.857,
+          "min": 10.114,
+          "max": 11.871
+        },
+        "p99_ms": {
+          "median": 16.167,
+          "min": 13.867,
+          "max": 17.081
+        },
+        "cpu_ticks_per_query": {
+          "median": 0.05844110450891297,
+          "min": 0.054556120453656626,
+          "max": 0.0692347288949897
+        }
+      },
+      "change_pct": {
+        "rps": 58.39595507531956,
+        "p95_ms": -18.804355269465177,
+        "p99_ms": -16.1288649097323,
+        "cpu_ticks_per_query": -35.38574087772205
+      },
+      "paired_candidate_minus_baseline": {
+        "rps": {
+          "differences_in_repetition_order": [
+            534.3536530237785,
+            169.1412405431878,
+            630.5358358015254
+          ],
+          "percent_changes_in_repetition_order": [
+            59.68346054499805,
+            16.991498343015053,
+            69.85848113750667
+          ],
+          "median_difference": 534.3536530237785,
+          "median_percent_change": 59.68346054499805,
+          "positive_pairs": 3,
+          "negative_pairs": 0,
+          "pairs": 3
+        },
+        "p95_ms": {
+          "differences_in_repetition_order": [
+            -2.847999999999999,
+            -1.5250000000000004,
+            -4.488999999999999
+          ],
+          "percent_changes_in_repetition_order": [
+            -19.349140566614576,
+            -11.395904946943658,
+            -30.74025885092103
+          ],
+          "median_difference": -2.847999999999999,
+          "median_percent_change": -19.349140566614576,
+          "positive_pairs": 0,
+          "negative_pairs": 3,
+          "pairs": 3
+        },
+        "p99_ms": {
+          "differences_in_repetition_order": [
+            -3.108999999999998,
+            -3.557000000000002,
+            -4.7719999999999985
+          ],
+          "percent_changes_in_repetition_order": [
+            -16.1288649097323,
+            -17.235197209031895,
+            -25.60223187939267
+          ],
+          "median_difference": -3.557000000000002,
+          "median_percent_change": -17.235197209031895,
+          "positive_pairs": 0,
+          "negative_pairs": 3,
+          "pairs": 3
+        },
+        "cpu_ticks_per_query": {
+          "differences_in_repetition_order": [
+            -0.034081216919658465,
+            -0.018900183773149226,
+            -0.035890021470399616
+          ],
+          "percent_changes_in_repetition_order": [
+            -36.83566991557778,
+            -21.444604868805538,
+            -39.68109717773803
+          ],
+          "median_difference": -0.034081216919658465,
+          "median_percent_change": -36.83566991557778,
+          "positive_pairs": 0,
+          "negative_pairs": 3,
+          "pairs": 3
+        }
+      },
+      "after_snapshot_ranges": {
+        "baseline": {
+          "RSS": {
+            "min": 2724,
+            "max": 2744
+          },
+          "TIMERS": {
+            "min": 2,
+            "max": 2
+          }
+        },
+        "candidate": {
+          "RSS": {
+            "min": 2680,
+            "max": 2700
+          },
+          "TIMERS": {
+            "min": 20,
+            "max": 21
+          }
+        }
+      }
+    }
+  ],
+  "raw": "final-apk-benchmark/results.jsonl",
+  "metadata": "final-apk-benchmark/metadata.json",
+  "correctness": "emulator-correctness-summary.json",
+  "emulated": true,
+  "physical_router": false,
+  "direct_firc_comparison": false,
+  "scope": "Final restricted candidate; real daemon and kernel ipsets under QEMU TCG; guest loopback loader",
+  "candidate_production_commit": "1763aff5a780343f1c1673586a046b30d99b9168",
+  "baseline_commit": "6a94817a3764dbf9280a9fe657c2afd943725cb4",
+  "superseded_experiment": "experimental-emulator-performance-summary.json"
+}

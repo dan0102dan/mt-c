@@ -1,0 +1,362 @@
+{
+  "production_commit": "1763aff5a780343f1c1673586a046b30d99b9168",
+  "scope": "Production C backend and real-kernel/HTTP validation. This is not a claim that the separate frontend/package matrix has completed.",
+  "runs": [
+    {
+      "id": 41224220407,
+      "name": "Checking package contracts",
+      "status": "completed",
+      "conclusion": "success",
+      "run_number": 158,
+      "jobs_url": "https://api.github.com/repos/dan0102dan/mt-c/actions/runs/41224220407/jobs",
+      "logs_url": "https://api.github.com/repos/dan0102dan/mt-c/actions/runs/41224220407/logs",
+      "workflow_id": 372470095
+    },
+    {
+      "id": 41224220399,
+      "name": "Netfilter recovery regression",
+      "status": "completed",
+      "conclusion": "success",
+      "run_number": 312,
+      "jobs_url": "https://api.github.com/repos/dan0102dan/mt-c/actions/runs/41224220399/jobs",
+      "logs_url": "https://api.github.com/repos/dan0102dan/mt-c/actions/runs/41224220399/logs",
+      "workflow_id": 377265444
+    },
+    {
+      "id": 41224220405,
+      "name": "Checking C backend",
+      "status": "completed",
+      "conclusion": "success",
+      "run_number": 479,
+      "jobs_url": "https://api.github.com/repos/dan0102dan/mt-c/actions/runs/41224220405/jobs",
+      "logs_url": "https://api.github.com/repos/dan0102dan/mt-c/actions/runs/41224220405/logs",
+      "workflow_id": 318447367
+    },
+    {
+      "id": 41224220776,
+      "name": "Checking",
+      "status": "completed",
+      "conclusion": "success",
+      "run_number": 364,
+      "jobs_url": "https://api.github.com/repos/dan0102dan/mt-c/actions/runs/41224220776/jobs",
+      "logs_url": "https://api.github.com/repos/dan0102dan/mt-c/actions/runs/41224220776/logs",
+      "workflow_id": 318641509
+    }
+  ],
+  "jobs": [
+    {
+      "id": 124604877816,
+      "name": "Cross-build skeleton (mipsel)",
+      "status": "completed",
+      "conclusion": "success",
+      "run_id": 41224220405,
+      "logs_url": null,
+      "steps": [
+        {
+          "name": "Set up job",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 1
+        },
+        {
+          "name": "Checkout repository",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 2
+        },
+        {
+          "name": "Install cross toolchain",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 3
+        },
+        {
+          "name": "Cross build",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 4
+        },
+        {
+          "name": "Post Checkout repository",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 8
+        },
+        {
+          "name": "Complete job",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 9
+        }
+      ]
+    },
+    {
+      "id": 124604877991,
+      "name": "OpenWrt native ubus integration",
+      "status": "completed",
+      "conclusion": "success",
+      "run_id": 41224220405,
+      "logs_url": null,
+      "steps": [
+        {
+          "name": "Set up job",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 1
+        },
+        {
+          "name": "Run actions/checkout@v5",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 2
+        },
+        {
+          "name": "Install tooling",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 3
+        },
+        {
+          "name": "Build native OpenWrt libraries",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 4
+        },
+        {
+          "name": "Build and test, including real ubusd",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 5
+        },
+        {
+          "name": "Sanitize native ubus integration",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 6
+        },
+        {
+          "name": "Post Run actions/checkout@v5",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 12
+        },
+        {
+          "name": "Complete job",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 13
+        }
+      ]
+    },
+    {
+      "id": 124604878037,
+      "name": "Build, test, sanitize (generic)",
+      "status": "completed",
+      "conclusion": "success",
+      "run_id": 41224220405,
+      "logs_url": null,
+      "steps": [
+        {
+          "name": "Set up job",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 1
+        },
+        {
+          "name": "Checkout repository",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 2
+        },
+        {
+          "name": "Install tooling",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 3
+        },
+        {
+          "name": "Build (warnings as errors)",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 4
+        },
+        {
+          "name": "Check platform payload isolation",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 5
+        },
+        {
+          "name": "Unit tests",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 6
+        },
+        {
+          "name": "Route profile failover on real kernel",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 7
+        },
+        {
+          "name": "Sanitizers (ASan+UBSan)",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 8
+        },
+        {
+          "name": "Static analysis",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 9
+        },
+        {
+          "name": "Fuzz smoke (libFuzzer, short)",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 10
+        },
+        {
+          "name": "Post Checkout repository",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 20
+        },
+        {
+          "name": "Complete job",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 21
+        }
+      ]
+    },
+    {
+      "id": 124604878044,
+      "name": "Differential/regression suites (vs golden snapshots)",
+      "status": "completed",
+      "conclusion": "success",
+      "run_id": 41224220405,
+      "logs_url": null,
+      "steps": [
+        {
+          "name": "Set up job",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 1
+        },
+        {
+          "name": "Checkout repository",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 2
+        },
+        {
+          "name": "Install libraries",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 3
+        },
+        {
+          "name": "Run differential/regression suites",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 4
+        },
+        {
+          "name": "Post Checkout repository",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 8
+        },
+        {
+          "name": "Complete job",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 9
+        }
+      ]
+    },
+    {
+      "id": 124604878211,
+      "name": "Build, test, sanitize (keenetic)",
+      "status": "completed",
+      "conclusion": "success",
+      "run_id": 41224220405,
+      "logs_url": null,
+      "steps": [
+        {
+          "name": "Set up job",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 1
+        },
+        {
+          "name": "Checkout repository",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 2
+        },
+        {
+          "name": "Install tooling",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 3
+        },
+        {
+          "name": "Build (warnings as errors)",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 4
+        },
+        {
+          "name": "Check platform payload isolation",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 5
+        },
+        {
+          "name": "Unit tests",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 6
+        },
+        {
+          "name": "Route profile failover on real kernel",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 7
+        },
+        {
+          "name": "Sanitizers (ASan+UBSan)",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 8
+        },
+        {
+          "name": "Static analysis",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 9
+        },
+        {
+          "name": "Fuzz smoke (libFuzzer, short)",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 10
+        },
+        {
+          "name": "Post Checkout repository",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 20
+        },
+        {
+          "name": "Complete job",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 21
+        }
+      ]
+    }
+  ]
+}

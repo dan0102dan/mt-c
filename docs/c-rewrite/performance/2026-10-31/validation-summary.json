@@ -1,0 +1,104 @@
+{
+  "production_commit": "1763aff5a780343f1c1673586a046b30d99b9168",
+  "passed": true,
+  "variants": [
+    {
+      "variant": "generic",
+      "passed": true,
+      "binaries": 81,
+      "summary": "validation/final-generic/summary.json",
+      "skipped_cases": 2,
+      "failures": 0,
+      "skips": [
+        {
+          "binary": "test_profile_routes",
+          "summaries": [
+            "Pass: 0, fail: 0, skip: 2."
+          ]
+        }
+      ]
+    },
+    {
+      "variant": "keenetic",
+      "passed": true,
+      "binaries": 86,
+      "summary": "validation/final-keenetic/summary.json",
+      "skipped_cases": 2,
+      "failures": 0,
+      "skips": [
+        {
+          "binary": "test_profile_routes",
+          "summaries": [
+            "Pass: 0, fail: 0, skip: 2."
+          ]
+        }
+      ]
+    },
+    {
+      "variant": "openwrt",
+      "passed": true,
+      "binaries": 81,
+      "summary": "validation/final-openwrt/summary.json",
+      "skipped_cases": 2,
+      "failures": 0,
+      "skips": [
+        {
+          "binary": "test_profile_routes",
+          "summaries": [
+            "Pass: 0, fail: 0, skip: 2."
+          ]
+        }
+      ]
+    },
+    {
+      "variant": "generic-asan",
+      "passed": true,
+      "binaries": 81,
+      "summary": "validation/final-generic-asan/summary.json",
+      "skipped_cases": 2,
+      "failures": 0,
+      "skips": [
+        {
+          "binary": "test_profile_routes",
+          "summaries": [
+            "Pass: 0, fail: 0, skip: 2."
+          ]
+        }
+      ]
+    },
+    {
+      "variant": "keenetic-asan",
+      "passed": true,
+      "binaries": 86,
+      "summary": "validation/final-keenetic-asan/summary.json",
+      "skipped_cases": 2,
+      "failures": 0,
+      "skips": [
+        {
+          "binary": "test_profile_routes",
+          "summaries": [
+            "Pass: 0, fail: 0, skip: 2."
+          ]
+        }
+      ]
+    },
+    {
+      "variant": "openwrt-asan",
+      "passed": true,
+      "binaries": 81,
+      "summary": "validation/final-openwrt-asan/summary.json",
+      "skipped_cases": 2,
+      "failures": 0,
+      "skips": [
+        {
+          "binary": "test_profile_routes",
+          "summaries": [
+            "Pass: 0, fail: 0, skip: 2."
+          ]
+        }
+      ]
+    }
+  ],
+  "total_binary_executions": 496,
+  "note": "Two privileged route cases per local variant skip because this host cannot create network namespaces. Real-kernel route/HTTP checks run in GitHub CI; OpenWrt guest validation is separate."
+}

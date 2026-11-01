@@ -1,0 +1,76 @@
+{
+  "baseline_commit": "6a94817a3764dbf9280a9fe657c2afd943725cb4",
+  "candidate_production_commit": "1763aff5a780343f1c1673586a046b30d99b9168",
+  "fresh_builds": true,
+  "package_executable_independently_extracted": true,
+  "packages": [
+    {
+      "version": "24.10.4",
+      "variant": "baseline",
+      "metadata": "final-emulator-build/24.10.4/baseline/build-metadata.json",
+      "source_commit": "6a94817a3764dbf9280a9fe657c2afd943725cb4",
+      "source_archive_sha256": "10dd1f631c5b767a70d9281735a1e7dfc21111ac464ce6f4b89ebd4a05cabda2",
+      "download_archive_sha256": "10dd1f631c5b767a70d9281735a1e7dfc21111ac464ce6f4b89ebd4a05cabda2",
+      "package_sha256": "3ab9323e0457142bf1d24aa1f295eaafd521291b20372bc433a3846eb03c2515",
+      "package_binary_sha256": "42778da919a1735d8a70043b7a822a9c24ba829a7d9c5b1bd24c5b8a28ec0a3e",
+      "binary_sha256": "db5ae00fa9b07014fe4b83c67b95d578387c5f9d456516f75d1304185558523f",
+      "backend_build_cleared": true,
+      "sdk_unpacked_verified": true,
+      "manifest_verified": false,
+      "recipe_sha256": "2250cc204b8202215549f5cd8aa7078fb45d9890150d769ce0d301fb3cb6eccf",
+      "sdk": "/workspace/scratch/20a964511d08/mt-c/.build/perf/sdk-24.10.4/openwrt-sdk-24.10.4-bcm27xx-bcm2710_gcc-13.3.0_musl.Linux-x86_64"
+    },
+    {
+      "version": "24.10.4",
+      "variant": "candidate",
+      "metadata": "final-emulator-build/24.10.4/candidate/build-metadata.json",
+      "source_commit": "1763aff5a780343f1c1673586a046b30d99b9168",
+      "source_archive_sha256": "5be884a3a1b7f3a82bb8adf2f6422cc3d78cdcf7c46af9597cfcbb2d74fb2e1f",
+      "download_archive_sha256": "5be884a3a1b7f3a82bb8adf2f6422cc3d78cdcf7c46af9597cfcbb2d74fb2e1f",
+      "package_sha256": "2001fa726dda197b598d4b0a97d08e00835bfe9fac27e921ea382ac41d92c1fb",
+      "package_binary_sha256": "85a9f3fbcb2cf8037d671cffc823341a32a6012a69321eefff1b426091ecf39c",
+      "binary_sha256": "03cfd050642dd1b8085769a91a32733347be4497c8b8bca97cf6289434c36a64",
+      "backend_build_cleared": true,
+      "sdk_unpacked_verified": true,
+      "manifest_verified": false,
+      "recipe_sha256": "2250cc204b8202215549f5cd8aa7078fb45d9890150d769ce0d301fb3cb6eccf",
+      "sdk": "/workspace/scratch/20a964511d08/mt-c/.build/perf/sdk-24.10.4/openwrt-sdk-24.10.4-bcm27xx-bcm2710_gcc-13.3.0_musl.Linux-x86_64"
+    },
+    {
+      "version": "25.12.5",
+      "variant": "baseline",
+      "metadata": "final-emulator-build/25.12.5/baseline/build-metadata.json",
+      "source_commit": "6a94817a3764dbf9280a9fe657c2afd943725cb4",
+      "source_archive_sha256": "3fb7a55fa0cacf415faa18cf49c903dac44f761bb230bda28512815d6b3efb8a",
+      "download_archive_sha256": "3fb7a55fa0cacf415faa18cf49c903dac44f761bb230bda28512815d6b3efb8a",
+      "package_sha256": "3979048fbe3e837023f0d1c713c6c9b946b297bedf48448f387581228a4d27c2",
+      "package_binary_sha256": "acfeacf8d88965cb148bb864bfc9dcdb99441a592c110bdc8f64b5592b6550d0",
+      "binary_sha256": "667d0cab3ace2cd1858c50da63cb7a54c5201e0a642dca51ba1619012f16519a",
+      "backend_build_cleared": true,
+      "sdk_unpacked_verified": true,
+      "manifest_verified": false,
+      "recipe_sha256": "2250cc204b8202215549f5cd8aa7078fb45d9890150d769ce0d301fb3cb6eccf",
+      "sdk": "/workspace/scratch/20a964511d08/mt-c/.build/perf/sdk-25.12.5/openwrt-sdk-25.12.5-bcm27xx-bcm2710_gcc-14.3.0_musl.Linux-x86_64"
+    },
+    {
+      "version": "25.12.5",
+      "variant": "candidate",
+      "metadata": "final-emulator-build/25.12.5/candidate/build-metadata.json",
+      "source_commit": "1763aff5a780343f1c1673586a046b30d99b9168",
+      "source_archive_sha256": "fa32e5f3ff43536c900c87dabb0e204075ad44adb280c8da2b827138e4800496",
+      "download_archive_sha256": "fa32e5f3ff43536c900c87dabb0e204075ad44adb280c8da2b827138e4800496",
+      "package_sha256": "8f576a97c94c636637ab4c2d301e9754ce9818a3725d3fd7ccae4c4830055ba9",
+      "package_binary_sha256": "fea57b6b3e7bff4c9e0cdeb8b34bf824578074212a037b2a5e97e4c3f75cb68b",
+      "binary_sha256": "2e6425816718fcdb3d9d6ffdb334fad479c1a3b4cdb78c50fd89c89ab463d349",
+      "backend_build_cleared": true,
+      "sdk_unpacked_verified": true,
+      "manifest_verified": false,
+      "recipe_sha256": "2250cc204b8202215549f5cd8aa7078fb45d9890150d769ce0d301fb3cb6eccf",
+      "sdk": "/workspace/scratch/20a964511d08/mt-c/.build/perf/sdk-25.12.5/openwrt-sdk-25.12.5-bcm27xx-bcm2710_gcc-14.3.0_musl.Linux-x86_64"
+    }
+  ],
+  "retained_setup_failures": [
+    "final-emulator-build/source-cache-guard/",
+    "final-emulator-build/rejected-preclean/"
+  ]
+}

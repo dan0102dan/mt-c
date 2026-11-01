@@ -1,0 +1,174 @@
+{
+  "baseline_commit": "6a94817a3764dbf9280a9fe657c2afd943725cb4",
+  "candidate_production_commit": "1763aff5a780343f1c1673586a046b30d99b9168",
+  "emulator_version": "3.7",
+  "physical_router": false,
+  "direct_firc_comparison": false,
+  "fresh_detailed_check_groups": 24,
+  "checks": [
+    {
+      "openwrt_version": "25.12.5",
+      "preset": "cudy-wr3000p-v1",
+      "ram_mib": 512,
+      "directory": "final-apk-validation",
+      "metadata": "final-apk-validation/metadata.json",
+      "correctness": "final-apk-validation/correctness.json",
+      "completed": true,
+      "installed_daemon_sha256": {
+        "baseline": "acfeacf8d88965cb148bb864bfc9dcdb99441a592c110bdc8f64b5592b6550d0",
+        "candidate": "fea57b6b3e7bff4c9e0cdeb8b34bf824578074212a037b2a5e97e4c3f75cb68b"
+      },
+      "qemu_binary_sha256": "908021a3611ab30bf5e2dc34d35bc67a0c60fc67763ab184f23b029cb3d545aa",
+      "qemu_version": "QEMU emulator version 10.1.0 (v10.1.0-53-g5fe1322)\nCopyright (c) 2003-2025 Fabrice Bellard and the QEMU Project developers",
+      "official_firmware_sha256": {
+        "firmware/25.12.5/openwrt-25.12.5-mediatek-filogic-cudy_wr3000p-v1-ubootmod-bl31-uboot.fip": "db5cc9d33a8d6600a775cd613a67d40925f10416d992504bb289f8de04739039",
+        "firmware/25.12.5/openwrt-25.12.5-mediatek-filogic-cudy_wr3000p-v1-ubootmod-initramfs-recovery.itb": "b960b2f568d2fcbb8831efb94210fce9d0dbbd2455b8e39b2c75971995ad849b",
+        "firmware/25.12.5/openwrt-25.12.5-mediatek-filogic-cudy_wr3000p-v1-ubootmod-preloader.bin": "9e7cec4ca72c83ea341971322e7b7ac22b670a782cdda60f2ff0582681df858e",
+        "firmware/25.12.5/openwrt-25.12.5-mediatek-filogic-cudy_wr3000p-v1-ubootmod-squashfs-sysupgrade.itb": "71eb1820110c5e10321f8172bb0f7c4f9cfdf5e676ee7d6fdf876d3016a6b443",
+        "firmware/25.12.5/sha256sums": "e1b59cd8b77d4cfb4f784b21140a7825e194ae40c8d92d8b530ceacc0d02a38e"
+      },
+      "variants": [
+        {
+          "variant": "baseline",
+          "detailed_checks": [
+            "unmatched_resolves_without_kernel_write",
+            "cold_warm_udp_tcp_filter_overlap",
+            "reduced_ttl_last_write",
+            "live_reload_aaaa",
+            "udp_dropped_reply_then_recovery",
+            "tcp_one_second_deadline"
+          ],
+          "tcp_deadline_seconds": 1.007873154,
+          "smoke_reused": false,
+          "smoke_logs": {
+            "dhcp": {
+              "path": "final-apk-validation/baseline-dhcp.log",
+              "sha256": "5a3d74e85e78fd64cbcb10b474df5073605bde26cba734a27e0a0322ba2404e1"
+            },
+            "routing": {
+              "path": "final-apk-validation/baseline-routing.log",
+              "sha256": "b1578b53902dd358b9f57ef2f9afda8529d338b87c73f98a00ad1080503a3a9e"
+            }
+          },
+          "detailed_wire_log": "final-apk-validation/baseline-dns-records.json",
+          "status": "PASS"
+        },
+        {
+          "variant": "candidate",
+          "detailed_checks": [
+            "unmatched_resolves_without_kernel_write",
+            "cold_warm_udp_tcp_filter_overlap",
+            "reduced_ttl_last_write",
+            "live_reload_aaaa",
+            "udp_dropped_reply_then_recovery",
+            "tcp_one_second_deadline"
+          ],
+          "tcp_deadline_seconds": 1.008479077,
+          "smoke_reused": false,
+          "smoke_logs": {
+            "dhcp": {
+              "path": "final-apk-validation/candidate-dhcp.log",
+              "sha256": "3d27732bb2ca7bf5d57363bd14cd62edb23be7f141191fbc2ae667eb232649cf"
+            },
+            "routing": {
+              "path": "final-apk-validation/candidate-routing.log",
+              "sha256": "e853f2487aefe17a6a3b67cc2a2ce0d893cacb199be2c636f2f62d702385904d"
+            }
+          },
+          "detailed_wire_log": "final-apk-validation/candidate-dns-records.json",
+          "status": "PASS"
+        }
+      ]
+    },
+    {
+      "openwrt_version": "24.10.4",
+      "preset": "cudy-tr3000-v1",
+      "ram_mib": 512,
+      "directory": "final-ipk-validation",
+      "metadata": "final-ipk-validation/metadata.json",
+      "correctness": "final-ipk-validation/correctness.json",
+      "completed": true,
+      "installed_daemon_sha256": {
+        "baseline": "42778da919a1735d8a70043b7a822a9c24ba829a7d9c5b1bd24c5b8a28ec0a3e",
+        "candidate": "85a9f3fbcb2cf8037d671cffc823341a32a6012a69321eefff1b426091ecf39c"
+      },
+      "qemu_binary_sha256": "908021a3611ab30bf5e2dc34d35bc67a0c60fc67763ab184f23b029cb3d545aa",
+      "qemu_version": "QEMU emulator version 10.1.0 (v10.1.0-53-g5fe1322)\nCopyright (c) 2003-2025 Fabrice Bellard and the QEMU Project developers",
+      "official_firmware_sha256": {
+        "firmware/24.10.4/openwrt-24.10.4-mediatek-filogic-cudy_tr3000-v1-ubootmod-bl31-uboot.fip": "58f99eadca322c52a8d8735328c03af6316aeea7226f6c340386be7f9c766eda",
+        "firmware/24.10.4/openwrt-24.10.4-mediatek-filogic-cudy_tr3000-v1-ubootmod-initramfs-recovery.itb": "506a531c075bc23f34eff55474bac13a133d543d4dfcd5262947c09144682c17",
+        "firmware/24.10.4/openwrt-24.10.4-mediatek-filogic-cudy_tr3000-v1-ubootmod-preloader.bin": "9010e0a44059d7149ef88f2dcbfdfec5338a02cb02730a0ea62a806b20cdfd06",
+        "firmware/24.10.4/openwrt-24.10.4-mediatek-filogic-cudy_tr3000-v1-ubootmod-squashfs-sysupgrade.itb": "8dbbd88be1664443c39154c93a73aef6489bbdb8a580adbd79bbdc17fdc31805",
+        "firmware/24.10.4/sha256sums": "5e316e4b8d9c34eddb4a61d46cbef216aebb0262d92e3eeb67a32a0e274fd0e6"
+      },
+      "variants": [
+        {
+          "variant": "baseline",
+          "detailed_checks": [
+            "unmatched_resolves_without_kernel_write",
+            "cold_warm_udp_tcp_filter_overlap",
+            "reduced_ttl_last_write",
+            "live_reload_aaaa",
+            "udp_dropped_reply_then_recovery",
+            "tcp_one_second_deadline"
+          ],
+          "tcp_deadline_seconds": 1.00797177,
+          "smoke_reused": true,
+          "smoke_logs": {
+            "dhcp": {
+              "path": "ipk-validation-final/baseline-dhcp.log",
+              "sha256": "32b9b4f3d93bfe41134cb1e98358dd2e507521face4182b45d28e2a094617349"
+            },
+            "routing": {
+              "path": "ipk-validation-final/baseline-routing.log",
+              "sha256": "2039a01f9e13aebd78353a7cffcf3046f9f3b7a4892d68c915ddbd7512fd9b3d"
+            }
+          },
+          "detailed_wire_log": "final-ipk-validation/baseline-dns-records.json",
+          "status": "PASS",
+          "reuse_provenance": {
+            "directory": "/workspace/scratch/20a964511d08/mt-c/docs/c-rewrite/performance/2026-10-31/ipk-validation-final",
+            "metadata_sha256": "8033e47ad1c9c940cd898b1870e9611aa93c7d581787736fce25efee71aebe4e",
+            "baseline_binary_sha256": "42778da919a1735d8a70043b7a822a9c24ba829a7d9c5b1bd24c5b8a28ec0a3e",
+            "log_sha256": {
+              "/workspace/scratch/20a964511d08/mt-c/docs/c-rewrite/performance/2026-10-31/ipk-validation-final/baseline-dhcp.log": "32b9b4f3d93bfe41134cb1e98358dd2e507521face4182b45d28e2a094617349",
+              "/workspace/scratch/20a964511d08/mt-c/docs/c-rewrite/performance/2026-10-31/ipk-validation-final/baseline-routing.log": "2039a01f9e13aebd78353a7cffcf3046f9f3b7a4892d68c915ddbd7512fd9b3d"
+            }
+          }
+        },
+        {
+          "variant": "candidate",
+          "detailed_checks": [
+            "unmatched_resolves_without_kernel_write",
+            "cold_warm_udp_tcp_filter_overlap",
+            "reduced_ttl_last_write",
+            "live_reload_aaaa",
+            "udp_dropped_reply_then_recovery",
+            "tcp_one_second_deadline"
+          ],
+          "tcp_deadline_seconds": 1.007582538,
+          "smoke_reused": false,
+          "smoke_logs": {
+            "dhcp": {
+              "path": "final-ipk-validation/candidate-dhcp.log",
+              "sha256": "cd7186d62a04dabad739279f6ecb14988925e369622b98f97711d355469925b7"
+            },
+            "routing": {
+              "path": "final-ipk-validation/candidate-routing.log",
+              "sha256": "17eacc639fb226c88e8d72f2f2983ffeea1dc930fe0bd97f2e00c3fc0c4db38f"
+            }
+          },
+          "detailed_wire_log": "final-ipk-validation/candidate-dns-records.json",
+          "status": "PASS"
+        }
+      ]
+    }
+  ],
+  "timer_units": {
+    "runtime_proof": "validation/udp-timer-final/arm64-runtime.json",
+    "tests": 21,
+    "assertions": 4943,
+    "status": "PASS"
+  },
+  "superseded_experiments": "experimental-emulator-correctness-summary.json"
+}
