@@ -1,0 +1,93 @@
+{
+  "started_at": "2026-11-01T16:05:05.929551+00:00",
+  "baseline_ref": "d4dd0f05a968f8e9c9e7186be083d56a26648521",
+  "baseline_git_blob": "9437f3e4a34c2647db904b74b2bb1c1b9d185886",
+  "cpu": 0,
+  "platform": "Linux-6.18.57-x86_64-with-glibc2.41",
+  "compiler": "gcc (Debian 14.2.0-19) 14.2.0",
+  "parameters": {
+    "output": "/mnt/data/memory-evidence/final-paired",
+    "baseline_file": "/mnt/data/memory-evidence/baseline-match.c",
+    "rules": [
+      100,
+      1000,
+      10000,
+      20000,
+      100000
+    ],
+    "shapes": [
+      "shared",
+      "diverse",
+      "deep"
+    ],
+    "pairs": 5,
+    "queries": 2000000,
+    "cpu": null,
+    "cc": "gcc"
+  },
+  "source_sha256": {
+    "tools/bench/namespace_memory.c": "ecceba555dce957ec54bf006ba1328b51435d54d1bb681d335d3afab323b548b",
+    "src/backend-c/src/rules/match.c": "56dc1d20a146c26d0f2ca475dcd50ac5fa80eb36e88caad9f45e5276c3c8a6d6",
+    "src/backend-c/src/rules/wildcard.c": "f2f2304fee9c8cbd62d90ea2b4c9646f4238d399aaa304e942e4cc7d3ad45963",
+    "src/backend-c/src/util/lookup.c": "fd4728c56b287bab98a10d9494ce2ea416d998c2984258c41027371edce8611f",
+    "src/backend-c/src/logging/log.c": "4baca7da1959be01f3df6049907b9c093f183a225a481dc577e1dbe19c352c26"
+  },
+  "scope": "matcher only; requested payload excludes allocator overhead; RSS is whole harness process",
+  "header_sha256": {
+    "src/backend-c/include/magitrickle/duration.h": "5824d055a941bc2f33e969875564b6a3dbfec9185b5d1f227ae62361325b9624",
+    "src/backend-c/include/magitrickle/err.h": "68cb49e8be20577f4f67c571c1f00e6405bcde68f1ab2454edea540d50ad271d",
+    "src/backend-c/include/magitrickle/id.h": "db32d482061e63502d7ec76b638bfc3e04362f4182b150fe7c69c74cf6037160",
+    "src/backend-c/include/magitrickle/log.h": "b5b789ff34fdef7d1f37691c2b197177a7c48622ae5925215c188b7da7f8c791",
+    "src/backend-c/include/magitrickle/lookup.h": "53d8d687b97188e14a60020cef14837d92170ffdc695aaffb15d8212d9ad255c",
+    "src/backend-c/include/magitrickle/match.h": "08c69a5d0ca5e7835df08662012e48df3d03ffb6432de0e88a3e275b4be887f1",
+    "src/backend-c/include/magitrickle/models.h": "e01e1459ef25cb102e71fe8f956d6224156ec7b428f3c480b1f723a28289e0ce"
+  },
+  "commands": [
+    [
+      "gcc",
+      "-std=c11",
+      "-O2",
+      "-D_POSIX_C_SOURCE=200809L",
+      "-Wall",
+      "-Wextra",
+      "-Werror",
+      "-I/mnt/data/mt-c/src/backend-c/include",
+      "-DMATCH_SOURCE=\"/tmp/mtc-ns-memory-ru8nffri/baseline-match.c\"",
+      "/mnt/data/mt-c/tools/bench/namespace_memory.c",
+      "/mnt/data/mt-c/src/backend-c/src/rules/wildcard.c",
+      "/mnt/data/mt-c/src/backend-c/src/util/lookup.c",
+      "/mnt/data/mt-c/src/backend-c/src/logging/log.c",
+      "-lpcre2-8",
+      "-o",
+      "/tmp/mtc-ns-memory-ru8nffri/baseline"
+    ],
+    [
+      "gcc",
+      "-std=c11",
+      "-O2",
+      "-D_POSIX_C_SOURCE=200809L",
+      "-Wall",
+      "-Wextra",
+      "-Werror",
+      "-I/mnt/data/mt-c/src/backend-c/include",
+      "-DMATCH_SOURCE=\"/mnt/data/mt-c/src/backend-c/src/rules/match.c\"",
+      "-DCOMPACT_NAMESPACE",
+      "/mnt/data/mt-c/tools/bench/namespace_memory.c",
+      "/mnt/data/mt-c/src/backend-c/src/rules/wildcard.c",
+      "/mnt/data/mt-c/src/backend-c/src/util/lookup.c",
+      "/mnt/data/mt-c/src/backend-c/src/logging/log.c",
+      "-lpcre2-8",
+      "-o",
+      "/tmp/mtc-ns-memory-ru8nffri/candidate"
+    ]
+  ],
+  "binary_sha256": {
+    "baseline": "81c507f593ad022cbadd744bd7a6144d183f3727d0f6d7faccb6e7183a1efc7f",
+    "candidate": "d2606a64f72a3d963065dc88ddd419feb137d1ae6e3a1328580d332ba1d5a024"
+  },
+  "candidate_git_blob": "71bb109ea935dee598b0d6697970935e340172a2",
+  "measurements_sha256": "4d498699a46d10cc914ffedbbc02c8f827ca7a00a422a870f1b520e1d3c9aec5",
+  "local_scope": "Focused matcher only: production source/header subset fetched through GitHub and checked against blob hashes. Full backend, QEMU and physical router were NOT run locally.",
+  "runner_sha256": "e6a9471815995e4acb240c3b30229a9d87902da5b6c0ad03ff41c29135c2d330",
+  "focused_tests_sha256": "6f328c3ee2ad822531c1d204b6c06ef4b3c927b15d491c30d59df974eb098356"
+}
