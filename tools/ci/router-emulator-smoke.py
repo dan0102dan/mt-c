@@ -213,6 +213,49 @@ def run_package_command(serial, command, timeout):
         time.sleep(5)
 
 
+
+def wait_for_boot_services(serial):
+    """A root prompt can appear before procd finishes initializing OpenWrt.
+
+    The guest shell can accept commands while hostname and logd are absent.
+    Wait for both, after netifd has established the default route, instead
+    of racing its initialization. A permanently unhealthy guest still fails.
+    """
+    serial.run(
+        "for i in $(seq 1 90); do "
+        "test \"$(hostname)\" != '(none)' && "
+        "ubus list log | grep -Fxq log && break; sleep 1; "
+        "done; test \"$(hostname)\" != '(none)' && "
+        "ubus list log | grep -Fxq log",
+        timeout=115,
+        show_output=True,
+    )
+
+
+def set_guest_clock(serial):
+    """Set UTC after system initialization; retry only a bounded boot race.
+
+    The immutable flash image has no usable RTC. Certificate verification of
+    OpenWrt's HTTPS feeds requires a current clock; do not disable TLS checks
+    or permit package tests to proceed with the wrong time.
+    """
+    for attempt in range(1, 5):
+        host_epoch = int(time.time())
+        command = (
+            f"date -u -s '@{host_epoch}' >/dev/null && date -u && "
+            f"test \"$(date +%s)\" -ge {host_epoch - 2}"
+        )
+        if serial.run(command, timeout=20, check=False, show_output=True) == 0:
+            return
+        if attempt == 4:
+            raise SmokeFailure("guest UTC clock failed verification after 4 attempts")
+        print(
+            f"guest UTC clock attempt {attempt}/4 failed during boot; retrying",
+            flush=True,
+        )
+        time.sleep(2)
+
+
 def run_test(emulator, package, preset, log_dir, openwrt_version):
     manager = "opkg" if package.suffix == ".ipk" else "apk"
     guest_package = f"/tmp/mt-c-ci{package.suffix}"
@@ -238,22 +281,18 @@ def run_test(emulator, package, preset, log_dir, openwrt_version):
             serial = SerialConsole(conn, process, work / "ci-serial.log")
             serial.wait_for_shell()
             print("OpenWrt root shell is ready", flush=True)
-            # A freshly prepared NAND has no saved wall clock, and this
-            # QEMU board need not expose a battery-backed RTC. Before an
-            # HTTPS feed update, set the guest clock to the CI host's UTC
-            # timestamp so certificate validity checks can work. Do not
-            # disable TLS certificate verification to mask the issue.
-            host_epoch = int(time.time())
-            serial.run(
-                f"date -u -s '@{host_epoch}' >/dev/null && "
-                f"test \"$(date +%s)\" -ge {host_epoch - 2} && date -u",
-                timeout=20,
-            )
             serial.run(
                 f"command -v {manager} && "
                 f'grep -Fxq "DISTRIB_RELEASE=\'{openwrt_version}\'" /etc/openwrt_release'
             )
             serial.run("for i in $(seq 1 30); do ip -4 route show default | grep -q '^default ' && break; sleep 2; done; ip -4 route show default | grep -q '^default '", timeout=75)
+            # The serial root prompt is available before OpenWrt finishes
+            # procd/netifd/logd initialization. Avoid racing the guest's
+            # clock setup while system services are still starting.
+            wait_for_boot_services(serial)
+            # Fresh flash has no battery-backed RTC. Set and verify UTC only
+            # after boot readiness, before any TLS-protected feed access.
+            set_guest_clock(serial)
             serial.run(f"wget -T 30 -O {guest_package} http://10.0.2.2:{http_port}/mt-c{package.suffix}", timeout=120)
             package_sha256 = hashlib.sha256(package.read_bytes()).hexdigest()
             serial.run(
