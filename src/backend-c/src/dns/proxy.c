@@ -296,13 +296,20 @@ static void deliver_response(exchange_t *ex, const uint8_t *resp,
     size_t out_len = resp_len;
     uint8_t *packed = NULL;
     if (!p->cfg.disable_drop_aaaa) {
+        size_t answers_before = msg->n_answers;
         mt_dns_msg_strip_aaaa(msg);
-        if (mt_dns_msg_pack(msg, &packed, &out_len) != MT_OK) {
-            mt_dns_msg_free(msg);
-            exchange_finish(ex, false);
-            return;
+        /* UDP can retain an unchanged upstream representation. TCP keeps its
+         * existing packing path; header-only messages retain the codec's
+         * historic normalization of section counts (D-86). */
+        if (ex->is_tcp || msg->n_answers != answers_before ||
+            resp_len == MT_DNS_HEADER_LEN) {
+            if (mt_dns_msg_pack(msg, &packed, &out_len) != MT_OK) {
+                mt_dns_msg_free(msg);
+                exchange_finish(ex, false);
+                return;
+            }
+            out = packed;
         }
-        out = packed;
     }
 
     if (ex->is_tcp) {
@@ -567,10 +574,18 @@ static void start_upstream(mt_dnsproxy_t *p, exchange_t *ex)
 
     /* TCP already has a processing deadline, including local PTR replies.
      * UDP arms its processing deadline here. */
-    if (ex->timer_id == 0 &&
-        mt_loop_add_timer(p->loop, p->cfg.timeout_ms, 0, on_timeout, ex,
-                          &ex->timer_id) != MT_OK) {
-        exchange_finish(ex, false);
+    if (ex->timer_id == 0) {
+        mt_err_t err;
+        if (ex->is_tcp) {
+            err = mt_loop_add_timer(p->loop, p->cfg.timeout_ms, 0,
+                                     on_timeout, ex, &ex->timer_id);
+        } else {
+            err = mt_loop_add_reusable_timer(p->loop, p->cfg.timeout_ms, 0,
+                                              on_timeout, ex, &ex->timer_id);
+        }
+        if (err != MT_OK) {
+            exchange_finish(ex, false);
+        }
     }
 }
 
@@ -609,10 +624,11 @@ static request_disp_t handle_request_common(mt_dnsproxy_t *p, exchange_t *ex)
                 q->name, q->name_len, q->qtype, ex->is_tcp, seen_ms);
         }
     }
+    bool single_ptr = req_msg->n_questions == 1 &&
+                      req_msg->questions[0].qtype == MT_DNS_TYPE_PTR;
     mt_dns_msg_free(req_msg);
 
-    if (!p->cfg.disable_fake_ptr &&
-        mt_dns_is_single_ptr_query(ex->req, ex->req_len)) {
+    if (!p->cfg.disable_fake_ptr && single_ptr) {
         uint8_t *resp = NULL;
         size_t rlen = 0;
         if (mt_dns_make_fake_ptr_response(ex->req, ex->req_len, &resp,

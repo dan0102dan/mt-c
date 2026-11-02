@@ -1,0 +1,496 @@
+[
+  {
+    "variant": "baseline",
+    "checks": [
+      {
+        "name": "unmatched_resolves_without_kernel_write"
+      },
+      {
+        "name": "cold_warm_udp_tcp_filter_overlap",
+        "ipsets": {
+          "mt_aa000001_4": [
+            {
+              "address": "10.99.0.3",
+              "ttl": 3899
+            },
+            {
+              "address": "10.99.0.2",
+              "ttl": 3899
+            },
+            {
+              "address": "10.99.0.4",
+              "ttl": 3899
+            },
+            {
+              "address": "10.99.0.1",
+              "ttl": 3899
+            }
+          ],
+          "mt_aa000001_6": [
+            {
+              "address": "fd00::4",
+              "ttl": 3899
+            },
+            {
+              "address": "fd00::3",
+              "ttl": 3899
+            },
+            {
+              "address": "fd00::1",
+              "ttl": 3899
+            },
+            {
+              "address": "fd00::2",
+              "ttl": 3899
+            }
+          ],
+          "mt_aa000002_4": [
+            {
+              "address": "10.99.0.3",
+              "ttl": 3899
+            },
+            {
+              "address": "10.99.0.4",
+              "ttl": 3899
+            },
+            {
+              "address": "10.99.0.2",
+              "ttl": 3899
+            },
+            {
+              "address": "10.99.0.1",
+              "ttl": 3899
+            }
+          ],
+          "mt_aa000002_6": [
+            {
+              "address": "fd00::3",
+              "ttl": 3899
+            },
+            {
+              "address": "fd00::4",
+              "ttl": 3899
+            },
+            {
+              "address": "fd00::1",
+              "ttl": 3899
+            },
+            {
+              "address": "fd00::2",
+              "ttl": 3899
+            }
+          ]
+        }
+      },
+      {
+        "name": "reduced_ttl_last_write",
+        "ipsets": {
+          "mt_aa000001_4": [
+            {
+              "address": "10.99.0.3",
+              "ttl": 3659
+            },
+            {
+              "address": "10.99.0.2",
+              "ttl": 3659
+            },
+            {
+              "address": "10.99.0.4",
+              "ttl": 3659
+            },
+            {
+              "address": "10.99.0.1",
+              "ttl": 3659
+            }
+          ],
+          "mt_aa000001_6": [
+            {
+              "address": "fd00::4",
+              "ttl": 3659
+            },
+            {
+              "address": "fd00::3",
+              "ttl": 3659
+            },
+            {
+              "address": "fd00::1",
+              "ttl": 3659
+            },
+            {
+              "address": "fd00::2",
+              "ttl": 3659
+            }
+          ],
+          "mt_aa000002_4": [
+            {
+              "address": "10.99.0.3",
+              "ttl": 3659
+            },
+            {
+              "address": "10.99.0.4",
+              "ttl": 3659
+            },
+            {
+              "address": "10.99.0.2",
+              "ttl": 3659
+            },
+            {
+              "address": "10.99.0.1",
+              "ttl": 3659
+            }
+          ],
+          "mt_aa000002_6": [
+            {
+              "address": "fd00::3",
+              "ttl": 3659
+            },
+            {
+              "address": "fd00::4",
+              "ttl": 3659
+            },
+            {
+              "address": "fd00::1",
+              "ttl": 3659
+            },
+            {
+              "address": "fd00::2",
+              "ttl": 3659
+            }
+          ]
+        }
+      },
+      {
+        "name": "live_reload_aaaa",
+        "ipsets": {
+          "mt_aa000001_4": [
+            {
+              "address": "10.99.0.4",
+              "ttl": 3659
+            },
+            {
+              "address": "10.99.0.1",
+              "ttl": 3659
+            },
+            {
+              "address": "10.99.0.2",
+              "ttl": 3659
+            },
+            {
+              "address": "10.99.0.3",
+              "ttl": 3659
+            }
+          ],
+          "mt_aa000001_6": [
+            {
+              "address": "fd00::4",
+              "ttl": 3659
+            },
+            {
+              "address": "fd00::2",
+              "ttl": 3659
+            },
+            {
+              "address": "fd00::1",
+              "ttl": 3659
+            },
+            {
+              "address": "fd00::3",
+              "ttl": 3659
+            }
+          ],
+          "mt_aa000002_4": [
+            {
+              "address": "10.99.0.2",
+              "ttl": 3659
+            },
+            {
+              "address": "10.99.0.3",
+              "ttl": 3659
+            },
+            {
+              "address": "10.99.0.1",
+              "ttl": 3659
+            },
+            {
+              "address": "10.99.0.4",
+              "ttl": 3659
+            }
+          ],
+          "mt_aa000002_6": [
+            {
+              "address": "fd00::3",
+              "ttl": 3659
+            },
+            {
+              "address": "fd00::4",
+              "ttl": 3659
+            },
+            {
+              "address": "fd00::2",
+              "ttl": 3659
+            },
+            {
+              "address": "fd00::1",
+              "ttl": 3659
+            }
+          ]
+        }
+      },
+      {
+        "name": "udp_dropped_reply_then_recovery",
+        "elapsed_seconds": 3.004164462
+      },
+      {
+        "name": "tcp_one_second_deadline",
+        "elapsed_seconds": 1.007873154
+      }
+    ]
+  },
+  {
+    "variant": "candidate",
+    "checks": [
+      {
+        "name": "unmatched_resolves_without_kernel_write"
+      },
+      {
+        "name": "cold_warm_udp_tcp_filter_overlap",
+        "ipsets": {
+          "mt_aa000001_4": [
+            {
+              "address": "10.99.0.2",
+              "ttl": 3899
+            },
+            {
+              "address": "10.99.0.1",
+              "ttl": 3899
+            },
+            {
+              "address": "10.99.0.3",
+              "ttl": 3899
+            },
+            {
+              "address": "10.99.0.4",
+              "ttl": 3899
+            }
+          ],
+          "mt_aa000001_6": [
+            {
+              "address": "fd00::4",
+              "ttl": 3899
+            },
+            {
+              "address": "fd00::3",
+              "ttl": 3899
+            },
+            {
+              "address": "fd00::2",
+              "ttl": 3899
+            },
+            {
+              "address": "fd00::1",
+              "ttl": 3899
+            }
+          ],
+          "mt_aa000002_4": [
+            {
+              "address": "10.99.0.2",
+              "ttl": 3899
+            },
+            {
+              "address": "10.99.0.4",
+              "ttl": 3899
+            },
+            {
+              "address": "10.99.0.3",
+              "ttl": 3899
+            },
+            {
+              "address": "10.99.0.1",
+              "ttl": 3899
+            }
+          ],
+          "mt_aa000002_6": [
+            {
+              "address": "fd00::2",
+              "ttl": 3899
+            },
+            {
+              "address": "fd00::4",
+              "ttl": 3899
+            },
+            {
+              "address": "fd00::3",
+              "ttl": 3899
+            },
+            {
+              "address": "fd00::1",
+              "ttl": 3899
+            }
+          ]
+        }
+      },
+      {
+        "name": "reduced_ttl_last_write",
+        "ipsets": {
+          "mt_aa000001_4": [
+            {
+              "address": "10.99.0.2",
+              "ttl": 3659
+            },
+            {
+              "address": "10.99.0.1",
+              "ttl": 3659
+            },
+            {
+              "address": "10.99.0.3",
+              "ttl": 3659
+            },
+            {
+              "address": "10.99.0.4",
+              "ttl": 3659
+            }
+          ],
+          "mt_aa000001_6": [
+            {
+              "address": "fd00::4",
+              "ttl": 3659
+            },
+            {
+              "address": "fd00::3",
+              "ttl": 3659
+            },
+            {
+              "address": "fd00::2",
+              "ttl": 3659
+            },
+            {
+              "address": "fd00::1",
+              "ttl": 3659
+            }
+          ],
+          "mt_aa000002_4": [
+            {
+              "address": "10.99.0.2",
+              "ttl": 3659
+            },
+            {
+              "address": "10.99.0.4",
+              "ttl": 3659
+            },
+            {
+              "address": "10.99.0.3",
+              "ttl": 3659
+            },
+            {
+              "address": "10.99.0.1",
+              "ttl": 3659
+            }
+          ],
+          "mt_aa000002_6": [
+            {
+              "address": "fd00::2",
+              "ttl": 3659
+            },
+            {
+              "address": "fd00::4",
+              "ttl": 3659
+            },
+            {
+              "address": "fd00::3",
+              "ttl": 3659
+            },
+            {
+              "address": "fd00::1",
+              "ttl": 3659
+            }
+          ]
+        }
+      },
+      {
+        "name": "live_reload_aaaa",
+        "ipsets": {
+          "mt_aa000001_4": [
+            {
+              "address": "10.99.0.4",
+              "ttl": 3659
+            },
+            {
+              "address": "10.99.0.2",
+              "ttl": 3659
+            },
+            {
+              "address": "10.99.0.1",
+              "ttl": 3659
+            },
+            {
+              "address": "10.99.0.3",
+              "ttl": 3659
+            }
+          ],
+          "mt_aa000001_6": [
+            {
+              "address": "fd00::4",
+              "ttl": 3659
+            },
+            {
+              "address": "fd00::2",
+              "ttl": 3659
+            },
+            {
+              "address": "fd00::3",
+              "ttl": 3659
+            },
+            {
+              "address": "fd00::1",
+              "ttl": 3659
+            }
+          ],
+          "mt_aa000002_4": [
+            {
+              "address": "10.99.0.4",
+              "ttl": 3659
+            },
+            {
+              "address": "10.99.0.1",
+              "ttl": 3659
+            },
+            {
+              "address": "10.99.0.3",
+              "ttl": 3659
+            },
+            {
+              "address": "10.99.0.2",
+              "ttl": 3659
+            }
+          ],
+          "mt_aa000002_6": [
+            {
+              "address": "fd00::4",
+              "ttl": 3659
+            },
+            {
+              "address": "fd00::1",
+              "ttl": 3659
+            },
+            {
+              "address": "fd00::3",
+              "ttl": 3659
+            },
+            {
+              "address": "fd00::2",
+              "ttl": 3659
+            }
+          ]
+        }
+      },
+      {
+        "name": "udp_dropped_reply_then_recovery",
+        "elapsed_seconds": 3.002084846
+      },
+      {
+        "name": "tcp_one_second_deadline",
+        "elapsed_seconds": 1.008479077
+      }
+    ]
+  }
+]

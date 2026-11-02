@@ -5,6 +5,7 @@ on:
       - 'Makefile'
       - 'files/**'
       - 'tools/ci/**'
+      - 'tools/bench/**'
       - 'tools/tests/package_identity.py'
       - 'tools/tests/frontend_variants.py'
       - '.github/workflows/check-packaging.yml'
@@ -13,6 +14,7 @@ on:
       - 'Makefile'
       - 'files/**'
       - 'tools/ci/**'
+      - 'tools/bench/**'
       - 'tools/tests/package_identity.py'
       - 'tools/tests/frontend_variants.py'
       - '.github/workflows/check-packaging.yml'
@@ -30,3 +32,26 @@ jobs:
         run: python3 tools/ci/tests/test_openwrt_sdk.py
       - name: Test router-emulator package-manager orchestration
         run: python3 tools/ci/tests/test_router_emulator.py
+      - name: Test Router Emulator preset and flash preparation
+        run: python3 tools/ci/tests/test_router_emulator_preset.py
+      - name: Test Router Emulator host runtime compatibility and same-release rebuild
+        run: python3 tools/ci/tests/test_router_emulator_runtime.py
+      - name: Test automatic latest-stable release selection and SHA256 checks
+        run: python3 tools/ci/tests/test_router_emulator_release.py
+      - name: Test fresh source staging for package comparisons
+        run: python3 tools/ci/tests/test_build_emulator_package.py
+      - name: Test DNS comparison correctness gates
+        run: python3 tools/ci/tests/test_router_emulator_compare.py
+      - name: Test rules comparison result gates
+        run: python3 tools/bench/tests/test_rules_reconcile_compare.py
+  benchmark_tools:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: tools/bench/go.mod
+          cache-dependency-path: tools/bench/go.sum
+      - name: Test DNS load and response fixtures
+        working-directory: tools/bench
+        run: go test ./dnsload ./dnsstub ./dnsquery

@@ -7,6 +7,20 @@
 
 #include "magitrickle/dns_cache.h"
 
+char *__real_strdup(const char *s);
+void *__real_realloc(void *p, size_t n);
+char *__wrap_strdup(const char *s);
+void *__wrap_realloc(void *p, size_t n);
+static size_t alloc_until_failure;
+static bool fail_one_allocation(void)
+{
+    return alloc_until_failure && --alloc_until_failure == 0;
+}
+char *__wrap_strdup(const char *s)
+{ return fail_one_allocation() ? NULL : __real_strdup(s); }
+void *__wrap_realloc(void *p, size_t n)
+{ return fail_one_allocation() ? NULL : __real_realloc(p, n); }
+
 static const uint8_t IP1234[4] = {1, 2, 3, 4};
 static const uint8_t IP5678[4] = {5, 6, 7, 8};
 static const uint8_t IP9101112[4] = {9, 10, 11, 12};
@@ -406,6 +420,53 @@ TEST bounded_domain_count_drops(void)
     PASS();
 }
 
+TEST aliases_bfs_order_growth_cycles_and_owned_output(void)
+{
+    mt_cache_t *cache = mt_cache_create(0); ASSERT(cache);
+    mt_cache_add_alias(cache, "a", "root", 60, 1000);
+    mt_cache_add_alias(cache, "b", "root", 60, 1000);
+    mt_cache_add_alias(cache, "c", "a", 60, 1000);
+    mt_cache_add_alias(cache, "root", "c", 60, 1000); /* cycle */
+    for (unsigned i = 0; i < 32; i++) {
+        char name[32]; snprintf(name, sizeof(name), "leaf%u", i);
+        mt_cache_add_alias(cache, name, "b", 60, 1000);
+    }
+    char **names = NULL; size_t n = 0;
+    ASSERT_EQ(MT_OK, mt_cache_get_aliases(cache, "root", &names, &n));
+    ASSERT_EQ(36u, n);
+    ASSERT_STR_EQ("root", names[0]); ASSERT_STR_EQ("a", names[1]);
+    ASSERT_STR_EQ("b", names[2]); ASSERT_STR_EQ("c", names[3]);
+    mt_cache_destroy(cache); /* caller owns every result, even after destroy */
+    for (unsigned i = 0; i < 32; i++) {
+        char name[32]; snprintf(name, sizeof(name), "leaf%u", i);
+        ASSERT_STR_EQ(name, names[i + 4]);
+    }
+    mt_cache_free_strings(names, n); PASS();
+}
+
+TEST aliases_allocation_failure_cleans_partial_output(void)
+{
+    mt_cache_t *cache = mt_cache_create(0); ASSERT(cache);
+    for (unsigned i = 0; i < 40; i++) {
+        char name[32]; snprintf(name, sizeof(name), "leaf%u", i);
+        mt_cache_add_alias(cache, name, "root", 60, 1000);
+    }
+    bool reached_success = false;
+    for (size_t fail = 1; fail < 100; fail++) {
+        char **names = NULL; size_t n = 123;
+        alloc_until_failure = fail;
+        mt_err_t err = mt_cache_get_aliases(cache, "root", &names, &n);
+        alloc_until_failure = 0;
+        if (err == MT_OK) {
+            ASSERT_EQ(41u, n); mt_cache_free_strings(names, n); reached_success = true; break;
+        }
+        ASSERT_EQ(MT_ERR_NOMEM, err); ASSERT(names == NULL); ASSERT_EQ(0u, n);
+        ASSERT_EQ(MT_OK, mt_cache_get_aliases(cache, "root", &names, &n));
+        ASSERT_EQ(41u, n); mt_cache_free_strings(names, n);
+    }
+    ASSERT(reached_success); mt_cache_destroy(cache); PASS();
+}
+
 GREATEST_MAIN_DEFS();
 
 int main(int argc, char **argv)
@@ -432,5 +493,7 @@ int main(int argc, char **argv)
     RUN_TEST(get_aliases_no_reverse);
     RUN_TEST(get_aliases_unknown_domain);
     RUN_TEST(bounded_domain_count_drops);
+    RUN_TEST(aliases_bfs_order_growth_cycles_and_owned_output);
+    RUN_TEST(aliases_allocation_failure_cleans_partial_output);
     GREATEST_MAIN_END();
 }

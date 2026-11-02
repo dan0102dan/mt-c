@@ -1,6 +1,7 @@
 #include "greatest.h"
 
 #include <pthread.h>
+#include <stdbool.h>
 #include <string.h>
 #include <sys/epoll.h>
 #include <time.h>
@@ -146,6 +147,64 @@ TEST del_timer_prevents_firing(void)
     PASS();
 }
 
+struct fairness_ctx {
+    int write_fd;
+    unsigned timer_calls;
+    bool adding, recursive, fd_seen;
+    mt_err_t error;
+};
+
+static void immediate_again(mt_loop_t *loop, void *ud)
+{
+    struct fairness_ctx *ctx = ud;
+    ctx->recursive = ctx->recursive || ctx->adding;
+    ctx->timer_calls++;
+    if (ctx->timer_calls == 1) {
+        if (write(ctx->write_fd, "x", 1) != 1) {
+            ctx->error = MT_ERR_IO;
+            mt_loop_stop(loop);
+            return;
+        }
+    }
+    if (ctx->timer_calls >= 64) {
+        mt_loop_stop(loop);
+        return;
+    }
+    ctx->adding = true;
+    ctx->error = mt_loop_add_timer(loop, 0, 0, immediate_again, ctx, NULL);
+    ctx->adding = false;
+    if (ctx->error != MT_OK) { mt_loop_stop(loop); }
+}
+
+static void fairness_fd(mt_loop_t *loop, int fd, uint32_t events, void *ud)
+{
+    (void)events;
+    struct fairness_ctx *ctx = ud;
+    char byte;
+    ctx->fd_seen = read(fd, &byte, 1) == 1;
+    mt_loop_stop(loop);
+}
+
+TEST immediate_timer_chain_does_not_recurse_or_starve_a_ready_fd(void)
+{
+    mt_loop_t *loop = NULL;
+    ASSERT_EQ(MT_OK, mt_loop_create(&loop));
+    int fds[2];
+    ASSERT_EQ(0, pipe(fds));
+    struct fairness_ctx ctx = {.write_fd = fds[1]};
+    ASSERT_EQ(MT_OK, mt_loop_add_fd(loop, fds[0], EPOLLIN, fairness_fd, &ctx));
+    ASSERT_EQ(MT_OK, mt_loop_add_timer(loop, 0, 0, immediate_again, &ctx, NULL));
+    ASSERT_EQ(MT_OK, mt_loop_run(loop));
+    ASSERT_EQ(MT_OK, ctx.error);
+    ASSERT(!ctx.recursive);
+    ASSERT(ctx.fd_seen);
+    ASSERT(ctx.timer_calls > 0 && ctx.timer_calls < 64);
+    ASSERT_EQ(MT_OK, mt_loop_del_fd(loop, fds[0]));
+    close(fds[0]); close(fds[1]);
+    mt_loop_destroy(loop);
+    PASS();
+}
+
 GREATEST_MAIN_DEFS();
 
 int main(int argc, char **argv)
@@ -156,5 +215,6 @@ int main(int argc, char **argv)
     RUN_TEST(fd_readable_event_delivers_data);
     RUN_TEST(cross_thread_post_executes_on_loop);
     RUN_TEST(del_timer_prevents_firing);
+    RUN_TEST(immediate_timer_chain_does_not_recurse_or_starve_a_ready_fd);
     GREATEST_MAIN_END();
 }

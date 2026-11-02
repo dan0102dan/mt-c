@@ -1,0 +1,62 @@
+[
+  {
+    "rules": 1000,
+    "domains": 1000,
+    "iterations": 474,
+    "reason": "candidate target",
+    "target_candidate_ns": 250000000,
+    "estimated_baseline_budget_ns": 5000000000,
+    "requested_iterations": 474,
+    "baseline_affordable_iterations": 710,
+    "estimated_candidate_ns": 250230762,
+    "estimated_baseline_ns": 3336655692
+  },
+  {
+    "rules": 10000,
+    "domains": 1000,
+    "iterations": 80,
+    "reason": "candidate target",
+    "target_candidate_ns": 250000000,
+    "estimated_baseline_budget_ns": 5000000000,
+    "requested_iterations": 80,
+    "baseline_affordable_iterations": 112,
+    "estimated_candidate_ns": 253047200,
+    "estimated_baseline_ns": 3545801280
+  },
+  {
+    "rules": 10000,
+    "domains": 10000,
+    "iterations": 6,
+    "reason": "baseline CPU budget or iteration cap",
+    "target_candidate_ns": 250000000,
+    "estimated_baseline_budget_ns": 5000000000,
+    "requested_iterations": 22,
+    "baseline_affordable_iterations": 6,
+    "estimated_candidate_ns": 71107752,
+    "estimated_baseline_ns": 4905632118
+  },
+  {
+    "rules": 100000,
+    "domains": 10000,
+    "iterations": 1,
+    "reason": "one iteration for the billion-comparison baseline",
+    "target_candidate_ns": 250000000,
+    "estimated_baseline_budget_ns": 5000000000,
+    "requested_iterations": 8,
+    "baseline_affordable_iterations": 1,
+    "estimated_candidate_ns": 35404073,
+    "estimated_baseline_ns": 4527237239
+  },
+  {
+    "rules": 100000,
+    "domains": 0,
+    "iterations": 283,
+    "reason": "candidate target",
+    "target_candidate_ns": 250000000,
+    "estimated_baseline_budget_ns": 5000000000,
+    "requested_iterations": 283,
+    "baseline_affordable_iterations": 1205,
+    "estimated_candidate_ns": 250608669,
+    "estimated_baseline_ns": 1173375449
+  }
+]

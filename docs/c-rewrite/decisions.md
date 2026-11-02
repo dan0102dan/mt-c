@@ -3976,3 +3976,107 @@ identity, existing config/API contracts, slow RCI with concurrent loop traffic,
 client disconnect/shutdown, proxy/redirect/body-limit failures and parser fuzzing.
 Hardware-specific inventory formats and the old Entware SDK still require their
 normal on-device/cross-build validation; host tests are not a substitute.
+
+## D-86 — Preserve unchanged DNS wire bytes and share the alias BFS queue (2026-10-31)
+
+The response hook still parses every upstream message and populates the cache
+and routing sets before client-side AAAA filtering. When filtering removes no
+Answer-section AAAA record in a UDP response, the proxy now forwards the original
+validated bytes instead of allocating and packing an equivalent message. TCP
+retains the historical packing path when filtering is enabled. Authority and Additional
+AAAA records remain untouched, as before. The existing 12-byte/header-only
+special case still runs through the packer when filtering is enabled, preserving
+its normalization of section counts.
+
+This intentionally preserves upstream compression and parser-tolerated trailing
+bytes on unchanged UDP responses; the old filtered path rewrote that representation.
+It does not remove validation, change DNS data/TTL, disable fake PTR, or cache DNS
+responses. Request-side PTR eligibility uses the already parsed question instead
+of decoding its name a second time. The fake response builder is unchanged.
+
+The cache's owned BFS result array also serves as its queue, eliminating a second
+copy of every alias string. The traversal order, cycle detection, ownership and
+allocation-failure cleanup are unchanged. Transport tests execute the actual
+response/request handlers for both UDP and TCP; cache tests cover growth, cycles,
+owned output after cache destruction, and every allocation failure in a traversal.
+
+## D-87 — Coalesce duplicate routing writes within a DNS response (2026-10-31)
+
+A response-local buffer retains at most 32 original actions and 4096 bytes of
+owned presentation names. For each (group ID, address family, address), its last
+occurrence wins, including a lower or zero TTL. Surviving actions retain their
+last-occurrence order. Full buffers flush synchronously in lossless chunks;
+single-answer messages bypass buffering. All records still update the DNS cache
+in their original order. Groups and families remain independent, and there is no
+suppression across responses or reloads.
+
+The sink receives the number of original writes represented by each action
+(1..32; zero means one for direct callers). The daemon retries the final desired
+write after an error, up to that budget, stopping on success. Thus a transient
+first failure does not discard all later opportunities to install the address.
+Errors do not prevent unrelated actions or future responses from being tried.
+
+For successful writes the final routing state equals the previous per-record
+stream. Under arbitrary kernel failures this is deliberately not an identical
+sequence of intermediate TTLs and partial states: retries carry the final TTL,
+not superseded values. Successful duplicate log entries are also collapsed.
+DNS forwarding retains its existing best-effort policy if routing writes fail.
+Tests compare seeded mixed messages against the unbatched per-record stream,
+check cache and final routing values, exercise buffer boundaries, warm/cold CNAME
+chains, reloads, and invoke the real daemon sink with failing writes.
+
+## D-88 — Explicitly reuse a bounded pool of UDP kernel timers (2026-10-31)
+
+The new opt-in mt_loop_add_reusable_timer API retains at most 32 disarmed
+timerfds and their watch allocations for reuse. Only UDP upstream deadlines
+use it. The existing mt_loop_add_timer API retains its fresh timerfd, immediate
+settime, watch allocation and epoll registration path, and closes on deletion;
+it never consumes or fills the reusable pool. TCP read/processing deadlines,
+including fake-PTR replies and the defensive upstream fallback, use that existing
+API. Every active logical timer still has its own monotonic kernel timer;
+arming and error reporting remain immediate. There is no shared timer heap,
+userspace deadline approximation, or end-of-batch timer rearm. Unread expirations
+are cleared by disarming before reuse. A failed disarm closes the descriptor.
+
+A cancelled watch is marked removed immediately and cannot be reused until all
+pointers in the current epoll batch have been considered. This preserves the
+existing deferred destruction rule when one callback cancels another ready timer
+and frees its userdata. A newly added zero-delay timer cannot run through the
+cancelled timer's stale event. The idle pool is released when loop_run returns
+(success or error) and on destruction. Active-timer ownership is unchanged.
+Timer IDs wrap without signed overflow and skip still-active IDs.
+
+Operation-count tests verify that repeated warm add/cancel pairs reuse the
+kernel object and epoll registration. Other tests cover the retention bound,
+periodic timers, missed ticks, cancellation from callbacks, stale ready events,
+allocation/syscall failures, ID wrap, and complete descriptor cleanup. This
+narrower implementation replaces the abandoned shared-queue experiment. A later
+all-transports pool also showed an adverse TCP capacity-test p99 direction, even
+when the old proxy object was restored. Final reuse and wire fast paths are
+therefore explicitly limited to UDP. The all-transports measurements are retained
+separately from the final results.
+Only measurements of the final source state apply to the final implementation.
+
+## D-89 — Scan cached names once per bounded block of rules (2026-10-31)
+
+Ruleset reconciliation aggregates ordinary domain/namespace/wildcard/regex rules
+into the existing matcher in blocks of at most 4096 rules. Each block scans known
+cached names once instead of once per rule. An empty cache skips matcher builds.
+The cap bounds rule count, not a fixed number of bytes; matcher storage still
+depends on pattern lengths and kinds.
+
+Dynamic desired entries retain their existing maximum remaining TTL and
+permanent-entry precedence. This reconciliation rule is distinct from D-87's
+last-write rule for an incoming DNS response. Blocks flush before enabled static
+subnet/subnet6 rules to preserve the relative insertion order of implicit host
+entries and explicit /32 or /128 entries. Leading-dot namespace patterns keep the
+old individual suffix matcher because the aggregate trie normalizes that form
+differently. An allocation failure while constructing the desired lists returns
+before any of those partial lists is applied to the kernel.
+
+Tests retain the previous builder as a reference, compare 300 seeded mixed
+configurations, malformed/leading-dot names, aliases and expiry, both block
+boundaries, static ordering and permanent TTLs. Fault injection includes failures
+while constructing a second block and verifies that no partial kernel write is
+performed. Benchmark scope is desired-list construction, not complete reload or
+packet forwarding.

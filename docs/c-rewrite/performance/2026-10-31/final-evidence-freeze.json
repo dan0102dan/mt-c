@@ -1,0 +1,36 @@
+{
+  "checked_unix": 1793470555.3896978,
+  "production_manifest_paths_unchanged": 144,
+  "completed_final_guest_runs": {
+    "final-apk-validation": {
+      "completed": true,
+      "harness_sha256": "f30b0ef0fd2d1b9f4a472f175900c511261e43f068ee4978a171abff832c7c9c",
+      "installed_daemon_sha256": {
+        "baseline": "acfeacf8d88965cb148bb864bfc9dcdb99441a592c110bdc8f64b5592b6550d0",
+        "candidate": "fea57b6b3e7bff4c9e0cdeb8b34bf824578074212a037b2a5e97e4c3f75cb68b"
+      }
+    },
+    "final-ipk-validation": {
+      "completed": true,
+      "harness_sha256": "f30b0ef0fd2d1b9f4a472f175900c511261e43f068ee4978a171abff832c7c9c",
+      "installed_daemon_sha256": {
+        "baseline": "42778da919a1735d8a70043b7a822a9c24ba829a7d9c5b1bd24c5b8a28ec0a3e",
+        "candidate": "85a9f3fbcb2cf8037d671cffc823341a32a6012a69321eefff1b426091ecf39c"
+      }
+    },
+    "final-apk-benchmark": {
+      "completed": true,
+      "harness_sha256": "f30b0ef0fd2d1b9f4a472f175900c511261e43f068ee4978a171abff832c7c9c",
+      "installed_daemon_sha256": {
+        "baseline": "acfeacf8d88965cb148bb864bfc9dcdb99441a592c110bdc8f64b5592b6550d0",
+        "candidate": "fea57b6b3e7bff4c9e0cdeb8b34bf824578074212a037b2a5e97e4c3f75cb68b"
+      }
+    }
+  },
+  "owned_benchmark_or_emulator_processes_remaining": [],
+  "no_more_measurements_planned": true,
+  "native_report": "host-results.md",
+  "emulator_report": "emulator-results.md",
+  "native_summary": "host-summary.json",
+  "guest_summary": "emulator-performance-summary.json"
+}

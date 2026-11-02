@@ -285,6 +285,29 @@ $(BUILDDIR)/tests/%: tests/unit/%.c $(LIB_OBJS) $(TEST_SUPPORT_OBJS)
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -Itests/vendor -Itests/unit $(LDFLAGS) -o $@ $< $(LIB_OBJS) $(TEST_SUPPORT_OBJS) $(LDLIBS) $(DEP_LIBS)
 
+# Exercise production dispatch/lifetime code without exposing test-only APIs.
+$(BUILDDIR)/tests/test_dns_pipeline: tests/unit/test_dns_pipeline.c $(MAIN_SRC) $(LIB_OBJS) $(TEST_SUPPORT_OBJS)
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) -Itests/vendor -Itests/unit $(LDFLAGS) \
+	    -Wl,--wrap=mt_app_find_group_by_id -Wl,--wrap=mt_app_find_subscription_ruleset_by_id \
+	    -Wl,--wrap=mt_ruleset_add_ipv4 -Wl,--wrap=mt_ruleset_add_ipv6 \
+	    -o $@ $< $(LIB_OBJS) $(TEST_SUPPORT_OBJS) $(LDLIBS) $(DEP_LIBS)
+
+$(BUILDDIR)/tests/test_dns_fastpath: tests/unit/test_dns_fastpath.c src/dns/proxy.c $(LIB_OBJS) $(TEST_SUPPORT_OBJS)
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) -Itests/vendor -Itests/unit $(LDFLAGS) \
+	    -Wl,--wrap=mt_dns_msg_pack -Wl,--wrap=mt_dns_msg_parse -Wl,--wrap=sendmsg \
+	    -Wl,--wrap=mt_loop_add_timer -Wl,--wrap=mt_loop_add_reusable_timer \
+	    -o $@ $< $(filter-out $(BUILDDIR)/src/dns/proxy.o,$(LIB_OBJS)) $(TEST_SUPPORT_OBJS) $(LDLIBS) $(DEP_LIBS)
+
+$(BUILDDIR)/tests/test_loop_timer_queue: tests/unit/test_loop_timer_queue.c src/platform/loop.c $(LIB_OBJS) $(TEST_SUPPORT_OBJS)
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) -Itests/vendor -Itests/unit $(LDFLAGS) -o $@ $< $(filter-out $(BUILDDIR)/src/platform/loop.o,$(LIB_OBJS)) $(TEST_SUPPORT_OBJS) $(LDLIBS) $(DEP_LIBS)
+
+$(BUILDDIR)/tests/test_dns_cache: tests/unit/test_dns_cache.c $(LIB_OBJS) $(TEST_SUPPORT_OBJS)
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) -Itests/vendor -Itests/unit $(LDFLAGS) -Wl,--wrap=strdup -Wl,--wrap=realloc -o $@ $< $(LIB_OBJS) $(TEST_SUPPORT_OBJS) $(LDLIBS) $(DEP_LIBS)
+
 # Include the native source to exercise shutdown with a real deferred ubus
 # notification, without adding a production-only testing API.
 $(BUILDDIR)/tests/test_dns_openwrt: tests/unit/test_dns_openwrt.c src/platform/dns_openwrt.c $(LIB_OBJS) $(TEST_SUPPORT_OBJS)
@@ -303,6 +326,12 @@ $(BUILDDIR)/tests/test_dns_stream: tests/unit/test_dns_stream.c $(LIB_OBJS) $(TE
 $(BUILDDIR)/tests/test_dns_query_alloc: tests/unit/test_dns_query_alloc.c $(LIB_OBJS) $(TEST_SUPPORT_OBJS)
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -Itests/vendor -Itests/unit $(LDFLAGS) -Wl,--wrap=malloc -Wl,--wrap=calloc -Wl,--wrap=memmove -Wl,--wrap=realloc -o $@ $< $(LIB_OBJS) $(TEST_SUPPORT_OBJS) $(LDLIBS) $(DEP_LIBS)
+
+# Exercise SIGPIPE when a restore child exits between poll(POLLOUT) and write.
+# The wrapper is linker-local to this test; the daemon uses the real write().
+$(BUILDDIR)/tests/test_iptables_sigpipe: tests/unit/test_iptables_sigpipe.c $(LIB_OBJS) $(TEST_SUPPORT_OBJS)
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) -Itests/vendor -Itests/unit $(LDFLAGS) -Wl,--wrap=write -o $@ $< $(LIB_OBJS) $(TEST_SUPPORT_OBJS) $(LDLIBS) $(DEP_LIBS)
 
 # Exercise the total redirect deadline with a short test-only timeout.
 $(BUILDDIR)/tests/test_sub_fetch_timeout: tests/unit/test_sub_fetch_timeout.c src/subscriptions/fetch.c $(LIB_OBJS) $(TEST_SUPPORT_OBJS)

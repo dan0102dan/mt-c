@@ -1,0 +1,382 @@
+{
+  "measured_runs": 18,
+  "successful_queries": 170855,
+  "errors": 0,
+  "timeouts": 0,
+  "invalid": 0,
+  "workloads": [
+    {
+      "proto": "tcp",
+      "cnames": 2,
+      "addresses": 4,
+      "baseline": {
+        "rps": {
+          "median": 270.98835200042885,
+          "min": 262.18072839549154,
+          "max": 303.56971273835467
+        },
+        "p95_ms": {
+          "median": 57.883,
+          "min": 51.713,
+          "max": 59.058
+        },
+        "p99_ms": {
+          "median": 68.265,
+          "min": 61.73,
+          "max": 71.985
+        },
+        "cpu_ticks_per_query": {
+          "median": 0.21739130434782608,
+          "min": 0.2025649457415324,
+          "max": 0.23047619047619047
+        }
+      },
+      "candidate": {
+        "rps": {
+          "median": 281.712930157619,
+          "min": 279.50581367452327,
+          "max": 340.3446554720633
+        },
+        "p95_ms": {
+          "median": 56.163,
+          "min": 48.21,
+          "max": 56.784
+        },
+        "p99_ms": {
+          "median": 68.013,
+          "min": 60.819,
+          "max": 69.817
+        },
+        "cpu_ticks_per_query": {
+          "median": 0.18900709219858156,
+          "min": 0.16109154929577466,
+          "max": 0.19120800571837027
+        }
+      },
+      "change_pct": {
+        "rps": 3.9575790169656955,
+        "p95_ms": -2.9715114973308365,
+        "p99_ms": -0.369149637442312,
+        "cpu_ticks_per_query": -13.056737588652478
+      },
+      "paired_candidate_minus_baseline": {
+        "rps": {
+          "differences_in_repetition_order": [
+            17.325085279031725,
+            69.35630347163448,
+            -21.856782580735683
+          ],
+          "median_difference": 17.325085279031725,
+          "median_percent_change": 6.6080697025516555,
+          "positive_pairs": 2,
+          "pairs": 3
+        },
+        "p95_ms": {
+          "differences_in_repetition_order": [
+            -2.895000000000003,
+            -9.673000000000002,
+            5.070999999999998
+          ],
+          "median_difference": -2.895000000000003,
+          "median_percent_change": -4.90196078431373,
+          "positive_pairs": 1,
+          "pairs": 3
+        },
+        "p99_ms": {
+          "differences_in_repetition_order": [
+            -3.971999999999994,
+            -7.445999999999998,
+            8.086999999999996
+          ],
+          "median_difference": -3.971999999999994,
+          "median_percent_change": -5.517816211710769,
+          "positive_pairs": 1,
+          "pairs": 3
+        },
+        "cpu_ticks_per_query": {
+          "differences_in_repetition_order": [
+            -0.03926818475782021,
+            -0.056299755052051426,
+            -0.013557853542950832
+          ],
+          "median_difference": -0.03926818475782021,
+          "median_percent_change": -17.03784875855835,
+          "positive_pairs": 0,
+          "pairs": 3
+        }
+      },
+      "after_snapshot_ranges": {
+        "baseline": {
+          "RSS": {
+            "min": 2672,
+            "max": 2748
+          },
+          "TIMERS": {
+            "min": 2,
+            "max": 2
+          }
+        },
+        "candidate": {
+          "RSS": {
+            "min": 2676,
+            "max": 2764
+          },
+          "TIMERS": {
+            "min": 20,
+            "max": 22
+          }
+        }
+      }
+    },
+    {
+      "proto": "udp",
+      "cnames": 0,
+      "addresses": 1,
+      "baseline": {
+        "rps": {
+          "median": 1215.3760880825755,
+          "min": 1214.0718039784463,
+          "max": 1344.82861685943
+        },
+        "p95_ms": {
+          "median": 12.324,
+          "min": 12.123,
+          "max": 12.439
+        },
+        "p99_ms": {
+          "median": 16.625,
+          "min": 16.582,
+          "max": 16.984
+        },
+        "cpu_ticks_per_query": {
+          "median": 0.06551043892816044,
+          "min": 0.061547610198468744,
+          "max": 0.06611230034579285
+        }
+      },
+      "candidate": {
+        "rps": {
+          "median": 1813.511802622734,
+          "min": 1736.1039954983455,
+          "max": 2088.9327539972774
+        },
+        "p95_ms": {
+          "median": 10.837,
+          "min": 9.687,
+          "max": 11.197
+        },
+        "p99_ms": {
+          "median": 14.208,
+          "min": 12.667,
+          "max": 14.725
+        },
+        "cpu_ticks_per_query": {
+          "median": 0.03820286659316428,
+          "min": 0.0362304967933378,
+          "max": 0.04088213278056083
+        }
+      },
+      "change_pct": {
+        "rps": 49.21404332413686,
+        "p95_ms": -12.065887698799093,
+        "p99_ms": -14.53834586466165,
+        "cpu_ticks_per_query": -41.684306778866166
+      },
+      "paired_candidate_minus_baseline": {
+        "rps": {
+          "differences_in_repetition_order": [
+            744.1041371378474,
+            520.72790741577,
+            599.4399986442877
+          ],
+          "median_difference": 599.4399986442877,
+          "median_percent_change": 49.37434480233838,
+          "positive_pairs": 3,
+          "pairs": 3
+        },
+        "p95_ms": {
+          "differences_in_repetition_order": [
+            -2.436,
+            -1.2420000000000009,
+            -1.487
+          ],
+          "median_difference": -1.487,
+          "median_percent_change": -12.065887698799093,
+          "positive_pairs": 0,
+          "pairs": 3
+        },
+        "p99_ms": {
+          "differences_in_repetition_order": [
+            -3.915000000000001,
+            -2.259000000000002,
+            -2.417
+          ],
+          "median_difference": -2.417,
+          "median_percent_change": -14.53834586466165,
+          "positive_pairs": 0,
+          "pairs": 3
+        },
+        "cpu_ticks_per_query": {
+          "differences_in_repetition_order": [
+            -0.025317113405130945,
+            -0.02462830614759961,
+            -0.027909433752628575
+          ],
+          "median_difference": -0.025317113405130945,
+          "median_percent_change": -41.13419403855394,
+          "positive_pairs": 0,
+          "pairs": 3
+        }
+      },
+      "after_snapshot_ranges": {
+        "baseline": {
+          "RSS": {
+            "min": 2660,
+            "max": 2776
+          },
+          "TIMERS": {
+            "min": 2,
+            "max": 2
+          }
+        },
+        "candidate": {
+          "RSS": {
+            "min": 2704,
+            "max": 2756
+          },
+          "TIMERS": {
+            "min": 21,
+            "max": 21
+          }
+        }
+      }
+    },
+    {
+      "proto": "udp",
+      "cnames": 2,
+      "addresses": 4,
+      "baseline": {
+        "rps": {
+          "median": 712.851942959373,
+          "min": 643.2426158881743,
+          "max": 796.542950040999
+        },
+        "p95_ms": {
+          "median": 18.435,
+          "min": 16.805,
+          "max": 22.708
+        },
+        "p99_ms": {
+          "median": 23.928,
+          "min": 23.207,
+          "max": 88.063
+        },
+        "cpu_ticks_per_query": {
+          "median": 0.12293243622091393,
+          "min": 0.10637230306071249,
+          "max": 0.12657244913806492
+        }
+      },
+      "candidate": {
+        "rps": {
+          "median": 1224.7828353362827,
+          "min": 1218.8885577307929,
+          "max": 1327.4679438705957
+        },
+        "p95_ms": {
+          "median": 12.987,
+          "min": 12.258,
+          "max": 14.001
+        },
+        "p99_ms": {
+          "median": 16.698,
+          "min": 16.604,
+          "max": 45.286
+        },
+        "cpu_ticks_per_query": {
+          "median": 0.06347393326262545,
+          "min": 0.06293285155073773,
+          "max": 0.06813150774780684
+        }
+      },
+      "change_pct": {
+        "rps": 71.81447668524987,
+        "p95_ms": -29.552481692432863,
+        "p99_ms": -30.21564694082247,
+        "cpu_ticks_per_query": -48.366814151018254
+      },
+      "paired_candidate_minus_baseline": {
+        "rps": {
+          "differences_in_repetition_order": [
+            581.5402194481084,
+            422.34560768979384,
+            614.6160009112227
+          ],
+          "median_difference": 581.5402194481084,
+          "median_percent_change": 86.2193064045911,
+          "positive_pairs": 3,
+          "pairs": 3
+        },
+        "p95_ms": {
+          "differences_in_repetition_order": [
+            -8.706999999999999,
+            -3.8179999999999996,
+            -6.177
+          ],
+          "median_difference": -6.177,
+          "median_percent_change": -33.50691619202604,
+          "positive_pairs": 0,
+          "pairs": 3
+        },
+        "p99_ms": {
+          "differences_in_repetition_order": [
+            -42.777,
+            -7.324000000000002,
+            -6.509
+          ],
+          "median_difference": -7.324000000000002,
+          "median_percent_change": -30.608492143095955,
+          "positive_pairs": 0,
+          "pairs": 3
+        },
+        "cpu_ticks_per_query": {
+          "differences_in_repetition_order": [
+            -0.06309851587543948,
+            -0.038240795312905654,
+            -0.0599995846701762
+          ],
+          "median_difference": -0.0599995846701762,
+          "median_percent_change": -48.80695975336796,
+          "positive_pairs": 0,
+          "pairs": 3
+        }
+      },
+      "after_snapshot_ranges": {
+        "baseline": {
+          "RSS": {
+            "min": 2668,
+            "max": 2748
+          },
+          "TIMERS": {
+            "min": 2,
+            "max": 2
+          }
+        },
+        "candidate": {
+          "RSS": {
+            "min": 2692,
+            "max": 2752
+          },
+          "TIMERS": {
+            "min": 20,
+            "max": 21
+          }
+        }
+      }
+    }
+  ],
+  "raw": "apk-benchmark/results.jsonl",
+  "metadata": "apk-benchmark/metadata.json",
+  "scope": "OpenWrt25.12.5 ARM64 musl real daemon and kernel ipsets in QEMU; guest-loopback loader, host upstream; not physical hardware",
+  "baseline_commit": "6a94817a3764dbf9280a9fe657c2afd943725cb4"
+}
