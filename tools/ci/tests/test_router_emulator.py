@@ -29,10 +29,15 @@ class RouterEmulatorTest(unittest.TestCase):
         self.emulator.mkdir()
         (self.emulator / "emulator.sh").touch()
 
-    def run_guest(self, version, fail_update=False, fail_install=False):
+    def run_guest(self, version, fail_update=False, fail_install=False, fail_clock_times=0):
         serial = MagicMock()
+        clock_calls = 0
 
         def run(command, **kwargs):
+            nonlocal clock_calls
+            if command.startswith("date -u -s "):
+                clock_calls += 1
+                return 1 if clock_calls <= fail_clock_times else 0
             if command in ("opkg update", "apk update"):
                 return 1 if fail_update else 0
             if fail_install and command.startswith("opkg install /tmp/"):
@@ -76,6 +81,45 @@ class RouterEmulatorTest(unittest.TestCase):
         self.assertIn("apk info -e mt-c", self.commands)
         self.assertFalse(any(command.startswith("opkg ") for command in self.commands))
         self.assertTrue(self.api_called)
+
+    def test_guest_boot_readiness_precedes_clock_and_https(self):
+        self.package = self.package.rename(self.package.with_suffix(".apk"))
+        self.run_guest("25.12.5")
+        route_index = next(i for i, cmd in enumerate(self.commands)
+                           if cmd.startswith("for i in $(seq 1 30)"))
+        boot_index = next(i for i, cmd in enumerate(self.commands)
+                          if "ubus list log | grep -Fxq log" in cmd)
+        clock_index = next(i for i, cmd in enumerate(self.commands)
+                           if cmd.startswith("date -u -s "))
+        update_index = self.commands.index("apk update")
+        self.assertLess(route_index, boot_index)
+        self.assertLess(boot_index, clock_index)
+        self.assertLess(clock_index, update_index)
+        self.assertIn('test "$(hostname)" != \'(none)\'',
+                      self.commands[boot_index])
+
+    def test_transient_clock_reset_is_reverified_before_package_download(self):
+        self.package = self.package.rename(self.package.with_suffix(".apk"))
+        self.run_guest("25.12.5", fail_clock_times=2)
+        clocks = [i for i, cmd in enumerate(self.commands)
+                  if cmd.startswith("date -u -s ")]
+        self.assertEqual(3, len(clocks))
+        self.assertTrue(any(cmd.startswith("wget -T 30 -O /tmp/mt-c-ci.apk")
+                            for cmd in self.commands))
+        self.assertLess(max(clocks), self.commands.index("apk update"))
+        self.assertTrue(self.api_called)
+
+    def test_persistent_bad_guest_clock_blocks_package_install(self):
+        self.package = self.package.rename(self.package.with_suffix(".apk"))
+        with self.assertRaisesRegex(smoke.SmokeFailure,
+                                    "guest UTC clock failed verification"):
+            self.run_guest("25.12.5", fail_clock_times=5)
+        self.assertEqual(4, sum(cmd.startswith("date -u -s ")
+                                for cmd in self.commands))
+        self.assertFalse(any(cmd.startswith("apk update") for cmd in self.commands))
+        self.assertFalse(any("wget -T 30 -O /tmp/mt-c-ci.apk" in cmd
+                             for cmd in self.commands))
+        self.assertFalse(self.api_called)
 
     def test_failed_feed_update_never_proceeds_to_install(self):
         with self.assertRaisesRegex(smoke.SmokeFailure, "opkg update failed"):
