@@ -18,6 +18,9 @@ start_service() {
 
         procd_open_instance "$NAME.main"
         procd_set_param command "$PROG"
+        # APK upgrades call start without stopping the existing instance.
+        # Let procd detect a replaced binary and restart that instance.
+        procd_set_param file "$PROG"
 
         procd_set_param stdout 1
         procd_set_param stderr 1

@@ -17,10 +17,31 @@ the supported build targets, which remain defined by `config/openwrt/*.config`.
 ## Checks inside each guest
 
 `tools/ci/router-emulator-smoke.py` verifies the running release, downloads the
-package into the guest, checks its SHA-256 and installs it with the guest's
+packages into the guest, checks their SHA-256 and installs them with the guest's
 package manager. Feed failures abort the test; dependency checks are not bypassed.
-The service starts through its packaged procd script and must remain alive while
-the HTTP API responds.
+The package's own hooks must start the service, and it must remain alive while
+the HTTP API responds. The test does not manually start or restart the service.
+
+Before installing the exact CI artifact, the workflow installs a lower-version
+fixture generated from it by `tools/ci/build-upgrade-fixture.py`. The fixture
+preserves its payload, dependencies and lifecycle hooks, apart from a test package
+version and a harmless trailer appended to the daemon's ELF file. This creates
+different executable bytes without compiling a second backend. The fixture is
+used only in the disposable guest and is not published as a release artifact.
+
+The original CI artifact is then installed over the fixture without removing the
+package first. The test requires the old process to exit, a new PID to appear,
+and the running `/proc/<pid>/exe` checksum to match the newly installed binary
+and differ from the fixture. It also checks preservation of a modified UCI
+conffile and waits for the API to return before testing DHCP and routing.
+Checking only the version on disk or an HTTP response could miss a daemon still
+running the old executable.
+
+On APK, `post-upgrade` invokes OpenWrt's `default_postinst`, which calls `start`.
+APK does not run the removal hook before an upgrade. The mt-c init script
+registers its executable with procd's `file` parameter so changed binary contents
+cause this `start` to replace an existing instance, even though the command path
+has not changed. This applies to both the SDK and root Makefile packaging paths.
 
 `router-emulator-dhcp.sh` creates a separate LAN client, acquires a real dnsmasq
 lease and checks device names through ubus, DNS journal JSON and SSE. Renewing
@@ -66,6 +87,11 @@ python3 tools/ci/router-emulator-smoke.py \
 ```
 
 For 25.12.5, supply its APK, `cudy-wr3000p-v1` and `--openwrt-version 25.12.5`.
+To exercise upgrades, also pass `--baseline-package /path/to/baseline.ipk` (or
+`.apk`), created with `build-upgrade-fixture.py --package <candidate> --output
+<baseline>`. For APK, supply `--apk-tool <sdk>/staging_dir/host/bin/apk` and run
+the generator through the SDK's `fakeroot` to preserve file ownership. Omitting
+the baseline tests a fresh installation only.
 Run guests sequentially: the runner reserves host port 18881 for the API.
 The guest needs access to its release's package feeds. Host preparation needs
 the emulator tools and `mtd-utils`; the smoke runner uses Python's standard
@@ -81,8 +107,10 @@ Host orchestration regressions can be checked separately:
 python3 tools/ci/tests/test_router_emulator.py
 ```
 
-These host tests cover package-manager selection, package delivery, early
-failure and cleanup; they do not establish that installation or routing works
+These host tests cover package-manager selection, package delivery, upgrade
+ordering, stale-process failures and cleanup; they do not establish that installation or routing works
 on OpenWrt. The emulator does not establish behavior on other architectures,
-physical switches, Wi-Fi hardware or hardware flow offload. Reboot persistence,
-profile failover and package upgrades are separate scenarios.
+physical switches, Wi-Fi hardware or hardware flow offload. Reboot persistence
+and profile failover are separate scenarios. The upgrade fixture exercises a
+version change and executable replacement, not a historical configuration
+migration or a backend feature change.

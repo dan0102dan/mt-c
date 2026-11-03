@@ -35,12 +35,14 @@ class SmokeFailure(RuntimeError):
 
 
 @contextmanager
-def serve_package(package):
-    """Expose exactly one package to QEMU's 10.0.2.2 host gateway."""
+def serve_package(package, baseline_package=None):
+    """Expose the candidate and optional upgrade fixture to the guest."""
     class PackageHandler(BaseHTTPRequestHandler):
         def do_GET(self):
             if self.path == f"/mt-c{package.suffix}":
                 payload = package
+            elif baseline_package is not None and self.path == f"/mt-c-baseline{package.suffix}":
+                payload = baseline_package
             elif self.path == "/routing.sh":
                 payload = ROUTING_SCRIPT
             elif self.path == "/dhcp.sh":
@@ -256,7 +258,67 @@ def set_guest_clock(serial):
         time.sleep(2)
 
 
-def run_test(emulator, package, preset, log_dir, openwrt_version):
+def download_package(serial, package, guest_path, http_port, name):
+    serial.run(f"wget -T 30 -O {guest_path} http://10.0.2.2:{http_port}/{name}", timeout=120)
+    package_sha256 = hashlib.sha256(package.read_bytes()).hexdigest()
+    serial.run(f"printf '%s  %s\\n' '{package_sha256}' '{guest_path}' | sha256sum -c -")
+
+
+def install_package(serial, manager, guest_package):
+    if manager == "opkg":
+        run_package_command(serial, f"opkg install {guest_package}", timeout=240)
+        serial.run("opkg list-installed mt-c | grep -q '^mt-c - '")
+    else:
+        run_package_command(serial, f"apk add --allow-untrusted {guest_package}", timeout=240)
+        serial.run("apk info -e mt-c")
+
+
+def check_running_service(serial):
+    # Package scripts, rather than a test-side restart, must start the daemon.
+    serial.run("for i in $(seq 1 60); do pidof magitrickled >/dev/null && break; sleep 1; done; pidof magitrickled", timeout=75)
+    check_http_api(timeout=75)
+    serial.run(
+        'sleep 3; set -- $(pidof magitrickled); test "$#" -eq 1 && '
+        'test "$(sha256sum /proc/$1/exe | cut -d\' \' -f1)" = '
+        '"$(sha256sum /usr/bin/magitrickled | cut -d\' \' -f1)"',
+        timeout=20,
+    )
+
+
+def record_upgrade_baseline(serial):
+    serial.run(
+        'set -- $(pidof magitrickled); test "$#" -eq 1 && '
+        'echo "$1" > /tmp/mtci-upgrade.pid && '
+        'sha256sum /proc/$1/exe | cut -d\' \' -f1 > /tmp/mtci-upgrade.sha256 && '
+        "printf '\\n# mt-c upgrade conffile check\\n' >> /etc/config/magitrickle && "
+        'sha256sum /etc/config/magitrickle > /tmp/mtci-upgrade.config'
+    )
+
+
+def check_upgraded_service(serial):
+    # The path is unchanged by an upgrade. Check the *running* executable,
+    # not just the installed file or an API served by the stale process.
+    serial.run(
+        'old_pid=$(cat /tmp/mtci-upgrade.pid); '
+        'for i in $(seq 1 60); do '
+        'set -- $(pidof magitrickled); '
+        'test "$#" -eq 1 && test "$1" != "$old_pid" && '
+        'test ! -e /proc/$old_pid/exe && break; sleep 1; '
+        'done; test "$#" -eq 1 && test "$1" != "$old_pid" && '
+        'test ! -e /proc/$old_pid/exe && '
+        'test "$(sha256sum /proc/$1/exe | cut -d\' \' -f1)" != '
+        '"$(cat /tmp/mtci-upgrade.sha256)" && '
+        'test "$(sha256sum /proc/$1/exe | cut -d\' \' -f1)" = '
+        '"$(sha256sum /usr/bin/magitrickled | cut -d\' \' -f1)" && '
+        'sha256sum -c /tmp/mtci-upgrade.config',
+        timeout=80,
+        show_output=True,
+    )
+    check_running_service(serial)
+    print("PASS: in-place package upgrade replaced the running executable and preserved the conffile", flush=True)
+
+
+def run_test(emulator, package, preset, log_dir, openwrt_version, baseline_package=None):
     manager = "opkg" if package.suffix == ".ipk" else "apk"
     guest_package = f"/tmp/mt-c-ci{package.suffix}"
     log_dir.mkdir(parents=True, exist_ok=True)
@@ -272,7 +334,7 @@ def run_test(emulator, package, preset, log_dir, openwrt_version):
            "-o", f"lan-forwards={API_HOST_PORT}:8080",
            "-S", str(console_path), "-m", str(monitor_path),
            "-L", str(log_dir)]
-    with serve_package(package) as http_port, (work / "ci-emulator-launch.log").open("wb") as launcher:
+    with serve_package(package, baseline_package) as http_port, (work / "ci-emulator-launch.log").open("wb") as launcher:
         print(f"Starting emulated OpenWrt {openwrt_version} ({preset}), package bytes: {package.stat().st_size}", flush=True)
         process = subprocess.Popen(cmd, cwd=emulator, stdout=launcher, stderr=subprocess.STDOUT)
         serial = None
@@ -293,27 +355,22 @@ def run_test(emulator, package, preset, log_dir, openwrt_version):
             # Fresh flash has no battery-backed RTC. Set and verify UTC only
             # after boot readiness, before any TLS-protected feed access.
             set_guest_clock(serial)
-            serial.run(f"wget -T 30 -O {guest_package} http://10.0.2.2:{http_port}/mt-c{package.suffix}", timeout=120)
-            package_sha256 = hashlib.sha256(package.read_bytes()).hexdigest()
-            serial.run(
-                f"printf '%s  %s\\n' '{package_sha256}' '{guest_package}' | sha256sum -c -"
-            )
+            download_package(serial, package, guest_package, http_port, f"mt-c{package.suffix}")
             run_package_command(serial, f"{manager} update", timeout=180)
-            if manager == "opkg":
-                run_package_command(serial, f"opkg install {guest_package}", timeout=240)
-                serial.run("opkg list-installed mt-c | grep -q '^mt-c - '")
-            else:
-                run_package_command(serial, f"apk add --allow-untrusted {guest_package}", timeout=240)
-                serial.run("apk info -e mt-c")
+            if baseline_package is not None:
+                guest_baseline = f"/tmp/mt-c-baseline{package.suffix}"
+                download_package(serial, baseline_package, guest_baseline, http_port,
+                                 f"mt-c-baseline{package.suffix}")
+                install_package(serial, manager, guest_baseline)
+                check_running_service(serial)
+                record_upgrade_baseline(serial)
+            install_package(serial, manager, guest_package)
             serial.run("test -x /usr/bin/magitrickled && test -x /etc/init.d/magitrickle")
             serial.run("grep -A 3 '^  link:' /etc/magitrickle/state/config.yaml | grep -q 'br-lan'")
-            serial.run("/etc/init.d/magitrickle restart", timeout=90)
-            # Detect immediate startup failures before waiting for the API.
-            serial.run("sleep 3; pidof magitrickled", timeout=20)
-            check_http_api(timeout=75)
-            # Verify the service survives the API request, not just a
-            # momentary procd spawn immediately after package install.
-            serial.run("sleep 3; pidof magitrickled", timeout=20)
+            if baseline_package is not None:
+                check_upgraded_service(serial)
+            else:
+                check_running_service(serial)
             print(f"PASS: {package.suffix[1:].upper()} installed via {manager}, procd service running, HTTP API responding", flush=True)
             # The forwarding test requires isolated client/server network
             # namespaces, and fails rather than degrading to a rule-only test.
@@ -373,6 +430,8 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--emulator-dir", type=Path, required=True)
     parser.add_argument("--package", type=Path, required=True)
+    parser.add_argument("--baseline-package", type=Path,
+                        help="lower-version fixture to install before upgrading to --package")
     parser.add_argument("--preset", default="cudy-wr3000p-v1")
     parser.add_argument("--openwrt-version", required=True)
     args = parser.parse_args()
@@ -383,10 +442,13 @@ def main():
     expected_suffix = ".ipk" if int(args.openwrt_version.split(".")[0]) < 25 else ".apk"
     if not package.is_file() or package.suffix != expected_suffix:
         parser.error(f"--package must be an existing OpenWrt {expected_suffix} for {args.openwrt_version}")
+    baseline = args.baseline_package.resolve() if args.baseline_package else None
+    if baseline is not None and (not baseline.is_file() or baseline.suffix != expected_suffix or baseline == package):
+        parser.error("--baseline-package must be a separate existing package of the same format")
     if not (emulator / "emulator.sh").is_file():
         parser.error("--emulator-dir does not contain emulator.sh")
     try:
-        run_test(emulator, package, args.preset, emulator / "work" / "logs", args.openwrt_version)
+        run_test(emulator, package, args.preset, emulator / "work" / "logs", args.openwrt_version, baseline)
     except (SmokeFailure, OSError, subprocess.SubprocessError) as error:
         print(f"FAIL: {error}", file=sys.stderr, flush=True)
         return 1

@@ -32,6 +32,8 @@ jobs:
         run: python3 tools/ci/tests/test_openwrt_sdk.py
       - name: Test router-emulator package-manager orchestration
         run: python3 tools/ci/tests/test_router_emulator.py
+      - name: Test package upgrade fixture generation
+        run: python3 tools/ci/tests/test_upgrade_fixture.py
       - name: Test Router Emulator preset and flash preparation
         run: python3 tools/ci/tests/test_router_emulator_preset.py
       - name: Test Router Emulator host runtime compatibility and same-release rebuild

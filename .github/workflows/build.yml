@@ -952,6 +952,26 @@ jobs:
       # release/workflow_dispatch triggers stay unchanged.
       # Resolve latest once per package smoke job. Both archives and their
       # SHA256 digests must come from the SAME stable GitHub release.
+      - name: Prepare lower-version package for upgrade test
+        if: github.event_name == 'push' && matrix.name == 'aarch64_cortex-a53' && (matrix.openwrt_version == '24.10.4' || matrix.openwrt_version == '25.12.5') && steps.package_outputs.outputs.package_1_path != ''
+        env:
+          PACKAGE: ${{ steps.package_outputs.outputs.package_1_path }}
+          SDK_DIR: ${{ steps.openwrt_sdk.outputs.sdk_dir }}
+          PACKAGE_EXT: ${{ matrix.package_ext }}
+        run: |
+          set -euo pipefail
+          test_root="$GITHUB_WORKSPACE/.build/router-emulator-smoke"
+          mkdir -p "$test_root"
+          if [ "$PACKAGE_EXT" = apk ]; then
+            "$SDK_DIR/staging_dir/host/bin/fakeroot" -- \
+              python3 tools/ci/build-upgrade-fixture.py \
+                --package "$PACKAGE" --apk-tool "$SDK_DIR/staging_dir/host/bin/apk" \
+                --output "$test_root/baseline.apk"
+          else
+            python3 tools/ci/build-upgrade-fixture.py \
+              --package "$PACKAGE" --output "$test_root/baseline.ipk"
+          fi
+
       - name: Resolve and download latest stable Router Emulator
         id: emulator_release
         if: github.event_name == 'push' && matrix.name == 'aarch64_cortex-a53' && (matrix.openwrt_version == '24.10.4' || matrix.openwrt_version == '25.12.5') && steps.package_outputs.outputs.package_1_path != ''
@@ -998,6 +1018,7 @@ jobs:
           python3 tools/ci/router-emulator-smoke.py \
             --emulator-dir "$test_root/Router-Emulator" \
             --package "$PACKAGE" \
+            --baseline-package "$test_root/baseline.${{ matrix.package_ext }}" \
             --preset "$PRESET" \
             --openwrt-version "$OPENWRT_VERSION"
 
