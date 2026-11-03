@@ -90,8 +90,10 @@ For 25.12.5, supply its APK, `cudy-wr3000p-v1` and `--openwrt-version 25.12.5`.
 To exercise upgrades, also pass `--baseline-package /path/to/baseline.ipk` (or
 `.apk`), created with `build-upgrade-fixture.py --package <candidate> --output
 <baseline>`. For APK, supply `--apk-tool <sdk>/staging_dir/host/bin/apk` and run
-the generator through the SDK's `fakeroot` to preserve file ownership. Omitting
-the baseline tests a fresh installation only.
+the generator through the SDK's `fakeroot` to preserve file ownership, with
+`STAGING_DIR_HOST=<sdk>/staging_dir/host` exported so the relocated SDK can find
+its fakeroot library and helper. Omitting the baseline tests a fresh installation
+only.
 Run guests sequentially: the runner reserves host port 18881 for the API.
 The guest needs access to its release's package feeds. Host preparation needs
 the emulator tools and `mtd-utils`; the smoke runner uses Python's standard

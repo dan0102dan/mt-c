@@ -963,9 +963,11 @@ jobs:
           test_root="$GITHUB_WORKSPACE/.build/router-emulator-smoke"
           mkdir -p "$test_root"
           if [ "$PACKAGE_EXT" = apk ]; then
-            "$SDK_DIR/staging_dir/host/bin/fakeroot" -- \
+            # The relocated SDK fakeroot finds its library and faked via this.
+            export STAGING_DIR_HOST="$SDK_DIR/staging_dir/host"
+            "$STAGING_DIR_HOST/bin/fakeroot" -- \
               python3 tools/ci/build-upgrade-fixture.py \
-                --package "$PACKAGE" --apk-tool "$SDK_DIR/staging_dir/host/bin/apk" \
+                --package "$PACKAGE" --apk-tool "$STAGING_DIR_HOST/bin/apk" \
                 --output "$test_root/baseline.apk"
           else
             python3 tools/ci/build-upgrade-fixture.py \
