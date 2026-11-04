@@ -26,12 +26,18 @@ jobs:
     steps:
       - uses: actions/checkout@v5
       - run: python3 tools/tests/package_identity.py
+      - name: Test Entware packaged install hooks
+        run: python3 tools/ci/tests/test_entware_ipk.py
+      - name: Test Keenetic service restart failures
+        run: python3 tools/ci/tests/test_entware_init.py
       - name: Check frontend build cache isolation
         run: python3 tools/tests/frontend_variants.py
       - name: Test SDK acquisition and source fallback
         run: python3 tools/ci/tests/test_openwrt_sdk.py
       - name: Test router-emulator package-manager orchestration
         run: python3 tools/ci/tests/test_router_emulator.py
+      - name: Test package upgrade fixture generation
+        run: python3 tools/ci/tests/test_upgrade_fixture.py
       - name: Test Router Emulator preset and flash preparation
         run: python3 tools/ci/tests/test_router_emulator_preset.py
       - name: Test Router Emulator host runtime compatibility and same-release rebuild

@@ -29,9 +29,14 @@ class RouterEmulatorTest(unittest.TestCase):
         self.emulator.mkdir()
         (self.emulator / "emulator.sh").touch()
 
-    def run_guest(self, version, fail_update=False, fail_install=False, fail_clock_times=0):
+    def run_guest(self, version, fail_update=False, fail_install=False, fail_clock_times=0,
+                  baseline=False, fail_upgrade=False, fail_replacement=False):
         serial = MagicMock()
         clock_calls = 0
+        baseline_package = None
+        if baseline:
+            baseline_package = self.directory / ("baseline" + self.package.suffix)
+            baseline_package.write_bytes(b"lower-version fixture with a different executable")
 
         def run(command, **kwargs):
             nonlocal clock_calls
@@ -42,6 +47,11 @@ class RouterEmulatorTest(unittest.TestCase):
                 return 1 if fail_update else 0
             if fail_install and command.startswith("opkg install /tmp/"):
                 return 1
+            if fail_upgrade and command in ("opkg install /tmp/mt-c-ci.ipk",
+                                             "apk add --allow-untrusted /tmp/mt-c-ci.apk"):
+                return 1
+            if fail_replacement and command.startswith("old_pid="):
+                raise smoke.SmokeFailure("running executable was not replaced")
             return 0
 
         serial.run.side_effect = run
@@ -56,12 +66,13 @@ class RouterEmulatorTest(unittest.TestCase):
             stack.enter_context(patch.object(smoke.time, "sleep"))
             try:
                 smoke.run_test(self.emulator, self.package, "cudy-wr3000p-v1",
-                               self.directory / "logs", version)
+                               self.directory / "logs", version, baseline_package)
             finally:
                 self.assertTrue(stop.called)
                 serial.close.assert_called_once()
                 self.commands = [call.args[0] for call in serial.run.call_args_list]
                 self.api_called = api.called
+                self.api_calls = api.call_count
 
     def test_ipk_installs_with_opkg_before_testing_backend(self):
         self.run_guest("24.10.4")
@@ -73,6 +84,7 @@ class RouterEmulatorTest(unittest.TestCase):
         self.assertTrue(self.api_called)
         self.assertIn('test "$(cat /tmp/mtci-dhcp-status)" = 0', self.commands)
         self.assertIn('test "$(cat /tmp/mtci-status)" = 0', self.commands)
+        self.assertNotIn("/etc/init.d/magitrickle restart", self.commands)
 
     def test_apk_still_installs_with_apk(self):
         self.package = self.package.rename(self.package.with_suffix(".apk"))
@@ -81,6 +93,49 @@ class RouterEmulatorTest(unittest.TestCase):
         self.assertIn("apk info -e mt-c", self.commands)
         self.assertFalse(any(command.startswith("opkg ") for command in self.commands))
         self.assertTrue(self.api_called)
+        self.assertNotIn("/etc/init.d/magitrickle restart", self.commands)
+
+    def test_both_managers_upgrade_without_removing_or_restarting_service(self):
+        for version, suffix, install in (
+            ("24.10.4", ".ipk", "opkg install"),
+            ("25.12.5", ".apk", "apk add --allow-untrusted"),
+        ):
+            with self.subTest(version=version):
+                self.package = self.package.rename(self.package.with_suffix(suffix))
+                self.run_guest(version, baseline=True)
+                first = self.commands.index(f"{install} /tmp/mt-c-baseline{suffix}")
+                upgrade = self.commands.index(f"{install} /tmp/mt-c-ci{suffix}")
+                record = next(i for i, command in enumerate(self.commands)
+                              if "> /tmp/mtci-upgrade.pid" in command)
+                verify = next(i for i, command in enumerate(self.commands)
+                              if command.startswith("old_pid="))
+                dhcp = next(i for i, command in enumerate(self.commands)
+                            if "wget -T 30 -O /tmp/mtci-dhcp.sh" in command)
+                self.assertLess(first, record)
+                self.assertLess(record, upgrade)
+                self.assertLess(upgrade, verify)
+                self.assertLess(verify, dhcp)
+                self.assertEqual(2, self.api_calls)
+                self.assertIn("sha256sum /proc/$1/exe", self.commands[verify])
+                self.assertIn("sha256sum /usr/bin/magitrickled", self.commands[verify])
+                self.assertIn("sha256sum -c /tmp/mtci-upgrade.config", self.commands[verify])
+                self.assertFalse(any("/etc/init.d/magitrickle restart" in cmd or
+                                     "opkg remove" in cmd or "apk del" in cmd
+                                     for cmd in self.commands))
+
+    def test_failed_upgrade_does_not_proceed_to_routing_checks(self):
+        self.package = self.package.rename(self.package.with_suffix(".apk"))
+        with self.assertRaisesRegex(smoke.SmokeFailure, "apk add .* failed after 4 attempts"):
+            self.run_guest("25.12.5", baseline=True, fail_upgrade=True)
+        self.assertEqual(1, self.api_calls)
+        self.assertFalse(any(command.startswith("old_pid=") for command in self.commands))
+        self.assertFalse(any("wget -T 30 -O /tmp/mtci-dhcp.sh" in cmd for cmd in self.commands))
+
+    def test_stale_process_fails_before_api_and_routing_can_hide_it(self):
+        with self.assertRaisesRegex(smoke.SmokeFailure, "running executable was not replaced"):
+            self.run_guest("24.10.4", baseline=True, fail_replacement=True)
+        self.assertEqual(1, self.api_calls)
+        self.assertFalse(any("wget -T 30 -O /tmp/mtci-dhcp.sh" in cmd for cmd in self.commands))
 
     def test_guest_boot_readiness_precedes_clock_and_https(self):
         self.package = self.package.rename(self.package.with_suffix(".apk"))
@@ -146,9 +201,13 @@ class RouterEmulatorTest(unittest.TestCase):
             boot.assert_not_called()
 
     def test_package_server_serves_ipk_bytes_and_rejects_apk_path(self):
-        with redirect_stdout(io.StringIO()), smoke.serve_package(self.package) as port:
+        baseline = self.directory / "baseline.ipk"
+        baseline.write_bytes(b"baseline package bytes")
+        with redirect_stdout(io.StringIO()), smoke.serve_package(self.package, baseline) as port:
             with urllib.request.urlopen(f"http://127.0.0.1:{port}/mt-c.ipk") as response:
                 self.assertEqual(response.read(), self.package.read_bytes())
+            with urllib.request.urlopen(f"http://127.0.0.1:{port}/mt-c-baseline.ipk") as response:
+                self.assertEqual(response.read(), baseline.read_bytes())
             with self.assertRaises(urllib.error.HTTPError) as error:
                 urllib.request.urlopen(f"http://127.0.0.1:{port}/mt-c.apk")
             self.assertEqual(error.exception.code, 404)

@@ -816,7 +816,15 @@ jobs:
 
             . .build/entware-package.env
             package=".build/mt-c_${PKG_VERSION}-${PKG_REVISION}_entware_${{ matrix.name }}.ipk"
-            cp "${packages[0]}" "$package"
+            # SDK-generated postinst requires an OpenWrt-style runtime helper
+            # absent from Entware/Keenetic. Use the same direct hook as the
+            # root Makefile, preserving the SDK payload and package metadata.
+            python3 tools/ci/finalize-entware-ipk.py \
+              --package "${packages[0]}" --output "$package" \
+              --postinst files/entware/_ipk/control/postinst
+            python3 tools/ci/finalize-entware-ipk.py \
+              --package "$package" --postinst files/entware/_ipk/control/postinst \
+              --check-only
 
             data_archive=$(mktemp)
             binary=$(mktemp)
@@ -952,6 +960,28 @@ jobs:
       # release/workflow_dispatch triggers stay unchanged.
       # Resolve latest once per package smoke job. Both archives and their
       # SHA256 digests must come from the SAME stable GitHub release.
+      - name: Prepare lower-version package for upgrade test
+        if: github.event_name == 'push' && matrix.name == 'aarch64_cortex-a53' && (matrix.openwrt_version == '24.10.4' || matrix.openwrt_version == '25.12.5') && steps.package_outputs.outputs.package_1_path != ''
+        env:
+          PACKAGE: ${{ steps.package_outputs.outputs.package_1_path }}
+          SDK_DIR: ${{ steps.openwrt_sdk.outputs.sdk_dir }}
+          PACKAGE_EXT: ${{ matrix.package_ext }}
+        run: |
+          set -euo pipefail
+          test_root="$GITHUB_WORKSPACE/.build/router-emulator-smoke"
+          mkdir -p "$test_root"
+          if [ "$PACKAGE_EXT" = apk ]; then
+            # The relocated SDK fakeroot finds its library and faked via this.
+            export STAGING_DIR_HOST="$SDK_DIR/staging_dir/host"
+            "$STAGING_DIR_HOST/bin/fakeroot" -- \
+              python3 tools/ci/build-upgrade-fixture.py \
+                --package "$PACKAGE" --apk-tool "$STAGING_DIR_HOST/bin/apk" \
+                --output "$test_root/baseline.apk"
+          else
+            python3 tools/ci/build-upgrade-fixture.py \
+              --package "$PACKAGE" --output "$test_root/baseline.ipk"
+          fi
+
       - name: Resolve and download latest stable Router Emulator
         id: emulator_release
         if: github.event_name == 'push' && matrix.name == 'aarch64_cortex-a53' && (matrix.openwrt_version == '24.10.4' || matrix.openwrt_version == '25.12.5') && steps.package_outputs.outputs.package_1_path != ''
@@ -998,6 +1028,7 @@ jobs:
           python3 tools/ci/router-emulator-smoke.py \
             --emulator-dir "$test_root/Router-Emulator" \
             --package "$PACKAGE" \
+            --baseline-package "$test_root/baseline.${{ matrix.package_ext }}" \
             --preset "$PRESET" \
             --openwrt-version "$OPENWRT_VERSION"
 
