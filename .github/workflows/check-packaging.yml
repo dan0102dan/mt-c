@@ -26,6 +26,10 @@ jobs:
     steps:
       - uses: actions/checkout@v5
       - run: python3 tools/tests/package_identity.py
+      - name: Test Entware packaged install hooks
+        run: python3 tools/ci/tests/test_entware_ipk.py
+      - name: Test Keenetic service restart failures
+        run: python3 tools/ci/tests/test_entware_init.py
       - name: Check frontend build cache isolation
         run: python3 tools/tests/frontend_variants.py
       - name: Test SDK acquisition and source fallback

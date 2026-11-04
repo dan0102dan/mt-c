@@ -61,6 +61,12 @@ def ipk_contract(work: Path, platform: str, target: str) -> None:
             assert fields["Conflicts"] == "magitrickle"
             assert fields["Version"] == "1.2.3-1"
             assert "Replaces" not in fields and "Provides" not in fields
+            if platform == "entware":
+                hook = control.extractfile("./postinst")
+                assert hook
+                assert hook.read() == (REPO / "files/entware/_ipk/control/postinst").read_bytes()
+                assert control.getmember("./postinst").mode & 0o111
+                assert not any(name.rsplit("/", 1)[-1] == "postinst-pkg" for name in control.getnames())
         with inner("data") as payload:
             files = set(payload.getnames())
             binary_dir = "./opt/bin" if platform == "entware" else "./usr/bin"

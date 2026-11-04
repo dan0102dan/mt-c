@@ -63,11 +63,10 @@ define Package/mt-c/conffiles
 /opt/var/lib/magitrickle/config.yaml
 endef
 
-define Package/mt-c/postinst
-#!/bin/sh
-/opt/etc/init.d/S99magitrickle restart
-exit 0
-endef
+# The SDK wraps Package/*/postinst in a call to /opt/lib/functions.sh,
+# which Entware/Keenetic does not provide. CI finalizes the IPK with the
+# canonical files/entware/_ipk/control/postinst before checking/uploading it.
+# Keep that script as the single source for both SDK and root packaging.
 
 define Build/Compile
 	$(MAKE) -C $(PKG_BUILD_DIR)/src/backend-c \

@@ -139,7 +139,9 @@ for PROC in $PROCS; do
       check && stop
       ;;
     restart)
-      check > /dev/null && stop
+      if check > /dev/null; then
+        stop || exit $?
+      fi
       start
       ;;
     check|status)

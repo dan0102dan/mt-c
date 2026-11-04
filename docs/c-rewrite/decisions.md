@@ -2072,6 +2072,27 @@ staged toolchain and build normal feed dependencies without rebuilding the
 SDK. The hashes are deliberately explicit so an incompatible future SDK
 fails rather than silently reusing a stale stamp.
 
+**Entware maintainer-script amendment (2026-11-04).** The SDK transforms
+`Package/mt-c/postinst` into `postinst-pkg` and generates a `postinst` wrapper
+that exits successfully when `/opt/lib/functions.sh` is absent. That runtime
+helper is not supplied by the standard Entware or Keenetic base packages.
+All three published 0.8.5.4 `_kn` IPKs contain this wrapper, so an ordinary
+opkg configure/upgrade can skip the intended restart despite succeeding.
+Root Makefile packaging already installs a direct script.
+
+CI now finalizes only the SDK IPK's post-install controls before publication:
+it installs the canonical `files/entware/_ipk/control/postinst`, removes the
+unused `postinst-pkg`, and preserves the compressed payload, other controls,
+metadata and conffiles. A validation gate executes the packaged hook with
+isolated paths and no `functions.sh`, including install/upgrade, suppression
+and failure cases. This is a maintainer-script contract test, not a Keenetic
+firmware emulator. No runtime compatibility helper or dependency is added.
+
+The canonical hook honors `IPKG_NO_SCRIPT=1` and offline `IPKG_INSTROOT`, and
+otherwise returns the init script's status. The `_kn` init script also stops
+a restart after a failed stop instead of treating the still-running old
+process as a successful start. Its timeout and signal policy are unchanged.
+
 ## D-49: Wire per-platform filesystem paths into the build (fixes Entware `/opt` paths)
 
 **Status: accepted.** Closes the gap left open in D-24: `paths.h` had

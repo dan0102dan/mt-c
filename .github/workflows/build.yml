@@ -816,7 +816,15 @@ jobs:
 
             . .build/entware-package.env
             package=".build/mt-c_${PKG_VERSION}-${PKG_REVISION}_entware_${{ matrix.name }}.ipk"
-            cp "${packages[0]}" "$package"
+            # SDK-generated postinst requires an OpenWrt-style runtime helper
+            # absent from Entware/Keenetic. Use the same direct hook as the
+            # root Makefile, preserving the SDK payload and package metadata.
+            python3 tools/ci/finalize-entware-ipk.py \
+              --package "${packages[0]}" --output "$package" \
+              --postinst files/entware/_ipk/control/postinst
+            python3 tools/ci/finalize-entware-ipk.py \
+              --package "$package" --postinst files/entware/_ipk/control/postinst \
+              --check-only
 
             data_archive=$(mktemp)
             binary=$(mktemp)
