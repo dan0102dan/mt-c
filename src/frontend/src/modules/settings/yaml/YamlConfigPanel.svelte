@@ -1,7 +1,6 @@
 <script lang="ts">
   import { getContext, untrack } from "svelte";
 
-  import Button from "../../../components/ui/Button.svelte";
   import Placeholder from "../../../components/ui/Placeholder.svelte";
   import { t } from "../../../data/locale.svelte";
   import { YamlConfigState } from "./yaml-config.svelte";
@@ -12,7 +11,7 @@
   } from "../../config-transfer/context";
   import { settingsSection } from "../section-controls";
 
-  let { active, onSave }: { active: boolean; onSave: () => void } = $props();
+  let { active }: { active: boolean } = $props();
   const section = settingsSection();
   const transfer = getContext<ConfigTransferControls>(CONFIG_TRANSFER_CONTEXT);
   const config = new YamlConfigState();
@@ -29,17 +28,6 @@
       void config.load();
     });
   });
-
-  async function reload() {
-    if (config.loading || config.saving) return;
-    if (
-      config.dirty &&
-      !window.confirm(t("Discard your YAML changes and reload the configuration from the server?"))
-    )
-      return;
-    refreshWarning = false;
-    await config.load(true);
-  }
 
   async function save() {
     if (blocked || config.loading || config.saving) return;
@@ -72,44 +60,55 @@
 
 <svelte:window onbeforeunload={beforeUnload} />
 
+{#snippet feedback()}
+  {#if config.error}
+    <div class="yaml-error" role="alert">
+      {#if config.error.code === "CONFIG_CONFLICT"}
+        <p>
+          {t(
+            "Configuration changed since it was loaded. Your draft is preserved. Reload the page to get the current configuration.",
+          )}
+        </p>
+      {:else if config.error.code === "CONFIG_OUT_OF_SYNC"}
+        <p>
+          {t(
+            "The file differs from the running configuration. Reload the page before trying to save again.",
+          )}
+        </p>
+      {/if}
+      <p>{t(config.error.message)}</p>
+      {#if config.error.line}
+        <p>
+          {t("Line")}: {config.error.line}{#if config.error.column}, {t("Column")}: {config.error
+              .column}{/if}
+        </p>
+      {/if}
+    </div>
+  {/if}
+{/snippet}
+
 <section
   id="yaml"
   aria-labelledby="yaml-heading"
   use:section={() => ({
     exclusive: true,
+    toolbarFeedback: feedback,
     dirty: config.dirty,
-    canSave: config.dirty && !config.loading && !config.saving && !blocked,
+    canSave:
+      config.dirty &&
+      !config.loading &&
+      !config.saving &&
+      !blocked &&
+      !config.validationErrors.length,
     validationMessage: blocked
       ? t("Save changes in other sections before saving the YAML configuration.")
-      : undefined,
+      : config.validationErrors.length
+        ? t("Fix YAML errors before saving.")
+        : undefined,
     onSave: save,
   })}
 >
   <h2 id="yaml-heading" class="sr-only">{t("YAML configuration")}</h2>
-  <p class="settings-description">
-    {t(
-      "Edit and save the configuration file directly in your browser. Comments and formatting are preserved.",
-    )}
-  </p>
-  <div class="yaml-toolbar">
-    <span class="yaml-status" role="status">
-      {#if config.saving}
-        {t("Saving configuration…")}
-      {:else if config.loading}
-        {t("Loading configuration…")}
-      {:else if config.dirty}
-        <span class="unsaved">{t("Unsaved changes")}</span>
-      {:else if config.snapshot}
-        {t("All changes saved")}
-      {/if}
-    </span>
-    <Button
-      small
-      disabled={config.loading || config.saving}
-      inactive={config.loading || config.saving}
-      onclick={() => void reload()}>{t("Reload configuration")}</Button
-    >
-  </div>
   {#if blocked}
     <p class="yaml-notice" role="status">
       {t("Save changes in other sections before saving the YAML configuration.")}
@@ -132,38 +131,14 @@
       )}
     </p>
   {/if}
-  {#if config.error}
-    <div class="yaml-error" role="alert">
-      {#if config.error.code === "CONFIG_CONFLICT"}
-        <p>
-          {t(
-            "Configuration changed since it was loaded. Your draft is preserved. Reload to get the current configuration.",
-          )}
-        </p>
-      {:else if config.error.code === "CONFIG_OUT_OF_SYNC"}
-        <p>
-          {t(
-            "The file differs from the running configuration. Reload it before trying to save again.",
-          )}
-        </p>
-      {/if}
-      <p>{t(config.error.message)}</p>
-      {#if config.error.line}
-        <p>
-          {t("Line")}: {config.error.line}{#if config.error.column}, {t("Column")}: {config.error
-              .column}{/if}
-        </p>
-      {/if}
-    </div>
-  {/if}
   {#if config.snapshot && editorModule}
     {#await editorModule}
       <Placeholder loading>{t("Loading editor…")}</Placeholder>
     {:then module}
       <module.default
         bind:value={config.draft}
+        errors={config.validationErrors}
         disabled={config.loading || config.saving}
-        {onSave}
       />
     {:catch}
       <Placeholder variant="error"
@@ -173,35 +148,10 @@
   {:else if config.loading}
     <Placeholder loading>{t("Loading configuration…")}</Placeholder>
   {/if}
-  <p id="yaml-editor-help" class="yaml-help">
-    {t(
-      "Ctrl/Cmd+S to save · Tab/Shift+Tab to indent · Ctrl/Cmd+F to search · Escape, then Tab to leave the editor",
-    )}
-  </p>
 </section>
 
 <style>
-  .yaml-toolbar {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 0.75rem;
-    margin-bottom: 0.5rem;
-  }
-  .yaml-status,
-  .yaml-help {
-    color: var(--text-2);
-    font-size: 0.875rem;
-    line-height: 1.5;
-  }
-  .unsaved {
-    color: var(--yellow-bright);
-  }
-  .yaml-help {
-    margin: 0.75rem 0 0;
-  }
-  .yaml-notice,
-  .yaml-error {
+  .yaml-notice {
     padding: 0.75rem;
     border: 1px solid var(--bg-light-extra);
     border-radius: 0.5rem;
@@ -214,14 +164,15 @@
     color: var(--text);
   }
   .yaml-error {
-    margin-bottom: 0.75rem;
-    border-color: var(--red);
     color: var(--red);
+    font-size: 0.875rem;
+    line-height: 1.5;
+    overflow-wrap: anywhere;
   }
   .yaml-error p {
     margin: 0;
   }
   .yaml-error p + p {
-    margin-top: 0.4rem;
+    margin-top: 0.15rem;
   }
 </style>

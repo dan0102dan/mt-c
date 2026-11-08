@@ -327,6 +327,8 @@ export class GroupsStore {
   };
 
   handleSaveShortcut = (event: KeyboardEvent) => {
+    // Raw YAML leaves browser shortcuts alone, including saves in mounted hidden tabs.
+    if (event.target instanceof Element && event.target.closest("#yaml")) return;
     if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "s") {
       if (this.canSave) {
         event.preventDefault();

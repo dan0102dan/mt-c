@@ -353,7 +353,7 @@ for (const shortcut of [
   { platform: "Linux x86_64", key: "Control+s" },
   { platform: "MacIntel", key: "Meta+s" },
 ]) {
-  test(`${shortcut.key} saves the current YAML draft`, async ({ page }) => {
+  test(`${shortcut.key} does not save the YAML draft`, async ({ page }) => {
     await page.addInitScript((platform) => {
       Object.defineProperty(navigator, "platform", { get: () => platform });
     }, shortcut.platform);
@@ -362,15 +362,13 @@ for (const shortcut of [
     const editor = await openYaml(page);
     await editor.fill(editedYaml);
     await editor.press(shortcut.key);
-    await expect.poll(() => state.yaml).toBe(editedYaml);
-    await expect.poll(() => hasUnloadWarning(page)).toBe(false);
-    expect(state.writes).toHaveLength(1);
+    expect(state.yaml).toBe(originalYaml);
+    expect(await hasUnloadWarning(page)).toBe(true);
+    expect(state.writes).toHaveLength(0);
   });
 }
 
-test("Tab indents YAML with spaces and Escape then Tab lets keyboard users leave", async ({
-  page,
-}) => {
+test("Tab leaves the YAML editor without changing indentation", async ({ page }) => {
   await backend(page);
   await page.goto("/");
   const editor = await openYaml(page);
@@ -378,11 +376,52 @@ test("Tab indents YAML with spaces and Escape then Tab lets keyboard users leave
   await editor.press("Control+End");
   await editor.press("Home");
   await editor.press("Tab");
-  await expect.poll(() => editorText(editor)).toBe("app:\n  logLevel: info");
-  await editor.press("Escape");
-  await editor.press("Tab");
+  await expect.poll(() => editorText(editor)).toBe("app:\nlogLevel: info");
   await expect(editor).not.toBeFocused();
 });
+
+test("browser find shortcuts are not intercepted by the YAML editor", async ({ page }) => {
+  await backend(page);
+  await page.goto("/");
+  const editor = await openYaml(page);
+  for (const modifier of ["ctrlKey", "metaKey"]) {
+    const intercepted = await editor.evaluate((element, modifier) => {
+      const event = new KeyboardEvent("keydown", {
+        key: "f",
+        code: "KeyF",
+        [modifier]: true,
+        bubbles: true,
+        cancelable: true,
+      });
+      element.dispatchEvent(event);
+      return event.defaultPrevented;
+    }, modifier);
+    expect(intercepted).toBe(false);
+  }
+  await expect(page.locator(".cm-search")).toHaveCount(0);
+});
+
+for (const width of [1280, 390]) {
+  test(`YAML uses the page width and scroll at ${width}px`, async ({ page }) => {
+    await page.setViewportSize({ width, height: 900 });
+    const { state } = await backend(page);
+    state.yaml = Array.from({ length: 150 }, (_, index) => `# Configuration line ${index}`).join(
+      "\n",
+    );
+    await page.goto("/");
+    const editor = await openYaml(page);
+    await editor.click();
+    const bounds = await page.locator(".yaml-editor").boundingBox();
+    const pageBounds = await page.locator(".app-tabs").boundingBox();
+    expect(bounds!.width).toBeCloseTo(pageBounds!.width, 0);
+    expect(bounds!.x).toBeCloseTo(pageBounds!.x, 0);
+    expect(bounds!.height).toBeGreaterThan(900);
+    await page.mouse.wheel(0, 700);
+    await expect.poll(() => page.evaluate(() => window.scrollY)).toBeGreaterThan(0);
+    expect(await page.locator(".cm-scroller").evaluate((element) => element.scrollTop)).toBe(0);
+    await expect(page.locator("#save-settings")).toBeInViewport();
+  });
+}
 
 test("YAML tab and Save remain reachable on a narrow screen with a long YAML line", async ({
   page,
@@ -583,43 +622,266 @@ test("confirming replacement never permits overwriting a newer configuration rev
   expect(await hasUnloadWarning(page)).toBe(true);
 });
 
-test("reload keeps the draft after cancellation or a read failure and discards it only after a successful confirmed read", async ({
+test("page reload reads the current configuration after confirming draft loss", async ({
   page,
 }) => {
   const { state } = await backend(page);
   await page.goto("/");
   const editor = await openYaml(page);
+  await expect(page.getByRole("button", { name: "Reload configuration", exact: true })).toHaveCount(
+    0,
+  );
   await editor.fill(editedYaml);
   state.yaml = originalYaml.replace("logLevel: info", "logLevel: warn");
   state.version++;
-  const reload = page.getByRole("button", { name: "Reload configuration", exact: true });
-  const cancel = page.waitForEvent("dialog").then(async (dialog) => {
-    expect(dialog.type()).toBe("confirm");
-    expect(dialog.message()).toBe(
-      "Discard your YAML changes and reload the configuration from the server?",
-    );
-    await dialog.dismiss();
+  page.once("dialog", async (dialog) => {
+    expect(dialog.type()).toBe("beforeunload");
+    await dialog.accept();
   });
-  await reload.click();
-  await cancel;
-  await expect.poll(() => editorText(editor)).toBe(editedYaml);
-  expect(await hasUnloadWarning(page)).toBe(true);
-  state.readFailure = true;
-  const failedRead = page.waitForEvent("dialog").then((dialog) => dialog.accept());
-  await reload.click();
-  await failedRead;
-  await expect(
-    page.getByRole("alert").filter({ hasText: "Cannot read configuration" }),
-  ).toBeVisible();
-  await expect.poll(() => editorText(editor)).toBe(editedYaml);
-  await expect(page.locator("#save-settings")).toBeEnabled();
-  expect(await hasUnloadWarning(page)).toBe(true);
-  state.readFailure = false;
-  const successfulRead = page.waitForEvent("dialog").then((dialog) => dialog.accept());
-  await reload.click();
-  await successfulRead;
-  await expect.poll(() => editorText(editor)).toBe(state.yaml);
+  await page.reload();
+  const reloaded = await openYaml(page);
+  await expect.poll(() => editorText(reloaded)).toBe(state.yaml);
   await expect(page.locator("#save-settings")).toBeDisabled();
   expect(state.writes).toHaveLength(0);
   expect(await hasUnloadWarning(page)).toBe(false);
+});
+
+for (const invalid of ["app: [", "app: {}\napp: {}", "", "- app", "app: {}\n---\ngroups: []"]) {
+  test(`invalid YAML blocks saving and can be corrected: ${JSON.stringify(invalid)}`, async ({
+    page,
+  }) => {
+    const { state } = await backend(page);
+    await page.goto("/");
+    const editor = await openYaml(page);
+    await editor.fill(invalid);
+    await expect(page.locator("#save-settings")).toBeDisabled();
+    await expect(page.locator(".cm-yaml-error-gutter")).toBeVisible();
+    expect(state.writes).toHaveLength(0);
+    expect(state.yaml).toBe(originalYaml);
+    expect(await hasUnloadWarning(page)).toBe(true);
+    await editor.fill(editedYaml);
+    await expect(page.locator(".cm-yaml-error-gutter")).toHaveCount(0);
+    await expect(page.locator("#save-settings")).toBeEnabled();
+    await page.locator("#save-settings").click();
+    await expect.poll(() => state.yaml).toBe(editedYaml);
+    expect(state.writes).toHaveLength(1);
+  });
+}
+
+for (const width of [1280, 390]) {
+  test(`YAML error stays visible while editing the bottom at ${width}px`, async ({ page }) => {
+    await page.setViewportSize({ width, height: 844 });
+    const { state } = await backend(page);
+    state.yaml = `${originalYaml}\n${"# More configuration\n".repeat(200)}`;
+    await page.goto("/");
+    const editor = await openYaml(page);
+    await page.evaluate(() => window.scrollTo(0, document.documentElement.scrollHeight));
+    await editor.locator(".cm-line").last().click();
+    await page.keyboard.press("End");
+    await page.keyboard.type("invalid: [");
+    const error = page.locator(".cm-yaml-error-gutter");
+    await expect(error).toBeInViewport();
+    await expect(page.locator(".cm-yaml-error-line")).toBeInViewport();
+    await expect(editor).toHaveAttribute("aria-invalid", "true");
+    await expect(page.locator("#save-settings")).toBeInViewport();
+    await expect(page.locator("#save-settings")).toBeDisabled();
+    expect(await page.evaluate(() => window.scrollY)).toBeGreaterThan(1000);
+    await page.keyboard.type("]");
+    await expect(error).toHaveCount(0);
+    await expect(page.locator(".cm-yaml-error-line")).toHaveCount(0);
+    await expect(editor).not.toHaveAttribute("aria-invalid", "true");
+    await expect(page.locator("#save-settings")).toBeEnabled();
+    await expect(page.getByText("Unsaved changes", { exact: true })).toHaveCount(0);
+    await page.getByRole("tab", { name: "Profiles", exact: true }).click();
+    await expect(page.getByText("Unsaved changes", { exact: true })).not.toBeVisible();
+  });
+}
+
+for (const width of [1280, 390]) {
+  test(`YAML preserves the offending token highlight after scrolling at ${width}px`, async ({
+    page,
+  }) => {
+    await page.setViewportSize({ width, height: 844 });
+    const { state } = await backend(page);
+    state.yaml = `app:\r\n  logLevel: "info"oops\r\n${"# More configuration\r\n".repeat(200)}`;
+    await page.goto("/");
+    await openYaml(page);
+    await expect(page.locator(".cm-yaml-error-mark")).toHaveText("oops");
+    await expect(page.locator(".cm-yaml-error-gutter")).toHaveCount(1);
+    await page.evaluate(() => window.scrollTo(0, document.documentElement.scrollHeight));
+    await page.evaluate(() => window.scrollTo(0, 0));
+    await expect(page.locator(".cm-yaml-error-mark")).toBeInViewport();
+    expect(state.writes).toHaveLength(0);
+  });
+}
+
+for (const width of [1280, 390]) {
+  test(`YAML validation does not shift content at ${width}px`, async ({ page }) => {
+    await page.setViewportSize({ width, height: 844 });
+    const { state } = await backend(page);
+    state.yaml = `${originalYaml}\n${"# More configuration\n".repeat(200)}value: "ok"`;
+    await page.goto("/");
+    const editor = await openYaml(page);
+    await page.evaluate(() => window.scrollTo(0, document.documentElement.scrollHeight));
+    const line = editor.locator(".cm-line").last();
+    await line.click();
+    await page.keyboard.press("End");
+    const measure = () =>
+      page.evaluate(() => ({
+        toolbar: document.querySelector(".settings-toolbar")!.getBoundingClientRect().height,
+        scroll: window.scrollY,
+        editor: document.querySelector(".cm-content")!.getBoundingClientRect().x,
+        height: document.documentElement.scrollHeight,
+        line: [...document.querySelectorAll(".cm-line")].at(-1)!.getBoundingClientRect().y,
+      }));
+    const before = await measure();
+    await page.keyboard.type("x");
+    await expect(page.locator(".cm-yaml-error-gutter")).toBeVisible();
+    await expect(page.locator(".cm-yaml-error-mark")).toHaveText("x");
+    expect(await measure()).toEqual(before);
+    await page.keyboard.press("Backspace");
+    await expect(page.locator(".cm-yaml-error-mark")).toHaveCount(0);
+    expect(await measure()).toEqual(before);
+  });
+}
+
+for (const sample of [
+  { yaml: "app:\n  httpWeb:\n    enabled: 123", token: "123" },
+  { yaml: 'app:\n  httpWeb:\n    auth:\n      enabled: "true"', token: '"true"' },
+  { yaml: "app:\n  dnsProxy:\n    disableFakePTR: wrong", token: "wrong" },
+  { yaml: 'app:\n  dnsProxy:\n    host:\n      port: "53"', token: '"53"' },
+  { yaml: "app:\n  dnsProxy:\n    timeout: false", token: "false" },
+  { yaml: "app:\n  netfilter:\n    disableIPv6: 0", token: "0" },
+  { yaml: "app:\n  keeneticPolicy:\n    enabled: 1", token: "1" },
+  { yaml: "app:\n  link: wrong", token: "wrong" },
+  { yaml: "groups:\n  - enable: 5", token: "5" },
+  { yaml: "groups:\n  - rules:\n      - enable: 4", token: "4" },
+  { yaml: "subscriptions:\n  - overrides:\n      - enable: 2", token: "2" },
+  { yaml: "subscriptions:\n  - interval: -1", token: "-1" },
+  { yaml: "profiles:\n  - interfaces: false", token: "false" },
+  { yaml: "app: false", token: "false" },
+  { yaml: "groups:\n  - priority: null", token: "null" },
+  { yaml: "app:\n  showAllInterfaces: &bad 3\n  httpWeb:\n    enabled: *bad", token: "3" },
+]) {
+  test(`YAML field types highlight the incorrect value: ${JSON.stringify(sample.yaml)}`, async ({
+    page,
+  }) => {
+    const { state } = await backend(page);
+    await page.goto("/");
+    const editor = await openYaml(page);
+    await editor.fill(sample.yaml);
+    await expect(page.locator(".cm-yaml-error-mark").first()).toHaveText(sample.token);
+    await expect(page.locator("#save-settings")).toBeDisabled();
+    await expect(editor).toHaveAttribute("aria-invalid", "true");
+    expect(state.writes).toHaveLength(0);
+    await editor.fill(editedYaml);
+    await expect(page.locator(".cm-yaml-error-mark")).toHaveCount(0);
+    await expect(page.locator("#save-settings")).toBeEnabled();
+    await page.locator("#save-settings").click();
+    await expect.poll(() => state.yaml).toBe(editedYaml);
+  });
+}
+
+test("YAML type checks preserve legacy booleans, numeric scalars, null overlays and aliases", async ({
+  page,
+}) => {
+  await backend(page);
+  await page.goto("/");
+  const editor = await openYaml(page);
+  await editor.fill(`app:
+  httpWeb:
+    enabled: YES
+    auth:
+      enabled: off
+    host:
+      port: 53.0
+  showAllInterfaces: &flag true
+  netfilter:
+    disableIPv4: *flag
+    disableIPv6: null
+  dnsProxy:
+    timeout: 1000
+    maxIdleConns: 18446744073709551615
+  link: [br0]
+groups:
+  - id: 12345678
+    priority: 100
+    enable: false
+subscriptions: []
+profiles: []
+`);
+  await expect(page.locator(".cm-yaml-error-mark")).toHaveCount(0);
+  await expect(page.locator("#save-settings")).toBeEnabled();
+});
+
+test("YAML error tooltip belongs to the line number without a toolbar indicator", async ({
+  page,
+}) => {
+  await backend(page);
+  await page.goto("/");
+  const editor = await openYaml(page);
+  await editor.fill("app:\n  httpWeb:\n    enabled: 123");
+  await expect(page.getByRole("button", { name: "Go to YAML error", exact: true })).toHaveCount(0);
+  await page.getByRole("tab", { name: "YAML", exact: true }).hover();
+  await expect(page.locator("#global-tooltip")).toHaveCount(0);
+  const marker = page.locator(".cm-yaml-error-gutter");
+  await expect(marker).toHaveText("3");
+  await marker.hover();
+  await expect(page.locator("#global-tooltip")).toHaveText(
+    "Expected a boolean value (true or false)",
+  );
+  await page.getByRole("tab", { name: "YAML", exact: true }).hover();
+  await expect(page.locator("#global-tooltip")).toHaveCount(0);
+  await marker.hover();
+  await editor.fill(editedYaml);
+  await expect(marker).toHaveCount(0);
+  await expect(page.locator("#global-tooltip")).toHaveCount(0);
+});
+
+for (const width of [1280, 390]) {
+  test(`YAML shows all type errors and clears only the corrected one at ${width}px`, async ({
+    page,
+  }) => {
+    await page.setViewportSize({ width, height: 844 });
+    const { state } = await backend(page);
+    await page.goto("/");
+    const editor = await openYaml(page);
+    const invalid =
+      'app:\r\n  httpWeb:\r\n    enabled: 123\r\n    host:\r\n      port: "53"\r\n  link: false\r\ngroups:\r\n  - enable: 456\r\n';
+    await editor.fill(invalid);
+    await expect(page.locator(".cm-yaml-error-mark")).toHaveText(["123", '"53"', "false", "456"]);
+    await expect(page.locator(".cm-yaml-error-gutter")).toHaveText(["3", "5", "6", "8"]);
+    await page.locator(".cm-yaml-error-gutter").nth(0).hover();
+    await expect(page.locator("#global-tooltip")).toHaveText(
+      "Expected a boolean value (true or false)",
+    );
+    await page.locator(".cm-yaml-error-gutter").nth(1).hover();
+    await expect(page.locator("#global-tooltip")).toHaveText("Expected a nonnegative integer");
+    await page.locator(".cm-yaml-error-gutter").nth(2).hover();
+    await expect(page.locator("#global-tooltip")).toHaveText("Expected a YAML sequence");
+    await page.mouse.move(0, 0);
+    await editor.fill(invalid.replace("enabled: 123", "enabled: true"));
+    await expect(page.locator(".cm-yaml-error-mark")).toHaveText(['"53"', "false", "456"]);
+    await expect(page.locator(".cm-yaml-error-gutter")).toHaveText(["5", "6", "8"]);
+    await expect(page.locator("#save-settings")).toBeDisabled();
+    expect(state.writes).toHaveLength(0);
+    await editor.fill(editedYaml);
+    await expect(page.locator(".cm-yaml-error-mark")).toHaveCount(0);
+    await expect(page.locator("#save-settings")).toBeEnabled();
+  });
+}
+
+test("YAML shows multiple syntax errors alongside type errors", async ({ page }) => {
+  await backend(page);
+  await page.goto("/");
+  const editor = await openYaml(page);
+  await editor.fill(
+    'app:\n  showAllInterfaces: true\n  showAllInterfaces: false\n  logLevel: info\n  logLevel: debug\n  httpWeb: {enabled: 12, host: {port: "53"}}',
+  );
+  await expect(page.locator(".cm-yaml-error-mark")).toHaveText(["s", "l", "12", '"53"']);
+  await expect(page.locator(".cm-yaml-error-gutter")).toHaveText(["3", "5", "6"]);
+  await page.locator(".cm-yaml-error-gutter").last().hover();
+  await expect(page.locator("#global-tooltip")).toContainText("Expected a boolean value");
+  await expect(page.locator("#global-tooltip")).toContainText("Expected a nonnegative integer");
+  await expect(page.locator("#save-settings")).toBeDisabled();
 });

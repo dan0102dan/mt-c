@@ -12,6 +12,8 @@ export type YamlConfigError = {
   code?: string;
   line?: number;
   column?: number;
+  from?: number;
+  to?: number;
 };
 
 function record(value: unknown): value is Record<string, unknown> {

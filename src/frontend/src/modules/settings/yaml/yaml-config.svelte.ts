@@ -1,5 +1,6 @@
 import { fetcher } from "../../../utils/fetcher";
 import { readYamlConfig, readYamlError, type YamlConfig, type YamlConfigError } from "./config";
+import { validateYaml } from "./validate";
 
 /** Raw configuration is kept only in memory. It may contain credentials. */
 export class YamlConfigState {
@@ -9,6 +10,7 @@ export class YamlConfigState {
   saving = $state(false);
   error = $state.raw<YamlConfigError>();
   dirty = $derived(this.snapshot !== undefined && this.draft !== this.snapshot.yaml);
+  validationErrors = $derived(this.snapshot ? validateYaml(this.draft) : []);
   private generation = 0;
 
   async load(discardDraft = false): Promise<void> {
@@ -32,6 +34,7 @@ export class YamlConfigState {
 
   async save(allowOutOfSync = false): Promise<void> {
     if (!this.snapshot || !this.dirty || this.loading || this.saving) return;
+    if (this.validationErrors.length) throw new Error(this.validationErrors[0].message);
     const generation = ++this.generation;
     const yaml = this.draft;
     const revision = this.snapshot.revision;

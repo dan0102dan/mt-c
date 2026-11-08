@@ -1,4 +1,4 @@
-import { getContext } from "svelte";
+import { getContext, type Snippet } from "svelte";
 
 import type { ContextAction } from "../../components/layout/PageControls.svelte";
 
@@ -8,6 +8,7 @@ export type SectionControls = {
   /** Whole-file writers save separately from structured settings sections. */
   exclusive?: boolean;
   validationMessage?: string;
+  toolbarFeedback?: Snippet;
   onSave: () => Promise<void>;
   addLabel?: string;
   canAdd?: boolean;

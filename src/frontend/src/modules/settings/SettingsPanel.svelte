@@ -114,6 +114,9 @@
         </Tabs.List>
       {/snippet}
     </PageControls>
+    {#if visibleControls?.toolbarFeedback}
+      {@render visibleControls.toolbarFeedback()}
+    {/if}
     {#each validationSections as section (section.element.id)}
       <span
         id={`settings-validation-${section.element.id}`}
@@ -130,7 +133,7 @@
     ><DnsQueryLog active={active && selected === "dns"} /></Tabs.Content
   >
   <Tabs.Content value="yaml" class="settings-content">
-    <YamlConfigPanel active={active && selected === "yaml"} onSave={() => void saveAll()} />
+    <YamlConfigPanel active={active && selected === "yaml"} />
   </Tabs.Content>
 </Tabs.Root>
 
