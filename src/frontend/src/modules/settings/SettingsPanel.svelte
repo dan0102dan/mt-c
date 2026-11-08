@@ -7,6 +7,7 @@
   import { t } from "../../data/locale.svelte";
   import DnsQueryLog from "./dns/DnsQueryLog.svelte";
   import ProfilesPanel from "./ProfilesPanel.svelte";
+  import YamlConfigPanel from "./yaml/YamlConfigPanel.svelte";
 
   import { toast } from "../../utils/events";
   import { CONFIG_TRANSFER_CONTEXT, type ConfigTransferControls } from "../config-transfer/context";
@@ -27,14 +28,24 @@
     profiles: t("Profiles"),
     keenetic: "Keenetic",
     dns: t("DNS queries"),
+    yaml: "YAML",
   });
   const visibleControls = $derived(visibleSection?.controls());
-  const dirty = $derived(sections.some((section) => section.controls().dirty));
+  const saveSections = $derived(
+    visibleControls?.exclusive
+      ? visibleSection
+        ? [visibleSection]
+        : []
+      : sections.filter((section) => !section.controls().exclusive),
+  );
+  const dirty = $derived(saveSections.some((section) => section.controls().dirty));
   const invalid = $derived(
-    sections.find((section) => section.controls().dirty && !section.controls().canSave)?.controls(),
+    saveSections
+      .find((section) => section.controls().dirty && !section.controls().canSave)
+      ?.controls(),
   );
   const validationSections = $derived(
-    sections.filter((section) => {
+    saveSections.filter((section) => {
       const controls = section.controls();
       return controls.dirty && controls.validationMessage;
     }),
@@ -46,7 +57,7 @@
     if (!canSave) return;
     // Both section APIs persist the same configuration file: serialize
     // writes. The failed section remains dirty; other edits still save.
-    const pending = sections.filter((section) => section.controls().dirty);
+    const pending = saveSections.filter((section) => section.controls().dirty);
     saving = true;
     let succeeded = 0;
     let failed = 0;
@@ -118,6 +129,9 @@
   <Tabs.Content value="dns" class="settings-content"
     ><DnsQueryLog active={active && selected === "dns"} /></Tabs.Content
   >
+  <Tabs.Content value="yaml" class="settings-content">
+    <YamlConfigPanel active={active && selected === "yaml"} onSave={() => void saveAll()} />
+  </Tabs.Content>
 </Tabs.Root>
 
 <style>

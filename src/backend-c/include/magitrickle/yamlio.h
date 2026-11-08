@@ -25,6 +25,18 @@
  * modified — mirroring Go's LoadConfig, callers treat it as poisoned. */
 mt_err_t mt_config_load_buffer(mt_config_t *cfg, const char *buf, size_t len);
 
+/* Browser editor validation is intentionally stricter than legacy file load:
+ * one document, scalar/unique/known mapping keys, and no cyclic structures.
+ * Defaults must already be initialized; errors leave the candidate poisoned.
+ * Line/column are 1-based when available, zero for model-level errors. */
+typedef struct mt_config_diagnostic {
+    size_t line;
+    size_t column;
+    char message[256];
+} mt_config_diagnostic_t;
+mt_err_t mt_config_load_editor_buffer(mt_config_t *cfg, const char *buf, size_t len,
+                                      mt_config_diagnostic_t *diagnostic);
+
 /* Convenience: read whole file. Missing file == MT_ERR_NOENT (Go treats
  * it as "keep defaults" — that decision is the caller's). */
 mt_err_t mt_config_load_file(mt_config_t *cfg, const char *path);
@@ -40,5 +52,9 @@ mt_err_t mt_config_save_json(const mt_config_t *cfg, const char *version, cJSON 
 /* Atomic write to path (0600). */
 mt_err_t mt_config_save_file(const mt_config_t *cfg, const char *version,
                              const char *path);
+
+/* Atomically persist already validated bytes without reformatting them.
+ * No errors are reported after the rename commit point. */
+mt_err_t mt_config_write_buffer(const char *path, const char *data, size_t len);
 
 #endif /* MAGITRICKLE_YAMLIO_H */

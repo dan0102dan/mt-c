@@ -5,6 +5,8 @@ import type { ContextAction } from "../../components/layout/PageControls.svelte"
 export type SectionControls = {
   canSave: boolean;
   dirty: boolean;
+  /** Whole-file writers save separately from structured settings sections. */
+  exclusive?: boolean;
   validationMessage?: string;
   onSave: () => Promise<void>;
   addLabel?: string;

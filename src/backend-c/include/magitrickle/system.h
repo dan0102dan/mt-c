@@ -33,5 +33,7 @@ typedef struct mt_system_ctx {
  * /api/v1/system/config/save, and POST /api/v1/system/hooks/netfilterd
  * on `h`. `ctx` must outlive the server. */
 void mt_system_register_routes(mt_httpd_t *h, mt_system_ctx_t *ctx);
+/* Included by mt_system_register_routes; separate entry point for focused tests. */
+void mt_system_register_yaml_routes(mt_httpd_t *h, mt_system_ctx_t *ctx);
 
 #endif /* MAGITRICKLE_SYSTEM_H */

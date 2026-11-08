@@ -69,9 +69,9 @@
     }
   });
 
-  let groupsStore: GroupsStore | undefined;
-  let subscriptionsStore: SubscriptionsStore | undefined;
-  let policySource: PolicyDraftSource | undefined;
+  let groupsStore = $state.raw<GroupsStore>();
+  let subscriptionsStore = $state.raw<SubscriptionsStore>();
+  let policySource = $state.raw<PolicyDraftSource>();
 
   let imported = $state<PortableConfig | undefined>();
   let previewServer = $state<ServerSnapshot | undefined>();
@@ -302,6 +302,28 @@
         if (policySource === source) policySource = undefined;
       };
     },
+    rawConfigBlocked: () =>
+      transferBusy ||
+      !!(groupsStore && !groupsStore.dataLoaded) ||
+      !!(subscriptionsStore && !subscriptionsStore.dataLoaded) ||
+      !!groupsStore?.hasUnsavedChanges ||
+      !!subscriptionsStore?.hasUnsavedChanges ||
+      profilesDirty() ||
+      !!policySource?.dirty() ||
+      !!groupsStore?.saving ||
+      !!subscriptionsStore?.saving ||
+      profiles.saving ||
+      !!policySource?.saving(),
+    async refreshAfterYaml() {
+      await Promise.all([
+        groupsStore?.mount({ preserveDrafts: true }),
+        subscriptionsStore?.mount({ preserveDrafts: true }),
+        fetchProfiles({ fresh: true, rebaseDrafts: true }),
+        policySource?.refresh(),
+      ]);
+      if (groupsStore?.fetchError || subscriptionsStore?.fetchError || profiles.failed)
+        throw new Error("Configuration view refresh failed");
+    },
     exportConfig: exportCurrentConfig,
     importConfig: openConfigImport,
   };
@@ -312,6 +334,7 @@
 
   function handleSearchShortcut(event: KeyboardEvent) {
     if (
+      event.defaultPrevented ||
       event.isComposing ||
       event.altKey ||
       event.shiftKey ||

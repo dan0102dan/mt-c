@@ -4101,3 +4101,58 @@ boundaries, static ordering and permanent TTLs. Fault injection includes failure
 while constructing a second block and verifies that no partial kernel write is
 performed. Benchmark scope is desired-list construction, not complete reload or
 packet forwarding.
+
+## D-90 — Browser YAML editing with explicit persistence and restart state (2026-11-08)
+
+The additive `GET/PUT /api/v1/system/config/yaml` endpoints expose only the
+daemon's configured file. GET reads exact UTF-8 bytes, including comments and
+line endings; when no file exists it generates the live configuration without
+writing anything. Both endpoints use the existing WebUI authentication and
+`Cache-Control: no-store`. PUT requires a JSON request and rejects cross-site
+browser fetch metadata. Raw YAML is limited to 16 MiB, the encoded JSON request
+to 24 MiB, within the server's existing aggregate in-flight budget.
+
+A SHA-256 revision binds file existence/bytes and canonical live models. Both
+external file edits and accepted-but-unpersisted API edits invalidate an older
+draft. GET reports `out_of_sync` when interpreting the file from defaults differs
+from live models or the file is invalid. PUT normally rejects this state with
+`CONFIG_OUT_OF_SYNC`; a current `allow_out_of_sync: true` acknowledgement permits
+intentional replacement/repair. It never bypasses stale-revision rejection.
+The file is checked again immediately before persistence; unrelated external
+writers do not participate in an interprocess lock, so no filesystem compare-and-
+swap guarantee against a write in the final check/rename window is claimed.
+
+Interactive validation is stricter than historical file loading: a single YAML
+document, nonempty scalar mapping keys, no duplicates or unsupported fields,
+explicit IDs for groups/subscriptions/rules, supported rule types and valid
+patterns, existing type/range/priority/profile-reference checks. Libyaml syntax
+failures carry 1-based line/column diagnostics. Legacy startup/SIGHUP unknown-key
+and overlay semantics remain unchanged. Numeric conversion and legacy duration
+normalization now reject values that would overflow before converting/multiplying;
+accepted finite in-range values retain their previous semantics.
+
+A fully prepared candidate goes through the existing transactional model/ruleset
+apply operation with an optional persistence callback. The raw callback preserves
+the submitted bytes rather than canonicalizing YAML. The shared writer uses an
+exclusive, unique 0600 sibling temporary file, full write/fsync/close, then rename
+and best-effort directory fsync. Failures before rename leave the previous file
+and model registry; kernel rollback remains best effort as in D-85. The success
+JSON is allocated before mutation. Comments-only edits skip model/routing rebuilds.
+
+The candidate represents a complete file interpreted from defaults, as on restart,
+not SIGHUP's partial overlay. Startup-bound settings are compared to an immutable
+copy of the original application settings: `restart_required` persists across GET
+and subsequent saves until restart or restoration of those original settings.
+No service restart is initiated, and the response does not claim that DNS/HTTP
+listeners, upstream transport, limits, logger or netfilter helper names were
+recreated. Routing/profile definitions and existing live consumers are updated
+by the shared apply operation. Structured UI and subscription-cache saves keep
+their historical canonical serializer and may subsequently normalize formatting
+and remove comments; the editor does not introduce a second configuration store.
+
+`test_config_yaml` exercises actual HTTP handlers/files, verbatim Unicode/CRLF
+round trips, no-op model identity, invalid-document diagnostics, disk and live
+conflicts, explicit divergence acknowledgement, repair of an invalid file,
+missing-file initialization, injected rename failure/rollback/retry, restart-state
+tracking, authentication and the larger request budget. Existing YAML/model/API
+tests remain the compatibility guard for the shared writer/apply paths.

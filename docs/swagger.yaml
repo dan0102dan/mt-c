@@ -98,6 +98,42 @@ definitions:
         example: iptables
         type: string
     type: object
+  types.ConfigYamlRes:
+    type: object
+    required: [yaml, revision, restart_required, out_of_sync]
+    properties:
+      yaml:
+        type: string
+        description: Exact UTF-8 file contents (up to 16 MiB), or generated live configuration when the file does not exist.
+      revision:
+        type: string
+        description: Opaque revision binding both file bytes and running configuration.
+        pattern: '^[0-9a-f]{64}$'
+      restart_required:
+        type: boolean
+        description: Desired startup settings differ from this daemon's original settings; listeners and other startup consumers require restart.
+      out_of_sync:
+        type: boolean
+        description: File and live models differ, or the file cannot be parsed. Saving needs explicit replacement acknowledgement.
+  types.ConfigYamlReq:
+    type: object
+    additionalProperties: false
+    required: [yaml, revision]
+    properties:
+      yaml: {type: string}
+      revision: {type: string}
+      allow_out_of_sync:
+        type: boolean
+        default: false
+        description: Explicit acknowledgement to replace differing live state. Never bypasses the revision check.
+  types.ConfigYamlError:
+    type: object
+    required: [error, code]
+    properties:
+      error: {type: string}
+      code: {type: string}
+      line: {type: integer, minimum: 1}
+      column: {type: integer, minimum: 1}
   types.UpdateInfoRes:
     type: object
     required: [installed_version, installed_revision, asset_suffix, can_install, reason]
@@ -618,6 +654,72 @@ paths:
       summary: Обновить правило
       tags:
       - rules
+  /api/v1/system/config/yaml:
+    get:
+      summary: Read the raw YAML configuration for editing
+      description: >-
+        Read-only; uses the daemon's configured file path. Responses use Cache-Control:
+        no-store and the usual WebUI authentication. A missing file is represented
+        by generated live YAML without creating it. Invalid existing YAML remains
+        readable so the editor can repair it with explicit replacement acknowledgement.
+      produces: [application/json]
+      responses:
+        "200":
+          description: YAML and current revision
+          schema: {$ref: '#/definitions/types.ConfigYamlRes'}
+        "401":
+          description: Authentication required
+        "413":
+          description: File exceeds the 16 MiB editor limit
+          schema: {$ref: '#/definitions/types.ConfigYamlError'}
+        "500":
+          description: File could not be read
+          schema: {$ref: '#/definitions/types.ConfigYamlError'}
+        "503":
+          description: Configuration persistence is unavailable
+          schema: {$ref: '#/definitions/types.ConfigYamlError'}
+      tags: [config]
+    put:
+      summary: Validate and save YAML without reformatting
+      description: >-
+        Requires JSON, one supported YAML document, and the revision from GET.
+        Raw YAML is limited to 16 MiB and the complete JSON request to 24 MiB.
+        Unknown/duplicate keys, invalid field types, IDs, rules and profile references
+        are rejected before file or live-state mutation. A current explicit
+        allow_out_of_sync acknowledgement permits repairing an invalid file or
+        replacing differing live state; it never permits a stale overwrite.
+        Models/routes are prepared transactionally and bytes written by atomic
+        replacement. Comments and formatting survive this save; subsequent structured
+        UI or subscription-cache saves use the existing canonical YAML serializer.
+        Startup-bound settings require a daemon restart; no restart is initiated here.
+      consumes: [application/json]
+      produces: [application/json]
+      parameters:
+      - in: body
+        name: json
+        required: true
+        schema: {$ref: '#/definitions/types.ConfigYamlReq'}
+      responses:
+        "200":
+          description: Saved YAML and new revision
+          schema: {$ref: '#/definitions/types.ConfigYamlRes'}
+        "400":
+          description: INVALID_CONFIG; syntax diagnostics may include 1-based line and column
+          schema: {$ref: '#/definitions/types.ConfigYamlError'}
+        "401":
+          description: Authentication required
+        "409":
+          description: CONFIG_CONFLICT or CONFIG_OUT_OF_SYNC; draft must be retained
+          schema: {$ref: '#/definitions/types.ConfigYamlError'}
+        "413":
+          description: Raw YAML or encoded request exceeds its size limit
+        "500":
+          description: Save failed; previous models retained and routing rollback attempted
+          schema: {$ref: '#/definitions/types.ConfigYamlError'}
+        "503":
+          description: Configuration persistence is unavailable
+          schema: {$ref: '#/definitions/types.ConfigYamlError'}
+      tags: [config]
   /api/v1/system/config/save:
     post:
       description: Сохраняет текущую конфигурацию в постоянную память

@@ -488,7 +488,7 @@ for (const width of [1280, 390]) {
     await expect(second.locator(".interface-id")).toHaveText(["tun1"]);
     await page.locator("#save-settings").click();
     await expect(page.locator("#save-settings")).toBeDisabled();
-    expect(state.profiles[0].interfaces).toEqual(["tun0", "tun2"]);
+    await expect.poll(() => state.profiles[0].interfaces).toEqual(["tun0", "tun2"]);
     expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(
       width,
     );
@@ -792,7 +792,9 @@ for (const width of [390, 1280]) {
         await expect(name).toHaveValue(value);
         await expect(profilesTab).toBeFocused();
         await draft
-          .locator(`[data-select-trigger][aria-label="${ru ? "Добавить интерфейс" : "Add interface"}"]`)
+          .locator(
+            `[data-select-trigger][aria-label="${ru ? "Добавить интерфейс" : "Add interface"}"]`,
+          )
           .click();
         await page.getByRole("option", { name: "tun1", exact: true }).click();
         await expect(save).toBeEnabled();

@@ -692,6 +692,7 @@ static size_t request_body_limit(const mt_http_req_t *req) {
     }
     const char *config = "/api/v1/system/config/apply";
     if (strcmp(req->path, config) == 0) return (size_t)24 * 1024 * 1024;
+    if (strcmp(req->path, "/api/v1/system/config/yaml") == 0) return (size_t)24 * 1024 * 1024;
     const char *prefixes[] = {"/api/v1/groups", "/api/v1/subscriptions"};
     for (size_t i = 0; i < 2; i++) {
         size_t len = strlen(prefixes[i]);

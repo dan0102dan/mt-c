@@ -37,6 +37,7 @@ struct mt_app {
     atomic_int policy_apply_error;
 #endif
     mt_config_t *cfg;
+    mt_app_config_t startup_config;
     /* Immutable startup helper names: rulesets borrow these, not the
      * reloadable configuration strings. */
     char *ipset_prefix;
@@ -238,6 +239,9 @@ mt_app_t *mt_app_create(const mt_app_deps_t *deps) {
     if (!app) { return NULL; }
     app->cfg = deps->cfg;
     if (mt_profiles_normalize(app->cfg) != MT_OK) { mt_app_destroy(app); return NULL; }
+    if (mt_app_config_clone(&app->startup_config, &app->cfg->app) != MT_OK) {
+        mt_app_destroy(app); return NULL;
+    }
     if (mt_strset(&app->ipset_prefix, deps->cfg->app.netfilter.ipset.table_prefix) != MT_OK ||
         mt_strset(&app->chain_prefix, deps->cfg->app.netfilter.iptables.chain_prefix) != MT_OK) {
         mt_app_destroy(app);
@@ -300,6 +304,7 @@ void mt_app_destroy(mt_app_t *app) {
     free(app->sub_synth_groups);
     free(app->ipset_prefix);
     free(app->chain_prefix);
+    mt_app_config_clear(&app->startup_config);
     free(app);
 }
 
@@ -1256,9 +1261,9 @@ mt_err_t mt_app_reload_config(mt_app_t *app, const char *path) {
     return mt_app_apply_config(app, &next, NULL, NULL);
 }
 
-mt_err_t mt_app_apply_config(mt_app_t *app, mt_config_t *candidate,
-                              const char *path, const char *version) {
-    if (!app || !candidate || candidate == app->cfg || (path && !version)) { return MT_ERR_INVAL; }
+mt_err_t mt_app_apply_config_with_persistence(mt_app_t *app, mt_config_t *candidate,
+                                               mt_app_config_persist_fn persist, void *userdata) {
+    if (!app || !candidate || candidate == app->cfg) { return MT_ERR_INVAL; }
     /* Ownership moves even on failure, so every caller has one cleanup rule. */
     mt_config_t next = *candidate;
     memset(candidate, 0, sizeof(*candidate));
@@ -1355,8 +1360,8 @@ mt_err_t mt_app_apply_config(mt_app_t *app, mt_config_t *candidate,
         if (err != MT_OK) { goto done; }
     }
 #endif
-    if (path) {
-        err = mt_config_save_file(app->cfg, version, path);
+    if (persist) {
+        err = persist(app->cfg, userdata);
         if (err != MT_OK) { goto done; }
     }
     for (size_t i = 0; i < old_ng; i++) { mt_ruleset_free(previous_groups[i]); }
@@ -1418,12 +1423,69 @@ done:
     return err;
 }
 
+typedef struct config_file_commit {
+    const char *path;
+    const char *version;
+} config_file_commit_t;
+
+static mt_err_t persist_config_file(const mt_config_t *cfg, void *userdata) {
+    const config_file_commit_t *file = userdata;
+    return mt_config_save_file(cfg, file->version, file->path);
+}
+
+mt_err_t mt_app_apply_config(mt_app_t *app, mt_config_t *candidate,
+                              const char *path, const char *version) {
+    if (path && !version) { return MT_ERR_INVAL; }
+    config_file_commit_t file = {.path = path, .version = version};
+    return mt_app_apply_config_with_persistence(app, candidate,
+                path ? persist_config_file : NULL, &file);
+}
+
 mt_err_t mt_app_save_config(mt_app_t *app, const char *path, const char *version) {
     return mt_config_save_file(app->cfg, version, path);
 }
 
 mt_err_t mt_app_config_snapshot_json(mt_app_t *app, const char *version, cJSON **out) {
     return mt_config_save_json(app->cfg, version, out);
+}
+
+mt_err_t mt_app_config_snapshot_yaml(mt_app_t *app, const char *version,
+                                      char **out, size_t *out_len) {
+    return mt_config_save_buffer(app->cfg, version, out, out_len);
+}
+
+bool mt_app_config_restart_required(const mt_app_t *app, const mt_app_config_t *candidate) {
+    const mt_app_config_t *a = &app->startup_config;
+    const mt_app_config_t *b = candidate ? candidate : &app->cfg->app;
+    /* Listeners, upstream transport, limits, logger, redirect topology and
+     * helper names are captured during daemon startup. Authentication/skin
+     * are included conservatively because their consumers also span servers.
+     * showAllInterfaces, additionalTTL and Keenetic policy are live settings. */
+    if (a->http_web.enabled != b->http_web.enabled ||
+        a->http_web.auth.enabled != b->http_web.auth.enabled ||
+        a->http_web.host.port != b->http_web.host.port ||
+        !same_text(a->http_web.host.address, b->http_web.host.address) ||
+        !same_text(a->http_web.skin, b->http_web.skin) ||
+        a->dns_proxy.host.port != b->dns_proxy.host.port ||
+        a->dns_proxy.upstream.port != b->dns_proxy.upstream.port ||
+        !same_text(a->dns_proxy.host.address, b->dns_proxy.host.address) ||
+        !same_text(a->dns_proxy.upstream.address, b->dns_proxy.upstream.address) ||
+        a->dns_proxy.disable_remap53 != b->dns_proxy.disable_remap53 ||
+        a->dns_proxy.disable_fake_ptr != b->dns_proxy.disable_fake_ptr ||
+        a->dns_proxy.disable_drop_aaaa != b->dns_proxy.disable_drop_aaaa ||
+        a->dns_proxy.max_idle_conns != b->dns_proxy.max_idle_conns ||
+        a->dns_proxy.max_concurrent != b->dns_proxy.max_concurrent ||
+        a->dns_proxy.timeout != b->dns_proxy.timeout ||
+        !same_text(a->netfilter.iptables.chain_prefix, b->netfilter.iptables.chain_prefix) ||
+        !same_text(a->netfilter.ipset.table_prefix, b->netfilter.ipset.table_prefix) ||
+        a->netfilter.disable_ipv4 != b->netfilter.disable_ipv4 ||
+        a->netfilter.disable_ipv6 != b->netfilter.disable_ipv6 ||
+        a->netfilter.start_mark_table_index != b->netfilter.start_mark_table_index ||
+        a->n_link != b->n_link || !same_text(a->log_level, b->log_level)) { return true; }
+    for (size_t i = 0; i < a->n_link; i++) {
+        if (!same_text(a->link[i], b->link[i])) { return true; }
+    }
+    return false;
 }
 
 void mt_app_set_port_remap(mt_app_t *app, mt_port_remap_t *remap) {

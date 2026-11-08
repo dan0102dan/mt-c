@@ -111,6 +111,7 @@ CONFIG_SRCS := \
     src/config/models.c src/config/profiles.c \
     src/config/yaml_scalar.c \
     src/config/yaml_load.c \
+    src/config/yaml_edit.c \
     src/config/yaml_save.c \
     src/rules/wildcard.c \
     src/rules/match.c \
@@ -144,6 +145,7 @@ API_SRCS := \
     src/api/app.c \
     src/api/groups.c \
     src/api/system.c src/api/profiles_api.c \
+    src/api/config_yaml.c \
     src/platform/dns_clients_service.c src/platform/dns_openwrt.c \
     src/update/release.c src/platform/update.c \
     src/api/staticfiles.c \
@@ -370,6 +372,10 @@ $(BUILDDIR)/tests/test_ruleset_indexed: tests/unit/test_ruleset_indexed.c $(LIB_
 $(BUILDDIR)/tests/test_profiles_reload: tests/unit/test_profiles_reload.c $(LIB_OBJS) $(TEST_SUPPORT_OBJS)
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -Itests/vendor -Itests/unit $(LDFLAGS) -Wl,--wrap=mt_ipset_nl_real_new -o $@ $< $(LIB_OBJS) $(TEST_SUPPORT_OBJS) $(LDLIBS) $(DEP_LIBS)
+
+$(BUILDDIR)/tests/test_config_yaml: tests/unit/test_config_yaml.c $(LIB_OBJS) $(TEST_SUPPORT_OBJS)
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) -Itests/vendor -Itests/unit $(LDFLAGS) -Wl,--wrap=rename -o $@ $< $(LIB_OBJS) $(TEST_SUPPORT_OBJS) $(LDLIBS) $(DEP_LIBS)
 
 # Wrappers are confined to these test executables, including sanitizer builds.
 $(BUILDDIR)/tests/test_profile_routes: tests/unit/test_profile_routes.c $(LIB_OBJS) $(TEST_SUPPORT_OBJS)

@@ -72,6 +72,8 @@ Routes (all under `/api/v1`):
 | DELETE /subscriptions/{id}?save | 200 / 404 |
 | GET /system/interfaces | 200 `{"interfaces":[{"id","name"?}]}` |
 | POST /system/config/save | 200 `{}`? (writes config; error → 500) |
+| GET /system/config/yaml (D-90) | 200 raw UTF-8 `yaml`, opaque `revision`, `restart_required`, `out_of_sync`; missing file generates live YAML without writing; unavailable path → 503, unreadable → 500, file >16 MiB → 413 |
+| PUT /system/config/yaml (D-90) | JSON `{yaml, revision, allow_out_of_sync?: bool}`; validates one known unambiguous document and atomically saves exact bytes with transactional model apply. 400 invalid, 409 stale or unacknowledged disk/live divergence, 413 size limit, 500 apply/persist failure, 503 unavailable |
 | POST /system/hooks/netfilterd | body `{"type","table"}`; triggers iptables re-commit; 200 |
 | **GET /system/update (D-74)** | **200** `{"installed_version":string,"installed_revision":positive_integer,"asset_suffix":string,"can_install":bool,"reason":string}`; purely local, no GitHub request; capability failures are described in `reason`, allocation failure → **500** |
 | **GET /system/update/status (D-74)** | **200** volatile preparation/job JSON (D-75); `idle` with no active job, or `installing, external:true` without job ID while a detached system installer holds the lock after restart; lock access/allocation failure → **500** |

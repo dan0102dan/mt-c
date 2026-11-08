@@ -18,6 +18,7 @@ import {
 import { registerMockDnsRoutes } from "./dns-mock.ts";
 import { registerMockPolicyRoutes } from "./keenetic-policy-mock.ts";
 import { registerMockUpdateRoutes } from "./update-mock.ts";
+import { registerMockYamlRoutes } from "./yaml-mock.ts";
 
 const API_BASE = "/api/v1";
 
@@ -420,6 +421,7 @@ function mockConfig(): ServerConfig {
     profiles: structuredClone(PROFILES),
     subscriptions: SUBSCRIPTIONS.map((sub) => ({
       ...structuredClone(sub),
+      priority: sub.priority ?? DEFAULT_SUBSCRIPTION_PRIORITY,
       interval: sub.interval ?? 86400,
       last_update: sub.lastUpdate ?? 0,
     })),
@@ -428,45 +430,56 @@ function mockConfig(): ServerConfig {
 function mockRevision() {
   return JSON.stringify(mockConfig());
 }
-app.get(`${API_BASE}/system/config/snapshot`, (c) =>
-  c.json({ revision: mockRevision(), config: mockConfig() }),
-);
-app.post(`${API_BASE}/system/config/apply`, async (c) => {
-  const body = await c.req.json();
-  if (body.revision !== mockRevision()) return c.json({ error: "stale config preview" }, 409);
-  const candidate: ServerConfig = body.config;
+function isConfigObject(value: unknown): value is Record<string, unknown> {
+  return !!value && typeof value === "object" && !Array.isArray(value);
+}
+function applyMockConfig(value: unknown) {
+  // Keep the existing mock's shallow validation shared by import and YAML.
+  // The production C endpoint remains authoritative for the full config schema.
   if (
-    !Array.isArray(candidate?.groups) ||
-    !Array.isArray(candidate?.profiles) ||
-    !Array.isArray(candidate?.subscriptions) ||
-    !candidate.app
-  ) {
-    return c.json({ error: "invalid config" }, 400);
-  }
+    !isConfigObject(value) ||
+    !isConfigObject(value.app) ||
+    !Array.isArray(value.groups) ||
+    !Array.isArray(value.profiles) ||
+    !Array.isArray(value.subscriptions) ||
+    ![...value.groups, ...value.profiles, ...value.subscriptions].every(isConfigObject)
+  )
+    throw new Error("invalid config");
+  const candidate = value as ServerConfig;
   const ids = new Set(candidate.profiles.map((p) => p.id));
   if (
     [...candidate.groups, ...candidate.subscriptions].some(
       (route) => route.profile && !ids.has(route.profile),
     )
   )
-    return c.json({ error: "missing profile" }, 400);
+    throw new Error("missing profile");
+  const before = new Map(SUBSCRIPTIONS.map((sub) => [sub.id, sub]));
+  const subscriptions = candidate.subscriptions.map((sub) => {
+    const cached = before.get(sub.id);
+    const retained = cached?.url === sub.url ? cached : undefined;
+    const originalRules = sub.rules ?? retained?.rules ?? [];
+    const rules = applyRuleOverrides(originalRules, sub.overrides ?? []).rules;
+    return { ...sub, rules, lastUpdate: retained?.lastUpdate ?? sub.last_update ?? 0 };
+  });
   PROFILES = structuredClone(candidate.profiles);
   DATA.groups = structuredClone(candidate.groups);
-  const before = new Map(SUBSCRIPTIONS.map((sub) => [sub.id, sub]));
-  SUBSCRIPTIONS.splice(
-    0,
-    SUBSCRIPTIONS.length,
-    ...candidate.subscriptions.map((sub) => {
-      const cached = before.get(sub.id);
-      const retained = cached?.url === sub.url ? cached : undefined;
-      const originalRules = sub.rules ?? retained?.rules ?? [];
-      const rules = applyRuleOverrides(originalRules, sub.overrides ?? []).rules;
-      return { ...sub, rules, lastUpdate: retained?.lastUpdate ?? sub.last_update ?? 0 };
-    }),
-  );
+  SUBSCRIPTIONS.splice(0, SUBSCRIPTIONS.length, ...subscriptions);
   appSettings = structuredClone(candidate.app);
+}
+app.get(`${API_BASE}/system/config/snapshot`, (c) =>
+  c.json({ revision: mockRevision(), config: mockConfig() }),
+);
+app.post(`${API_BASE}/system/config/apply`, async (c) => {
+  const body = await c.req.json();
+  if (body.revision !== mockRevision()) return c.json({ error: "stale config preview" }, 409);
+  try {
+    applyMockConfig(body.config);
+  } catch (error) {
+    return c.json({ error: error instanceof Error ? error.message : "invalid config" }, 400);
+  }
   return c.json({ ok: true });
 });
+registerMockYamlRoutes(app, { get: mockConfig, apply: applyMockConfig });
 
 app.get(`${API_BASE}/system/interfaces`, (c) => c.json(INTERFACES));
 app.get(`${API_BASE}/logs`, async (c) => {
