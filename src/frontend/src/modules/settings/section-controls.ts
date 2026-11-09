@@ -5,10 +5,12 @@ import type { ContextAction } from "../../components/layout/PageControls.svelte"
 export type SectionControls = {
   canSave: boolean;
   dirty: boolean;
-  /** Whole-file writers save separately from structured settings sections. */
-  exclusive?: boolean;
+  /** Confirm before any section is written; runtime changes run last. */
+  prepareSave?: () => Promise<boolean>;
+  saveLast?: boolean;
   validationMessage?: string;
   toolbarFeedback?: Snippet;
+  dialog?: Snippet;
   onSave: () => Promise<void>;
   addLabel?: string;
   canAdd?: boolean;

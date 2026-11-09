@@ -17,8 +17,8 @@ import {
 } from "../src/utils/priority.ts";
 import { registerMockDnsRoutes } from "./dns-mock.ts";
 import { registerMockPolicyRoutes } from "./keenetic-policy-mock.ts";
+import { registerMockSettingsRoutes } from "./settings-mock.ts";
 import { registerMockUpdateRoutes } from "./update-mock.ts";
-import { registerMockYamlRoutes } from "./yaml-mock.ts";
 
 const API_BASE = "/api/v1";
 
@@ -109,7 +109,7 @@ app.use(cors());
 
 // Auth Middleware
 app.use(`${API_BASE}/*`, async (c, next) => {
-  if (c.req.path === `${API_BASE}/auth` || !AUTH_ENABLED) {
+  if (c.req.path === `${API_BASE}/auth` || !mockAuthEnabled()) {
     await next();
     return;
   }
@@ -125,10 +125,11 @@ app.use(`${API_BASE}/*`, async (c, next) => {
 registerMockDnsRoutes(app);
 
 app.get(`${API_BASE}/auth`, async (c) => {
-  return c.json({ enabled: AUTH_ENABLED }, 200);
+  return c.json({ enabled: mockAuthEnabled() }, 200);
 });
 
 app.post(`${API_BASE}/auth`, async (c) => {
+  if (!mockAuthEnabled()) return c.json({ error: "Authentication is disabled" }, 404);
   const body = await c.req.json();
   if (body.login === "root" && body.password === "keenetic") {
     return c.json({ token: STATIC_TOKEN });
@@ -387,7 +388,7 @@ registerMockPolicyRoutes(app, {
 let appSettings: ServerConfig["app"] = {
   httpWeb: {
     enabled: true,
-    auth: { enabled: false },
+    auth: { enabled: AUTH_ENABLED },
     host: { address: "0.0.0.0", port: 6969 },
     skin: "",
   },
@@ -413,6 +414,12 @@ let appSettings: ServerConfig["app"] = {
   showAllInterfaces: false,
   logLevel: "info",
 };
+function mockAuthEnabled() {
+  const http = appSettings.httpWeb;
+  if (!http || typeof http !== "object" || Array.isArray(http)) return AUTH_ENABLED;
+  const auth = http.auth;
+  return !!auth && typeof auth === "object" && !Array.isArray(auth) && auth.enabled === true;
+}
 function mockConfig(): ServerConfig {
   return {
     configVersion: "0.8.5",
@@ -434,7 +441,7 @@ function isConfigObject(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === "object" && !Array.isArray(value);
 }
 function applyMockConfig(value: unknown) {
-  // Keep the existing mock's shallow validation shared by import and YAML.
+  // Keep the existing mock's shallow validation shared by import and settings.
   // The production C endpoint remains authoritative for the full config schema.
   if (
     !isConfigObject(value) ||
@@ -479,7 +486,7 @@ app.post(`${API_BASE}/system/config/apply`, async (c) => {
   }
   return c.json({ ok: true });
 });
-registerMockYamlRoutes(app, { get: mockConfig, apply: applyMockConfig });
+registerMockSettingsRoutes(app, { get: mockConfig, apply: applyMockConfig });
 
 app.get(`${API_BASE}/system/interfaces`, (c) => c.json(INTERFACES));
 app.get(`${API_BASE}/logs`, async (c) => {

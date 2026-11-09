@@ -57,6 +57,8 @@ struct mt_http_res {
     size_t body_len;
     bool responded;
     bool streaming;
+    mt_http_sent_fn on_sent;
+    void *on_sent_ud;
 };
 
 typedef struct route {
@@ -107,6 +109,8 @@ struct mt_http_conn {
     bool close_after_write;
     bool http_1_0;
     int idle_timer_id;
+    mt_http_sent_fn on_sent;
+    void *on_sent_ud;
 };
 
 /* ---- small string helpers -------------------------------------------------- */
@@ -194,6 +198,11 @@ const uint8_t *mt_http_req_body(const mt_http_req_t *req, size_t *len) {
 
 /* ---- response building ------------------------------------------------------ */
 
+void mt_http_res_on_sent(mt_http_res_t *res, mt_http_sent_fn callback, void *userdata) {
+    res->on_sent = callback;
+    res->on_sent_ud = userdata;
+}
+
 void mt_http_res_set_header(mt_http_res_t *res, const char *name, const char *value) {
     if (res->n_headers >= MT_HTTPD_MAX_RES_HEADERS) { return; }
     snprintf(res->headers[res->n_headers].name, sizeof(res->headers[0].name), "%s", name);
@@ -218,16 +227,19 @@ void mt_http_res_write(mt_http_res_t *res, int status, const char *content_type,
     res->responded = true;
 }
 
-void mt_http_res_write_json(mt_http_res_t *res, int status, cJSON *obj) {
+bool mt_http_res_write_json(mt_http_res_t *res, int status, cJSON *obj) {
     char *dump = mt_json_dump(obj);
     cJSON_Delete(obj);
     if (!dump) {
         mt_http_res_write_error(res, 500, "failed to encode response");
-        return;
+        return false;
     }
+    size_t length = strlen(dump);
     mt_http_res_write(res, status, "application/json; charset=utf-8", (const uint8_t *)dump,
-                      strlen(dump));
+                      length);
     free(dump);
+    if (res->body_len != length) { res->status = 500; return false; }
+    return true;
 }
 
 void mt_http_res_write_error(mt_http_res_t *res, int status, const char *msg) {
@@ -312,6 +324,11 @@ static route_t *match_route(mt_httpd_t *h, const char *method, const char *path,
 static void stream_cleanup(mt_http_conn_t *c);
 
 static void conn_destroy(mt_http_conn_t *c) {
+    if (c->on_sent) {
+        mt_http_sent_fn callback = c->on_sent;
+        c->on_sent = NULL;
+        callback(c->on_sent_ud, false);
+    }
     stream_cleanup(c);
     if (c->pending) { c->pending->conn = NULL; c->pending = NULL; }
     if (c->idle_timer_id) { mt_loop_del_timer(c->server->loop, c->idle_timer_id); }
@@ -373,6 +390,7 @@ static void on_conn_readable(mt_loop_t *loop, int fd, uint32_t events, void *ud)
  * handles a fd requires del_fd + add_fd with the new callback, the same
  * pattern dns/proxy.c uses for its client-writable handoff. */
 static void start_write(mt_http_conn_t *c) {
+    if (!c->wbuf) { conn_close(c); return; }
     while (c->wbuf_sent < c->wbuf_len) {
         ssize_t n = send(c->fd, c->wbuf + c->wbuf_sent, c->wbuf_len - c->wbuf_sent, MSG_NOSIGNAL);
         if (n < 0) {
@@ -390,6 +408,11 @@ static void start_write(mt_http_conn_t *c) {
         c->wbuf_sent += (size_t)n;
     }
     /* fully written */
+    if (c->on_sent) {
+        mt_http_sent_fn callback = c->on_sent;
+        c->on_sent = NULL;
+        callback(c->on_sent_ud, true);
+    }
     if (c->close_after_write) {
         conn_close(c);
         return;
@@ -417,6 +440,7 @@ static void on_conn_writable(mt_loop_t *loop, int fd, uint32_t events, void *ud)
 static const char *reason_phrase(int status) {
     switch (status) {
     case 200: return "OK";
+    case 202: return "Accepted";
     case 400: return "Bad Request";
     case 401: return "Unauthorized";
     case 404: return "Not Found";
@@ -432,6 +456,8 @@ static const char *reason_phrase(int status) {
 }
 
 static void build_response_bytes(mt_http_conn_t *c, const mt_http_res_t *res) {
+    c->on_sent = res->on_sent;
+    c->on_sent_ud = res->on_sent_ud;
     char head[2048];
     int off = snprintf(head, sizeof(head), "HTTP/1.1 %d %s\r\n", res->status,
                        reason_phrase(res->status));
@@ -692,7 +718,6 @@ static size_t request_body_limit(const mt_http_req_t *req) {
     }
     const char *config = "/api/v1/system/config/apply";
     if (strcmp(req->path, config) == 0) return (size_t)24 * 1024 * 1024;
-    if (strcmp(req->path, "/api/v1/system/config/yaml") == 0) return (size_t)24 * 1024 * 1024;
     const char *prefixes[] = {"/api/v1/groups", "/api/v1/subscriptions"};
     for (size_t i = 0; i < 2; i++) {
         size_t len = strlen(prefixes[i]);
@@ -966,6 +991,15 @@ mt_err_t mt_httpd_listen_tcp(mt_httpd_t *h, const char *addr, uint16_t port) {
     }
     h->tcp_fd = fd;
     return MT_OK;
+}
+
+uint16_t mt_httpd_tcp_port(const mt_httpd_t *h) {
+    if (!h || h->tcp_fd < 0) { return 0; }
+    struct sockaddr_storage address;
+    socklen_t length = sizeof(address);
+    if (getsockname(h->tcp_fd, (struct sockaddr *)&address, &length)) { return 0; }
+    return address.ss_family == AF_INET ? ntohs(((struct sockaddr_in *)&address)->sin_port) :
+           address.ss_family == AF_INET6 ? ntohs(((struct sockaddr_in6 *)&address)->sin6_port) : 0;
 }
 
 mt_err_t mt_httpd_listen_unix(mt_httpd_t *h, const char *path) {

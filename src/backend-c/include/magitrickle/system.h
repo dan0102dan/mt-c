@@ -10,6 +10,7 @@
 #include "magitrickle/dns_query_log.h"
 #include "magitrickle/dns_clients.h"
 #include "magitrickle/httpd.h"
+#include "magitrickle/settings.h"
 
 #ifdef MT_ENTWARE_KN
 #include "magitrickle/keenetic_ifstate_service.h"
@@ -20,6 +21,7 @@ typedef struct mt_system_ctx {
     mt_kn_ifstate_service_t *interface_service; /* optional, borrowed */
 #endif
     mt_app_t *app;
+    mt_settings_t *settings; /* controller survives runtime reconstruction */
     mt_dns_query_log_t *query_log; /* nullable in system API tests */
     mt_dns_clients_t *dns_clients; /* optional loop-owned device label cache */
     /* Same meaning as mt_groups_ctx_t's fields (groups.h): used for
@@ -33,7 +35,5 @@ typedef struct mt_system_ctx {
  * /api/v1/system/config/save, and POST /api/v1/system/hooks/netfilterd
  * on `h`. `ctx` must outlive the server. */
 void mt_system_register_routes(mt_httpd_t *h, mt_system_ctx_t *ctx);
-/* Included by mt_system_register_routes; separate entry point for focused tests. */
-void mt_system_register_yaml_routes(mt_httpd_t *h, mt_system_ctx_t *ctx);
 
 #endif /* MAGITRICKLE_SYSTEM_H */

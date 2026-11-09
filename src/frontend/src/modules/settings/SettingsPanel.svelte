@@ -6,8 +6,8 @@
   import PageControls from "../../components/layout/PageControls.svelte";
   import { t } from "../../data/locale.svelte";
   import DnsQueryLog from "./dns/DnsQueryLog.svelte";
+  import GeneralSettingsPanel from "./general/GeneralSettingsPanel.svelte";
   import ProfilesPanel from "./ProfilesPanel.svelte";
-  import YamlConfigPanel from "./yaml/YamlConfigPanel.svelte";
 
   import { toast } from "../../utils/events";
   import { CONFIG_TRANSFER_CONTEXT, type ConfigTransferControls } from "../config-transfer/context";
@@ -28,24 +28,15 @@
     profiles: t("Profiles"),
     keenetic: "Keenetic",
     dns: t("DNS queries"),
-    yaml: "YAML",
+    general: t("General"),
   });
   const visibleControls = $derived(visibleSection?.controls());
-  const saveSections = $derived(
-    visibleControls?.exclusive
-      ? visibleSection
-        ? [visibleSection]
-        : []
-      : sections.filter((section) => !section.controls().exclusive),
-  );
-  const dirty = $derived(saveSections.some((section) => section.controls().dirty));
+  const dirty = $derived(sections.some((section) => section.controls().dirty));
   const invalid = $derived(
-    saveSections
-      .find((section) => section.controls().dirty && !section.controls().canSave)
-      ?.controls(),
+    sections.find((section) => section.controls().dirty && !section.controls().canSave)?.controls(),
   );
   const validationSections = $derived(
-    saveSections.filter((section) => {
+    sections.filter((section) => {
       const controls = section.controls();
       return controls.dirty && controls.validationMessage;
     }),
@@ -55,14 +46,23 @@
 
   async function saveAll() {
     if (!canSave) return;
-    // Both section APIs persist the same configuration file: serialize
-    // writes. The failed section remains dirty; other edits still save.
-    const pending = saveSections.filter((section) => section.controls().dirty);
+    // Confirm runtime changes before writing any section, then apply them last
+    // so listener/auth changes cannot interrupt the other settings saves.
+    const pending = sections
+      .filter((section) => section.controls().dirty)
+      .sort(
+        (a, b) => Number(Boolean(a.controls().saveLast)) - Number(Boolean(b.controls().saveLast)),
+      );
     saving = true;
     let succeeded = 0;
     let failed = 0;
     try {
       for (const section of pending) {
+        const prepare = section.controls().prepareSave;
+        if (prepare && !(await prepare())) return;
+      }
+      for (const section of pending) {
+        if (section.controls().saveLast && failed) continue;
         try {
           await section.controls().onSave();
           succeeded++;
@@ -77,6 +77,22 @@
     }
   }
 
+  function handleSaveShortcut(event: KeyboardEvent) {
+    if (
+      !active ||
+      event.defaultPrevented ||
+      event.isComposing ||
+      event.altKey ||
+      event.shiftKey ||
+      !(event.ctrlKey || event.metaKey) ||
+      event.key.toLowerCase() !== "s"
+    )
+      return;
+    if (document.querySelector('[data-dialog-content][data-state="open"]')) return;
+    event.preventDefault();
+    void saveAll();
+  }
+
   setContext<RegisterSection>(SETTINGS_SECTIONS, (section) => {
     sections = [...sections, section];
     return () => {
@@ -84,6 +100,13 @@
     };
   });
 </script>
+
+<svelte:window onkeydown={handleSaveShortcut} />
+
+{#each sections as section (section.element.id)}
+  {@const dialog = section.controls().dialog}
+  {#if dialog}{@render dialog()}{/if}
+{/each}
 
 <Tabs.Root bind:value={selected} class="settings-page">
   <div class="settings-toolbar">
@@ -114,9 +137,10 @@
         </Tabs.List>
       {/snippet}
     </PageControls>
-    {#if visibleControls?.toolbarFeedback}
-      {@render visibleControls.toolbarFeedback()}
-    {/if}
+    {#each sections as section (section.element.id)}
+      {@const feedback = section.controls().toolbarFeedback}
+      {#if feedback}{@render feedback()}{/if}
+    {/each}
     {#each validationSections as section (section.element.id)}
       <span
         id={`settings-validation-${section.element.id}`}
@@ -132,8 +156,8 @@
   <Tabs.Content value="dns" class="settings-content"
     ><DnsQueryLog active={active && selected === "dns"} /></Tabs.Content
   >
-  <Tabs.Content value="yaml" class="settings-content">
-    <YamlConfigPanel active={active && selected === "yaml"} />
+  <Tabs.Content value="general" class="settings-content">
+    <GeneralSettingsPanel active={active && selected === "general"} pageSaving={saving} />
   </Tabs.Content>
 </Tabs.Root>
 

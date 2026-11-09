@@ -891,75 +891,83 @@ static void on_tcp_accept(mt_loop_t *loop, int fd, uint32_t events, void *ud)
 
 /* ---- public API ---- */
 
-mt_err_t mt_dnsproxy_create(const mt_dnsproxy_config_t *cfg, mt_loop_t *loop,
-                            mt_dnsproxy_msg_cb cb, void *cb_ud,
-                            mt_dnsproxy_t **out)
+mt_err_t mt_dnsproxy_resolve_upstream(const char *address, uint16_t port,
+                                     mt_dns_upstream_t *out)
 {
-    mt_dnsproxy_t *p = calloc(1, sizeof(*p));
-    if (p == NULL) {
-        return MT_ERR_NOMEM;
-    }
-    p->cfg = *cfg;
-    p->loop = loop;
-    p->cb = cb;
-    p->cb_ud = cb_ud;
-    p->udp_fd = -1;
-    p->tcp_fd = -1;
-
-    int fam_listen;
-    struct sockaddr_storage listen_sa;
-    socklen_t listen_len;
-    if (parse_listen(cfg->listen_addr, cfg->listen_port, &fam_listen,
-                     &listen_sa, &listen_len) != 0) {
-        free(p);
-        return MT_ERR_INVAL;
-    }
-    p->family = fam_listen;
-
-    /* Unlike inet_pton, getaddrinfo accepts the hostnames accepted by
-     * Go's net.Dialer. Resolve once at startup, outside the event loop;
-     * upstream and listener families are independent. */
-    const char *upstream = cfg->upstream_addr;
     char host[256];
-    if (!upstream || strlen(upstream) >= sizeof(host)) {
-        free(p);
+    if (!address || !*address || strlen(address) >= sizeof(host) || !out) {
         return MT_ERR_INVAL;
     }
-    snprintf(host, sizeof(host), "%s", upstream);
+    snprintf(host, sizeof(host), "%s", address);
     size_t host_len = strlen(host);
     if (host_len >= 2 && host[0] == '[' && host[host_len - 1] == ']') {
         host[host_len - 1] = '\0';
         memmove(host, host + 1, host_len - 1);
     }
     char service[6];
-    snprintf(service, sizeof(service), "%u", cfg->upstream_port);
+    snprintf(service, sizeof(service), "%u", port);
     struct addrinfo hints = {0}, *addresses = NULL;
     hints.ai_family = AF_UNSPEC;
     hints.ai_socktype = SOCK_DGRAM;
     hints.ai_flags = AI_NUMERICSERV;
     if (getaddrinfo(host, service, &hints, &addresses) != 0 || !addresses) {
-        free(p);
         return MT_ERR_INVAL;
     }
-    if (addresses->ai_addrlen > sizeof(p->upstream_sa)) {
+    if (addresses->ai_addrlen > sizeof(out->address)) {
         freeaddrinfo(addresses);
-        free(p);
         return MT_ERR_INVAL;
     }
-    memcpy(&p->upstream_sa, addresses->ai_addr, addresses->ai_addrlen);
-    p->upstream_sa_len = addresses->ai_addrlen;
-    p->family = addresses->ai_family;
+    memset(out, 0, sizeof(*out));
+    memcpy(&out->address, addresses->ai_addr, addresses->ai_addrlen);
+    out->length = addresses->ai_addrlen;
     freeaddrinfo(addresses);
+    return MT_OK;
+}
 
+mt_err_t mt_dnsproxy_create_resolved(const mt_dnsproxy_config_t *cfg, mt_loop_t *loop,
+                                     mt_dnsproxy_msg_cb cb, void *cb_ud,
+                                     const mt_dns_upstream_t *upstream,
+                                     mt_dnsproxy_t **out)
+{
+    if (!upstream || !upstream->length || upstream->length > sizeof(upstream->address) ||
+        (upstream->address.ss_family != AF_INET && upstream->address.ss_family != AF_INET6)) {
+        return MT_ERR_INVAL;
+    }
+    mt_dnsproxy_t *p = calloc(1, sizeof(*p));
+    if (!p) { return MT_ERR_NOMEM; }
+    p->cfg = *cfg;
+    p->loop = loop;
+    p->cb = cb;
+    p->cb_ud = cb_ud;
+    p->udp_fd = -1;
+    p->tcp_fd = -1;
+    int fam_listen;
+    struct sockaddr_storage listen_sa;
+    socklen_t listen_len;
+    if (parse_listen(cfg->listen_addr, cfg->listen_port, &fam_listen,
+                     &listen_sa, &listen_len) != 0) {
+        free(p); return MT_ERR_INVAL;
+    }
+    p->upstream_sa = upstream->address;
+    p->upstream_sa_len = upstream->length;
+    p->family = upstream->address.ss_family;
     p->cfg.listen_addr = strdup(cfg->listen_addr ? cfg->listen_addr : "0.0.0.0");
-    p->cfg.upstream_addr = strdup(upstream);
+    p->cfg.upstream_addr = strdup(cfg->upstream_addr);
     pool_init(&p->udp_pool, cfg->max_idle_conns);
     if (!p->cfg.listen_addr || !p->cfg.upstream_addr || !p->udp_pool.fds) {
-        mt_dnsproxy_destroy(p);
-        return MT_ERR_NOMEM;
+        mt_dnsproxy_destroy(p); return MT_ERR_NOMEM;
     }
     *out = p;
     return MT_OK;
+}
+
+mt_err_t mt_dnsproxy_create(const mt_dnsproxy_config_t *cfg, mt_loop_t *loop,
+                            mt_dnsproxy_msg_cb cb, void *cb_ud,
+                            mt_dnsproxy_t **out)
+{
+    mt_dns_upstream_t upstream;
+    mt_err_t err = mt_dnsproxy_resolve_upstream(cfg->upstream_addr, cfg->upstream_port, &upstream);
+    return err == MT_OK ? mt_dnsproxy_create_resolved(cfg, loop, cb, cb_ud, &upstream, out) : err;
 }
 
 mt_err_t mt_dnsproxy_start(mt_dnsproxy_t *p)
@@ -993,6 +1001,16 @@ mt_err_t mt_dnsproxy_start(mt_dnsproxy_t *p)
         return e;
     }
     p->udp_fd = ufd;
+
+    /* A legacy port 0 selects one port shared by UDP and TCP. Publish the
+     * actual port so an interactive settings snapshot is usable. */
+    if (p->cfg.listen_port == 0) {
+        socklen_t bound_len = sizeof(listen_sa);
+        if (getsockname(ufd, (struct sockaddr *)&listen_sa, &bound_len) != 0) { return mt_err_from_errno(errno); }
+        listen_len = bound_len;
+        p->cfg.listen_port = fam == AF_INET ? ntohs(((struct sockaddr_in *)&listen_sa)->sin_port) :
+                                                     ntohs(((struct sockaddr_in6 *)&listen_sa)->sin6_port);
+    }
 
     /* TCP */
     int tfd = socket(fam, SOCK_STREAM | SOCK_NONBLOCK | SOCK_CLOEXEC, 0);
@@ -1030,6 +1048,8 @@ mt_err_t mt_dnsproxy_start(mt_dnsproxy_t *p)
             p->cfg.upstream_port);
     return MT_OK;
 }
+
+uint16_t mt_dnsproxy_listen_port(const mt_dnsproxy_t *p) { return p ? p->cfg.listen_port : 0; }
 
 void mt_dnsproxy_set_query_log(mt_dnsproxy_t *p, mt_dns_query_log_t *log)
 {

@@ -487,7 +487,7 @@ void mt_system_register_routes(mt_httpd_t *h, mt_system_ctx_t *ctx) {
     must_route(h, "GET", "/api/v1/system/dns/capture", handle_dns_capture, ctx);
     must_route(h, "PUT", "/api/v1/system/dns/capture", handle_dns_capture, ctx);
     mt_profiles_register_routes(h, ctx);
-    mt_system_register_yaml_routes(h, ctx);
+    mt_settings_register_routes(h, ctx->settings);
     mt_update_register_routes(h, ctx);
     must_route(h, "GET", "/api/v1/system/interfaces", handle_list_interfaces, ctx);
     must_route(h, "GET", "/api/v1/system/dns/queries", handle_dns_queries, ctx);

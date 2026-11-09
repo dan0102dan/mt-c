@@ -37,7 +37,6 @@ struct mt_app {
     atomic_int policy_apply_error;
 #endif
     mt_config_t *cfg;
-    mt_app_config_t startup_config;
     /* Immutable startup helper names: rulesets borrow these, not the
      * reloadable configuration strings. */
     char *ipset_prefix;
@@ -239,9 +238,6 @@ mt_app_t *mt_app_create(const mt_app_deps_t *deps) {
     if (!app) { return NULL; }
     app->cfg = deps->cfg;
     if (mt_profiles_normalize(app->cfg) != MT_OK) { mt_app_destroy(app); return NULL; }
-    if (mt_app_config_clone(&app->startup_config, &app->cfg->app) != MT_OK) {
-        mt_app_destroy(app); return NULL;
-    }
     if (mt_strset(&app->ipset_prefix, deps->cfg->app.netfilter.ipset.table_prefix) != MT_OK ||
         mt_strset(&app->chain_prefix, deps->cfg->app.netfilter.iptables.chain_prefix) != MT_OK) {
         mt_app_destroy(app);
@@ -289,6 +285,22 @@ mt_app_t *mt_app_create(const mt_app_deps_t *deps) {
     return app;
 }
 
+mt_err_t mt_app_suspend(mt_app_t *app) {
+    if (!app) { return MT_OK; }
+    mt_app_stop_netfilter_committer(app);
+    app->running = false;
+    mt_err_t first = MT_OK;
+    for (size_t i = 0; i < app->n_rulesets; i++) {
+        mt_err_t err = mt_ruleset_disable(app->rulesets[i]);
+        if (first == MT_OK) { first = err; }
+    }
+    for (size_t i = 0; i < app->n_sub_rulesets; i++) {
+        mt_err_t err = mt_ruleset_disable(app->sub_rulesets[i]);
+        if (first == MT_OK) { first = err; }
+    }
+    return first;
+}
+
 void mt_app_destroy(mt_app_t *app) {
     if (!app) { return; }
     /* Nothing below is safe while a rebuild can still be reading the
@@ -304,7 +316,6 @@ void mt_app_destroy(mt_app_t *app) {
     free(app->sub_synth_groups);
     free(app->ipset_prefix);
     free(app->chain_prefix);
-    mt_app_config_clear(&app->startup_config);
     free(app);
 }
 
@@ -1447,45 +1458,6 @@ mt_err_t mt_app_save_config(mt_app_t *app, const char *path, const char *version
 
 mt_err_t mt_app_config_snapshot_json(mt_app_t *app, const char *version, cJSON **out) {
     return mt_config_save_json(app->cfg, version, out);
-}
-
-mt_err_t mt_app_config_snapshot_yaml(mt_app_t *app, const char *version,
-                                      char **out, size_t *out_len) {
-    return mt_config_save_buffer(app->cfg, version, out, out_len);
-}
-
-bool mt_app_config_restart_required(const mt_app_t *app, const mt_app_config_t *candidate) {
-    const mt_app_config_t *a = &app->startup_config;
-    const mt_app_config_t *b = candidate ? candidate : &app->cfg->app;
-    /* Listeners, upstream transport, limits, logger, redirect topology and
-     * helper names are captured during daemon startup. Authentication/skin
-     * are included conservatively because their consumers also span servers.
-     * showAllInterfaces, additionalTTL and Keenetic policy are live settings. */
-    if (a->http_web.enabled != b->http_web.enabled ||
-        a->http_web.auth.enabled != b->http_web.auth.enabled ||
-        a->http_web.host.port != b->http_web.host.port ||
-        !same_text(a->http_web.host.address, b->http_web.host.address) ||
-        !same_text(a->http_web.skin, b->http_web.skin) ||
-        a->dns_proxy.host.port != b->dns_proxy.host.port ||
-        a->dns_proxy.upstream.port != b->dns_proxy.upstream.port ||
-        !same_text(a->dns_proxy.host.address, b->dns_proxy.host.address) ||
-        !same_text(a->dns_proxy.upstream.address, b->dns_proxy.upstream.address) ||
-        a->dns_proxy.disable_remap53 != b->dns_proxy.disable_remap53 ||
-        a->dns_proxy.disable_fake_ptr != b->dns_proxy.disable_fake_ptr ||
-        a->dns_proxy.disable_drop_aaaa != b->dns_proxy.disable_drop_aaaa ||
-        a->dns_proxy.max_idle_conns != b->dns_proxy.max_idle_conns ||
-        a->dns_proxy.max_concurrent != b->dns_proxy.max_concurrent ||
-        a->dns_proxy.timeout != b->dns_proxy.timeout ||
-        !same_text(a->netfilter.iptables.chain_prefix, b->netfilter.iptables.chain_prefix) ||
-        !same_text(a->netfilter.ipset.table_prefix, b->netfilter.ipset.table_prefix) ||
-        a->netfilter.disable_ipv4 != b->netfilter.disable_ipv4 ||
-        a->netfilter.disable_ipv6 != b->netfilter.disable_ipv6 ||
-        a->netfilter.start_mark_table_index != b->netfilter.start_mark_table_index ||
-        a->n_link != b->n_link || !same_text(a->log_level, b->log_level)) { return true; }
-    for (size_t i = 0; i < a->n_link; i++) {
-        if (!same_text(a->link[i], b->link[i])) { return true; }
-    }
-    return false;
 }
 
 void mt_app_set_port_remap(mt_app_t *app, mt_port_remap_t *remap) {

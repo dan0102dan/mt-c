@@ -51,6 +51,7 @@
   import { LayoutList, Menu, RSS, Settings } from "../ui/icons";
   import { PAGE_CONTROLS_MOTION, type PageControlsMotion } from "./page-controls-motion";
 
+  let { active = true }: { active?: boolean } = $props();
   setContext<PageControlsMotion>(PAGE_CONTROLS_MOTION, {});
 
   const lastActiveTab = persistedState("active_tab", "groups");
@@ -64,7 +65,7 @@
     lastActiveTab.current = active_tab;
     // Tab content stays mounted. onMount alone cannot refresh usage after
     // Groups/Subscriptions have saved a different profile assignment.
-    if (active_tab === "settings") {
+    if (active && active_tab === "settings") {
       untrack(() => void fetchProfiles({ fresh: true }));
     }
   });
@@ -302,28 +303,14 @@
         if (policySource === source) policySource = undefined;
       };
     },
-    rawConfigBlocked: () =>
+    connectionChangeBlocked: () =>
       transferBusy ||
       !!(groupsStore && !groupsStore.dataLoaded) ||
       !!(subscriptionsStore && !subscriptionsStore.dataLoaded) ||
       !!groupsStore?.hasUnsavedChanges ||
       !!subscriptionsStore?.hasUnsavedChanges ||
-      profilesDirty() ||
-      !!policySource?.dirty() ||
       !!groupsStore?.saving ||
-      !!subscriptionsStore?.saving ||
-      profiles.saving ||
-      !!policySource?.saving(),
-    async refreshAfterYaml() {
-      await Promise.all([
-        groupsStore?.mount({ preserveDrafts: true }),
-        subscriptionsStore?.mount({ preserveDrafts: true }),
-        fetchProfiles({ fresh: true, rebaseDrafts: true }),
-        policySource?.refresh(),
-      ]);
-      if (groupsStore?.fetchError || subscriptionsStore?.fetchError || profiles.failed)
-        throw new Error("Configuration view refresh failed");
-    },
+      !!subscriptionsStore?.saving,
     exportConfig: exportCurrentConfig,
     importConfig: openConfigImport,
   };
@@ -334,6 +321,7 @@
 
   function handleSearchShortcut(event: KeyboardEvent) {
     if (
+      !active ||
       event.defaultPrevented ||
       event.isComposing ||
       event.altKey ||
@@ -445,18 +433,18 @@
     <article>
       <Tabs.Content value="groups" class="app-tab-content">
         <GroupsView
-          active={active_tab === "groups"}
+          active={active && active_tab === "groups"}
           onRenderComplete={() => (isRenderCompleteGroups = true)}
         />
       </Tabs.Content>
       <Tabs.Content value="subscriptions" class="app-tab-content">
         <SubscriptionsView
-          active={active_tab === "subscriptions"}
+          active={active && active_tab === "subscriptions"}
           onRenderComplete={() => (isRenderCompleteSubscriptions = true)}
         />
       </Tabs.Content>
       <Tabs.Content value="settings" class="app-tab-content"
-        ><SettingsPanel active={active_tab === "settings"} /></Tabs.Content
+        ><SettingsPanel active={active && active_tab === "settings"} /></Tabs.Content
       >
     </article>
   </Tabs.Root>

@@ -95,6 +95,9 @@ mt_err_t mt_app_reconcile_routes(mt_app_t *app, const char *interface_name);
 /* Disables and frees every group's mt_ruleset_t (mirrors main.c's
  * previous inline teardown); does NOT touch cfg (borrowed). */
 void mt_app_destroy(mt_app_t *app);
+/* Stop the committer and disable owned routing resources, retaining the
+ * models for daemon reconstruction. Reports kernel teardown failures. */
+mt_err_t mt_app_suspend(mt_app_t *app);
 
 /* Marks the app "running" -- mirrors Go's App.enabled atomic.Bool: once
  * true, mt_app_add_group immediately Enable()s+Sync()s the new group
@@ -310,19 +313,13 @@ mt_err_t mt_app_reload_config(mt_app_t *app, const char *path);
 mt_err_t mt_app_save_config(mt_app_t *app, const char *path, const char *version);
 /* Read the live in-memory configuration without persisting it. */
 mt_err_t mt_app_config_snapshot_json(mt_app_t *app, const char *version, cJSON **out);
-mt_err_t mt_app_config_snapshot_yaml(mt_app_t *app, const char *version,
-                                      char **out, size_t *out_len);
-/* Compare startup-bound settings against their original values. Passing NULL
- * as candidate inspects the current desired configuration. Routing/profile
- * changes and live-only settings do not require a restart. */
-bool mt_app_config_restart_required(const mt_app_t *app, const mt_app_config_t *candidate);
 /* Apply a complete prepared model. Consumes/zeros candidate on every valid
  * call (success or failure). Optional path/version persist before retiring old
  * models and registries; failure restores them without serialization/reparse.
  * File reload supplies its overlay semantics before calling this same operation. */
 mt_err_t mt_app_apply_config(mt_app_t *app, mt_config_t *candidate,
                               const char *path, const char *version);
-/* Same transaction with a custom persistence commit, for verbatim YAML edits.
+/* Same transaction with a custom atomic persistence commit.
  * The callback runs after model/kernel preparation and must not return an
  * error after committing its file. A failure restores the previous registry. */
 typedef mt_err_t (*mt_app_config_persist_fn)(const mt_config_t *cfg, void *userdata);

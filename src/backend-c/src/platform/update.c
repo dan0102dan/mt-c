@@ -200,6 +200,18 @@ static int installation_busy(void) {
     return result;
 }
 
+bool mt_update_busy(void) {
+    pthread_mutex_lock(&state_mutex);
+    bool busy = strcmp(state.stage, "idle") && strcmp(state.stage, "failed") &&
+                strcmp(state.stage, "succeeded") && strcmp(state.stage, "interrupted");
+    pthread_mutex_unlock(&state_mutex);
+    return busy || installation_busy() == 1;
+}
+
+void mt_update_resume(void) {
+    if (!prepare_joinable) { atomic_store(&stopping, false); }
+}
+
 static void handle_status(mt_http_req_t *req, mt_http_res_t *res, void *ud) {
     (void)req; (void)ud;
     pthread_mutex_lock(&state_mutex);
@@ -503,6 +515,9 @@ void mt_update_shutdown(void) {
 
 static void handle_install(mt_http_req_t *req, mt_http_res_t *res, void *ud) {
     mt_system_ctx_t *ctx = ud;
+    if (mt_settings_busy(ctx->settings)) {
+        mt_http_res_write_error(res, 409, "Settings are being applied"); return;
+    }
     char suffix[192] = "";
     const char *error = capability(suffix, sizeof(suffix));
     if (error) { mt_http_res_write_error(res, 403, error); return; }
