@@ -12,6 +12,10 @@
 #include "fake_iptables.h"
 #include "fake_ipset_nl.h"
 
+/* Keep persisted fixtures reloadable in unversioned native builds (D-36). */
+#undef MT_VERSION
+#define MT_VERSION "0.99.0"
+
 int mt_settings_test_main(int argc, char **argv);
 #define main mt_settings_test_main
 #include "../../src/main/main.c"
