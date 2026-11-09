@@ -5,4 +5,6 @@
 #endif
 #define mt_update_register_routes mt_test_openwrt_update_register_routes
 #define mt_update_shutdown mt_test_openwrt_update_shutdown
+#define mt_update_busy mt_test_openwrt_update_busy
+#define mt_update_resume mt_test_openwrt_update_resume
 #include "test_update_process.c"
