@@ -202,17 +202,52 @@ static void *stub_loop(void *userdata)
     return NULL;
 }
 
-static bool stub_start(dns_stub_t *s, uint8_t answer)
+static void stub_close_sockets(dns_stub_t *s)
+{
+    int saved_errno = errno;
+    if (s->udp >= 0) { close(s->udp); s->udp = -1; }
+    if (s->tcp >= 0) { close(s->tcp); s->tcp = -1; }
+    errno = saved_errno;
+}
+
+static bool stub_start_at(dns_stub_t *s, uint8_t answer, uint16_t first_port)
 {
     memset(s, 0, sizeof(*s)); s->udp = s->tcp = -1; s->answer = answer;
-    s->udp = bound_socket(SOCK_DGRAM, &s->port);
-    if (s->udp < 0) { return false; }
-    s->tcp = socket(AF_INET, SOCK_STREAM, 0);
-    struct sockaddr_in address = {.sin_family = AF_INET, .sin_port = htons(s->port), .sin_addr.s_addr = htonl(INADDR_LOOPBACK)};
-    if (s->tcp < 0 || bind(s->tcp, (struct sockaddr *)&address, sizeof(address)) || listen(s->tcp, 8)) { return false; }
-    return pthread_create(&s->thread, NULL, stub_loop, s) == 0;
+    atomic_init(&s->stopping, false);
+    /* UDP port 0 can select a number occupied by TCP (including TIME_WAIT).
+     * Retry that collision only, releasing both sockets before another try. */
+    for (unsigned attempt = 0; attempt < 32; attempt++) {
+        s->udp = socket(AF_INET, SOCK_DGRAM, 0);
+        if (s->udp < 0) { goto fail; }
+        struct sockaddr_in address = {.sin_family = AF_INET,
+            .sin_port = htons(attempt == 0 ? first_port : 0),
+            .sin_addr.s_addr = htonl(INADDR_LOOPBACK)};
+        if (bind(s->udp, (struct sockaddr *)&address, sizeof(address))) {
+            if (errno == EADDRINUSE) { goto retry; }
+            goto fail;
+        }
+        socklen_t length = sizeof(address);
+        if (getsockname(s->udp, (struct sockaddr *)&address, &length)) { goto fail; }
+        s->port = ntohs(address.sin_port);
+        s->tcp = socket(AF_INET, SOCK_STREAM, 0);
+        if (s->tcp < 0) { goto fail; }
+        if (bind(s->tcp, (struct sockaddr *)&address, sizeof(address))) {
+            if (errno == EADDRINUSE) { goto retry; }
+            goto fail;
+        }
+        if (listen(s->tcp, 8)) { goto fail; }
+        int thread_error = pthread_create(&s->thread, NULL, stub_loop, s);
+        if (thread_error) { errno = thread_error; goto fail; }
+        return true;
+retry:
+        stub_close_sockets(s);
+    }
+fail:
+    stub_close_sockets(s);
+    return false;
 }
-static void stub_stop(dns_stub_t *s) { atomic_store(&s->stopping, true); pthread_join(s->thread, NULL); close(s->udp); close(s->tcp); }
+static bool stub_start(dns_stub_t *s, uint8_t answer) { return stub_start_at(s, answer, 0); }
+static void stub_stop(dns_stub_t *s) { atomic_store(&s->stopping, true); pthread_join(s->thread, NULL); stub_close_sockets(s); }
 
 static int dns_query(uint16_t port, bool tcp, bool aaaa, uint8_t *last)
 {
@@ -379,6 +414,33 @@ static char *read_file(const char *path)
     char *text = length >= 0 ? malloc((size_t)length + 1) : NULL;
     if (!text || fread(text, 1, (size_t)length, file) != (size_t)length) { free(text); fclose(file); return NULL; }
     text[length] = '\0'; fclose(file); return text;
+}
+
+TEST dns_stub_retries_cross_protocol_port_collision_without_leaking_sockets(void)
+{
+    dns_stub_t guard; ASSERT(stub_start(&guard, 1));
+    uint16_t occupied_port = guard.port;
+    int occupied_tcp = dup(guard.tcp);
+    stub_stop(&guard); /* Keep TCP reserved while releasing its UDP counterpart. */
+    ASSERT(occupied_tcp >= 0);
+    dns_stub_t stub;
+    bool started = stub_start_at(&stub, 12, occupied_port);
+    if (!started) { close(occupied_tcp); ASSERT(started); }
+    uint16_t chosen_port = stub.port;
+    int udp = socket(AF_INET, SOCK_DGRAM, 0);
+    struct sockaddr_in address = {.sin_family = AF_INET,
+        .sin_port = htons(occupied_port), .sin_addr.s_addr = htonl(INADDR_LOOPBACK)};
+    int rebound = udp < 0 ? -1 : bind(udp, (struct sockaddr *)&address, sizeof(address));
+    if (udp >= 0) { close(udp); }
+    uint8_t udp_answer = 0, tcp_answer = 0;
+    int udp_result = dns_query(stub.port, false, false, &udp_answer);
+    int tcp_result = dns_query(stub.port, true, false, &tcp_answer);
+    stub_stop(&stub); close(occupied_tcp);
+    ASSERT(chosen_port != occupied_port);
+    ASSERT_EQ(0, rebound); /* The failed attempt released its UDP socket. */
+    ASSERT_EQ(1, udp_result); ASSERT_EQ(12, udp_answer);
+    ASSERT_EQ(1, tcp_result); ASSERT_EQ(12, tcp_answer);
+    PASS();
 }
 
 TEST projection_is_strict_and_preserves_hidden_settings(void)
@@ -723,6 +785,7 @@ int main(int argc, char **argv)
 {
     GREATEST_MAIN_BEGIN();
     mt_sub_fetch_global_init();
+    RUN_TEST(dns_stub_retries_cross_protocol_port_collision_without_leaking_sockets);
     RUN_TEST(projection_is_strict_and_preserves_hidden_settings);
     RUN_TEST(real_dns_upstream_switch_preserves_cache_and_repopulates_sets);
     RUN_TEST(pending_resolution_keeps_dns_live_and_preserves_later_profile_saves);

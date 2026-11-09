@@ -257,7 +257,7 @@ test("General edits typed settings, saves and reloads without exposing YAML or i
   await page
     .getByRole("combobox", { name: "Interfaces for DNS interception", exact: true })
     .fill("br0, tun1");
-  await page.getByRole("button", { name: "Log level", exact: true }).click();
+  await page.locator('[data-select-trigger][aria-label="Log level"]').click();
   await page.getByRole("option", { name: "Debug", exact: true }).click();
   const expected = generalSettings();
   expected.dnsProxy.timeoutMs = 7500;

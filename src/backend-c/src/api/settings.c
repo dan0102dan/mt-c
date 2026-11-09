@@ -217,14 +217,17 @@ mt_err_t mt_settings_parse(const cJSON *json, const mt_app_config_t *base,
     for (size_t i = 0; i < out->n_link; i++) { free(out->link[i]); }
     free(out->link); out->link = NULL; out->n_link = 0;
     size_t count = (size_t)cJSON_GetArraySize(links);
-    if (count) { out->link = calloc(count, sizeof(*out->link)); if (!out->link) { err = MT_ERR_NOMEM; goto fail; } }
-    cJSON_ArrayForEach(link, links) {
-        REQUIRE(cJSON_IsString(link) && *link->valuestring && strlen(link->valuestring) < IF_NAMESIZE, "link");
-        for (const unsigned char *p = (const unsigned char *)link->valuestring; *p; p++) { REQUIRE(*p != '/' && !isspace(*p) && !iscntrl(*p), "link"); }
-        for (size_t i = 0; i < out->n_link; i++) { REQUIRE(strcmp(out->link[i], link->valuestring), "link"); }
-        err = mt_strset(&out->link[out->n_link], link->valuestring);
-        if (err != MT_OK) { goto fail; }
-        out->n_link++;
+    if (count) {
+        out->link = calloc(count, sizeof(*out->link));
+        if (!out->link) { err = MT_ERR_NOMEM; goto fail; }
+        cJSON_ArrayForEach(link, links) {
+            REQUIRE(cJSON_IsString(link) && *link->valuestring && strlen(link->valuestring) < IF_NAMESIZE, "link");
+            for (const unsigned char *p = (const unsigned char *)link->valuestring; *p; p++) { REQUIRE(*p != '/' && !isspace(*p) && !iscntrl(*p), "link"); }
+            for (size_t i = 0; i < out->n_link; i++) { REQUIRE(strcmp(out->link[i], link->valuestring), "link"); }
+            err = mt_strset(&out->link[out->n_link], link->valuestring);
+            if (err != MT_OK) { goto fail; }
+            out->n_link++;
+        }
     }
 #undef STRING
 #undef NUMBER
