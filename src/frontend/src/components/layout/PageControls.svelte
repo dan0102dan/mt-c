@@ -65,9 +65,13 @@
   let iconMode = $state<"add" | "record" | "stop">("add");
   let showAdd = $state(false);
   let resetting = $state(false);
+  let wasActive = false;
 
   $effect(() => {
-    if (!active) return;
+    if (!active) {
+      wasActive = false;
+      return;
+    }
     const next = hasAdd;
     const previous = motion?.hasAdd ?? next;
     const nextIconMode = targetIconMode;
@@ -76,6 +80,16 @@
       motion.hasAdd = next;
       motion.iconMode = nextIconMode;
     }
+
+    // This row is already painted: let CSS reverse from the current geometry.
+    // Resetting here would snap a half-finished morph to its previous target.
+    if (wasActive) {
+      resetting = false;
+      showAdd = next;
+      iconMode = nextIconMode;
+      return;
+    }
+    wasActive = true;
     resetting = true;
     showAdd = previous;
     iconMode = previousIconMode;
