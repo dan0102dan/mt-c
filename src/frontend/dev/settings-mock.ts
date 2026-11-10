@@ -257,7 +257,7 @@ export function mockRequiresDnsRestart(
   next: MockGeneralSettings,
 ): boolean {
   const runtime = (settings: MockGeneralSettings) => ({
-    httpWeb: { enabled: settings.httpWeb.enabled, host: settings.httpWeb.host },
+    httpWeb: { host: settings.httpWeb.host },
     dnsProxy: {
       host: settings.dnsProxy.host,
       upstream: settings.dnsProxy.upstream,
