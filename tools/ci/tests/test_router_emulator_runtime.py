@@ -69,7 +69,7 @@ printf '%s' "$CONFIGURE_ARGS" | grep -q -- '--disable-gtk'
     def clone_fixture(self, source, tag, log, *, mode):
         """Simulate the upstream shell build with real subprocess/Git config."""
         self.assertEqual(tag, "v4.1")
-        (source / "VERSION").write_text("4.1\\n")
+        (source / "VERSION").write_text("4.1\n")
         trace = self.root / "clone-attempts.txt"
         # This comment mirrors the exact clone command in upstream build.sh.
         # Test both the presence and absence of the Git URL rewrite.
