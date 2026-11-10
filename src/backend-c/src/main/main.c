@@ -549,7 +549,7 @@ static const char *static_skin_fn(void *ud)
 
 /* Create a complete WebUI listener without disturbing DNS or any of its
  * routing machinery. The returned server is owned by the caller. */
-static mt_err_t daemon_open_web(struct daemon *d, const mt_http_web_config_t *web,
+static mt_err_t daemon_open_web(struct daemon *d, const mt_app_config_t *app,
                                 uint16_t fallback_port, mt_httpd_t **out)
 {
     mt_httpd_t *http = NULL;
@@ -566,8 +566,8 @@ static mt_err_t daemon_open_web(struct daemon *d, const mt_http_web_config_t *we
     mt_httpd_route(http, "POST", "/api/v1/auth", mt_auth_login_handler, &d->auth_ctx);
     mt_httpd_set_middleware(http, mt_auth_middleware, &d->auth_ctx);
     mt_httpd_set_not_found(http, mt_static_handler, &d->static_ctx);
-    err = mt_httpd_listen_tcp(http, web->host.address,
-                             web->host.port ? web->host.port : fallback_port);
+    err = mt_httpd_listen_tcp(http, app->http_web.host.address,
+                             app->http_web.host.port ? app->http_web.host.port : fallback_port);
     if (err != MT_OK) { mt_httpd_destroy(http); return err; }
     *out = http;
     return MT_OK;
@@ -583,7 +583,7 @@ static mt_err_t daemon_apply_live_settings(mt_app_config_t *next, void *userdata
     mt_httpd_t *new_web = NULL;
     mt_err_t err = MT_OK;
     if (toggle_web && next->http_web.enabled) {
-        err = daemon_open_web(d, &next->http_web, next->http_web.host.port, &new_web);
+        err = daemon_open_web(d, next, next->http_web.host.port, &new_web);
         if (err != MT_OK) { return err; }
     }
     mt_config_t persisted = *d->cfg; /* borrowed collections and non-live fields */
@@ -952,7 +952,7 @@ static mt_err_t daemon_start(struct daemon *d, mt_config_t *cfg, const char *con
     };
     if (cfg->app.http_web.enabled) {
         d->failure_stage = "bind web interface";
-        err = daemon_open_web(d, &cfg->app.http_web,
+        err = daemon_open_web(d, &cfg->app,
                               restore_ports ? restore_ports->http : 0, &d->http_tcp);
         if (err != MT_OK) {
             MT_ERROR("failed to listen HTTP %s:%u: %s", cfg->app.http_web.host.address,
