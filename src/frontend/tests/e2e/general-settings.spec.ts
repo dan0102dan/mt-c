@@ -865,7 +865,14 @@ test("disabling the web interface explains the expected loss of access", async (
   await page.goto("/");
   await openGeneral(page);
   await page.getByRole("switch", { name: "Enable web interface", exact: true }).click();
-  await confirmSave(page);
+  await page.locator("#save-settings").click();
+  const warning = page.getByRole("dialog", { name: "Apply general settings?", exact: true });
+  await expect(warning).toBeVisible();
+  await expect(warning).not.toContainText("DNS routing may be temporarily unavailable");
+  await expect(warning).toContainText("The web interface will be disabled");
+  expect(state.previews).toHaveLength(1);
+  expect(state.writes).toHaveLength(0);
+  await warning.getByRole("button", { name: "Apply", exact: true }).click();
   await expect(
     page.getByText(
       "If web access is disabled, this page cannot confirm the result. Your draft is preserved.",
@@ -874,6 +881,7 @@ test("disabling the web interface explains the expected loss of access", async (
   ).toBeVisible();
   expect(state.writes).toHaveLength(1);
   expect(state.writes[0].settings.httpWeb.enabled).toBe(false);
+  expect(state.writes[0].allow_dns_restart).toBe(false);
   await expect(page.getByRole("link", { name: /^Open new web address/ })).toHaveCount(0);
 });
 
