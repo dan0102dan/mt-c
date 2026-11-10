@@ -16,29 +16,65 @@
   class:stop={mode === "stop"}
 >
   <rect class="outline" x="2" y="2" width="20" height="20" rx="10" ry="10" />
-  <path class="plus" d="M8 12h8" />
-  <path class="plus" d="M12 8v8" />
-  <circle class="dot" cx="12" cy="12" r="2" fill="currentColor" stroke="none" />
+  <g class="symbol" fill="currentColor" stroke="none">
+    <rect class="bar horizontal" x="7" y="11" width="10" height="2" rx="1" ry="1" />
+    <rect class="bar vertical" x="11" y="7" width="2" height="10" rx="1" ry="1" />
+  </g>
 </svg>
 
 <style>
-  .plus,
-  .dot {
-    transform-origin: 12px 12px;
+  svg {
+    --morph-duration: 300ms;
+    --morph-ease: cubic-bezier(0.4, 0, 0.2, 1);
+  }
+
+  /* Both arms round into the same dot, rather than collapsing a stroked path
+     to scale(0) while a separate dot starts a non-reversible bounce. */
+  .bar,
+  .outline {
     transition:
-      transform 220ms cubic-bezier(0.2, 0, 0.2, 1),
-      opacity 160ms ease;
+      x var(--morph-duration) var(--morph-ease),
+      y var(--morph-duration) var(--morph-ease),
+      width var(--morph-duration) var(--morph-ease),
+      height var(--morph-duration) var(--morph-ease),
+      rx var(--morph-duration) var(--morph-ease),
+      ry var(--morph-duration) var(--morph-ease);
   }
-  .plus {
-    vector-effect: non-scaling-stroke;
+  .bar {
+    rx: 1px;
+    ry: 1px;
   }
-  .dot {
-    transform: scale(0);
+  .horizontal {
+    x: 7px;
+    y: 11px;
+    width: 10px;
+    height: 2px;
+  }
+  .vertical {
+    x: 11px;
+    y: 7px;
+    width: 2px;
+    height: 10px;
+  }
+  .record .bar,
+  .stop .bar {
+    x: 10px;
+    y: 10px;
+    width: 4px;
+    height: 4px;
+    rx: 2px;
+    ry: 2px;
+  }
+  /* Fade the union, not each overlapping arm, so the centre stays uniform. */
+  .symbol {
+    opacity: 1;
+    transition: opacity var(--morph-duration) var(--morph-ease);
+  }
+  .stop .symbol {
     opacity: 0;
   }
 
-  /* A rounded rect starts as the original circle, then its sides straighten
-     into the stop square. The same outline stays mounted in both states. */
+  /* Keep one outline mounted through the circle <-> square transition. */
   .outline {
     x: 2px;
     y: 2px;
@@ -46,13 +82,6 @@
     height: 20px;
     rx: 10px;
     ry: 10px;
-    transition:
-      x 300ms cubic-bezier(0.2, 0, 0.2, 1),
-      y 300ms cubic-bezier(0.2, 0, 0.2, 1),
-      width 300ms cubic-bezier(0.2, 0, 0.2, 1),
-      height 300ms cubic-bezier(0.2, 0, 0.2, 1),
-      rx 300ms cubic-bezier(0.2, 0, 0.2, 1),
-      ry 300ms cubic-bezier(0.2, 0, 0.2, 1);
   }
   .stop .outline {
     x: 3px;
@@ -63,36 +92,9 @@
     ry: 2px;
   }
 
-  .record .plus,
-  .stop .plus {
-    transform: scale(0);
-  }
-  .record .dot {
-    transform: scale(1);
-    opacity: 1;
-    transition: none;
-    animation: dot-bounce 320ms cubic-bezier(0.2, 0, 0.2, 1);
-  }
-  @keyframes dot-bounce {
-    0% {
-      transform: scale(0);
-      opacity: 0;
-    }
-    70% {
-      transform: scale(1.1);
-      opacity: 1;
-    }
-    100% {
-      transform: scale(1);
-      opacity: 1;
-    }
-  }
   @media (prefers-reduced-motion: reduce) {
-    .record .dot {
-      animation: none;
-    }
-    .plus,
-    .dot,
+    .bar,
+    .symbol,
     .outline {
       transition: none;
     }
