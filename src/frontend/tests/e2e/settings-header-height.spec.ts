@@ -235,11 +235,10 @@ test("recording replaces Add without shifting the toolbar during tab changes", a
     0,
   );
   await expect
-    .poll(() =>
-      horizontalBar.evaluate((node) =>
-        Math.abs(parseFloat(getComputedStyle(node).width) - initialBarWidth),
-      ),
-    )
+    .poll(async () => {
+      const barWidth = await horizontalBar.evaluate((node) => parseFloat(getComputedStyle(node).width));
+      return Math.abs(barWidth - initialBarWidth);
+    })
     .toBeLessThan(0.1);
   expect(
     await iconNode!.evaluate(
