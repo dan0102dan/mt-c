@@ -19,8 +19,12 @@ information are used only during discovery and are not sent to the browser.
 
 The bounded `clients_begin/chunk/end` stream updates labels for already displayed
 queries without replaying DNS history. Changes during a metadata transfer restart
-staging, so viewers never combine portions of different snapshots. Only a changed
-inventory notifies viewers.
+staging, so viewers never combine portions of different snapshots. A first completed
+inventory notifies viewers even when empty; after that only changes notify viewers.
+When a tab resumes, its last displayed labels remain provisional until this fresh
+inventory arrives. The backend does not send a misleading empty map while the first
+lookup is pending. A genuinely empty or failed lookup clears stale labels, including
+after a device has changed ownership of its IP. No periodic browser request is added.
 
 ## Keenetic `_kn`
 
@@ -125,7 +129,9 @@ If the periodic reconciliation timer cannot be created, optional discovery
 does not start; the journal continues to deliver DNS records with IP addresses.
 
 Removing the final viewer stops timers, closes OpenWrt discovery and releases
-the map. A bounded RCI request already in progress may finish, but its result
+the map. Subsequent viewers start a fresh lookup; retaining provisional names
+in the browser is a presentation-only safeguard against a brief IP/name flicker,
+not an assertion about historical ownership. A bounded RCI request already in progress may finish, but its result
 cannot enter a later viewer generation. HTTP streams are closed before service
 destruction. Generic Entware builds instantiate no provider and gain no OpenWrt
 dependency. This refactor adds no runtime dependencies to PR #25.

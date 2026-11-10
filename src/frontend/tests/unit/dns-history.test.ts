@@ -78,6 +78,29 @@ Deno.test("alias updates replace metadata without copying or replacing query his
   assert.equal(h.view().clientNames.size, 0);
 });
 
+Deno.test("resumed stream keeps displayed names until the next completed inventory", () => {
+  const h = history();
+  h.ingest(capture(true));
+  h.ingest(event("query", row(1)));
+  h.ingest({ event: "clients", data: "", clients: [{ ip: "10.0.0.1", name: "Phone" }] });
+  const prior = h.view();
+  const resumed = createDnsHistory(prior);
+  resumed.ingest(capture(true));
+  resumed.ingest(event("snapshot", { queries: [row(1)], capacity: 1000 }));
+  assert.equal(resumed.view().clientNames.get("10.0.0.1"), "Phone");
+  // A confirmed rename replaces retained metadata without a history replay.
+  const retained = resumed.view().queries;
+  resumed.ingest({ event: "clients", data: "", clients: [{ ip: "10.0.0.1", name: "Laptop" }] });
+  assert.equal(resumed.view().clientNames.get("10.0.0.1"), "Laptop");
+  assert.strictEqual(resumed.view().queries, retained);
+  // Empty is authoritative only once the provider has completed discovery.
+  resumed.ingest({ event: "clients", data: "", clients: [] });
+  assert.equal(resumed.view().clientNames.size, 0);
+  resumed.ingest({ event: "clients", data: "", clients: [{ ip: "10.0.0.1", name: "Phone" }] });
+  resumed.ingest(capture(false));
+  assert.equal(resumed.view().clientNames.size, 0);
+});
+
 Deno.test("legacy labels cannot retain clients after their last row is evicted", () => {
   const h = history(8);
   for (let id = 1; id <= 10000; id++) {

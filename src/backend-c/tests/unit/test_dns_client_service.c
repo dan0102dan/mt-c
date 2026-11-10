@@ -41,7 +41,8 @@ static void changed(void *ud)
     const char *name = mt_dns_clients_lookup(f->clients, "::ffff:192.168.1.42");
     const char *expected = phase == 0 ? "Phone" : phase == 1 ? "Renamed phone" : "Back online";
     if (phase == 2 ? name != NULL : !name || strcmp(name, expected)) { f->failed = true; }
-    if (mt_dns_clients_revision(f->clients) <= f->revision) { f->failed = true; }
+    if (!mt_dns_clients_ready(f->clients) ||
+        mt_dns_clients_revision(f->clients) <= f->revision) { f->failed = true; }
     f->revision = mt_dns_clients_revision(f->clients);
     f->notifications++;
     if (phase == 3) { mt_loop_stop(f->loop); return; }
@@ -62,6 +63,7 @@ TEST optional_discovery_is_async_coalesced_and_updates_existing_labels(void)
     atomic_init(&f.phase, 0); atomic_init(&f.fetches, 0); atomic_init(&f.wrong_thread, false);
     ASSERT_EQ(MT_OK, mt_loop_create(&f.loop));
     ASSERT_EQ(MT_OK, mt_dns_clients_create(f.loop, fake_fetch, &f, &f.clients));
+    ASSERT(!mt_dns_clients_ready(f.clients));
     int subscription = mt_dns_clients_subscribe(f.clients, changed, &f);
     ASSERT(subscription > 0);
     int ticker = 0, watchdog = 0;
@@ -74,11 +76,45 @@ TEST optional_discovery_is_async_coalesced_and_updates_existing_labels(void)
     ASSERT_STR_EQ("Back online", mt_dns_clients_lookup(f.clients, "192.168.1.42"));
     ASSERT(mt_dns_clients_lookup(f.clients, "2001:db8::42") == NULL);
     mt_dns_clients_unsubscribe(f.clients, subscription);
+    ASSERT(!mt_dns_clients_ready(f.clients));
     ASSERT(mt_dns_clients_lookup(f.clients, "192.168.1.42") == NULL);
     mt_dns_clients_refresh(f.clients);
     mt_dns_clients_destroy(f.clients);
     mt_loop_destroy(f.loop);
     ASSERT_EQ(4u, atomic_load(&f.fetches));
+    PASS();
+}
+static mt_err_t empty_fetch(mt_dns_client_t **out, size_t *count,
+                           const atomic_bool *stop, void *ud)
+{
+    (void)stop; (void)ud;
+    *out = NULL; *count = 0;
+    return MT_OK;
+}
+static void empty_ready(void *ud)
+{
+    fixture_t *f = ud;
+    if (!mt_dns_clients_ready(f->clients) || mt_dns_clients_count(f->clients) != 0 ||
+        mt_dns_clients_revision(f->clients) == 0) { f->failed = true; }
+    f->notifications++;
+    mt_loop_stop(f->loop);
+}
+TEST empty_first_inventory_notifies_subscribers(void)
+{
+    fixture_t f = {0};
+    ASSERT_EQ(MT_OK, mt_loop_create(&f.loop));
+    ASSERT_EQ(MT_OK, mt_dns_clients_create(f.loop, empty_fetch, NULL, &f.clients));
+    int subscription = mt_dns_clients_subscribe(f.clients, empty_ready, &f);
+    ASSERT(subscription > 0);
+    ASSERT(!mt_dns_clients_ready(f.clients));
+    int watchdog = 0;
+    ASSERT_EQ(MT_OK, mt_loop_add_timer(f.loop, 2000, 0, deadline, &f, &watchdog));
+    ASSERT_EQ(MT_OK, mt_loop_run(f.loop));
+    ASSERT(!f.failed); ASSERT(!f.timed_out); ASSERT_EQ(1u, f.notifications);
+    mt_dns_clients_unsubscribe(f.clients, subscription);
+    ASSERT(!mt_dns_clients_ready(f.clients));
+    mt_dns_clients_destroy(f.clients);
+    mt_loop_destroy(f.loop);
     PASS();
 }
 TEST generic_build_has_no_implicit_router_discovery(void)
@@ -92,6 +128,7 @@ TEST generic_build_has_no_implicit_router_discovery(void)
 #endif
     ASSERT(mt_dns_clients_lookup(NULL, "192.168.1.1") == NULL);
     ASSERT_EQ(0u, mt_dns_clients_revision(NULL));
+    ASSERT(mt_dns_clients_ready(NULL));
     mt_dns_clients_destroy(NULL);
     PASS();
 }
@@ -100,6 +137,7 @@ int main(int argc, char **argv)
 {
     GREATEST_MAIN_BEGIN();
     RUN_TEST(optional_discovery_is_async_coalesced_and_updates_existing_labels);
+    RUN_TEST(empty_first_inventory_notifies_subscribers);
     RUN_TEST(generic_build_has_no_implicit_router_discovery);
     GREATEST_MAIN_END();
 }

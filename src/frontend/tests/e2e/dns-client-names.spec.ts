@@ -10,6 +10,7 @@ function createBackend() {
   const state = {
     manualGets: 0,
     snapshots: 0,
+    deferLabelsOnConnect: false,
     history: [
       {
         id: 3,
@@ -65,7 +66,7 @@ function createBackend() {
     }
     if (req.url?.endsWith("/stream")) {
       res.writeHead(200, { "Content-Type": "text/event-stream", "Cache-Control": "no-store" });
-      labels(res);
+      if (!state.deferLabelsOnConnect) labels(res);
       snapshot(res);
       streams.add(res);
       res.on("close", () => streams.delete(res));
@@ -182,6 +183,42 @@ for (const width of [1280, 390]) {
     );
   });
 }
+
+test("background tab keeps current names until a completed replacement arrives", async ({
+  page,
+  dns,
+}) => {
+  const region = await setup(page, dns);
+  const first = region.locator("tbody tr").first();
+  await expect(first.locator(".client-name")).toHaveText("Phone");
+  dns.state.deferLabelsOnConnect = true;
+  await page.evaluate(() => {
+    Object.defineProperty(document, "hidden", { configurable: true, value: true });
+    document.dispatchEvent(new Event("visibilitychange"));
+  });
+  await expect.poll(() => dns.streams.size).toBe(0);
+  await page.evaluate(() => {
+    Object.defineProperty(document, "hidden", { configurable: true, value: false });
+    document.dispatchEvent(new Event("visibilitychange"));
+  });
+  await expect.poll(() => dns.streams.size).toBe(1);
+  await expect.poll(() => dns.state.snapshots).toBe(2);
+  // DNS snapshots contain raw queries, not names. Waiting for the router's
+  // inventory must not temporarily replace the previous label with an IP.
+  await expect(first.locator(".client-name")).toHaveText("Phone");
+  await expect(first.locator(".client-address")).toHaveText("192.168.1.42");
+
+  dns.state.history[0].client_name = "Renamed phone";
+  dns.updateLabels();
+  await expect(first.locator(".client-name")).toHaveText("Renamed phone");
+  delete dns.state.history[0].client_name;
+  delete dns.state.history[1].client_name;
+  dns.updateLabels();
+  await expect(first.locator(".client-address")).toHaveCount(0);
+  await expect(first.locator(".client-name")).toHaveText("192.168.1.42");
+  expect(dns.state.manualGets).toBe(0);
+  expect(dns.state.snapshots).toBe(2);
+});
 
 for (const width of [1280, 390]) {
   test(`grouped rows keep their height through client label changes at ${width}px`, async ({

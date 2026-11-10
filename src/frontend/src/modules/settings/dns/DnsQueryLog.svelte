@@ -997,6 +997,11 @@
       height: auto;
       padding: 0.05rem 0;
     }
+    /* Baseline alignment depends on the client's font metrics: switching from
+     * an IP-only label to a name+IP used to move the card by one pixel. */
+    .dns-table.grouped td {
+      align-items: start;
+    }
     .dns-table td.domain {
       order: -1;
     }

@@ -60,6 +60,9 @@ void mt_dns_clients_invalidate(mt_dns_clients_t *clients);
 size_t mt_dns_clients_count(const mt_dns_clients_t *clients);
 const mt_dns_client_t *mt_dns_clients_at(const mt_dns_clients_t *clients, size_t index);
 uint64_t mt_dns_clients_revision(const mt_dns_clients_t *clients);
+/* True after the first inventory attempt (including an authoritative empty
+ * or failed result). NULL means no system provider, hence nothing is pending. */
+bool mt_dns_clients_ready(const mt_dns_clients_t *clients);
 const char *mt_dns_clients_lookup(const mt_dns_clients_t *clients, const char *address);
 
 #endif

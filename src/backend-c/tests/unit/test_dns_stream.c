@@ -42,6 +42,7 @@ typedef struct harness {
     char path[108];
     atomic_bool auth_enabled, revoked;
     atomic_uint alias;
+    atomic_bool defer_alias_fetch, alias_fetch_started;
     bool real_auth;
     char shadow[160], token[MT_JWT_MAX_TOKEN], state[108];
     mt_dns_clients_t *clients;
@@ -83,8 +84,13 @@ static void auth_change(mt_http_req_t *req, mt_http_res_t *res, void *ud) {
     mt_http_res_write_json(res, 200, cJSON_CreateObject());
 }
 static mt_err_t fetch_clients(mt_dns_client_t **out, size_t *count, const atomic_bool *stop, void *ud) {
-    (void)stop;
     harness_t *h = ud;
+    atomic_store(&h->alias_fetch_started, true);
+    while (atomic_load(&h->defer_alias_fetch) && !atomic_load(stop)) {
+        struct timespec delay = {.tv_nsec = 1000000};
+        nanosleep(&delay, NULL);
+    }
+    if (atomic_load(stop)) return MT_ERR_CANCELED;
     *out = calloc(1, sizeof(**out));
     if (!*out) return MT_ERR_NOMEM;
     strcpy((*out)->ip, "192.168.1.50");
@@ -103,6 +109,7 @@ static void *worker(void *ud) { mt_loop_run(((harness_t *)ud)->loop); return NUL
 static bool start_options(harness_t *h, size_t capacity, bool prefill, bool real_auth, bool aliases) {
     memset(h, 0, sizeof(*h));
     atomic_init(&h->auth_enabled, true); atomic_init(&h->revoked, false); atomic_init(&h->alias, 0);
+    atomic_init(&h->defer_alias_fetch, false); atomic_init(&h->alias_fetch_started, false);
     h->real_auth = real_auth;
     if (real_auth) {
         strcpy(h->state, "/tmp/mt-stream-auth-XXXXXX");
@@ -431,6 +438,24 @@ static bool client_inventory(int fd, const char *expected) {
     }
     return false;
 }
+TEST initial_metadata_waits_for_inventory_without_blocking_dns_history(void) {
+    harness_t h; ASSERT(start_options(&h, 1000, false, false, true));
+    atomic_store(&h.defer_alias_fetch, true);
+    int fd = request(&h, "GET", "/api/v1/system/dns/stream", true);
+    ASSERT(fd >= 0); ASSERT(headers(fd, 200));
+    ASSERT(capture_event(fd, true));
+    char kind[32]; size_t bytes = 0;
+    cJSON *data = next_event(fd, kind, &bytes);
+    ASSERT(data);
+    ASSERT_STR_EQ("snapshot_begin", kind); /* no premature clients_begin(0) */
+    cJSON_Delete(data);
+    ASSERT(event_is(fd, "snapshot_end"));
+    struct pollfd pfd = {.fd = fd, .events = POLLIN};
+    ASSERT_EQ(0, poll(&pfd, 1, 25)); /* metadata still pending, no empty label map */
+    atomic_store(&h.defer_alias_fetch, false);
+    ASSERT(client_inventory(fd, "Phone"));
+    close(fd); finish(&h); PASS();
+}
 TEST alias_rename_does_not_replay_dns_history(void) {
     harness_t h; ASSERT(start_options(&h, 1000, false, false, true));
     ASSERT(control(&h, "POST", "/test/append"));
@@ -484,6 +509,7 @@ int main(int argc, char **argv) {
     RUN_TEST(disconnect_and_subscriber_limit);
     RUN_TEST(authorization_changes_close_existing_streams);
     RUN_TEST(password_change_revokes_a_real_signed_token_on_an_idle_stream);
+    RUN_TEST(initial_metadata_waits_for_inventory_without_blocking_dns_history);
     RUN_TEST(alias_rename_does_not_replay_dns_history);
     RUN_TEST(streaming_reuses_timers_and_coalesces_wakeup_syscalls);
     GREATEST_MAIN_END();
