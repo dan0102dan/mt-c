@@ -91,16 +91,22 @@ for (const width of [1280, 390]) {
     expect(Math.abs(sampled.reversed - sampled.middle)).toBeLessThan(0.5);
     expect(sampled.resetting).toBe(false);
     expect(sampled.sameNode).toBe(true);
-    expect(sampled.hasBounce).toBe(false);
+    expect(sampled.hasBounce).toBe(true);
     await expect.poll(() => arm.evaluate((node) => getComputedStyle(node).width)).toBe("10px");
 
     await dns.click();
     await expect.poll(() => arm.evaluate((node) => getComputedStyle(node).width)).toBe("4px");
     await expect.poll(() => arm.evaluate((node) => getComputedStyle(node).height)).toBe("4px");
     await expect(action).toHaveAttribute("aria-label", "Start recording");
+    await expect
+      .poll(() => action.locator(".symbol").evaluate((node) => getComputedStyle(node).animationName))
+      .toBe("dot-bounce");
     await expect(action).toBeEnabled();
 
     await page.emulateMedia({ reducedMotion: "reduce" });
+    await expect
+      .poll(() => action.locator(".symbol").evaluate((node) => getComputedStyle(node).animationName))
+      .toBe("none");
     await profiles.click();
     await expect.poll(() => arm.evaluate((node) => getComputedStyle(node).width)).toBe("10px");
     const durations = await action.locator(".bar, .symbol, .outline").evaluateAll((nodes) =>
