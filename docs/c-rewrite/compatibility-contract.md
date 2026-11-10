@@ -72,6 +72,8 @@ Routes (all under `/api/v1`):
 | DELETE /subscriptions/{id}?save | 200 / 404 |
 | GET /system/interfaces | 200 `{"interfaces":[{"id","name"?}]}` |
 | POST /system/config/save | 200 `{}`? (writes config; error → 500) |
+| GET /system/settings (D-91) | 200 typed `settings`, app-only `revision`, and nullable last `operation` with ID/state/target revision. Uses the current configuration projection; authenticated and not cached. |
+| PUT /system/settings (D-91) | JSON `{settings, revision}` for the 20 allowed app fields. 202 starts automatic runtime reconfiguration after acknowledgement; 200 unchanged and already active; 400 invalid, 409 stale/busy, 500 preparation failure, 503 unavailable. Completion requires succeeded operation and target revision; startup/write failure restores previous settings, with rollback failure distinct. |
 | POST /system/hooks/netfilterd | body `{"type","table"}`; triggers iptables re-commit; 200 |
 | **GET /system/update (D-74)** | **200** `{"installed_version":string,"installed_revision":positive_integer,"asset_suffix":string,"can_install":bool,"reason":string}`; purely local, no GitHub request; capability failures are described in `reason`, allocation failure → **500** |
 | **GET /system/update/status (D-74)** | **200** volatile preparation/job JSON (D-75); `idle` with no active job, or `installing, external:true` without job ID while a detached system installer holds the lock after restart; lock access/allocation failure → **500** |

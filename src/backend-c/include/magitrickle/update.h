@@ -51,4 +51,7 @@ struct mt_system_ctx;
 void mt_update_register_routes(struct mt_httpd *http, struct mt_system_ctx *ctx);
 /* Loop-thread shutdown: cancel/join preparation, never kill a package transaction. */
 void mt_update_shutdown(void);
+/* Settings reconstruction must neither cancel nor overlap an update job. */
+bool mt_update_busy(void);
+void mt_update_resume(void);
 #endif

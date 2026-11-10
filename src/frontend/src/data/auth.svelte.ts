@@ -6,3 +6,9 @@ export const authState = $state({
   enabled: true,
   checked: false,
 });
+
+/** A running service can enable authentication without reloading this page. */
+export function requireAuthentication() {
+  authState.enabled = true;
+  token.reset();
+}

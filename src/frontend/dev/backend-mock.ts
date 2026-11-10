@@ -17,6 +17,7 @@ import {
 } from "../src/utils/priority.ts";
 import { registerMockDnsRoutes } from "./dns-mock.ts";
 import { registerMockPolicyRoutes } from "./keenetic-policy-mock.ts";
+import { registerMockSettingsRoutes } from "./settings-mock.ts";
 import { registerMockUpdateRoutes } from "./update-mock.ts";
 
 const API_BASE = "/api/v1";
@@ -108,7 +109,7 @@ app.use(cors());
 
 // Auth Middleware
 app.use(`${API_BASE}/*`, async (c, next) => {
-  if (c.req.path === `${API_BASE}/auth` || !AUTH_ENABLED) {
+  if (c.req.path === `${API_BASE}/auth` || !mockAuthEnabled()) {
     await next();
     return;
   }
@@ -124,10 +125,11 @@ app.use(`${API_BASE}/*`, async (c, next) => {
 registerMockDnsRoutes(app);
 
 app.get(`${API_BASE}/auth`, async (c) => {
-  return c.json({ enabled: AUTH_ENABLED }, 200);
+  return c.json({ enabled: mockAuthEnabled() }, 200);
 });
 
 app.post(`${API_BASE}/auth`, async (c) => {
+  if (!mockAuthEnabled()) return c.json({ error: "Authentication is disabled" }, 404);
   const body = await c.req.json();
   if (body.login === "root" && body.password === "keenetic") {
     return c.json({ token: STATIC_TOKEN });
@@ -386,7 +388,7 @@ registerMockPolicyRoutes(app, {
 let appSettings: ServerConfig["app"] = {
   httpWeb: {
     enabled: true,
-    auth: { enabled: false },
+    auth: { enabled: AUTH_ENABLED },
     host: { address: "0.0.0.0", port: 6969 },
     skin: "",
   },
@@ -412,6 +414,12 @@ let appSettings: ServerConfig["app"] = {
   showAllInterfaces: false,
   logLevel: "info",
 };
+function mockAuthEnabled() {
+  const http = appSettings.httpWeb;
+  if (!http || typeof http !== "object" || Array.isArray(http)) return AUTH_ENABLED;
+  const auth = http.auth;
+  return !!auth && typeof auth === "object" && !Array.isArray(auth) && auth.enabled === true;
+}
 function mockConfig(): ServerConfig {
   return {
     configVersion: "0.8.5",
@@ -420,6 +428,7 @@ function mockConfig(): ServerConfig {
     profiles: structuredClone(PROFILES),
     subscriptions: SUBSCRIPTIONS.map((sub) => ({
       ...structuredClone(sub),
+      priority: sub.priority ?? DEFAULT_SUBSCRIPTION_PRIORITY,
       interval: sub.interval ?? 86400,
       last_update: sub.lastUpdate ?? 0,
     })),
@@ -428,45 +437,56 @@ function mockConfig(): ServerConfig {
 function mockRevision() {
   return JSON.stringify(mockConfig());
 }
-app.get(`${API_BASE}/system/config/snapshot`, (c) =>
-  c.json({ revision: mockRevision(), config: mockConfig() }),
-);
-app.post(`${API_BASE}/system/config/apply`, async (c) => {
-  const body = await c.req.json();
-  if (body.revision !== mockRevision()) return c.json({ error: "stale config preview" }, 409);
-  const candidate: ServerConfig = body.config;
+function isConfigObject(value: unknown): value is Record<string, unknown> {
+  return !!value && typeof value === "object" && !Array.isArray(value);
+}
+function applyMockConfig(value: unknown) {
+  // Keep the existing mock's shallow validation shared by import and settings.
+  // The production C endpoint remains authoritative for the full config schema.
   if (
-    !Array.isArray(candidate?.groups) ||
-    !Array.isArray(candidate?.profiles) ||
-    !Array.isArray(candidate?.subscriptions) ||
-    !candidate.app
-  ) {
-    return c.json({ error: "invalid config" }, 400);
-  }
+    !isConfigObject(value) ||
+    !isConfigObject(value.app) ||
+    !Array.isArray(value.groups) ||
+    !Array.isArray(value.profiles) ||
+    !Array.isArray(value.subscriptions) ||
+    ![...value.groups, ...value.profiles, ...value.subscriptions].every(isConfigObject)
+  )
+    throw new Error("invalid config");
+  const candidate = value as ServerConfig;
   const ids = new Set(candidate.profiles.map((p) => p.id));
   if (
     [...candidate.groups, ...candidate.subscriptions].some(
       (route) => route.profile && !ids.has(route.profile),
     )
   )
-    return c.json({ error: "missing profile" }, 400);
+    throw new Error("missing profile");
+  const before = new Map(SUBSCRIPTIONS.map((sub) => [sub.id, sub]));
+  const subscriptions = candidate.subscriptions.map((sub) => {
+    const cached = before.get(sub.id);
+    const retained = cached?.url === sub.url ? cached : undefined;
+    const originalRules = sub.rules ?? retained?.rules ?? [];
+    const rules = applyRuleOverrides(originalRules, sub.overrides ?? []).rules;
+    return { ...sub, rules, lastUpdate: retained?.lastUpdate ?? sub.last_update ?? 0 };
+  });
   PROFILES = structuredClone(candidate.profiles);
   DATA.groups = structuredClone(candidate.groups);
-  const before = new Map(SUBSCRIPTIONS.map((sub) => [sub.id, sub]));
-  SUBSCRIPTIONS.splice(
-    0,
-    SUBSCRIPTIONS.length,
-    ...candidate.subscriptions.map((sub) => {
-      const cached = before.get(sub.id);
-      const retained = cached?.url === sub.url ? cached : undefined;
-      const originalRules = sub.rules ?? retained?.rules ?? [];
-      const rules = applyRuleOverrides(originalRules, sub.overrides ?? []).rules;
-      return { ...sub, rules, lastUpdate: retained?.lastUpdate ?? sub.last_update ?? 0 };
-    }),
-  );
+  SUBSCRIPTIONS.splice(0, SUBSCRIPTIONS.length, ...subscriptions);
   appSettings = structuredClone(candidate.app);
+}
+app.get(`${API_BASE}/system/config/snapshot`, (c) =>
+  c.json({ revision: mockRevision(), config: mockConfig() }),
+);
+app.post(`${API_BASE}/system/config/apply`, async (c) => {
+  const body = await c.req.json();
+  if (body.revision !== mockRevision()) return c.json({ error: "stale config preview" }, 409);
+  try {
+    applyMockConfig(body.config);
+  } catch (error) {
+    return c.json({ error: error instanceof Error ? error.message : "invalid config" }, 400);
+  }
   return c.json({ ok: true });
 });
+registerMockSettingsRoutes(app, { get: mockConfig, apply: applyMockConfig });
 
 app.get(`${API_BASE}/system/interfaces`, (c) => c.json(INTERFACES));
 app.get(`${API_BASE}/logs`, async (c) => {

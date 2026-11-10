@@ -98,6 +98,129 @@ definitions:
         example: iptables
         type: string
     type: object
+  types.SettingsEndpoint:
+    type: object
+    additionalProperties: false
+    required: [address, port]
+    properties:
+      address: {type: string, minLength: 1, example: '[::]'}
+      port: {type: integer, minimum: 1, maximum: 65535}
+  types.GeneralSettings:
+    type: object
+    additionalProperties: false
+    required: [httpWeb, dnsProxy, netfilter, link, showAllInterfaces, logLevel]
+    description: >-
+      The complete editable application settings projection. Collection data,
+      Keenetic policy, skin, chain/table prefixes and mark-table index are not
+      accepted here and are preserved from the latest running configuration.
+    properties:
+      httpWeb:
+        type: object
+        additionalProperties: false
+        required: [enabled, auth, host]
+        properties:
+          enabled: {type: boolean}
+          auth:
+            type: object
+            additionalProperties: false
+            required: [enabled]
+            properties:
+              enabled: {type: boolean}
+          host: {$ref: '#/definitions/types.SettingsEndpoint'}
+      dnsProxy:
+        type: object
+        additionalProperties: false
+        required: [host, upstream, disableRemap53, disableFakePTR, disableDropAAAA, maxIdleConns, maxConcurrent, timeoutMs]
+        properties:
+          host: {$ref: '#/definitions/types.SettingsEndpoint'}
+          upstream: {$ref: '#/definitions/types.SettingsEndpoint'}
+          disableRemap53: {type: boolean}
+          disableFakePTR: {type: boolean}
+          disableDropAAAA: {type: boolean}
+          maxIdleConns: {type: integer, minimum: 0, maximum: 4294967295}
+          maxConcurrent: {type: integer, minimum: 1, maximum: 4294967295}
+          timeoutMs:
+            type: integer
+            minimum: 1
+            maximum: 4294967295
+            description: Upstream request timeout in milliseconds.
+      netfilter:
+        type: object
+        additionalProperties: false
+        required: [disableIPv4, disableIPv6, ipset]
+        properties:
+          disableIPv4: {type: boolean}
+          disableIPv6: {type: boolean}
+          ipset:
+            type: object
+            additionalProperties: false
+            required: [additionalTTLSeconds]
+            properties:
+              additionalTTLSeconds:
+                type: integer
+                minimum: 0
+                maximum: 4294967295
+                description: Extra lifetime added to DNS-derived IP entries, in seconds.
+      link:
+        type: array
+        uniqueItems: true
+        description: Interface names used to collect local addresses for DNS port interception.
+        items: {type: string, minLength: 1}
+      showAllInterfaces: {type: boolean}
+      logLevel:
+        type: string
+        enum: [trace, debug, info, warn, error, fatal, panic, nolevel, disabled]
+  types.SettingsOperation:
+    type: object
+    required: [id, state, target_revision]
+    properties:
+      id: {type: string}
+      state:
+        type: string
+        enum: [applying, succeeded, failed, rollback_failed]
+      target_revision: {type: string}
+      error: {type: string}
+  types.SettingsSnapshot:
+    type: object
+    required: [settings, revision, operation]
+    properties:
+      settings: {$ref: '#/definitions/types.GeneralSettings'}
+      revision:
+        type: string
+        description: Opaque revision over the editable application settings only.
+      operation:
+        $ref: '#/definitions/types.SettingsOperation'
+        x-nullable: true
+  types.SettingsRequest:
+    type: object
+    additionalProperties: false
+    required: [settings, revision]
+    properties:
+      settings: {$ref: '#/definitions/types.GeneralSettings'}
+      revision: {type: string}
+  types.SettingsAccepted:
+    type: object
+    required: [operation, target_revision, next_web]
+    properties:
+      operation: {$ref: '#/definitions/types.SettingsOperation'}
+      target_revision: {type: string}
+      next_web:
+        type: object
+        required: [enabled, address, port, auth_enabled]
+        properties:
+          enabled: {type: boolean}
+          address: {type: string}
+          port: {type: integer, minimum: 1, maximum: 65535}
+          auth_enabled: {type: boolean}
+  types.SettingsError:
+    type: object
+    required: [error, code]
+    properties:
+      error: {type: string}
+      code: {type: string}
+      field:
+        type: string
+        description: Invalid field path, when available.
   types.UpdateInfoRes:
     type: object
     required: [installed_version, installed_revision, asset_suffix, can_install, reason]
@@ -618,6 +741,73 @@ paths:
       summary: Обновить правило
       tags:
       - rules
+  /api/v1/system/settings:
+    get:
+      summary: Read editable application settings and the last apply result
+      description: >-
+        Read-only, authenticated and not cached. Returns settings from the running
+        configuration, an app-only revision and the last volatile apply operation.
+        An applying operation is not a successful save. Confirmation requires the
+        expected operation ID, succeeded state and target revision. Enabling
+        authentication can require a new login before this response is accessible.
+      produces: [application/json]
+      responses:
+        "200":
+          description: Current configuration settings and operation status
+          schema: {$ref: '#/definitions/types.SettingsSnapshot'}
+        "401":
+          description: Authentication required
+        "500":
+          description: Settings could not be read
+          schema: {$ref: '#/definitions/types.SettingsError'}
+        "503":
+          description: Settings controller is unavailable
+          schema: {$ref: '#/definitions/types.SettingsError'}
+      tags: [config]
+    put:
+      summary: Save and immediately apply application settings
+      description: >-
+        Requires same-origin JSON, the complete allowed settings projection and the
+        revision from GET. Unknown fields and invalid types/ranges are rejected.
+        Application is queued only after a successful acknowledgement write; the
+        daemon recreates the runtime itself, preserving current collections and
+        DNS cache, then atomically saves its canonical YAML. DNS routing can be
+        interrupted temporarily while applying. Startup or persistence failures
+        trigger restoration of the previous settings; failed restoration is a
+        distinct operation result. GET confirms completion on the same origin.
+        For changed HTTP address/port use next_web to construct a new browser
+        URL; wildcard addresses mean the browser's current host. Do not forward
+        credentials across origins. Disabling HTTP removes browser access to the
+        final result. No separate manual restart request is needed.
+      consumes: [application/json]
+      produces: [application/json]
+      parameters:
+      - in: body
+        name: json
+        required: true
+        schema: {$ref: '#/definitions/types.SettingsRequest'}
+      responses:
+        "200":
+          description: Settings are unchanged and already active; no runtime restart
+          schema: {$ref: '#/definitions/types.SettingsAccepted'}
+        "202":
+          description: Accepted for application; not yet confirmed saved or active
+          schema: {$ref: '#/definitions/types.SettingsAccepted'}
+        "400":
+          description: Invalid settings or request; field identifies the invalid input when available
+          schema: {$ref: '#/definitions/types.SettingsError'}
+        "401":
+          description: Authentication required
+        "409":
+          description: Stale settings revision or another application already in progress
+          schema: {$ref: '#/definitions/types.SettingsError'}
+        "500":
+          description: Preparation failed before acceptance
+          schema: {$ref: '#/definitions/types.SettingsError'}
+        "503":
+          description: Persistence or runtime application is unavailable
+          schema: {$ref: '#/definitions/types.SettingsError'}
+      tags: [config]
   /api/v1/system/config/save:
     post:
       description: Сохраняет текущую конфигурацию в постоянную память

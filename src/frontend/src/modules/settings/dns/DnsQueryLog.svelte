@@ -8,7 +8,7 @@
   import Placeholder from "../../../components/ui/Placeholder.svelte";
   import Select from "../../../components/ui/Select.svelte";
   import Tooltip from "../../../components/ui/Tooltip.svelte";
-  import { token } from "../../../data/auth.svelte";
+  import { requireAuthentication, token } from "../../../data/auth.svelte";
   import { locales, t } from "../../../data/locale.svelte";
 
   import {
@@ -201,7 +201,7 @@
           loading = state === "connecting";
           failed = state === "reconnecting" || state === "unavailable";
         },
-        onUnauthorized: () => token.reset(),
+        onUnauthorized: requireAuthentication,
       }),
     );
     return () => {

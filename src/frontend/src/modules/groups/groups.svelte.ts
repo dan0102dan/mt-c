@@ -96,10 +96,12 @@ type SearchHighlightSegment = {
 
 type GroupsStoreOptions = {
   onRenderComplete?: () => void;
+  isActive?: () => boolean;
 };
 
 export class GroupsStore {
   onRenderComplete?: () => void;
+  private isActive: () => boolean;
 
   tracker = $state(new ChangeTracker<Group[]>([]));
   #savedRules = new Map<string, Rule[]>();
@@ -182,6 +184,7 @@ export class GroupsStore {
 
   constructor(options: GroupsStoreOptions = {}) {
     this.onRenderComplete = options.onRenderComplete;
+    this.isActive = options.isActive ?? (() => true);
     this.#setupEffects();
   }
 
@@ -327,6 +330,15 @@ export class GroupsStore {
   };
 
   handleSaveShortcut = (event: KeyboardEvent) => {
+    if (
+      !this.isActive() ||
+      event.defaultPrevented ||
+      event.isComposing ||
+      event.altKey ||
+      event.shiftKey
+    )
+      return;
+    if (document.querySelector('[data-dialog-content][data-state="open"]')) return;
     if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "s") {
       if (this.canSave) {
         event.preventDefault();

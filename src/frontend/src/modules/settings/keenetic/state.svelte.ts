@@ -62,8 +62,17 @@ function accept(value: Status, resetDraft: boolean) {
 }
 let pending: Promise<void> | undefined;
 let generation = 0;
-export function fetchPolicySettings(silent = false): Promise<void> {
-  if (pending) return pending;
+export function fetchPolicySettings(
+  silent = false,
+  options: { fresh?: boolean } = {},
+): Promise<void> {
+  if (pending) {
+    if (!options.fresh) return pending;
+    // A whole-config save must not accept a response captured before it.
+    // Wait for the stale request to retire, then read the confirmed state.
+    generation++;
+    return pending.then(() => fetchPolicySettings(silent, options));
+  }
   if (policy.saving) return Promise.resolve();
   const version = generation;
   policy.loading = true;
@@ -74,7 +83,7 @@ export function fetchPolicySettings(silent = false): Promise<void> {
       );
       if (version === generation) accept(value, !policy.loaded || !policyDirty());
     } catch {
-      if (version === generation && !policy.loaded) policy.failed = true;
+      if (version === generation && (options.fresh || !policy.loaded)) policy.failed = true;
     } finally {
       policy.loading = false;
       pending = undefined;

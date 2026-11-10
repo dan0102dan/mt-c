@@ -14,6 +14,7 @@ export type ConfigTransferControls = {
   registerGroups: (store: GroupsStore) => () => void;
   registerSubscriptions: (store: SubscriptionsStore) => () => void;
   registerPolicy: (source: PolicyDraftSource) => () => void;
+  connectionChangeBlocked: () => boolean;
   exportConfig: () => Promise<void>;
   importConfig: (event: Event) => Promise<void>;
 };

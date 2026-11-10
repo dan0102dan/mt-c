@@ -1,11 +1,16 @@
-import { getContext } from "svelte";
+import { getContext, type Snippet } from "svelte";
 
 import type { ContextAction } from "../../components/layout/PageControls.svelte";
 
 export type SectionControls = {
   canSave: boolean;
   dirty: boolean;
+  /** Confirm before any section is written; runtime changes run last. */
+  prepareSave?: () => Promise<boolean>;
+  saveLast?: boolean;
   validationMessage?: string;
+  toolbarFeedback?: Snippet;
+  dialog?: Snippet;
   onSave: () => Promise<void>;
   addLabel?: string;
   canAdd?: boolean;

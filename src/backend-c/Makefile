@@ -144,6 +144,7 @@ API_SRCS := \
     src/api/app.c \
     src/api/groups.c \
     src/api/system.c src/api/profiles_api.c \
+    src/api/settings.c \
     src/platform/dns_clients_service.c src/platform/dns_openwrt.c \
     src/update/release.c src/platform/update.c \
     src/api/staticfiles.c \
@@ -389,6 +390,17 @@ $(BUILDDIR)/tests/test_route_recovery: tests/unit/test_route_recovery.c $(MAIN_S
 	    -o $@ $< $(LIB_OBJS) $(TEST_SUPPORT_OBJS) $(LDLIBS) $(DEP_LIBS)
 
 # Exercise production link staging with in-memory netfilter transports.
+$(BUILDDIR)/tests/test_settings: tests/unit/test_settings.c $(MAIN_SRC) $(LIB_OBJS) $(TEST_SUPPORT_OBJS)
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) -Itests/vendor -Itests/unit $(LDFLAGS) \
+	    -Wl,--wrap=mt_rtnl_open -Wl,--wrap=mt_rtnl_close -Wl,--wrap=mt_rtnl_alloc_mark_table \
+	    -Wl,--wrap=mt_rtnl_reserve_table -Wl,--wrap=mt_rtnl_release_table -Wl,--wrap=mt_rtnl_get_default_route \
+	    -Wl,--wrap=mt_nl_watcher_create_with_routes -Wl,--wrap=mt_httpd_listen_unix \
+	    -Wl,--wrap=mt_ipt_executable_real_new -Wl,--wrap=mt_ipset_nl_real_new \
+	    -Wl,--wrap=mt_ruleset_snapshot_build \
+	    -Wl,--wrap=mt_dnsproxy_resolve_upstream -Wl,--wrap=rename -Wl,--wrap=send \
+	    -o $@ $< $(LIB_OBJS) $(TEST_SUPPORT_OBJS) $(LDLIBS) $(DEP_LIBS)
+
 $(BUILDDIR)/tests/test_rule_priority: tests/unit/test_rule_priority.c $(LIB_OBJS) $(TEST_SUPPORT_OBJS)
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -Itests/vendor -Itests/unit $(LDFLAGS) -o $@ $< $(filter-out $(BUILDDIR)/src/netfilter/ipset_to_link.o,$(LIB_OBJS)) $(TEST_SUPPORT_OBJS) $(LDLIBS) $(DEP_LIBS)

@@ -95,6 +95,9 @@ mt_err_t mt_app_reconcile_routes(mt_app_t *app, const char *interface_name);
 /* Disables and frees every group's mt_ruleset_t (mirrors main.c's
  * previous inline teardown); does NOT touch cfg (borrowed). */
 void mt_app_destroy(mt_app_t *app);
+/* Stop the committer and disable owned routing resources, retaining the
+ * models for daemon reconstruction. Reports kernel teardown failures. */
+mt_err_t mt_app_suspend(mt_app_t *app);
 
 /* Marks the app "running" -- mirrors Go's App.enabled atomic.Bool: once
  * true, mt_app_add_group immediately Enable()s+Sync()s the new group
@@ -316,7 +319,6 @@ mt_err_t mt_app_config_snapshot_json(mt_app_t *app, const char *version, cJSON *
  * File reload supplies its overlay semantics before calling this same operation. */
 mt_err_t mt_app_apply_config(mt_app_t *app, mt_config_t *candidate,
                               const char *path, const char *version);
-
 /* Called from the netfilterd webhook to bring the netfilter tables back
  * in line with the live groups.
  *

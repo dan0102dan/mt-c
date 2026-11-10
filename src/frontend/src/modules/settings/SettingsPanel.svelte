@@ -6,6 +6,7 @@
   import PageControls from "../../components/layout/PageControls.svelte";
   import { t } from "../../data/locale.svelte";
   import DnsQueryLog from "./dns/DnsQueryLog.svelte";
+  import GeneralSettingsPanel from "./general/GeneralSettingsPanel.svelte";
   import ProfilesPanel from "./ProfilesPanel.svelte";
 
   import { toast } from "../../utils/events";
@@ -24,10 +25,15 @@
   let selected = $state("profiles");
   const visibleSection = $derived(sections.find((section) => section.element.id === selected));
   const tabLabels = $derived<Record<string, string>>({
+    general: t("General"),
     profiles: t("Profiles"),
     keenetic: "Keenetic",
     dns: t("DNS queries"),
   });
+  const tabSections = $derived([
+    ...sections.filter((section) => section.element.id === "general"),
+    ...sections.filter((section) => section.element.id !== "general"),
+  ]);
   const visibleControls = $derived(visibleSection?.controls());
   const dirty = $derived(sections.some((section) => section.controls().dirty));
   const invalid = $derived(
@@ -44,14 +50,23 @@
 
   async function saveAll() {
     if (!canSave) return;
-    // Both section APIs persist the same configuration file: serialize
-    // writes. The failed section remains dirty; other edits still save.
-    const pending = sections.filter((section) => section.controls().dirty);
+    // Confirm runtime changes before writing any section, then apply them last
+    // so listener/auth changes cannot interrupt the other settings saves.
+    const pending = sections
+      .filter((section) => section.controls().dirty)
+      .sort(
+        (a, b) => Number(Boolean(a.controls().saveLast)) - Number(Boolean(b.controls().saveLast)),
+      );
     saving = true;
     let succeeded = 0;
     let failed = 0;
     try {
       for (const section of pending) {
+        const prepare = section.controls().prepareSave;
+        if (prepare && !(await prepare())) return;
+      }
+      for (const section of pending) {
+        if (section.controls().saveLast && failed) continue;
         try {
           await section.controls().onSave();
           succeeded++;
@@ -66,6 +81,22 @@
     }
   }
 
+  function handleSaveShortcut(event: KeyboardEvent) {
+    if (
+      !active ||
+      event.defaultPrevented ||
+      event.isComposing ||
+      event.altKey ||
+      event.shiftKey ||
+      !(event.ctrlKey || event.metaKey) ||
+      event.key.toLowerCase() !== "s"
+    )
+      return;
+    if (document.querySelector('[data-dialog-content][data-state="open"]')) return;
+    event.preventDefault();
+    void saveAll();
+  }
+
   setContext<RegisterSection>(SETTINGS_SECTIONS, (section) => {
     sections = [...sections, section];
     return () => {
@@ -73,6 +104,13 @@
     };
   });
 </script>
+
+<svelte:window onkeydown={handleSaveShortcut} />
+
+{#each sections as section (section.element.id)}
+  {@const dialog = section.controls().dialog}
+  {#if dialog}{@render dialog()}{/if}
+{/each}
 
 <Tabs.Root bind:value={selected} class="settings-page">
   <div class="settings-toolbar">
@@ -97,12 +135,16 @@
     >
       {#snippet search()}
         <Tabs.List class="settings-tabs" aria-label={t("Settings")}>
-          {#each sections as section (section.element.id)}
+          {#each tabSections as section (section.element.id)}
             <Tabs.Trigger value={section.element.id}>{tabLabels[section.element.id]}</Tabs.Trigger>
           {/each}
         </Tabs.List>
       {/snippet}
     </PageControls>
+    {#each sections as section (section.element.id)}
+      {@const feedback = section.controls().toolbarFeedback}
+      {#if feedback}{@render feedback()}{/if}
+    {/each}
     {#each validationSections as section (section.element.id)}
       <span
         id={`settings-validation-${section.element.id}`}
@@ -118,6 +160,9 @@
   <Tabs.Content value="dns" class="settings-content"
     ><DnsQueryLog active={active && selected === "dns"} /></Tabs.Content
   >
+  <Tabs.Content value="general" class="settings-content">
+    <GeneralSettingsPanel active={active && selected === "general"} pageSaving={saving} />
+  </Tabs.Content>
 </Tabs.Root>
 
 <style>

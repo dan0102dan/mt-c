@@ -24,6 +24,7 @@
 
 #include <stdbool.h>
 #include <stdint.h>
+#include <sys/socket.h>
 
 #include "magitrickle/dns_query_log.h"
 #include "magitrickle/dnswire.h"
@@ -44,6 +45,15 @@ typedef struct mt_dnsproxy_config {
     bool disable_drop_aaaa;
 } mt_dnsproxy_config_t;
 
+/* Resolution may block in libc. Settings preparation performs it on a worker
+ * while the old DNS loop is still serving requests, then reuses this result. */
+typedef struct mt_dns_upstream {
+    struct sockaddr_storage address;
+    socklen_t length;
+} mt_dns_upstream_t;
+mt_err_t mt_dnsproxy_resolve_upstream(const char *address, uint16_t port,
+                                     mt_dns_upstream_t *out);
+
 /* Called for every successfully parsed upstream response (network is
  * "udp"/"tcp", client addr string for logging). The proxy owns msg; the
  * callback must not free or retain it. Phase 4 wires cache + matching. */
@@ -54,6 +64,10 @@ typedef void (*mt_dnsproxy_msg_cb)(const mt_dns_msg_t *msg,
 mt_err_t mt_dnsproxy_create(const mt_dnsproxy_config_t *cfg, mt_loop_t *loop,
                             mt_dnsproxy_msg_cb cb, void *cb_ud,
                             mt_dnsproxy_t **out);
+mt_err_t mt_dnsproxy_create_resolved(const mt_dnsproxy_config_t *cfg, mt_loop_t *loop,
+                                     mt_dnsproxy_msg_cb cb, void *cb_ud,
+                                     const mt_dns_upstream_t *upstream,
+                                     mt_dnsproxy_t **out);
 void mt_dnsproxy_destroy(mt_dnsproxy_t *p);
 
 /* Borrowed pointer. Both proxy and journal are owned by the daemon and
@@ -62,6 +76,7 @@ void mt_dnsproxy_set_query_log(mt_dnsproxy_t *p, mt_dns_query_log_t *log);
 
 /* Bind + register listeners on the loop. */
 mt_err_t mt_dnsproxy_start(mt_dnsproxy_t *p);
+uint16_t mt_dnsproxy_listen_port(const mt_dnsproxy_t *p);
 
 /* Observability. */
 uint64_t mt_dnsproxy_dropped(const mt_dnsproxy_t *p);

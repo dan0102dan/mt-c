@@ -285,6 +285,22 @@ mt_app_t *mt_app_create(const mt_app_deps_t *deps) {
     return app;
 }
 
+mt_err_t mt_app_suspend(mt_app_t *app) {
+    if (!app) { return MT_OK; }
+    mt_app_stop_netfilter_committer(app);
+    app->running = false;
+    mt_err_t first = MT_OK;
+    for (size_t i = 0; i < app->n_rulesets; i++) {
+        mt_err_t err = mt_ruleset_disable(app->rulesets[i]);
+        if (first == MT_OK) { first = err; }
+    }
+    for (size_t i = 0; i < app->n_sub_rulesets; i++) {
+        mt_err_t err = mt_ruleset_disable(app->sub_rulesets[i]);
+        if (first == MT_OK) { first = err; }
+    }
+    return first;
+}
+
 void mt_app_destroy(mt_app_t *app) {
     if (!app) { return; }
     /* Nothing below is safe while a rebuild can still be reading the

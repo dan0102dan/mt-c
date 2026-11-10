@@ -200,7 +200,7 @@ static getter_res_t get_uint64(node_t *n, uint64_t max, uint64_t *dst,
         } else {
             value = (uint64_t)v.i;
         }
-    } else if (v.kind == MT_SCALAR_FLOAT && v.f >= 0 &&
+    } else if (v.kind == MT_SCALAR_FLOAT && v.f >= 0 && v.f < 18446744073709551616.0 &&
                v.f == (double)(uint64_t)v.f) {
         /* yaml.v2 accepts integral floats into uints (u3: 1.0) */
         value = (uint64_t)v.f;
@@ -228,6 +228,7 @@ static getter_res_t get_duration(node_t *n, mt_duration_t *dst, mt_err_t *err)
     if (scalar_is_plain(n)) {
         mt_scalar_value_t v = mt_yaml_resolve_plain(scalar_text(n));
         if (v.kind == MT_SCALAR_INT) {
+            if (v.is_uint && v.u > INT64_MAX) { *err = MT_ERR_INVAL; return GET_ERR; }
             *dst = v.is_uint ? (mt_duration_t)v.u : (mt_duration_t)v.i;
             return GET_OK;
         }
@@ -431,6 +432,7 @@ static mt_err_t load_app(yaml_document_t *doc, node_t *app,
             /* legacy: value below 1ms is interpreted as milliseconds
              * (config.go TODO before 1.0.0) */
             if (t < MT_DURATION_MS) {
+                if (t < INT64_MIN / MT_DURATION_MS) { return MT_ERR_INVAL; }
                 t *= MT_DURATION_MS;
             }
             c->dns_proxy.timeout = t;
@@ -467,6 +469,7 @@ static mt_err_t load_app(yaml_document_t *doc, node_t *app,
             if (r == GET_OK) {
                 /* legacy: below 1s means seconds */
                 if (ttl < MT_DURATION_SEC) {
+                    if (ttl < INT64_MIN / MT_DURATION_SEC) { return MT_ERR_INVAL; }
                     ttl *= MT_DURATION_SEC;
                 }
                 c->netfilter.ipset.additional_ttl = ttl;

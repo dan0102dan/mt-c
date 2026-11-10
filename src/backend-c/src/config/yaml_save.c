@@ -536,6 +536,8 @@ mt_err_t mt_config_save_buffer(const mt_config_t *cfg, const char *version,
     return *out != NULL ? MT_OK : MT_ERR_NOMEM;
 }
 
+static mt_err_t write_file_atomic(const char *path, const char *data, size_t len);
+
 mt_err_t mt_config_save_file(const mt_config_t *cfg, const char *version,
                              const char *path)
 {
@@ -546,42 +548,56 @@ mt_err_t mt_config_save_file(const mt_config_t *cfg, const char *version,
         return err;
     }
 
+    err = write_file_atomic(path, data, len);
+    free(data);
+    return err;
+}
+
+static mt_err_t write_file_atomic(const char *path, const char *data, size_t len)
+{
+    if (!path || (!data && len)) { return MT_ERR_INVAL; }
+    mt_err_t err = MT_OK;
+
     /* atomic write: tmp in same dir + fsync + rename + dir fsync */
     char tmp_path[4096];
-    int n = snprintf(tmp_path, sizeof(tmp_path), "%s.tmp.%d", path,
-                     (int)getpid());
+    int n = snprintf(tmp_path, sizeof(tmp_path), "%s.tmp.XXXXXX", path);
     if (n < 0 || (size_t)n >= sizeof(tmp_path)) {
-        free(data);
         return MT_ERR_INVAL;
     }
 
-    int fd = open(tmp_path, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0600);
+    int fd = mkstemp(tmp_path);
     if (fd < 0) {
-        free(data);
         return mt_err_from_errno(errno);
+    }
+    if (fcntl(fd, F_SETFD, FD_CLOEXEC) != 0) {
+        err = mt_err_from_errno(errno);
+        close(fd); unlink(tmp_path); return err;
     }
     size_t written = 0;
     while (written < len) {
         ssize_t rc = write(fd, data + written, len - written);
-        if (rc < 0) {
-            if (errno == EINTR) {
+        if (rc <= 0) {
+            if (rc < 0 && errno == EINTR) {
                 continue;
             }
-            err = mt_err_from_errno(errno);
+            err = rc == 0 ? MT_ERR_IO : mt_err_from_errno(errno);
             close(fd);
             unlink(tmp_path);
-            free(data);
             return err;
         }
         written += (size_t)rc;
     }
-    if (fsync(fd) != 0 || close(fd) != 0) {
+    if (fsync(fd) != 0) {
         err = mt_err_from_errno(errno);
+        close(fd);
         unlink(tmp_path);
-        free(data);
         return err;
     }
-    free(data);
+    if (close(fd) != 0) {
+        err = mt_err_from_errno(errno);
+        unlink(tmp_path);
+        return err;
+    }
 
     if (rename(tmp_path, path) != 0) {
         err = mt_err_from_errno(errno);

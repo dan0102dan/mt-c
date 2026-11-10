@@ -61,10 +61,12 @@ type AddSubscriptionPayload = {
 
 type SubscriptionsStoreOptions = {
   onRenderComplete?: () => void;
+  isActive?: () => boolean;
 };
 
 export class SubscriptionsStore {
   onRenderComplete?: () => void;
+  private isActive: () => boolean;
 
   tracker = $state(new ChangeTracker<Subscription[]>([]));
   saving = $state(false);
@@ -168,6 +170,7 @@ export class SubscriptionsStore {
 
   constructor(options: SubscriptionsStoreOptions = {}) {
     this.onRenderComplete = options.onRenderComplete;
+    this.isActive = options.isActive ?? (() => true);
     this.#setupEffects();
   }
 
@@ -297,6 +300,15 @@ export class SubscriptionsStore {
   };
 
   handleSaveShortcut = (event: KeyboardEvent) => {
+    if (
+      !this.isActive() ||
+      event.defaultPrevented ||
+      event.isComposing ||
+      event.altKey ||
+      event.shiftKey
+    )
+      return;
+    if (document.querySelector('[data-dialog-content][data-state="open"]')) return;
     if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "s") {
       if (this.canSave) {
         event.preventDefault();

@@ -1,4 +1,4 @@
-import { token } from "../data/auth.svelte";
+import { requireAuthentication, token } from "../data/auth.svelte";
 import { t } from "../data/locale.svelte";
 
 import { toast } from "./events";
@@ -7,14 +7,20 @@ import { HttpError } from "./http-error";
 const viteEnv = (import.meta as ImportMeta & { env?: { DEV?: boolean } }).env;
 export const API_BASE = viteEnv?.DEV ? "http://localhost:6969/api/v1" : "/api/v1";
 
-export type FetchOptions = RequestInit & { silent?: boolean; timeoutMs?: number };
+export type FetchOptions = RequestInit & {
+  silent?: boolean;
+  timeoutMs?: number;
+  /** Applying access settings may require reauthentication after the reply. */
+  authFailure?: "reset" | "preserve";
+};
 
 export async function fetcher<T>(url: string, settings: FetchOptions = {}): Promise<T> {
-  const { silent = false, timeoutMs, ...options } = settings;
-  if (token.current) {
+  const { silent = false, timeoutMs, authFailure = "reset", ...options } = settings;
+  const requestToken = token.current;
+  if (requestToken) {
     options.headers = {
       ...options.headers,
-      Authorization: `Bearer ${token.current}`,
+      Authorization: `Bearer ${requestToken}`,
     };
   }
 
@@ -33,7 +39,10 @@ export async function fetcher<T>(url: string, settings: FetchOptions = {}): Prom
     const res = await fetch(`${API_BASE}${url}`, options);
 
     if (res.status === 401 || res.status === 403) {
-      token.reset();
+      // A reply to an old request must not invalidate a renewed login.
+      if (token.current !== requestToken) throw new Error("Unauthorized");
+      if (authFailure === "preserve") throw new HttpError(res.status, await res.text());
+      requireAuthentication();
       throw new Error("Unauthorized");
     }
 

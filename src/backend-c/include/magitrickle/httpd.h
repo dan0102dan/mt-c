@@ -51,6 +51,11 @@ typedef struct mt_httpd mt_httpd_t;
 typedef struct mt_http_req mt_http_req_t;
 typedef struct mt_http_res mt_http_res_t;
 typedef struct mt_http_deferred mt_http_deferred_t;
+/* Finite-response completion, exactly once: true after all bytes reached the
+ * socket, false on disconnect/write failure/teardown. Called on the loop owner.
+ * The callback may request loop stop, but must not destroy the active server. */
+typedef void (*mt_http_sent_fn)(void *userdata, bool sent);
+void mt_http_res_on_sent(mt_http_res_t *res, mt_http_sent_fn callback, void *userdata);
 /* Defer only during a handler. Complete exactly once, on the loop thread.
  * Completion remains safe after peer disconnect/server destruction. On a
  * failed enqueue cancel the deferral and write a normal immediate error. */
@@ -73,6 +78,7 @@ mt_err_t mt_httpd_create(mt_loop_t *loop, mt_httpd_t **out);
 void mt_httpd_destroy(mt_httpd_t *h);
 
 mt_err_t mt_httpd_listen_tcp(mt_httpd_t *h, const char *addr, uint16_t port);
+uint16_t mt_httpd_tcp_port(const mt_httpd_t *h); /* actual port after an ephemeral bind */
 /* Removes any existing socket file at `path` first (matches Go's
  * os.Remove-if-exists in SetupUnixSocket), then binds/listens. */
 mt_err_t mt_httpd_listen_unix(mt_httpd_t *h, const char *path);
@@ -123,7 +129,8 @@ void mt_http_res_write(mt_http_res_t *res, int status, const char *content_type,
                        const uint8_t *data, size_t len);
 /* Convenience: status + application/json body from a cJSON value (which
  * this call deletes). */
-void mt_http_res_write_json(mt_http_res_t *res, int status, cJSON *obj);
+/* Returns false when encoding/copying the response failed. */
+bool mt_http_res_write_json(mt_http_res_t *res, int status, cJSON *obj);
 /* Convenience: {"error": msg} via mt_json_error, matching
  * api/utils.WriteError. */
 void mt_http_res_write_error(mt_http_res_t *res, int status, const char *msg);

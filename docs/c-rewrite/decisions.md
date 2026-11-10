@@ -4119,3 +4119,162 @@ boundaries, static ordering and permanent TTLs. Fault injection includes failure
 while constructing a second block and verifies that no partial kernel write is
 performed. Benchmark scope is desired-list construction, not complete reload or
 packet forwarding.
+
+## D-90 — Browser YAML editing with explicit persistence and restart state (2026-11-08)
+
+**Superseded by D-91 before merge:** the raw editor and its API were removed at
+the user's request in favor of typed General settings and automatic application.
+The following entry records the original design. Shared atomic-write and numeric
+overflow fixes remain in use.
+
+The additive `GET/PUT /api/v1/system/config/yaml` endpoints expose only the
+daemon's configured file. GET reads exact UTF-8 bytes, including comments and
+line endings; when no file exists it generates the live configuration without
+writing anything. Both endpoints use the existing WebUI authentication and
+`Cache-Control: no-store`. PUT requires a JSON request and rejects cross-site
+browser fetch metadata. Raw YAML is limited to 16 MiB, the encoded JSON request
+to 24 MiB, within the server's existing aggregate in-flight budget.
+
+A SHA-256 revision binds file existence/bytes and canonical live models. Both
+external file edits and accepted-but-unpersisted API edits invalidate an older
+draft. GET reports `out_of_sync` when interpreting the file from defaults differs
+from live models or the file is invalid. PUT normally rejects this state with
+`CONFIG_OUT_OF_SYNC`; a current `allow_out_of_sync: true` acknowledgement permits
+intentional replacement/repair. It never bypasses stale-revision rejection.
+The file is checked again immediately before persistence; unrelated external
+writers do not participate in an interprocess lock, so no filesystem compare-and-
+swap guarantee against a write in the final check/rename window is claimed.
+
+Interactive validation is stricter than historical file loading: a single YAML
+document, nonempty scalar mapping keys, no duplicates or unsupported fields,
+explicit IDs for groups/subscriptions/rules, supported rule types and valid
+patterns, existing type/range/priority/profile-reference checks. Libyaml syntax
+failures carry 1-based line/column diagnostics. Legacy startup/SIGHUP unknown-key
+and overlay semantics remain unchanged. Numeric conversion and legacy duration
+normalization now reject values that would overflow before converting/multiplying;
+accepted finite in-range values retain their previous semantics.
+
+A fully prepared candidate goes through the existing transactional model/ruleset
+apply operation with an optional persistence callback. The raw callback preserves
+the submitted bytes rather than canonicalizing YAML. The shared writer uses an
+exclusive, unique 0600 sibling temporary file, full write/fsync/close, then rename
+and best-effort directory fsync. Failures before rename leave the previous file
+and model registry; kernel rollback remains best effort as in D-85. The success
+JSON is allocated before mutation. Comments-only edits skip model/routing rebuilds.
+
+The candidate represents a complete file interpreted from defaults, as on restart,
+not SIGHUP's partial overlay. Startup-bound settings are compared to an immutable
+copy of the original application settings: `restart_required` persists across GET
+and subsequent saves until restart or restoration of those original settings.
+No service restart is initiated, and the response does not claim that DNS/HTTP
+listeners, upstream transport, limits, logger or netfilter helper names were
+recreated. Routing/profile definitions and existing live consumers are updated
+by the shared apply operation. Structured UI and subscription-cache saves keep
+their historical canonical serializer and may subsequently normalize formatting
+and remove comments; the editor does not introduce a second configuration store.
+
+`test_config_yaml` exercises actual HTTP handlers/files, verbatim Unicode/CRLF
+round trips, no-op model identity, invalid-document diagnostics, disk and live
+conflicts, explicit divergence acknowledgement, repair of an invalid file,
+missing-file initialization, injected rename failure/rollback/retry, restart-state
+tracking, authentication and the larger request budget. Existing YAML/model/API
+tests remain the compatibility guard for the shared writer/apply paths.
+
+## D-91 — General settings with immediate runtime application (2026-11-10)
+
+The unmerged YAML editor from D-90 is replaced by the **General / Общие** tab.
+Its form exposes 20 application settings not already managed by the routing,
+subscriptions, profiles, or Keenetic policy interfaces: HTTP enable/auth/listen
+address and port; DNS listen/upstream endpoints, port-53 interception, PTR/AAAA
+handling, timeout and concurrency/idle-pool limits; IPv4/IPv6 routing, additional
+IP-set TTL, intercepted interfaces, interface-list visibility, and log level.
+Timeout is an integer number of milliseconds and additional TTL an integer
+number of seconds. Positive UI switches invert the existing `disable*` fields.
+The installed YAML schema, field names and defaults remain unchanged. The form
+does not expose helper chain/set names, mark/table allocation, or the skin path.
+The projection represents legacy zero timeout/concurrency and unknown log level
+using their existing effective defaults. Fractional duration units use the same
+integer truncation as the runtime. Legacy listener port zero is reported as the
+actual bound port; DNS now shares that selected port between UDP and TCP instead
+of binding two unrelated ephemeral ports. DNS interception targets that actual bound
+port too, including after rollback; the stored legacy zero is left unchanged.
+A disabled HTTP listener with port zero
+uses the default 8080 in the form. These projections do not rewrite the file on
+GET.
+
+`GET/PUT /api/v1/system/settings` use a strict JSON projection rather than a
+complete configuration document. The revision hashes this projection only, so
+unrelated group, subscription, profile and policy changes do not invalidate a
+General draft. PUT rejects missing/unknown/duplicate fields, invalid types,
+addresses, interface names, enum values and out-of-range integers. It checks
+the existing revision, reserves one operation, and returns an operation ID,
+target revision and the intended web endpoint. Authentication remains the
+existing system-account policy. Browser writes require JSON and reject
+cross-site fetch metadata; both responses use `Cache-Control: no-store`.
+
+A changed PUT returns **202 Accepted**, not an application-success response.
+Only a fully written HTTP acknowledgement permits the operation to proceed;
+disconnect/encoding/write failure before that point leaves the runtime and file
+untouched. Upstream hostname resolution runs off-loop while the old DNS proxy
+still works. After resolution, the loop owner checks the revision again and
+combines the requested public fields with the latest application model. This
+preserves settings outside the projection as well as the latest collection
+models. A concurrent software update and a General application exclude one
+another. Identical, already-active settings return 200 without a runtime cycle.
+The controller also tracks whether a complete runtime is running independently
+of its last operation result; neither a legacy model-only reload nor a failed
+preparation in administrative recovery can produce a false no-op success.
+Hostname preparation uses the platform's libc resolver timeout. The browser's
+confirmation deadline does not cancel that worker: the old DNS loop keeps
+serving during resolution, and shutdown may wait for the resolver to finish.
+
+The daemon then stops its old runtime graph and recreates listeners, proxy,
+pipeline, routing helpers, background services and API contexts in process.
+DNS cache ownership and the settings operation controller outlive that graph;
+cached DNS-derived routes can therefore be rebuilt without waiting for every
+name to be queried again. Callback contexts belong to the runtime structure,
+not a completed initializer's stack. New listeners and synchronous routing
+startup must succeed before the shared atomic writer persists the configuration.
+Only after that commit is the operation marked `succeeded`. The existing
+Keenetic policy discovery still begins with a closed scope until discovery is
+complete; this does not widen DNS interception during reconstruction.
+
+Startup or persistence failure tears down the candidate and reconstructs the
+previous runtime without committing the candidate file. A successful recovery
+is reported as `failed` with the old settings. Kernel cleanup or recovery errors
+are reported separately as `rollback_failed`; they are not presented as an
+atomic kernel rollback. If the full old runtime cannot start, a minimal
+administrative API is attempted using the old web/authentication settings so
+the failure can be inspected or retried. Historical SIGHUP and portable-import
+semantics remain unchanged; they do not become full runtime restarts through
+this new endpoint.
+
+The settings page confirms the temporary DNS-routing interruption before any
+section in its Save operation is written. General runs last and is skipped if
+an earlier section fails to save. Additional notices explain disabled web
+access, a changed address/port and authentication changes. The browser reports
+success only after observing the matching completed operation, target revision
+and full projection. It never repeats an ambiguous PUT automatically. Lost
+acknowledgements, timeouts, stale drafts and failed application keep the draft
+and offer a page reload or application check. Polling is bounded and
+same-origin; a changed web endpoint is a user-opened link without transferred
+credentials. Reauthentication keeps mounted drafts but disables the hidden
+application and its keyboard shortcuts. Unauthorized responses to requests sent
+with an older token do not invalidate a renewed login.
+
+The raw YAML API, editor, validation-only parser and editor dependencies are
+removed. The shared atomic writer, numeric-overflow guards, existing portable
+snapshot/import API and unrelated draft/persistence protections remain. Unused
+raw-editor persistence callbacks are removed; app configuration writes use the
+existing direct serializer path, with the atomic file helper kept private.
+
+`test_settings` executes the production daemon lifecycle with real HTTP and
+UDP/TCP DNS sockets, temporary configuration files and upstream stubs. It checks
+upstream/listener/auth changes, cache rehydration, current-model preservation,
+strict revisions, partial acknowledgements and disconnects, persistence/startup
+failures, degraded recovery and retry, and legacy ephemeral ports. Netfilter,
+netlink, device discovery and the administrative Unix-socket bind are replaced
+by narrow test transports; these tests do not establish real-router kernel
+rollback behavior. Browser and mock-API tests cover draft ownership, Save-all
+ordering, confirmation, reauthentication, ambiguous responses and responsive
+English/Russian controls separately from the native lifecycle.

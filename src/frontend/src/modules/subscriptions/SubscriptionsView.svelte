@@ -35,7 +35,10 @@
 
   let { active = true, onRenderComplete }: Props = $props();
 
-  const store = new SubscriptionsStore({ onRenderComplete: () => onRenderComplete?.() });
+  const store = new SubscriptionsStore({
+    onRenderComplete: () => onRenderComplete?.(),
+    isActive: () => active,
+  });
   setContext(SUBSCRIPTIONS_STORE_CONTEXT, store);
   const transfer = getContext<ConfigTransferControls>(CONFIG_TRANSFER_CONTEXT);
   const unregisterTransfer = transfer.registerSubscriptions(store);

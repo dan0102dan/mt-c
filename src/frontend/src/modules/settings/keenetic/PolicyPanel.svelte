@@ -45,8 +45,10 @@
       dirty: () => policy.loaded && policyDirty(),
       saving: () => policy.saving,
       refresh: async () => {
-        policy.loaded = false;
-        await fetchPolicySettings();
+        // The user can start a new draft while a whole-config request is in
+        // flight. Keep it, and replace only a clean baseline with fresh data.
+        await fetchPolicySettings(false, { fresh: true });
+        if (policy.failed) throw new Error("Policy settings refresh failed");
       },
     });
     void fetchPolicySettings();
