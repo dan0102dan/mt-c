@@ -183,6 +183,66 @@ for (const width of [1280, 390]) {
   });
 }
 
+for (const width of [1280, 390]) {
+  test(`grouped rows keep their height through client label changes at ${width}px`, async ({
+    page,
+    dns,
+  }) => {
+    await page.setViewportSize({ width, height: 844 });
+    for (const row of dns.state.history) delete row.client_name;
+    const region = await setup(page, dns);
+    await region.getByRole("button", { name: "Group by domain" }).click();
+    const rows = region.locator("tbody tr");
+    await expect(rows).toHaveCount(2);
+    await page.evaluate(() => document.fonts.ready.then(() => undefined));
+    const heights = () =>
+      rows.evaluateAll((elements) =>
+        elements.map((element) => element.getBoundingClientRect().height),
+      );
+    const original = await heights();
+
+    dns.state.history[0].client_name = "ubuntu-desktop";
+    dns.state.history[1].client_name = "redosHyperV";
+    dns.updateLabels();
+    await expect(rows.first()).toContainText("ubuntu-desktop");
+    await expect(rows.first()).toContainText("192.168.1.42");
+    await expect.poll(heights).toEqual(original);
+
+    dns.state.history[0].client_name = "a".repeat(126);
+    dns.updateLabels();
+    await expect(rows.first()).toContainText("a".repeat(126));
+    await expect.poll(heights).toEqual(original);
+
+    // A domain with more than two clients stays compact, but every IP is
+    // still reachable from a keyboard-accessible detail popover.
+    const extra = {
+      id: 4,
+      time_ms: 4000,
+      client: "192.168.1.44",
+      domain: "example.org",
+      qtype: 1,
+      protocol: "udp" as const,
+    };
+    dns.state.history.unshift(extra);
+    for (const stream of dns.streams) stream.write(frame("query", { ...extra, retained_from: 1 }));
+    await expect(rows.first().locator(".dns-more-clients")).toHaveText("+2");
+    await expect.poll(heights).toEqual(original);
+    await rows.first().getByRole("button", { name: /Show all clients/ }).click();
+    const details = page.getByRole("dialog", { name: "Clients" });
+    await expect(details).toContainText("192.168.1.42");
+    await expect(details).toContainText("192.168.1.43");
+    await expect(details).toContainText("192.168.1.44");
+    await page.keyboard.press("Escape");
+
+    delete dns.state.history[0].client_name;
+    dns.updateLabels();
+    await expect(rows.first()).not.toContainText("a".repeat(126));
+    await expect.poll(heights).toEqual(original);
+    expect(dns.state.manualGets).toBe(0);
+    expect(dns.state.snapshots).toBe(1);
+  });
+}
+
 test("a burst uses bounded history and preserves the newest requests", async ({ page, dns }) => {
   const region = await setup(page, dns);
   const wire = Array.from({ length: 10000 }, (_, index) => {
