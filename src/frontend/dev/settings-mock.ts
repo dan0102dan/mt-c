@@ -251,15 +251,79 @@ async function revision(settings: MockGeneralSettings): Promise<string> {
   return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 
+/** Match the native runtime's restart boundary; the browser asks the API. */
+export function mockRequiresDnsRestart(
+  current: MockGeneralSettings,
+  next: MockGeneralSettings,
+): boolean {
+  const runtime = (settings: MockGeneralSettings) => ({
+    httpWeb: { enabled: settings.httpWeb.enabled, host: settings.httpWeb.host },
+    dnsProxy: {
+      host: settings.dnsProxy.host,
+      upstream: settings.dnsProxy.upstream,
+      disableRemap53: settings.dnsProxy.disableRemap53,
+      maxIdleConns: settings.dnsProxy.maxIdleConns,
+      maxConcurrent: settings.dnsProxy.maxConcurrent,
+      timeoutMs: settings.dnsProxy.timeoutMs,
+    },
+    netfilter: {
+      disableIPv4: settings.netfilter.disableIPv4,
+      disableIPv6: settings.netfilter.disableIPv6,
+    },
+    link: settings.link,
+  });
+  return fingerprint(runtime(current)) !== fingerprint(runtime(next));
+}
+
+async function readRequest(request: Request, allowRestartFlag = false) {
+  if (
+    !/^application\/json(?:\s*;|\s*$)/i.test(request.headers.get("Content-Type") ?? "") ||
+    request.headers.get("Sec-Fetch-Site") === "cross-site"
+  )
+    throw new SettingsError("", "Expected a same-origin JSON request");
+  let input: unknown;
+  try {
+    input = await request.json();
+  } catch {
+    throw new SettingsError("", "Invalid JSON");
+  }
+  const hasRestartFlag = allowRestartFlag && Object.hasOwn(record(input), "allow_dns_restart");
+  const body = fields(input, [
+    "settings",
+    "revision",
+    ...(hasRestartFlag ? ["allow_dns_restart"] : []),
+  ]);
+  if (typeof body.revision !== "string") throw new SettingsError("revision");
+  return {
+    settings: readSettings(body.settings),
+    revision: body.revision,
+    allowDnsRestart: hasRestartFlag ? boolean(body.allow_dns_restart, "allow_dns_restart") : true,
+  };
+}
+
 /** In-memory lifecycle simulation. The next status GET applies the queued
  * projection to the latest model; real listeners, DNS and disk are unchanged. */
 export function registerMockSettingsRoutes(
   app: Hono,
-  source: { get: () => ServerConfig; apply: (config: unknown) => void },
+  source: {
+    get: () => ServerConfig;
+    apply: (config: unknown) => void;
+    runtimeActive?: () => boolean;
+  },
 ) {
   let operation: Operation | null = null;
-  let pending: { settings: MockGeneralSettings; baseline: string } | undefined;
+  let pending:
+    | {
+        settings: MockGeneralSettings;
+        baseline: string;
+        allowDnsRestart: boolean;
+        dnsRestartRequired: boolean;
+      }
+    | undefined;
   let accepting = false;
+  const runtimeActive = () => source.runtimeActive?.() ?? true;
+  const requiresRestart = (current: MockGeneralSettings, next: MockGeneralSettings) =>
+    !runtimeActive() || mockRequiresDnsRestart(current, next);
 
   function completePending() {
     if (!pending || !operation) return;
@@ -269,6 +333,11 @@ export function registerMockSettingsRoutes(
       const current = source.get();
       if (fingerprint(project(current)) !== request.baseline)
         throw new Error("General settings changed before application");
+      if (
+        (!request.allowDnsRestart || !request.dnsRestartRequired) &&
+        requiresRestart(project(current), request.settings)
+      )
+        throw new Error("A DNS restart became necessary before application; save again to confirm");
       source.apply(overlay(current, request.settings));
       operation = { ...operation, state: "succeeded" };
     } catch (error) {
@@ -288,29 +357,48 @@ export function registerMockSettingsRoutes(
     return c.json({ settings, revision: await revision(settings), operation: currentOperation });
   });
 
+  app.post(`${BASE}/preview`, async (c) => {
+    c.header("Cache-Control", "no-store");
+    if (pending || accepting)
+      return c.json({ code: "SETTINGS_BUSY", error: "Settings are already being applied" }, 409);
+    try {
+      const input = await readRequest(c.req.raw);
+      const current = project(source.get());
+      const baseline = fingerprint(current);
+      if (
+        input.revision !== (await revision(current)) ||
+        fingerprint(project(source.get())) !== baseline
+      )
+        return c.json(
+          { code: "SETTINGS_CONFLICT", error: "General settings changed; reload before saving" },
+          409,
+        );
+      return c.json({ dns_restart_required: requiresRestart(current, input.settings) });
+    } catch (error) {
+      if (error instanceof SettingsError)
+        return c.json(
+          {
+            code: "SETTINGS_INVALID",
+            error: error.message,
+            ...(error.field ? { field: error.field } : {}),
+          },
+          400,
+        );
+      throw error;
+    }
+  });
+
   app.put(BASE, async (c) => {
     c.header("Cache-Control", "no-store");
     if (pending || accepting)
       return c.json({ code: "SETTINGS_BUSY", error: "Settings are already being applied" }, 409);
     accepting = true;
     try {
-      if (
-        !/^application\/json(?:\s*;|\s*$)/i.test(c.req.header("Content-Type") ?? "") ||
-        c.req.header("Sec-Fetch-Site") === "cross-site"
-      )
-        throw new SettingsError("", "Expected a same-origin JSON request");
-      let input: unknown;
-      try {
-        input = await c.req.json();
-      } catch {
-        throw new SettingsError("", "Invalid JSON");
-      }
-      const body = fields(input, ["settings", "revision"]);
-      if (typeof body.revision !== "string") throw new SettingsError("revision");
-      const settings = readSettings(body.settings);
+      const input = await readRequest(c.req.raw, true);
+      const settings = input.settings;
       const current = project(source.get());
       const baseline = fingerprint(current);
-      if (body.revision !== (await revision(current)))
+      if (input.revision !== (await revision(current)))
         return c.json(
           { code: "SETTINGS_CONFLICT", error: "General settings changed; reload before saving" },
           409,
@@ -321,13 +409,28 @@ export function registerMockSettingsRoutes(
           { code: "SETTINGS_CONFLICT", error: "General settings changed; reload before saving" },
           409,
         );
-      const unchanged = fingerprint(settings) === baseline;
+      const dnsRestartRequired = requiresRestart(current, settings);
+      if (!input.allowDnsRestart && dnsRestartRequired)
+        return c.json(
+          {
+            code: "SETTINGS_RESTART_REQUIRED",
+            error: "A DNS restart must be confirmed before saving",
+          },
+          409,
+        );
+      const unchanged = fingerprint(settings) === baseline && runtimeActive();
       operation = {
         id: crypto.randomUUID().replaceAll("-", ""),
         state: unchanged ? "succeeded" : "applying",
         target_revision,
       };
-      if (!unchanged) pending = { settings, baseline };
+      if (!unchanged)
+        pending = {
+          settings,
+          baseline,
+          allowDnsRestart: input.allowDnsRestart,
+          dnsRestartRequired,
+        };
       return c.json(
         {
           operation,

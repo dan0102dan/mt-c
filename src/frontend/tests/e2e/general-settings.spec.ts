@@ -1,6 +1,6 @@
 import { expect, test, type Page } from "@playwright/test";
 
-import type { MockGeneralSettings } from "../../dev/settings-mock.ts";
+import { mockRequiresDnsRestart, type MockGeneralSettings } from "../../dev/settings-mock";
 import type { Profile } from "../../src/types";
 import { generalServerConfig, generalSettings } from "../mocks/general-settings";
 
@@ -10,7 +10,11 @@ type Operation = {
   target_revision: string;
   error?: string;
 };
-type SettingsWrite = { settings: MockGeneralSettings; revision: string };
+type SettingsWrite = {
+  settings: MockGeneralSettings;
+  revision: string;
+  allow_dns_restart?: boolean;
+};
 type PutFailure = "validation" | "server" | "lost-ack" | "malformed";
 
 function object(value: unknown): value is Record<string, unknown> {
@@ -31,6 +35,10 @@ async function backend(page: Page) {
     applyFailure: null as "failed" | "rollback_failed" | null,
     putFailure: null as PutFailure | null,
     readFailure: null as "network" | "malformed" | null,
+    previewFailure: null as "network" | "malformed" | "server" | "not-found" | null,
+    runtimeActive: true,
+    loseRuntimeAfterPreview: false,
+    previews: [] as SettingsWrite[],
     checkOperationId: null as string | null,
     checkReads: 0,
     writes: [] as SettingsWrite[],
@@ -56,10 +64,12 @@ async function backend(page: Page) {
         state: state.applyFailure,
         error: "Could not start the requested DNS listener",
       };
+      if (state.applyFailure === "rollback_failed") state.runtimeActive = false;
     } else {
       state.settings = structuredClone(state.pending.settings);
       state.version = state.pending.version;
       state.operation = { ...state.operation, state: "succeeded" };
+      state.runtimeActive = true;
     }
     state.pending = null;
   };
@@ -91,6 +101,38 @@ async function backend(page: Page) {
       return route.fulfill({
         json: { interfaces: state.interfaces },
       });
+    if (path === "/system/settings/preview") {
+      const body: unknown = request.postDataJSON();
+      if (!object(body) || !object(body.settings) || typeof body.revision !== "string")
+        throw new Error("Invalid General settings preview");
+      state.previews.push(structuredClone(body) as SettingsWrite);
+      if (state.previewFailure === "network") return route.abort("failed");
+      if (state.previewFailure === "not-found")
+        return route.fulfill({ status: 404, json: { error: "Not found" } });
+      if (state.previewFailure === "malformed")
+        return route.fulfill({ json: { dns_restart_required: "false" } });
+      if (state.previewFailure === "server")
+        return route.fulfill({
+          status: 503,
+          json: { code: "SETTINGS_UNAVAILABLE", error: "Cannot preview settings" },
+        });
+      if (body.revision !== revision())
+        return route.fulfill({
+          status: 409,
+          json: {
+            code: "SETTINGS_CONFLICT",
+            error: "General settings changed; reload before saving",
+          },
+        });
+      const dnsRestart =
+        !state.runtimeActive ||
+        mockRequiresDnsRestart(state.settings, body.settings as MockGeneralSettings);
+      if (state.loseRuntimeAfterPreview) {
+        state.runtimeActive = false;
+        state.loseRuntimeAfterPreview = false;
+      }
+      return route.fulfill({ json: { dns_restart_required: dnsRestart } });
+    }
     if (path === "/system/settings") {
       if (request.method() === "GET") {
         if (state.operation) state.checkReads++;
@@ -128,7 +170,16 @@ async function backend(page: Page) {
           json: { code: "SETTINGS_UNAVAILABLE", error: "Settings application is unavailable" },
         });
       const settings = structuredClone(body.settings) as MockGeneralSettings;
-      const unchanged = JSON.stringify(settings) === JSON.stringify(state.settings);
+      if (
+        body.allow_dns_restart === false &&
+        (!state.runtimeActive || mockRequiresDnsRestart(state.settings, settings))
+      )
+        return route.fulfill({
+          status: 409,
+          json: { code: "SETTINGS_RESTART_REQUIRED", error: "A DNS restart must be confirmed" },
+        });
+      const unchanged =
+        state.runtimeActive && JSON.stringify(settings) === JSON.stringify(state.settings);
       const targetVersion = unchanged ? state.version : state.version + 1;
       state.operation = {
         id: `operation-${state.writes.length}`,
@@ -277,7 +328,9 @@ test("General edits typed settings, saves and reloads without exposing YAML or i
   await confirmSave(page);
   await applied(page);
   expect(state.settings).toEqual(expected);
-  expect(state.writes).toEqual([{ settings: expected, revision: baseline }]);
+  expect(state.writes).toEqual([
+    { settings: expected, revision: baseline, allow_dns_restart: true },
+  ]);
   expect(state.structuredWrites).toEqual([]);
   expect(state.requests.some(({ path }) => path === "/system/config/yaml")).toBe(false);
   expect(await hasUnloadWarning(page)).toBe(false);
@@ -287,6 +340,208 @@ test("General edits typed settings, saves and reloads without exposing YAML or i
   await expect(page.getByRole("textbox", { name: "Upstream DNS server", exact: true })).toHaveValue(
     "8.8.8.8",
   );
+});
+
+for (const field of ["logging", "interface visibility", "PTR", "AAAA", "TTL"] as const) {
+  test(`saving live ${field} settings applies without a DNS warning or empty dialog`, async ({
+    page,
+  }) => {
+    const { state } = await backend(page);
+    const expected = generalSettings();
+    await page.goto("/");
+    await openGeneral(page);
+    if (field === "logging") {
+      await page.locator('[data-select-trigger][aria-label="Log detail level"]').click();
+      await page.getByRole("option", { name: "Debug", exact: true }).click();
+      expected.logLevel = "debug";
+    } else if (field === "interface visibility") {
+      await page
+        .getByRole("switch", { name: "Show all interfaces in selectors", exact: true })
+        .click();
+      expected.showAllInterfaces = true;
+    } else if (field === "PTR") {
+      await page.getByRole("switch", { name: "Block reverse lookups (PTR)", exact: true }).click();
+      expected.dnsProxy.disableFakePTR = true;
+    } else if (field === "AAAA") {
+      await page.getByRole("switch", { name: "Filter IPv6 answers (AAAA)", exact: true }).click();
+      expected.dnsProxy.disableDropAAAA = true;
+    } else {
+      await page
+        .getByRole("spinbutton", { name: "Additional IP address TTL (seconds)", exact: true })
+        .fill("120");
+      expected.netfilter.ipset.additionalTTLSeconds = 120;
+    }
+    await page.locator("#save-settings").click();
+    await applied(page);
+    await expect(
+      page.getByRole("dialog", { name: "Apply general settings?", exact: true }),
+    ).toHaveCount(0);
+    expect(state.settings).toEqual(expected);
+    expect(state.previews).toHaveLength(1);
+    expect(state.writes).toHaveLength(1);
+    expect(state.writes[0].allow_dns_restart).toBe(false);
+    await expect(page.locator("#save-settings")).toBeDisabled();
+  });
+}
+
+test("reverted DNS fields do not trigger a warning for a later live edit", async ({ page }) => {
+  const { state } = await backend(page);
+  await page.goto("/");
+  const timeout = await openGeneral(page);
+  await timeout.fill("7500");
+  await timeout.fill("05000");
+  await expect(page.locator("#save-settings")).toBeDisabled();
+  expect(state.previews).toEqual([]);
+  await page.getByRole("switch", { name: "Show all interfaces in selectors", exact: true }).click();
+  await page.locator("#save-settings").click();
+  await applied(page);
+  await expect(
+    page.getByRole("dialog", { name: "Apply general settings?", exact: true }),
+  ).toHaveCount(0);
+  expect(state.settings.dnsProxy.timeoutMs).toBe(5000);
+  expect(state.settings.showAllInterfaces).toBe(true);
+  expect(state.writes[0].allow_dns_restart).toBe(false);
+});
+
+test("live General edits save from Profiles without a DNS confirmation", async ({ page }) => {
+  const { state } = await backend(page);
+  await page.goto("/");
+  await openGeneral(page);
+  await page.getByRole("switch", { name: "Show all interfaces in selectors", exact: true }).click();
+  await page.getByRole("tab", { name: "Profiles", exact: true }).click();
+  await page.getByRole("textbox", { name: "Profile name", exact: true }).first().fill("Live save");
+  await page.locator("#save-settings").click();
+  await expect(page.getByText("Settings saved", { exact: true })).toBeVisible();
+  await expect(
+    page.getByRole("dialog", { name: "Apply general settings?", exact: true }),
+  ).toHaveCount(0);
+  expect(state.actions).toEqual(["profiles", "settings"]);
+  expect(state.profiles[0].name).toBe("Live save");
+  expect(state.settings.showAllInterfaces).toBe(true);
+  expect(state.writes[0].allow_dns_restart).toBe(false);
+});
+
+test("an authentication-only edit keeps its web warning without a DNS interruption warning", async ({
+  page,
+}) => {
+  await page.addInitScript(() =>
+    localStorage.setItem("auth", JSON.stringify({ value: "initial-token" })),
+  );
+  const { state } = await backend(page);
+  state.settings.httpWeb.auth.enabled = true;
+  await page.goto("/");
+  await openGeneral(page);
+  await page.getByRole("switch", { name: "Enable authentication", exact: true }).click();
+  await page.locator("#save-settings").click();
+  const dialog = page.getByRole("dialog", { name: "Apply general settings?", exact: true });
+  await expect(dialog).toBeVisible();
+  await expect(dialog).toContainText("Sign-in will no longer be required for the web interface.");
+  await expect(dialog).not.toContainText("DNS routing");
+  expect(state.writes).toEqual([]);
+  await dialog.getByRole("button", { name: "Apply", exact: true }).click();
+  await applied(page);
+  expect(state.settings.httpWeb.auth.enabled).toBe(false);
+  expect(state.writes[0].allow_dns_restart).toBe(false);
+});
+
+test("mixed live and DNS changes still require the DNS warning", async ({ page }) => {
+  const { state } = await backend(page);
+  await page.goto("/");
+  const timeout = await openGeneral(page);
+  await timeout.fill("7500");
+  await page.getByRole("switch", { name: "Show all interfaces in selectors", exact: true }).click();
+  await page.locator("#save-settings").click();
+  const dialog = page.getByRole("dialog", { name: "Apply general settings?", exact: true });
+  await expect(dialog).toContainText("DNS routing may be temporarily unavailable");
+  expect(state.writes).toEqual([]);
+  await dialog.getByRole("button", { name: "Apply", exact: true }).click();
+  await applied(page);
+  expect(state.writes[0].allow_dns_restart).toBe(true);
+});
+
+for (const failure of ["network", "malformed", "server"] as const) {
+  test(`a ${failure} preview failure stops every Settings write and preserves the drafts`, async ({
+    page,
+  }) => {
+    const { state } = await backend(page);
+    await page.goto("/");
+    await openGeneral(page);
+    await page
+      .getByRole("switch", { name: "Show all interfaces in selectors", exact: true })
+      .click();
+    await page.getByRole("tab", { name: "Profiles", exact: true }).click();
+    const name = page.getByRole("textbox", { name: "Profile name", exact: true }).first();
+    await name.fill("Preview must succeed first");
+    state.previewFailure = failure;
+    await page.locator("#save-settings").click();
+    await expect(page.getByRole("alert")).toBeVisible();
+    await expect(page.locator("#save-settings")).toBeEnabled();
+    await expect(name).toHaveValue("Preview must succeed first");
+    expect(state.actions).toEqual([]);
+    expect(state.writes).toEqual([]);
+    await expect(
+      page.getByRole("dialog", { name: "Apply general settings?", exact: true }),
+    ).toHaveCount(0);
+    state.previewFailure = null;
+    await page.locator("#save-settings").click();
+    await expect(page.getByText("Settings saved", { exact: true })).toBeVisible();
+    expect(state.actions).toEqual(["profiles", "settings"]);
+    expect(state.settings.showAllInterfaces).toBe(true);
+  });
+}
+
+test("a runtime change after preview preserves the draft and requires a fresh confirmed save", async ({
+  page,
+}) => {
+  const { state } = await backend(page);
+  await page.goto("/");
+  await openGeneral(page);
+  const toggle = page.getByRole("switch", {
+    name: "Show all interfaces in selectors",
+    exact: true,
+  });
+  await toggle.click();
+  state.loseRuntimeAfterPreview = true;
+  await page.locator("#save-settings").click();
+  await expect(
+    page.getByText(
+      "The service now needs a DNS restart. Your draft is preserved. Save again to review the warning.",
+      { exact: true },
+    ),
+  ).toBeVisible();
+  await expect(toggle).toBeChecked();
+  await expect(page.locator("#save-settings")).toBeEnabled();
+  expect(state.writes).toHaveLength(1);
+  expect(state.writes[0].allow_dns_restart).toBe(false);
+  expect(state.settings.showAllInterfaces).toBe(false);
+  expect(state.operation).toBeNull();
+  await page.locator("#save-settings").click();
+  const dialog = page.getByRole("dialog", { name: "Apply general settings?", exact: true });
+  await expect(dialog).toContainText("DNS routing may be temporarily unavailable");
+  expect(state.writes).toHaveLength(1);
+  expect(state.previews).toHaveLength(2);
+  await dialog.getByRole("button", { name: "Apply", exact: true }).click();
+  await applied(page);
+  expect(state.writes).toHaveLength(2);
+  expect(state.writes[1].allow_dns_restart).toBe(true);
+  expect(state.settings.showAllInterfaces).toBe(true);
+});
+
+test("a backend without preview retains the DNS warning and the legacy PUT body", async ({
+  page,
+}) => {
+  const { state } = await backend(page);
+  state.previewFailure = "not-found";
+  await page.goto("/");
+  await openGeneral(page);
+  await page.getByRole("switch", { name: "Show all interfaces in selectors", exact: true }).click();
+  await page.locator("#save-settings").click();
+  const dialog = page.getByRole("dialog", { name: "Apply general settings?", exact: true });
+  await expect(dialog).toContainText("DNS routing may be temporarily unavailable");
+  await dialog.getByRole("button", { name: "Apply", exact: true }).click();
+  await applied(page);
+  expect(state.writes).toHaveLength(1);
+  expect(Object.keys(state.writes[0]).sort()).toEqual(["revision", "settings"]);
 });
 
 test("cancelling the DNS interruption warning starts no General or profile writes", async ({
@@ -404,12 +659,13 @@ test("a stale settings revision preserves the General draft and never starts an 
   await timeout.fill("7500");
   state.settings.dnsProxy.timeoutMs = 9000;
   state.version++;
-  await confirmSave(page);
+  await page.locator("#save-settings").click();
   await expect(
     page.getByText("General settings changed; reload before saving", { exact: false }).first(),
   ).toBeVisible();
   await expect(timeout).toHaveValue("7500");
-  expect(state.writes[0].revision).toBe(baseline);
+  expect(state.previews[0].revision).toBe(baseline);
+  expect(state.writes).toEqual([]);
   expect(state.operation).toBeNull();
   expect(state.settings.dnsProxy.timeoutMs).toBe(9000);
   expect(await hasUnloadWarning(page)).toBe(true);
@@ -1039,7 +1295,7 @@ test("a delayed unauthorized response cannot discard a renewed login or the Gene
   state.acceptedToken = "renewed-token";
   await showPage(page, "Settings");
   await captured;
-  await confirmSave(page);
+  await page.locator("#save-settings").click();
   const login = page.getByRole("dialog", { name: "Sign In", exact: true });
   await expect(login).toBeVisible();
   await login.locator("#login").fill("root");

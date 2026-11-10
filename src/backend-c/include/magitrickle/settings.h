@@ -8,6 +8,7 @@
 #include "magitrickle/models.h"
 
 typedef struct mt_settings mt_settings_t;
+typedef mt_err_t (*mt_settings_live_apply_fn)(mt_app_config_t *candidate, void *userdata);
 
 cJSON *mt_settings_json(const mt_app_config_t *app);
 mt_err_t mt_settings_revision(const mt_app_config_t *app, char revision[65]);
@@ -15,6 +16,9 @@ mt_err_t mt_settings_revision(const mt_app_config_t *app, char revision[65]);
  * On error out is empty; field identifies the invalid public field. */
 mt_err_t mt_settings_parse(const cJSON *json, const mt_app_config_t *base,
                            mt_app_config_t *out, char field[96]);
+/* Borrow the six live fields from source, retaining all other values/pointers.
+ * The caller must transfer or retain ownership of source->log_level. */
+void mt_settings_overlay_live(mt_app_config_t *target, const mt_app_config_t *source);
 
 mt_settings_t *mt_settings_create(mt_config_t *config);
 /* Call before destroying the attached loop; joins any preparation worker. */
@@ -22,6 +26,11 @@ void mt_settings_destroy(mt_settings_t *settings);
 /* NULL detaches preparation before the old loop is destroyed. The controller
  * itself must remain alive until its HTTP responses have been torn down. */
 void mt_settings_attach_loop(mt_settings_t *settings, mt_loop_t *loop);
+/* Called on the loop owner after ACK and revision/impact checks. A successful
+ * callback may transfer candidate->log_level; all other candidate data remains
+ * controller-owned. Failure must leave the live configuration unchanged. */
+void mt_settings_set_live_apply(mt_settings_t *settings, mt_settings_live_apply_fn apply,
+                                void *userdata);
 void mt_settings_bound_ports(mt_settings_t *settings, uint16_t http, uint16_t dns);
 /* Recorded only after every runtime component started successfully. Legacy
  * reloads may change cfg without changing this actual-runtime baseline. */

@@ -9,14 +9,16 @@ const BASE = "/api/v1/system/settings";
 
 function fixture() {
   const app = new Hono();
-  const state = { config: generalServerConfig(), writes: 0, fail: false };
+  const state = { config: generalServerConfig(), writes: 0, fail: false, runtimeActive: true };
   registerMockSettingsRoutes(app, {
     get: () => structuredClone(state.config),
     apply: (candidate) => {
       if (state.fail) throw new Error("Cannot persist general settings");
       state.config = structuredClone(candidate) as ServerConfig;
       state.writes++;
+      state.runtimeActive = true;
     },
+    runtimeActive: () => state.runtimeActive,
   });
   return {
     app,
@@ -28,8 +30,122 @@ function fixture() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body),
       }),
+    preview: (body: unknown) =>
+      app.request(`${BASE}/preview`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      }),
   };
 }
+
+Deno.test("settings preview distinguishes live changes and remains read-only", async () => {
+  const { get, preview, state } = fixture();
+  const initial = await get();
+  const settings = generalSettings();
+  settings.logLevel = "debug";
+  settings.showAllInterfaces = true;
+  settings.httpWeb.auth.enabled = true;
+  settings.dnsProxy.disableFakePTR = true;
+  settings.dnsProxy.disableDropAAAA = true;
+  settings.netfilter.ipset.additionalTTLSeconds = 0;
+  const response = await preview({ settings, revision: initial.revision });
+  assert.equal(response.status, 200);
+  assert.equal(response.headers.get("Cache-Control"), "no-store");
+  assert.deepEqual(await response.json(), { dns_restart_required: false });
+  const noOp = await preview({ settings: initial.settings, revision: initial.revision });
+  assert.deepEqual(await noOp.json(), { dns_restart_required: false });
+  settings.dnsProxy.upstream.address = "8.8.8.8";
+  const dnsChange = await preview({ settings, revision: initial.revision });
+  assert.deepEqual(await dnsChange.json(), { dns_restart_required: true });
+  assert.deepEqual(await get(), initial);
+  assert.equal(state.writes, 0);
+});
+
+Deno.test(
+  "a denied DNS restart has no operation or write and can be confirmed explicitly",
+  async () => {
+    const { get, put, preview, state } = fixture();
+    const initial = await get();
+    const settings = { ...generalSettings(), logLevel: "debug" };
+    assert.deepEqual(await (await preview({ settings, revision: initial.revision })).json(), {
+      dns_restart_required: false,
+    });
+    state.runtimeActive = false;
+    const rejected = await put({ settings, revision: initial.revision, allow_dns_restart: false });
+    assert.equal(rejected.status, 409);
+    assert.equal((await rejected.json()).code, "SETTINGS_RESTART_REQUIRED");
+    assert.deepEqual(await get(), initial);
+    assert.equal(state.writes, 0);
+    assert.deepEqual(await (await preview({ settings, revision: initial.revision })).json(), {
+      dns_restart_required: true,
+    });
+    assert.equal(
+      (await put({ settings, revision: initial.revision, allow_dns_restart: true })).status,
+      202,
+    );
+    assert.equal((await get()).operation.state, "succeeded");
+    assert.equal(state.config.app.logLevel, "debug");
+    assert.equal(state.runtimeActive, true);
+    assert.equal(state.writes, 1);
+  },
+);
+
+Deno.test("a prepared live request cannot escalate after its acknowledgement", async () => {
+  for (const allow_dns_restart of [false, true]) {
+    const { get, put, state } = fixture();
+    const initial = await get();
+    const settings = { ...generalSettings(), logLevel: "debug" };
+    assert.equal(
+      (await put({ settings, revision: initial.revision, allow_dns_restart })).status,
+      202,
+    );
+    state.runtimeActive = false;
+    const failed = await get();
+    assert.equal(failed.operation.state, "failed");
+    assert.deepEqual(failed.settings, initial.settings);
+    assert.equal(failed.revision, initial.revision);
+    assert.equal(state.writes, 0);
+  }
+});
+
+Deno.test(
+  "preview validates requests and revisions without bypassing a pending operation",
+  async () => {
+    const { app, get, put, preview, state } = fixture();
+    const initial = await get();
+    const payload = { settings: generalSettings(), revision: initial.revision };
+    for (const body of [
+      { ...payload, allow_dns_restart: true },
+      { ...payload, settings: { ...payload.settings, logLevel: "verbose" } },
+      { settings: payload.settings },
+    ])
+      assert.equal((await preview(body)).status, 400);
+    assert.equal((await preview({ ...payload, revision: "stale" })).status, 409);
+    assert.equal(
+      (
+        await app.request(`${BASE}/preview`, {
+          method: "POST",
+          headers: { "Content-Type": "text/plain" },
+          body: JSON.stringify(payload),
+        })
+      ).status,
+      400,
+    );
+    for (const value of [null, 0, "false"])
+      assert.equal((await put({ ...payload, allow_dns_restart: value })).status, 400);
+    const settings = { ...payload.settings, logLevel: "debug" };
+    assert.equal(
+      (await put({ settings, revision: initial.revision, allow_dns_restart: false })).status,
+      202,
+    );
+    const blocked = await preview({ settings, revision: initial.revision });
+    assert.equal(blocked.status, 409);
+    assert.equal((await blocked.json()).code, "SETTINGS_BUSY");
+    assert.equal(state.writes, 0);
+    assert.equal((await get()).operation.state, "succeeded");
+  },
+);
 
 Deno.test(
   "settings mock exposes only the typed General projection with explicit units",

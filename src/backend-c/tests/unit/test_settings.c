@@ -28,6 +28,32 @@ static atomic_uint held_sends;
 static atomic_int held_fd;
 static mt_fake_ipset_nl_t *current_ipset;
 
+/* Address discovery is a netlink-backed transport too. Keep the loopback
+ * fixture deterministic while exercising the real interception compiler. */
+int __wrap_getifaddrs(struct ifaddrs **out);
+void __wrap_freeifaddrs(struct ifaddrs *list);
+int __wrap_getifaddrs(struct ifaddrs **out)
+{
+    struct addresses {
+        struct ifaddrs entries[2];
+        struct sockaddr_in ipv4;
+        struct sockaddr_in6 ipv6;
+    } *addresses = calloc(1, sizeof(*addresses));
+    *out = NULL;
+    if (!addresses) { errno = ENOMEM; return -1; }
+    addresses->ipv4.sin_family = AF_INET;
+    addresses->ipv4.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    addresses->ipv6.sin6_family = AF_INET6;
+    addresses->ipv6.sin6_addr = in6addr_loopback;
+    addresses->entries[0].ifa_name = addresses->entries[1].ifa_name = "lo";
+    addresses->entries[0].ifa_addr = (struct sockaddr *)&addresses->ipv4;
+    addresses->entries[1].ifa_addr = (struct sockaddr *)&addresses->ipv6;
+    addresses->entries[0].ifa_next = &addresses->entries[1];
+    *out = addresses->entries;
+    return 0;
+}
+void __wrap_freeifaddrs(struct ifaddrs *list) { free(list); }
+
 static void pause_ms(long ms)
 {
     struct timespec delay = {.tv_sec = ms / 1000, .tv_nsec = (ms % 1000) * 1000000};
@@ -309,10 +335,18 @@ static void diagnostic(mt_http_req_t *req, mt_http_res_t *res, void *userdata)
     mt_ipt_rules_snapshot_free(rules);
     mt_http_res_write_json(res, 200, json);
 }
+static void invalidate_runtime(mt_http_req_t *req, mt_http_res_t *res, void *userdata)
+{
+    (void)req;
+    harness_t *h = userdata;
+    mt_settings_runtime_stopped(h->settings);
+    mt_http_res_write_json(res, 200, cJSON_CreateObject());
+}
 static void register_diagnostic(harness_t *h)
 {
     if (h->daemon.http_tcp) { mt_httpd_route(h->daemon.http_tcp, "GET", "/test/state", diagnostic, h); }
     mt_httpd_route(h->daemon.http_unix, "GET", "/test/state", diagnostic, h);
+    mt_httpd_route(h->daemon.http_unix, "POST", "/test/runtime/invalidate", invalidate_runtime, h);
 }
 static void *runtime_loop(void *userdata)
 {
@@ -352,7 +386,12 @@ static harness_t *harness_start_ports(uint16_t upstream, bool enabled_group, boo
     int fd = mkstemp(h->path); if (fd < 0) { return NULL; } close(fd);
     if (mt_config_save_file(&h->config, MT_VERSION, h->path) != MT_OK) { return NULL; }
     h->settings = mt_settings_create(&h->config); h->cache = mt_cache_create(0);
-    if (!h->settings || !h->cache || daemon_start(&h->daemon, &h->config, h->path, h->settings, h->cache, NULL, NULL) != MT_OK) { return NULL; }
+    if (!h->settings || !h->cache) { return NULL; }
+    mt_err_t start = daemon_start(&h->daemon, &h->config, h->path, h->settings, h->cache, NULL, NULL);
+    if (start != MT_OK) {
+        fprintf(stderr, "settings harness startup: %s: %s\n", h->daemon.failure_stage, mt_err_str(start));
+        return NULL;
+    }
     register_diagnostic(h);
     if (pthread_create(&h->thread, NULL, runtime_loop, h)) { return NULL; }
     return h;
@@ -414,6 +453,35 @@ static int submit(uint16_t port, const cJSON *snapshot, cJSON **ack)
 {
     char *body = payload(snapshot);
     int status = request(port, "PUT", "/api/v1/system/settings", body, ack); free(body); return status;
+}
+static char *permission_payload(const cJSON *snapshot, const cJSON *permission)
+{
+    char *plain = payload(snapshot);
+    cJSON *body = cJSON_Parse(plain); free(plain);
+    cJSON_AddItemToObject(body, "allow_dns_restart", cJSON_Duplicate(permission, true));
+    char *text = cJSON_PrintUnformatted(body); cJSON_Delete(body); return text;
+}
+static int submit_without_restart(uint16_t port, const cJSON *snapshot, cJSON **ack)
+{
+    cJSON *permission = cJSON_CreateFalse();
+    char *body = permission_payload(snapshot, permission); cJSON_Delete(permission);
+    int status = request(port, "PUT", "/api/v1/system/settings", body, ack); free(body); return status;
+}
+static int preview(uint16_t port, const cJSON *snapshot, cJSON **response)
+{
+    char *body = payload(snapshot);
+    int status = request(port, "POST", "/api/v1/system/settings/preview", body, response); free(body); return status;
+}
+static void replace_setting(cJSON *snapshot, const char *path, const char *value)
+{
+    char buffer[96]; snprintf(buffer, sizeof(buffer), "%s", path);
+    cJSON *parent = item(snapshot, "settings");
+    char *save = NULL, *part = strtok_r(buffer, ".", &save);
+    for (;;) {
+        char *next = strtok_r(NULL, ".", &save);
+        if (!next) { cJSON_ReplaceItemInObjectCaseSensitive(parent, part, cJSON_Parse(value)); return; }
+        parent = item(parent, part); part = next;
+    }
 }
 static cJSON *await_operation(uint16_t port, const char *id, const char *state)
 {
@@ -519,6 +587,150 @@ TEST projection_is_strict_and_preserves_hidden_settings(void)
     mt_app_config_clear(&parsed); cJSON_Delete(json); mt_config_clear(&config); PASS();
 }
 
+TEST preview_classifies_actual_changes_without_mutating_or_resolving(void)
+{
+    dns_stub_t stub; ASSERT(stub_start(&stub, 12)); harness_t *h = harness_start(stub.port, false); ASSERT(h);
+    uint16_t web = h->config.app.http_web.host.port;
+    cJSON *snapshot = NULL, *response = NULL;
+    ASSERT_EQ(200, request(web, "GET", "/api/v1/system/settings", NULL, &snapshot));
+    char *before = read_file(h->path); ASSERT(before);
+    int started = atomic_load(&starts);
+    atomic_store(&resolver_entered, false); atomic_store(&hold_resolver, true);
+    const struct { const char *path, *value; bool restart; } cases[] = {
+        {"httpWeb.enabled", "false", true}, {"httpWeb.auth.enabled", "true", false},
+        {"httpWeb.host.address", "\"0.0.0.0\"", true}, {"httpWeb.host.port", "1", true},
+        {"dnsProxy.host.address", "\"0.0.0.0\"", true}, {"dnsProxy.host.port", "1", true},
+        {"dnsProxy.upstream.address", "\"unresolvable.invalid\"", true}, {"dnsProxy.upstream.port", "1", true},
+        {"dnsProxy.disableRemap53", "false", true}, {"dnsProxy.disableFakePTR", "true", false},
+        {"dnsProxy.disableDropAAAA", "true", false}, {"dnsProxy.maxIdleConns", "20", true},
+        {"dnsProxy.maxConcurrent", "50", true}, {"dnsProxy.timeoutMs", "6000", true},
+        {"netfilter.disableIPv4", "false", true}, {"netfilter.disableIPv6", "false", true},
+        {"netfilter.ipset.additionalTTLSeconds", "42", false}, {"link", "[]", true},
+        {"showAllInterfaces", "true", false}, {"logLevel", "\"warn\"", false},
+    };
+    ASSERT_EQ(200, preview(web, snapshot, &response));
+    ASSERT(cJSON_IsFalse(item(response, "dns_restart_required"))); cJSON_Delete(response);
+    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+        cJSON *changed = cJSON_Duplicate(snapshot, true);
+        replace_setting(changed, cases[i].path, cases[i].value);
+        ASSERT_EQ(200, preview(web, changed, &response));
+        ASSERT_EQ(cases[i].restart, cJSON_IsTrue(item(response, "dns_restart_required")));
+        cJSON_Delete(changed); cJSON_Delete(response);
+    }
+    cJSON *changed = cJSON_Duplicate(snapshot, true);
+    replace_setting(changed, "showAllInterfaces", "true"); replace_setting(changed, "dnsProxy.timeoutMs", "6000");
+    ASSERT_EQ(200, preview(web, changed, &response)); ASSERT(cJSON_IsTrue(item(response, "dns_restart_required"))); cJSON_Delete(response);
+    ASSERT_EQ(409, submit_without_restart(web, changed, &response));
+    ASSERT_STR_EQ("SETTINGS_RESTART_REQUIRED", text_value(response, "code")); cJSON_Delete(response);
+    cJSON *permission = cJSON_CreateNumber(0);
+    char *invalid = permission_payload(changed, permission); cJSON_Delete(permission);
+    ASSERT_EQ(400, request(web, "PUT", "/api/v1/system/settings", invalid, &response)); free(invalid);
+    ASSERT_STR_EQ("allow_dns_restart", text_value(response, "field")); cJSON_Delete(response);
+    replace_setting(changed, "dnsProxy.timeoutMs", "5000");
+    ASSERT_EQ(200, preview(web, changed, &response)); ASSERT(cJSON_IsFalse(item(response, "dns_restart_required"))); cJSON_Delete(response);
+    replace_setting(changed, "showAllInterfaces", "false");
+    ASSERT_EQ(200, preview(web, changed, &response)); ASSERT(cJSON_IsFalse(item(response, "dns_restart_required"))); cJSON_Delete(response);
+    cJSON_Delete(changed);
+    atomic_store(&hold_resolver, false);
+    ASSERT(!atomic_load(&resolver_entered)); ASSERT_EQ(started, atomic_load(&starts));
+    ASSERT_EQ(200, request(web, "GET", "/api/v1/system/settings", NULL, &response));
+    ASSERT_STR_EQ(text_value(snapshot, "revision"), text_value(response, "revision")); ASSERT(cJSON_IsNull(item(response, "operation")));
+    char *after = read_file(h->path); ASSERT(after); ASSERT_STR_EQ(before, after);
+    free(before); free(after); cJSON_Delete(snapshot); cJSON_Delete(response); harness_stop(h); stub_stop(&stub); PASS();
+}
+
+TEST live_settings_preserve_dns_runtime_and_revoke_unauthenticated_streams(void)
+{
+    dns_stub_t stub; ASSERT(stub_start(&stub, 12)); harness_t *h = harness_start(stub.port, true); ASSERT(h);
+    uint16_t web = h->daemon.ports.http, dns = h->daemon.ports.dns;
+    mt_loop_t *loop = h->daemon.loop; mt_dnsproxy_t *proxy = h->daemon.proxy;
+    mt_dns_pipeline_t *pipeline = h->daemon.pipeline; mt_httpd_t *http = h->daemon.http_tcp;
+    const char *dns_address = h->config.app.dns_proxy.host.address, *chain = h->config.app.netfilter.iptables.chain_prefix;
+    char **links = h->config.app.link;
+    int started = atomic_load(&starts);
+    ASSERT_EQ(1, dns_query(dns, false, false, NULL)); ASSERT_EQ(0, dns_query(dns, false, true, NULL));
+    int stream = send_request(web, "GET", "/api/v1/system/dns/stream", NULL); ASSERT(stream >= 0);
+    char stream_data[2048]; ssize_t received = recv(stream, stream_data, sizeof(stream_data) - 1, 0); ASSERT(received > 0);
+    stream_data[received] = '\0'; ASSERT(strstr(stream_data, "HTTP/1.1 200"));
+    cJSON *snapshot = NULL, *response = NULL, *ack = NULL;
+    ASSERT_EQ(200, request(web, "GET", "/api/v1/system/settings", NULL, &snapshot));
+    replace_setting(snapshot, "showAllInterfaces", "true"); replace_setting(snapshot, "logLevel", "\"warn\"");
+    replace_setting(snapshot, "httpWeb.auth.enabled", "true"); replace_setting(snapshot, "dnsProxy.disableFakePTR", "true");
+    replace_setting(snapshot, "dnsProxy.disableDropAAAA", "true"); replace_setting(snapshot, "netfilter.ipset.additionalTTLSeconds", "42");
+    ASSERT_EQ(200, preview(web, snapshot, &response)); ASSERT(cJSON_IsFalse(item(response, "dns_restart_required"))); cJSON_Delete(response);
+    atomic_store(&resolver_entered, false); atomic_store(&hold_resolver, true);
+    ASSERT_EQ(202, submit_without_restart(web, snapshot, &ack));
+    response = await_operation(0, text_value(item(ack, "operation"), "id"), "succeeded");
+    atomic_store(&hold_resolver, false); ASSERT(response);
+    ASSERT(!atomic_load(&resolver_entered)); ASSERT_EQ(started, atomic_load(&starts));
+    ASSERT(h->daemon.loop == loop); ASSERT(h->daemon.proxy == proxy); ASSERT(h->daemon.pipeline == pipeline); ASSERT(h->daemon.http_tcp == http);
+    ASSERT(h->config.app.dns_proxy.host.address == dns_address); ASSERT(h->config.app.netfilter.iptables.chain_prefix == chain); ASSERT(h->config.app.link == links);
+    ASSERT_EQ(MT_LOG_WARN, mt_log_level()); ASSERT_STR_EQ(text_value(ack, "target_revision"), text_value(response, "revision"));
+    ASSERT_EQ(1, dns_query(dns, false, false, NULL)); ASSERT_EQ(1, dns_query(dns, true, false, NULL)); ASSERT_EQ(1, dns_query(dns, false, true, NULL));
+    cJSON *denied = NULL; ASSERT_EQ(401, request(web, "GET", "/api/v1/system/settings", NULL, &denied)); cJSON_Delete(denied);
+    do { received = recv(stream, stream_data, sizeof(stream_data), 0); } while (received > 0);
+    close(stream); ASSERT_EQ(0, received);
+    mt_config_t persisted; ASSERT_EQ(MT_OK, mt_config_init_defaults(&persisted));
+    ASSERT_EQ(MT_OK, mt_config_load_file(&persisted, h->path));
+    ASSERT_EQ(web, persisted.app.http_web.host.port); ASSERT_EQ(dns, persisted.app.dns_proxy.host.port);
+    ASSERT_EQ((size_t)1, mt_cache_domain_count(h->cache));
+    ASSERT(persisted.app.show_all_interfaces); ASSERT(persisted.app.http_web.auth.enabled);
+    ASSERT(persisted.app.dns_proxy.disable_fake_ptr); ASSERT(persisted.app.dns_proxy.disable_drop_aaaa);
+    ASSERT_EQ(42 * MT_DURATION_SEC, persisted.app.netfilter.ipset.additional_ttl); ASSERT_STR_EQ("warn", persisted.app.log_level);
+    mt_config_clear(&persisted);
+    ASSERT_EQ(200, submit_without_restart((uint16_t)atomic_load(&admin_port), response, &denied));
+    ASSERT_STR_EQ("succeeded", text_value(item(denied, "operation"), "state")); cJSON_Delete(denied);
+    /* A second live operation also works on the same, never-stopped loop. */
+    replace_setting(response, "httpWeb.auth.enabled", "false");
+    cJSON_Delete(ack); ASSERT_EQ(202, submit_without_restart((uint16_t)atomic_load(&admin_port), response, &ack));
+    cJSON *confirmed = await_operation(web, text_value(item(ack, "operation"), "id"), "succeeded"); ASSERT(confirmed);
+    ASSERT_EQ(started, atomic_load(&starts)); ASSERT(h->daemon.loop == loop); ASSERT_EQ(1, dns_query(dns, true, false, NULL));
+    cJSON_Delete(confirmed); cJSON_Delete(snapshot); cJSON_Delete(response); cJSON_Delete(ack); harness_stop(h); stub_stop(&stub); PASS();
+}
+
+TEST live_persistence_failure_preserves_memory_file_and_dns(void)
+{
+    dns_stub_t stub; ASSERT(stub_start(&stub, 12)); harness_t *h = harness_start(stub.port, false); ASSERT(h);
+    uint16_t web = h->config.app.http_web.host.port, dns = h->config.app.dns_proxy.host.port;
+    cJSON *snapshot = NULL, *ack = NULL;
+    ASSERT_EQ(200, request(web, "GET", "/api/v1/system/settings", NULL, &snapshot));
+    char *before = read_file(h->path); ASSERT(before); int started = atomic_load(&starts);
+    replace_setting(snapshot, "showAllInterfaces", "true"); replace_setting(snapshot, "httpWeb.auth.enabled", "true");
+    replace_setting(snapshot, "logLevel", "\"warn\""); replace_setting(snapshot, "dnsProxy.disableDropAAAA", "true");
+    atomic_store(&fail_rename, 1);
+    ASSERT_EQ(202, submit_without_restart(web, snapshot, &ack));
+    cJSON *failed = await_operation(web, text_value(item(ack, "operation"), "id"), "failed"); ASSERT(failed);
+    ASSERT_STR_EQ(text_value(snapshot, "revision"), text_value(failed, "revision"));
+    ASSERT(!h->config.app.show_all_interfaces); ASSERT(!h->config.app.http_web.auth.enabled); ASSERT_EQ(MT_LOG_ERROR, mt_log_level());
+    ASSERT_EQ(started, atomic_load(&starts)); ASSERT_EQ(1, dns_query(dns, false, false, NULL)); ASSERT_EQ(0, dns_query(dns, false, true, NULL));
+    char *after = read_file(h->path); ASSERT(after); ASSERT_STR_EQ(before, after);
+    free(before); free(after); cJSON_Delete(snapshot); cJSON_Delete(ack); cJSON_Delete(failed); harness_stop(h); stub_stop(&stub); PASS();
+}
+
+TEST live_acknowledgement_cannot_escalate_to_dns_restart(void)
+{
+    dns_stub_t stub; ASSERT(stub_start(&stub, 12)); harness_t *h = harness_start(stub.port, false); ASSERT(h);
+    uint16_t web = h->config.app.http_web.host.port, dns = h->config.app.dns_proxy.host.port;
+    cJSON *snapshot = NULL, *ack = NULL, *response = NULL;
+    ASSERT_EQ(200, request(web, "GET", "/api/v1/system/settings", NULL, &snapshot));
+    replace_setting(snapshot, "showAllInterfaces", "true");
+    ASSERT_EQ(200, preview(web, snapshot, &response)); ASSERT(cJSON_IsFalse(item(response, "dns_restart_required"))); cJSON_Delete(response);
+    char *before = read_file(h->path); ASSERT(before); int started = atomic_load(&starts);
+    cJSON *permission = cJSON_CreateFalse(); char *body = permission_payload(snapshot, permission); cJSON_Delete(permission);
+    atomic_store(&held_fd, -1); atomic_store(&hold_send, true); atomic_store(&held_sends, 0);
+    int fd = send_request(web, "PUT", "/api/v1/system/settings", body); free(body); ASSERT(fd >= 0);
+    for (size_t i = 0; !atomic_load(&held_sends) && i < 200; i++) { pause_ms(1); }
+    ASSERT(atomic_load(&held_sends) > 0);
+    ASSERT_EQ(200, request((uint16_t)atomic_load(&admin_port), "POST", "/test/runtime/invalidate", NULL, &response)); cJSON_Delete(response);
+    atomic_store(&hold_send, false);
+    ASSERT_EQ(202, read_response(fd, &ack));
+    cJSON *failed = await_operation(web, text_value(item(ack, "operation"), "id"), "failed"); ASSERT(failed);
+    ASSERT(strstr(text_value(item(failed, "operation"), "error"), "DNS restart"));
+    ASSERT_EQ(started, atomic_load(&starts)); ASSERT_EQ(1, dns_query(dns, false, false, NULL)); ASSERT(!h->config.app.show_all_interfaces);
+    char *after = read_file(h->path); ASSERT(after); ASSERT_STR_EQ(before, after);
+    free(before); free(after); cJSON_Delete(snapshot); cJSON_Delete(ack); cJSON_Delete(failed); harness_stop(h); stub_stop(&stub); PASS();
+}
+
 TEST real_dns_upstream_switch_preserves_cache_and_repopulates_sets(void)
 {
     dns_stub_t old, next; ASSERT(stub_start(&old, 10)); ASSERT(stub_start(&next, 20));
@@ -561,7 +773,7 @@ TEST pending_resolution_keeps_dns_live_and_preserves_later_profile_saves(void)
     uint16_t web = h->config.app.http_web.host.port, dns = h->config.app.dns_proxy.host.port;
     cJSON *snapshot = NULL, *ack = NULL, *response = NULL;
     ASSERT_EQ(200, request(web, "GET", "/api/v1/system/settings", NULL, &snapshot));
-    cJSON_ReplaceItemInObjectCaseSensitive(item(snapshot, "settings"), "showAllInterfaces", cJSON_CreateTrue());
+    cJSON_SetNumberValue(item(item(item(snapshot, "settings"), "dnsProxy"), "timeoutMs"), 6000);
     atomic_store(&hold_resolver, true); atomic_store(&resolver_entered, false);
     int before = atomic_load(&starts);
     ASSERT_EQ(202, submit(web, snapshot, &ack));
@@ -594,9 +806,11 @@ TEST stale_request_and_invalid_fields_do_not_change_file_or_runtime(void)
     char *before = read_file(h->path); ASSERT(before); int started = atomic_load(&starts);
     cJSON_SetNumberValue(item(item(item(item(snapshot, "settings"), "httpWeb"), "host"), "port"), 0);
     ASSERT_EQ(400, submit(web, snapshot, &response)); ASSERT_STR_EQ("httpWeb.host.port", text_value(response, "field")); cJSON_Delete(response);
+    ASSERT_EQ(400, preview(web, snapshot, &response)); ASSERT_STR_EQ("httpWeb.host.port", text_value(response, "field")); cJSON_Delete(response);
     cJSON_SetNumberValue(item(item(item(item(snapshot, "settings"), "httpWeb"), "host"), "port"), web);
     cJSON_ReplaceItemInObjectCaseSensitive(snapshot, "revision", cJSON_CreateString("ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"));
     ASSERT_EQ(409, submit(web, snapshot, &response)); ASSERT_STR_EQ("SETTINGS_CONFLICT", text_value(response, "code")); cJSON_Delete(response);
+    ASSERT_EQ(409, preview(web, snapshot, &response)); ASSERT_STR_EQ("SETTINGS_CONFLICT", text_value(response, "code")); cJSON_Delete(response);
     char *after = read_file(h->path); ASSERT(after); ASSERT_STR_EQ(before, after); ASSERT_EQ(started, atomic_load(&starts));
     free(before); free(after); cJSON_Delete(snapshot); harness_stop(h); stub_stop(&stub); PASS();
 }
@@ -607,7 +821,7 @@ TEST legacy_apply_invalidates_pending_settings_and_identical_retry_recreates_run
     uint16_t web = h->config.app.http_web.host.port;
     cJSON *snapshot = NULL, *ack = NULL, *response = NULL;
     ASSERT_EQ(200, request(web, "GET", "/api/v1/system/settings", NULL, &snapshot));
-    cJSON_ReplaceItemInObjectCaseSensitive(item(snapshot, "settings"), "showAllInterfaces", cJSON_CreateTrue());
+    cJSON_SetNumberValue(item(item(item(snapshot, "settings"), "dnsProxy"), "timeoutMs"), 6000);
     atomic_store(&hold_resolver, true);
     int started = atomic_load(&starts);
     ASSERT_EQ(202, submit(web, snapshot, &ack));
@@ -635,7 +849,7 @@ TEST startup_and_persistence_failures_restore_old_listeners_file_and_runtime(voi
         ASSERT_EQ(200, request(web, "GET", "/api/v1/system/settings", NULL, &snapshot));
         char *before = read_file(h->path); ASSERT(before);
         cJSON *settings = item(snapshot, "settings");
-        cJSON_ReplaceItemInObjectCaseSensitive(settings, "showAllInterfaces", cJSON_CreateTrue());
+        cJSON_SetNumberValue(item(item(settings, "dnsProxy"), "timeoutMs"), 6000);
         uint16_t busy_port = 0; int busy_fd = -1;
         if (kind == 0) { atomic_store(&fail_rename, 1); }
         if (kind == 1) { busy_fd = bound_socket(SOCK_STREAM, &busy_port); ASSERT(busy_fd >= 0); ASSERT_EQ(0, listen(busy_fd, 4)); cJSON_SetNumberValue(item(item(item(settings, "httpWeb"), "host"), "port"), busy_port); }
@@ -679,14 +893,15 @@ TEST http_dns_ports_auth_and_web_disable_take_effect(void)
     cJSON_Delete(snapshot); cJSON_Delete(ack); cJSON_Delete(response); harness_stop(h); stub_stop(&stub); PASS();
 }
 
-TEST acknowledgement_flush_gates_restart_and_disconnect_cancels_it(void)
+TEST acknowledgement_flush_gates_apply_and_disconnect_cancels_it(void)
 {
     dns_stub_t stub; ASSERT(stub_start(&stub, 12)); harness_t *h = harness_start(stub.port, false); ASSERT(h);
     uint16_t web = h->config.app.http_web.host.port, dns = h->config.app.dns_proxy.host.port;
-    for (int disconnect = 1; disconnect >= 0; disconnect--) {
+    for (int restart = 0; restart < 2; restart++) for (int disconnect = 1; disconnect >= 0; disconnect--) {
         cJSON *snapshot = NULL, *ack = NULL;
         ASSERT_EQ(200, request(web, "GET", "/api/v1/system/settings", NULL, &snapshot));
-        cJSON_ReplaceItemInObjectCaseSensitive(item(snapshot, "settings"), "showAllInterfaces", cJSON_CreateTrue());
+        if (restart) { replace_setting(snapshot, "dnsProxy.timeoutMs", "6000"); }
+        else { replace_setting(snapshot, "showAllInterfaces", "true"); }
         char *body = payload(snapshot), *before = read_file(h->path); ASSERT(before);
         atomic_store(&held_fd, -1); atomic_store(&hold_send, true); atomic_store(&held_sends, 0);
         int started = atomic_load(&starts), fd = send_request(web, "PUT", "/api/v1/system/settings", body); free(body); ASSERT(fd >= 0);
@@ -710,6 +925,7 @@ TEST acknowledgement_flush_gates_restart_and_disconnect_cancels_it(void)
             atomic_store(&hold_send, false);
             ASSERT_EQ(202, read_response(fd, &ack));
             cJSON *confirmed = await_operation(web, text_value(item(ack, "operation"), "id"), "succeeded"); ASSERT(confirmed); cJSON_Delete(confirmed);
+            ASSERT_EQ(started + restart, atomic_load(&starts));
         }
         free(before); cJSON_Delete(snapshot); cJSON_Delete(ack);
     }
@@ -722,7 +938,7 @@ TEST rollback_failure_keeps_admin_status_and_same_settings_retry_recovers(void)
     uint16_t web = h->config.app.http_web.host.port;
     cJSON *snapshot = NULL, *ack = NULL;
     ASSERT_EQ(200, request(web, "GET", "/api/v1/system/settings", NULL, &snapshot));
-    cJSON_ReplaceItemInObjectCaseSensitive(item(snapshot, "settings"), "showAllInterfaces", cJSON_CreateTrue());
+    cJSON_SetNumberValue(item(item(item(snapshot, "settings"), "dnsProxy"), "timeoutMs"), 6000);
     atomic_store(&fail_rtnl, 2);
     ASSERT_EQ(202, submit(web, snapshot, &ack));
     cJSON *failed = await_operation(0, text_value(item(ack, "operation"), "id"), "rollback_failed"); ASSERT(failed);
@@ -734,7 +950,15 @@ TEST rollback_failure_keeps_admin_status_and_same_settings_retry_recovers(void)
     cJSON_ReplaceItemInObjectCaseSensitive(item(item(item(unresolvable, "settings"), "dnsProxy"), "upstream"), "address", cJSON_CreateString("unresolvable.invalid"));
     ASSERT_EQ(202, submit((uint16_t)atomic_load(&admin_port), unresolvable, &ack)); cJSON_Delete(unresolvable);
     cJSON *preparation_failed = await_operation(0, text_value(item(ack, "operation"), "id"), "failed"); ASSERT(preparation_failed);
-    cJSON_Delete(preparation_failed); cJSON_Delete(ack);
+    cJSON *live = cJSON_Duplicate(preparation_failed, true), *impact = NULL;
+    replace_setting(live, "showAllInterfaces", "true");
+    ASSERT_EQ(200, preview((uint16_t)atomic_load(&admin_port), live, &impact));
+    ASSERT(cJSON_IsTrue(item(impact, "dns_restart_required"))); cJSON_Delete(impact);
+    ASSERT_EQ(409, submit_without_restart((uint16_t)atomic_load(&admin_port), live, &impact));
+    ASSERT_STR_EQ("SETTINGS_RESTART_REQUIRED", text_value(impact, "code")); cJSON_Delete(impact);
+    ASSERT_EQ(200, request((uint16_t)atomic_load(&admin_port), "GET", "/api/v1/system/settings", NULL, &impact));
+    ASSERT_STR_EQ(text_value(item(preparation_failed, "operation"), "id"), text_value(item(impact, "operation"), "id"));
+    cJSON_Delete(impact); cJSON_Delete(live); cJSON_Delete(preparation_failed); cJSON_Delete(ack);
     ASSERT_EQ(202, submit((uint16_t)atomic_load(&admin_port), failed, &ack));
     cJSON *confirmed = await_operation(web, text_value(item(ack, "operation"), "id"), "succeeded"); ASSERT(confirmed);
     ASSERT_EQ(1, dns_query(h->config.app.dns_proxy.host.port, false, false, NULL));
@@ -796,8 +1020,18 @@ TEST legacy_ephemeral_ports_are_usable_and_rollback_restores_both_transports(voi
     ASSERT_EQ(web, item(item(item(item(snapshot, "settings"), "httpWeb"), "host"), "port")->valueint);
     ASSERT_EQ(dns, item(item(item(item(snapshot, "settings"), "dnsProxy"), "host"), "port")->valueint);
     ASSERT_EQ(200, submit(web, snapshot, &ack)); cJSON_Delete(ack);
+    mt_loop_t *loop = h->daemon.loop;
+    replace_setting(snapshot, "showAllInterfaces", "true");
+    ASSERT_EQ(202, submit_without_restart(web, snapshot, &ack));
+    cJSON *live = await_operation(web, text_value(item(ack, "operation"), "id"), "succeeded"); ASSERT(live);
+    ASSERT(h->daemon.loop == loop); ASSERT_EQ(0, h->config.app.http_web.host.port); ASSERT_EQ(0, h->config.app.dns_proxy.host.port);
+    mt_config_t persisted; ASSERT_EQ(MT_OK, mt_config_init_defaults(&persisted));
+    ASSERT_EQ(MT_OK, mt_config_load_file(&persisted, h->path));
+    ASSERT_EQ(0, persisted.app.http_web.host.port); ASSERT_EQ(0, persisted.app.dns_proxy.host.port); mt_config_clear(&persisted);
+    ASSERT_EQ(1, dns_query(dns, false, false, NULL)); ASSERT_EQ(1, dns_query(dns, true, false, NULL));
+    cJSON_Delete(snapshot); snapshot = live; cJSON_Delete(ack);
     char *before = read_file(h->path); ASSERT(before);
-    cJSON_ReplaceItemInObjectCaseSensitive(item(snapshot, "settings"), "showAllInterfaces", cJSON_CreateTrue());
+    cJSON_SetNumberValue(item(item(item(snapshot, "settings"), "dnsProxy"), "timeoutMs"), 6000);
     atomic_store(&fail_rename, 1);
     ASSERT_EQ(202, submit(web, snapshot, &ack));
     cJSON *failed = await_operation(web, text_value(item(ack, "operation"), "id"), "failed"); ASSERT(failed);
@@ -815,13 +1049,17 @@ int main(int argc, char **argv)
     mt_sub_fetch_global_init();
     RUN_TEST(dns_stub_retries_cross_protocol_port_collision_without_leaking_sockets);
     RUN_TEST(projection_is_strict_and_preserves_hidden_settings);
+    RUN_TEST(preview_classifies_actual_changes_without_mutating_or_resolving);
+    RUN_TEST(live_settings_preserve_dns_runtime_and_revoke_unauthenticated_streams);
+    RUN_TEST(live_persistence_failure_preserves_memory_file_and_dns);
+    RUN_TEST(live_acknowledgement_cannot_escalate_to_dns_restart);
     RUN_TEST(real_dns_upstream_switch_preserves_cache_and_repopulates_sets);
     RUN_TEST(pending_resolution_keeps_dns_live_and_preserves_later_profile_saves);
     RUN_TEST(stale_request_and_invalid_fields_do_not_change_file_or_runtime);
     RUN_TEST(legacy_apply_invalidates_pending_settings_and_identical_retry_recreates_runtime);
     RUN_TEST(startup_and_persistence_failures_restore_old_listeners_file_and_runtime);
     RUN_TEST(http_dns_ports_auth_and_web_disable_take_effect);
-    RUN_TEST(acknowledgement_flush_gates_restart_and_disconnect_cancels_it);
+    RUN_TEST(acknowledgement_flush_gates_apply_and_disconnect_cancels_it);
     RUN_TEST(rollback_failure_keeps_admin_status_and_same_settings_retry_recovers);
     RUN_TEST(resolution_failure_and_true_noop_leave_runtime_running);
     RUN_TEST(family_and_dns_interception_components_are_recreated);

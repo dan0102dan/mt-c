@@ -7,6 +7,7 @@ import {
   emptyDraft,
   readSettingsAcknowledgement,
   readSettingsError,
+  readSettingsPreview,
   readSettingsSnapshot,
   sameSettings,
   settingsToDraft,
@@ -17,6 +18,13 @@ import {
   type WebTarget,
 } from "./config";
 
+export type PreparedSettingsSave = {
+  settings: GeneralSettings;
+  revision: string;
+  dnsRestartRequired: boolean;
+  legacy: boolean;
+};
+
 type PendingApplication = {
   settings: GeneralSettings;
   draft: string;
@@ -26,7 +34,13 @@ type PendingApplication = {
   targetRevision?: string;
 };
 type Outcome =
-  "idle" | "applying" | "succeeded" | "failed" | "rollback_failed" | "unknown" | "awaiting_auth";
+  | "idle"
+  | "applying"
+  | "succeeded"
+  | "failed"
+  | "rollback_failed"
+  | "unknown"
+  | "awaiting_auth";
 
 const POLL_TIMEOUT_MS = 20000;
 const POLL_INTERVAL_MS = 750;
@@ -51,6 +65,7 @@ export class GeneralSettingsState {
   draft = $state(emptyDraft());
   snapshot = $state.raw<SettingsSnapshot>();
   loading = $state(false);
+  preparing = $state(false);
   saving = $state(false);
   checking = $state(false);
   pending = $state.raw<PendingApplication>();
@@ -66,7 +81,7 @@ export class GeneralSettingsState {
         : JSON.stringify(this.draft) !== JSON.stringify(settingsToDraft(this.snapshot.settings))),
     ),
   );
-  busy = $derived(this.loading || this.saving || this.checking);
+  busy = $derived(this.loading || this.preparing || this.saving || this.checking);
   canSave = $derived(
     Boolean(
       this.snapshot &&
@@ -124,10 +139,62 @@ export class GeneralSettingsState {
     }
   }
 
-  async save(): Promise<void> {
+  /** Plan before any Save-all write; only the server knows the active runtime. */
+  async prepareSave(): Promise<PreparedSettingsSave | undefined> {
+    const settings = this.built.settings;
+    if (!this.canSave || !settings || !this.snapshot) return;
+    const revision = this.snapshot.revision;
+    const { controller, generation } = this.begin();
+    this.preparing = true;
+    this.error = undefined;
+    try {
+      let dnsRestartRequired: boolean;
+      let legacy = false;
+      try {
+        const preview = readSettingsPreview(
+          await fetcher<unknown>("/system/settings/preview", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ settings, revision }),
+            silent: true,
+            authFailure: "preserve",
+            timeoutMs: 6000,
+            signal: controller.signal,
+            redirect: "error",
+          }),
+        );
+        dnsRestartRequired = preview.dns_restart_required;
+      } catch (error) {
+        if (!(error instanceof HttpError) || error.status !== 404) throw error;
+        // Older backends restart all General settings and accept only two keys.
+        dnsRestartRequired = true;
+        legacy = true;
+      }
+      if (generation !== this.generation || controller.signal.aborted) return;
+      return { settings, revision, dnsRestartRequired, legacy };
+    } catch (error) {
+      if (
+        generation === this.generation &&
+        !controller.signal.aborted &&
+        !this.unauthorized(error)
+      ) {
+        this.error = readSettingsError(error);
+        this.outcome = "failed";
+      }
+    } finally {
+      if (generation === this.generation) this.preparing = false;
+    }
+  }
+
+  async save(plan: PreparedSettingsSave): Promise<void> {
     const settings = this.built.settings;
     if (!this.canSave || !settings || !this.snapshot)
       throw new Error("Settings cannot be saved yet.");
+    if (plan.revision !== this.snapshot.revision || !sameSettings(plan.settings, settings)) {
+      this.error = { message: "Settings changed after preview. Save again to check them." };
+      this.outcome = "failed";
+      throw new Error(this.error.message);
+    }
     const { controller, generation } = this.begin();
     const pending: PendingApplication = {
       settings,
@@ -153,7 +220,11 @@ export class GeneralSettingsState {
           await fetcher<unknown>("/system/settings", {
             method: "PUT",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ settings, revision: pending.previousRevision }),
+            body: JSON.stringify({
+              settings,
+              revision: pending.previousRevision,
+              ...(!plan.legacy ? { allow_dns_restart: plan.dnsRestartRequired } : {}),
+            }),
             silent: true,
             authFailure: "preserve",
             timeoutMs: 6000,
