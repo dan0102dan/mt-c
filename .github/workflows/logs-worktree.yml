@@ -8,13 +8,26 @@ permissions:
 jobs:
   source:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
-      - name: Archive tracked source only
-        run: git archive --format=tar HEAD -o source.tar
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Install validation dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y libcjson-dev libyaml-dev libmnl-dev
+          cd src/frontend
+          npm ci --no-audit --no-fund
+      - name: Package headers and JS tooling only
+        run: |
+          mkdir -p validation/include
+          cp -r /usr/include/cjson /usr/include/libmnl /usr/include/yaml.h validation/include/
+          mv src/frontend/node_modules validation/node_modules
+          tar -czf validation.tar.gz -C validation .
       - uses: actions/upload-artifact@v4
         with:
-          name: logs-worktree-source
-          path: source.tar
+          name: logs-validation-deps
+          path: validation.tar.gz
           retention-days: 1
