@@ -4,6 +4,52 @@ Format: ID, status (proposed/accepted/superseded), context, decision,
 consequences. Phase 0 entries are **proposed** unless marked otherwise —
 final acceptance happens when the implementing phase starts.
 
+## D-93 — DNS-safe WebUI toggles and immediate, quiet settings saves (2026-11-11)
+
+Status: **accepted at the user's request**. This entry supersedes D-92's
+original browser-preview workflow and its earlier full-runtime treatment of
+HTTP enable changes. Historical decisions below remain for context.
+
+Changing only `httpWeb.enabled` creates or removes the TCP WebUI listener;
+it does not recreate the DNS proxy, DNS pipeline, cache, routing components,
+event loop or Unix administrative API. The operation waits for the entire
+HTTP acknowledgement to flush, and listener removal runs only after that
+response callback has returned. Enabling first binds the new HTTP listener,
+then persists the configuration; a persistence failure disposes the new
+listener and retains the previous configuration. Disabling persists first,
+then closes the HTTP listener. The browser warns about losing web access,
+not a DNS interruption. Changing `httpWeb.host.address` or
+`httpWeb.host.port` still follows full-runtime reconstruction and therefore
+retains the DNS-interruption warning; mixed DNS changes do too.
+
+Saving no longer calls `POST /system/settings/preview`, nor replaces that
+request with background or debounced previews. The already loaded normalized
+settings and edited values determine the necessary warning immediately.
+The frontend comparison covers the same restart-requiring fields as the
+native classifier, with regression tests for every editable field and for
+reverted values. WebUI enable/disable, authentication, logging, interface-list
+visibility, PTR/AAAA flags and additional TTL do not by themselves require a
+DNS warning. Save-all still confirms before any writes and saves General
+last, after the other changed settings sections succeed.
+
+The existing preview API remains available for API clients. The actual PUT
+retains strict validation, revision conflict detection and
+`allow_dns_restart` enforcement. A changed runtime must not silently turn an
+unapproved live save into a DNS restart. Refusal is an ordinary save error
+with the draft preserved, not an automatic retry or an extra confirmation
+flow. A 202 response means accepted, not applied: bounded operation-result
+reconciliation after PUT remains, including lost-acknowledgement and
+reauthentication handling, without automatically resending the mutation.
+
+Normal progress and success do not create text rows, banners or success
+toasts in Settings. The fixed-size Save button indicates work in progress;
+its dimensions and the settings header/content positions remain stable.
+Actionable validation, save errors and reconnection instructions remain
+available, and failures never discard the draft. Browser tests cover the
+absence of preflight requests and normal status captions, stable geometry
+while saving and after completion, conditional warnings, preserved drafts
+and safe Save-all ordering.
+
 ## D-01 — Source layout `src/backend-c/`
 
 Status: proposed. Adopt the spec's suggested tree (include/magitrickle/ +
