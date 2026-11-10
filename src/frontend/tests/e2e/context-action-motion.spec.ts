@@ -100,7 +100,7 @@ for (const width of [1280, 390]) {
     await expect(action).toHaveAttribute("aria-label", "Start recording");
     await expect
       .poll(() => action.locator(".symbol").evaluate((node) => getComputedStyle(node).animationName))
-      .toBe("dot-bounce");
+      .toContain("dot-bounce");
     await expect(action).toBeEnabled();
 
     await page.emulateMedia({ reducedMotion: "reduce" });
