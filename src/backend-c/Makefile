@@ -398,6 +398,7 @@ $(BUILDDIR)/tests/test_settings: tests/unit/test_settings.c $(MAIN_SRC) $(LIB_OB
 	    -Wl,--wrap=mt_nl_watcher_create_with_routes -Wl,--wrap=mt_httpd_listen_unix \
 	    -Wl,--wrap=mt_ipt_executable_real_new -Wl,--wrap=mt_ipset_nl_real_new \
 	    -Wl,--wrap=mt_ruleset_snapshot_build \
+	    -Wl,--wrap=getifaddrs -Wl,--wrap=freeifaddrs \
 	    -Wl,--wrap=mt_dnsproxy_resolve_upstream -Wl,--wrap=rename -Wl,--wrap=send \
 	    -o $@ $< $(LIB_OBJS) $(TEST_SUPPORT_OBJS) $(LDLIBS) $(DEP_LIBS)
 

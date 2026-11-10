@@ -29,6 +29,9 @@ struct mt_settings {
     pthread_t resolver;
     int resolve_pipe[2];
     bool resolving, response_pending, acknowledged, resolved, ready;
+    bool dns_restart_required, allow_dns_restart;
+    mt_settings_live_apply_fn live_apply;
+    void *live_userdata;
     uint16_t http_port, dns_port;
 };
 
@@ -253,6 +256,32 @@ static mt_app_config_t effective_settings(const mt_settings_t *s)
     return app;
 }
 
+void mt_settings_overlay_live(mt_app_config_t *target, const mt_app_config_t *source)
+{
+    target->log_level = source->log_level;
+    target->show_all_interfaces = source->show_all_interfaces;
+    target->http_web.auth.enabled = source->http_web.auth.enabled;
+    target->dns_proxy.disable_fake_ptr = source->dns_proxy.disable_fake_ptr;
+    target->dns_proxy.disable_drop_aaaa = source->dns_proxy.disable_drop_aaaa;
+    target->netfilter.ipset.additional_ttl = source->netfilter.ipset.additional_ttl;
+}
+
+/* Compare effective public values, including legacy zero/default projections.
+ * The same overlay defines classification, persistence and live mutation. */
+static mt_err_t needs_dns_restart(const mt_settings_t *s, const mt_app_config_t *current,
+                                  const mt_app_config_t *candidate, const char *revision,
+                                  const char *target_revision, bool *required)
+{
+    *required = true;
+    if (!s->live_apply || strcmp(revision, s->active_revision)) { return MT_OK; }
+    mt_app_config_t live = *current;
+    mt_settings_overlay_live(&live, candidate);
+    char live_revision[65];
+    mt_err_t err = mt_settings_revision(&live, live_revision);
+    if (err == MT_OK) { *required = strcmp(live_revision, target_revision) != 0; }
+    return err;
+}
+
 /* Called only on the event-loop owner. No other request can mutate cfg
  * between this final comparison/snapshot and the loop's exit. */
 static void maybe_apply(mt_settings_t *s)
@@ -263,10 +292,30 @@ static void maybe_apply(mt_settings_t *s)
     mt_app_config_t effective = effective_settings(s);
     if (mt_settings_revision(&effective, revision) != MT_OK) { fail_operation(s, "Cannot prepare settings"); return; }
     if (strcmp(revision, s->revision)) { fail_operation(s, "Settings changed before they could be applied"); return; }
+    bool restart;
+    if (needs_dns_restart(s, &effective, &s->requested, revision, s->target_revision, &restart) != MT_OK) {
+        fail_operation(s, "Cannot prepare settings"); return;
+    }
+    if (restart && (!s->allow_dns_restart || !s->dns_restart_required)) {
+        fail_operation(s, "Settings now require a DNS restart; save again to confirm"); return;
+    }
     cJSON *json = mt_settings_json(&s->requested);
     mt_err_t err = json ? mt_settings_parse(json, &s->config->app, &s->candidate, field) : MT_ERR_NOMEM;
     cJSON_Delete(json);
     if (err != MT_OK) { fail_operation(s, "Cannot prepare settings"); return; }
+    if (!restart) {
+        err = s->live_apply(&s->candidate, s->live_userdata);
+        mt_app_config_clear(&s->candidate); memset(&s->candidate, 0, sizeof(s->candidate));
+        if (err == MT_OK) {
+            mt_settings_runtime_started(s);
+            mt_settings_finish(s, NULL, false);
+        } else {
+            char message[160];
+            snprintf(message, sizeof(message), "Cannot save live settings (%s); settings were not changed", mt_err_str(err));
+            mt_settings_finish(s, message, false);
+        }
+        return;
+    }
     s->ready = true;
     mt_loop_stop(s->loop);
 }
@@ -332,8 +381,13 @@ void mt_settings_attach_loop(mt_settings_t *s, mt_loop_t *loop) {
     if (!loop) {
         if (s->resolving) { pthread_join(s->resolver, NULL); s->resolving = false; }
         close_resolver_pipe(s);
+        s->live_apply = NULL; s->live_userdata = NULL;
     }
     s->loop = loop;
+}
+void mt_settings_set_live_apply(mt_settings_t *s, mt_settings_live_apply_fn apply, void *userdata)
+{
+    if (s) { s->live_apply = apply; s->live_userdata = userdata; }
 }
 bool mt_settings_busy(const mt_settings_t *s) { return s && (s->resolving || s->response_pending || (s->state && !strcmp(s->state, "applying"))); }
 bool mt_settings_ready(const mt_settings_t *s) { return s && s->ready; }
@@ -423,63 +477,110 @@ static cJSON *acknowledgement(const mt_settings_t *s, const mt_app_config_t *app
     return json;
 }
 
-static void put_settings(mt_http_req_t *req, mt_http_res_t *res, void *userdata)
+typedef struct settings_request {
+    mt_app_config_t candidate;
+    char revision[65], target_revision[65];
+    bool allow_dns_restart, dns_restart_required;
+} settings_request_t;
+
+/* Preview and PUT must validate and classify exactly the same projection.
+ * Preview performs no resolution, reservation, persistence or live mutation. */
+static bool read_settings_request(mt_http_req_t *req, mt_http_res_t *res,
+                                  mt_settings_t *s, bool preview, settings_request_t *out)
 {
-    mt_settings_t *s = userdata;
     mt_http_res_set_header(res, "Cache-Control", "no-store");
-    if (!s || !s->loop) { api_error(res, 503, "SETTINGS_UNAVAILABLE", "Settings cannot be applied", NULL); return; }
-    if (mt_settings_busy(s)) { api_error(res, 409, "SETTINGS_BUSY", "Settings are already being applied", NULL); return; }
-    if (mt_update_busy()) { api_error(res, 409, "SETTINGS_BUSY", "Wait for the software update to finish", NULL); return; }
+    if (!s || !s->loop) { api_error(res, 503, "SETTINGS_UNAVAILABLE", "Settings cannot be applied", NULL); return false; }
+    if (mt_settings_busy(s)) { api_error(res, 409, "SETTINGS_BUSY", "Settings are already being applied", NULL); return false; }
+    if (mt_update_busy()) { api_error(res, 409, "SETTINGS_BUSY", "Wait for the software update to finish", NULL); return false; }
     const char *site = mt_http_req_header(req, "Sec-Fetch-Site"), *type = mt_http_req_header(req, "Content-Type");
     if ((site && !strcmp(site, "cross-site")) || !type || strncmp(type, "application/json", 16) ||
-        (type[16] && type[16] != ';')) { api_error(res, 400, "SETTINGS_INVALID", "Expected a same-origin JSON request", NULL); return; }
+        (type[16] && type[16] != ';')) { api_error(res, 400, "SETTINGS_INVALID", "Expected a same-origin JSON request", NULL); return false; }
     size_t length;
     const uint8_t *body = mt_http_req_body(req, &length);
     cJSON *json = mt_json_parse_document((const char *)body, length);
-    const char *const keys[] = {"settings", "revision"};
-    char field[96], revision[65], target_revision[65];
-    const cJSON *expected = member(json, "revision");
-    if (!fields(json, keys, 2, "", field) || !cJSON_IsString(expected) || strlen(expected->valuestring) != 64) {
-        cJSON_Delete(json); api_error(res, 400, "SETTINGS_INVALID", "Invalid settings request", NULL); return;
+    const char *const keys[] = {"settings", "revision", "allow_dns_restart"};
+    char field[96];
+    const cJSON *expected = member(json, "revision"), *allow = member(json, "allow_dns_restart");
+    size_t key_count = !preview && allow ? 3 : 2;
+    if (!fields(json, keys, key_count, "", field) || !cJSON_IsString(expected) || strlen(expected->valuestring) != 64) {
+        cJSON_Delete(json); api_error(res, 400, "SETTINGS_INVALID", "Invalid settings request", NULL); return false;
     }
+    if (allow && !cJSON_IsBool(allow)) {
+        cJSON_Delete(json); api_error(res, 400, "SETTINGS_INVALID", "Invalid settings field", "allow_dns_restart"); return false;
+    }
+    out->allow_dns_restart = !allow || cJSON_IsTrue(allow);
     mt_app_config_t effective = effective_settings(s);
-    if (mt_settings_revision(&effective, revision) != MT_OK) {
-        cJSON_Delete(json); api_error(res, 503, "SETTINGS_UNAVAILABLE", "Cannot read settings", NULL); return;
+    if (mt_settings_revision(&effective, out->revision) != MT_OK) {
+        cJSON_Delete(json); api_error(res, 503, "SETTINGS_UNAVAILABLE", "Cannot read settings", NULL); return false;
     }
-    if (strcmp(revision, expected->valuestring)) {
-        cJSON_Delete(json); api_error(res, 409, "SETTINGS_CONFLICT", "Settings changed since they were loaded", NULL); return;
+    if (strcmp(out->revision, expected->valuestring)) {
+        cJSON_Delete(json); api_error(res, 409, "SETTINGS_CONFLICT", "Settings changed since they were loaded", NULL); return false;
     }
-    mt_app_config_t candidate = {0};
-    mt_err_t err = mt_settings_parse(member(json, "settings"), &s->config->app, &candidate, field);
+    mt_err_t err = mt_settings_parse(member(json, "settings"), &s->config->app, &out->candidate, field);
     cJSON_Delete(json);
     if (err != MT_OK) {
         api_error(res, err == MT_ERR_INVAL ? 400 : 503, err == MT_ERR_INVAL ? "SETTINGS_INVALID" : "SETTINGS_UNAVAILABLE",
-                   err == MT_ERR_INVAL ? "Invalid settings field" : "Cannot prepare settings", field); return;
+                   err == MT_ERR_INVAL ? "Invalid settings field" : "Cannot prepare settings", field); return false;
+    }
+    if (mt_settings_revision(&out->candidate, out->target_revision) != MT_OK ||
+        needs_dns_restart(s, &effective, &out->candidate, out->revision,
+                          out->target_revision, &out->dns_restart_required) != MT_OK) {
+        mt_app_config_clear(&out->candidate);
+        api_error(res, 503, "SETTINGS_UNAVAILABLE", "Cannot prepare settings", NULL); return false;
+    }
+    return true;
+}
+
+static void preview_settings(mt_http_req_t *req, mt_http_res_t *res, void *userdata)
+{
+    settings_request_t request = {0};
+    if (!read_settings_request(req, res, userdata, true, &request)) { return; }
+    mt_app_config_clear(&request.candidate);
+    cJSON *json = cJSON_CreateObject();
+    if (!json || !cJSON_AddBoolToObject(json, "dns_restart_required", request.dns_restart_required)) {
+        cJSON_Delete(json); api_error(res, 503, "SETTINGS_UNAVAILABLE", "Cannot prepare settings preview", NULL); return;
+    }
+    (void)mt_http_res_write_json(res, 200, json);
+}
+
+static void put_settings(mt_http_req_t *req, mt_http_res_t *res, void *userdata)
+{
+    mt_settings_t *s = userdata;
+    settings_request_t request = {0};
+    if (!read_settings_request(req, res, s, false, &request)) { return; }
+    if (request.dns_restart_required && !request.allow_dns_restart) {
+        mt_app_config_clear(&request.candidate);
+        api_error(res, 409, "SETTINGS_RESTART_REQUIRED", "Settings require a DNS restart; preview and confirm before saving", NULL); return;
     }
     uint8_t id[16];
-    if (mt_settings_revision(&candidate, target_revision) != MT_OK || mt_random_bytes(id, sizeof(id)) != MT_OK) {
-        mt_app_config_clear(&candidate); api_error(res, 503, "SETTINGS_UNAVAILABLE", "Cannot prepare settings", NULL); return;
+    if (mt_random_bytes(id, sizeof(id)) != MT_OK) {
+        mt_app_config_clear(&request.candidate); api_error(res, 503, "SETTINGS_UNAVAILABLE", "Cannot prepare settings", NULL); return;
     }
-    mt_app_config_clear(&s->requested); s->requested = candidate;
-    memset(&candidate, 0, sizeof(candidate));
+    mt_app_config_clear(&s->requested); s->requested = request.candidate;
+    memset(&request.candidate, 0, sizeof(request.candidate));
     for (size_t i = 0; i < sizeof(id); i++) { snprintf(s->id + 2 * i, 3, "%02x", id[i]); }
-    snprintf(s->revision, sizeof(s->revision), "%s", revision);
-    snprintf(s->target_revision, sizeof(s->target_revision), "%s", target_revision);
+    snprintf(s->revision, sizeof(s->revision), "%s", request.revision);
+    snprintf(s->target_revision, sizeof(s->target_revision), "%s", request.target_revision);
+    s->dns_restart_required = request.dns_restart_required;
+    s->allow_dns_restart = request.allow_dns_restart;
     s->error[0] = '\0'; s->resolved = false; s->acknowledged = false; s->ready = false;
-    bool unchanged = !strcmp(revision, target_revision) && !strcmp(target_revision, s->active_revision) &&
-                     (!s->state || strcmp(s->state, "rollback_failed"));
+    bool unchanged = !strcmp(request.revision, request.target_revision) && !request.dns_restart_required;
     s->state = unchanged ? "succeeded" : "applying";
     cJSON *ack = acknowledgement(s, &s->requested);
     if (!ack) { fail_operation(s, "Cannot encode settings acknowledgement"); api_error(res, 503, "SETTINGS_UNAVAILABLE", s->error, NULL); return; }
     if (unchanged) { (void)mt_http_res_write_json(res, 200, ack); return; }
-    if (pipe(s->resolve_pipe) != 0) { goto unavailable; }
-    for (size_t i = 0; i < 2; i++) {
-        int flags = fcntl(s->resolve_pipe[i], F_GETFD);
-        if (flags < 0 || fcntl(s->resolve_pipe[i], F_SETFD, flags | FD_CLOEXEC) < 0) { goto unavailable; }
+    if (s->dns_restart_required) {
+        if (pipe(s->resolve_pipe) != 0) { goto unavailable; }
+        for (size_t i = 0; i < 2; i++) {
+            int flags = fcntl(s->resolve_pipe[i], F_GETFD);
+            if (flags < 0 || fcntl(s->resolve_pipe[i], F_SETFD, flags | FD_CLOEXEC) < 0) { goto unavailable; }
+        }
+        if (mt_loop_add_fd(s->loop, s->resolve_pipe[0], EPOLLIN, resolved, s) != MT_OK) { goto unavailable; }
+        if (pthread_create(&s->resolver, NULL, resolve_upstream, s) != 0) { goto unavailable; }
+        s->resolving = true;
+    } else {
+        s->resolved = true; s->resolve_error = MT_OK;
     }
-    if (mt_loop_add_fd(s->loop, s->resolve_pipe[0], EPOLLIN, resolved, s) != MT_OK) { goto unavailable; }
-    if (pthread_create(&s->resolver, NULL, resolve_upstream, s) != 0) { goto unavailable; }
-    s->resolving = true;
     if (!mt_http_res_write_json(res, 202, ack)) { response_sent(s, false); return; }
     s->response_pending = true;
     mt_http_res_on_sent(res, response_sent, s);
@@ -494,4 +595,5 @@ void mt_settings_register_routes(mt_httpd_t *http, mt_settings_t *settings)
 {
     mt_httpd_route(http, "GET", "/api/v1/system/settings", get_settings, settings);
     mt_httpd_route(http, "PUT", "/api/v1/system/settings", put_settings, settings);
+    mt_httpd_route(http, "POST", "/api/v1/system/settings/preview", preview_settings, settings);
 }

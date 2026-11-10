@@ -9,7 +9,7 @@
   import Switch from "../../../components/ui/Switch.svelte";
   import { fetchInterfaces, interfaces } from "../../../data/interfaces.svelte";
   import { t } from "../../../data/locale.svelte";
-  import { GeneralSettingsState } from "./settings-state.svelte";
+  import { GeneralSettingsState, type PreparedSettingsSave } from "./settings-state.svelte";
 
   import { Add, GroupCollapse, GroupExpand } from "../../../components/ui/icons";
   import {
@@ -36,6 +36,7 @@
   const transfer = getContext<ConfigTransferControls | undefined>(CONFIG_TRANSFER_CONTEXT);
   const config = new GeneralSettingsState();
   let confirmation = $state(false);
+  let preparedSave = $state.raw<PreparedSettingsSave>();
   let advancedOpen = $state(false);
   let interfaceCandidate = $state("");
   let submittedDraft = $state.raw<GeneralDraft>();
@@ -127,11 +128,18 @@
     const resolve = resolveConfirmation;
     resolveConfirmation = undefined;
     confirmation = false;
+    if (!confirmed) preparedSave = undefined;
     resolve?.(confirmed);
   }
 
   async function confirmSave(): Promise<boolean> {
     if (!config.canSave || blocked) return false;
+    preparedSave = undefined;
+    submittedDraft = { ...config.draft };
+    const plan = await config.prepareSave();
+    if (!plan) return false;
+    preparedSave = plan;
+    if (!plan.dnsRestartRequired && !connectionChange) return true;
     confirmation = true;
     return new Promise((resolve) => {
       resolveConfirmation = resolve;
@@ -142,8 +150,11 @@
     if (blocked)
       throw new Error("Save changes in Groups and Subscriptions before changing web access.");
     const previous = config.snapshot?.settings.showAllInterfaces;
+    const plan = preparedSave;
+    preparedSave = undefined;
+    if (!plan) throw new Error("Settings cannot be saved yet.");
     submittedDraft = { ...config.draft };
-    await config.save();
+    await config.save(plan);
     if (previous !== config.snapshot?.settings.showAllInterfaces) void fetchInterfaces();
   }
 
@@ -189,7 +200,9 @@
     onOpenAutoFocus={() => document.getElementById("general-confirm-cancel")?.focus()}
   >
     <div slot="body" class="confirmation-body">
-      <p>{t("DNS routing may be temporarily unavailable while settings are being applied.")}</p>
+      {#if preparedSave?.dnsRestartRequired}
+        <p>{t("DNS routing may be temporarily unavailable while settings are being applied.")}</p>
+      {/if}
       {#if proposed && !proposed.httpWeb.enabled}
         <p>
           {t(
@@ -288,6 +301,12 @@
         </p>
       {:else if config.error.code === "SETTINGS_BUSY"}
         <p>{t("Another settings application is in progress. Your draft is preserved.")}</p>
+      {:else if config.error.code === "SETTINGS_RESTART_REQUIRED"}
+        <p>
+          {t(
+            "The service now needs a DNS restart. Your draft is preserved. Save again to review the warning.",
+          )}
+        </p>
       {/if}
       {#if config.outcome === "rollback_failed"}
         <p>
@@ -296,10 +315,12 @@
           )}
         </p>
       {/if}
-      <p>{t(config.error.message)}</p>
+      {#if config.error.code !== "SETTINGS_RESTART_REQUIRED"}<p>{t(config.error.message)}</p>{/if}
     </div>
   {/if}
-  {#if (config.busy && !config.loading) || externalApplication}
+  {#if config.preparing}
+    <p class="application-status" role="status">{t("Checking settings…")}</p>
+  {:else if (config.busy && !config.loading) || externalApplication}
     <p class="application-status" role="status">{t("Applying settings…")}</p>
   {:else if config.outcome === "succeeded" && !config.dirty}
     <p class="application-status" role="status">{t("Settings applied")}</p>
@@ -338,7 +359,13 @@
     prepareSave: confirmSave,
     dialog: confirmationDialog,
     toolbarFeedback:
-      active || config.pending || config.error || config.nextWeb || config.saving || config.checking
+      active ||
+      config.pending ||
+      config.error ||
+      config.nextWeb ||
+      config.preparing ||
+      config.saving ||
+      config.checking
         ? feedback
         : undefined,
     validationMessage: blocked

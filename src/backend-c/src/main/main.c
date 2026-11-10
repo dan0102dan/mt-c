@@ -547,6 +547,29 @@ static const char *static_skin_fn(void *ud)
     return cfg->app.http_web.skin;
 }
 
+/* The controller calls this only on the loop owner after a complete ACK.
+ * Keep live listeners, in-flight DNS exchanges and immutable app pointers.
+ * Persist first: all following live updates are infallible. */
+static mt_err_t daemon_apply_live_settings(mt_app_config_t *next, void *userdata)
+{
+    struct daemon *d = userdata;
+    mt_config_t persisted = *d->cfg; /* borrowed collections and non-live fields */
+    mt_settings_overlay_live(&persisted.app, next);
+    mt_err_t err = mt_config_save_file(&persisted, MT_VERSION, d->config_path);
+    if (err != MT_OK) { return err; }
+    char *previous_log_level = d->cfg->app.log_level;
+    mt_settings_overlay_live(&d->cfg->app, next);
+    next->log_level = NULL; /* transfer this single owned string */
+    free(previous_log_level);
+    mt_log_set_level(mt_log_level_from_str(d->cfg->app.log_level));
+    mt_dnsproxy_set_disable_flags(d->proxy, d->cfg->app.dns_proxy.disable_fake_ptr,
+                                  d->cfg->app.dns_proxy.disable_drop_aaaa);
+    mt_dns_pipeline_set_additional_ttl(d->pipeline,
+        (uint32_t)(d->cfg->app.netfilter.ipset.additional_ttl / MT_DURATION_SEC));
+    mt_httpd_revalidate_streams(d->http_tcp);
+    return MT_OK;
+}
+
 /* Own all route contexts in the runtime: callbacks remain valid after this
  * initializer returns, including across another settings operation. */
 static mt_err_t daemon_start(struct daemon *d, mt_config_t *cfg, const char *config_path,
@@ -925,6 +948,7 @@ static mt_err_t daemon_start(struct daemon *d, mt_config_t *cfg, const char *con
 
     d->ports = (struct bound_ports){mt_httpd_tcp_port(d->http_tcp), mt_dnsproxy_listen_port(d->proxy)};
     mt_settings_bound_ports(settings, d->ports.http, d->ports.dns);
+    mt_settings_set_live_apply(settings, daemon_apply_live_settings, d);
     mt_settings_runtime_started(settings);
     d->failure_stage = NULL;
     MT_INFO("service started");

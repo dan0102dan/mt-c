@@ -131,12 +131,14 @@ const snapshotSchema = object({
   revision,
   operation: nullable(operationSchema),
 });
+const previewSchema = object({ dns_restart_required: boolean() });
 const acknowledgementSchema = object({
   operation: operationSchema,
   target_revision: revision,
   next_web: webTargetSchema,
 });
 export type SettingsSnapshot = InferOutput<typeof snapshotSchema>;
+export type SettingsPreview = InferOutput<typeof previewSchema>;
 export type SettingsOperation = InferOutput<typeof operationSchema>;
 export type SettingsAcknowledgement = InferOutput<typeof acknowledgementSchema>;
 export type WebTarget = InferOutput<typeof webTargetSchema>;
@@ -147,6 +149,14 @@ export function readSettingsSnapshot(value: unknown): SettingsSnapshot {
     return parse(snapshotSchema, value);
   } catch {
     throw new Error("Invalid general settings response.");
+  }
+}
+
+export function readSettingsPreview(value: unknown): SettingsPreview {
+  try {
+    return parse(previewSchema, value);
+  } catch {
+    throw new Error("Invalid settings preview response.");
   }
 }
 

@@ -198,6 +198,27 @@ definitions:
     properties:
       settings: {$ref: '#/definitions/types.GeneralSettings'}
       revision: {type: string}
+      allow_dns_restart:
+        type: boolean
+        default: true
+        description: >-
+          Set false when the preview did not require a DNS restart. The server
+          rejects an operation that would need a restart instead of silently
+          escalating it. Omission preserves compatibility with older clients.
+  types.SettingsPreviewRequest:
+    type: object
+    additionalProperties: false
+    required: [settings, revision]
+    properties:
+      settings: {$ref: '#/definitions/types.GeneralSettings'}
+      revision: {type: string}
+  types.SettingsPreview:
+    type: object
+    required: [dns_restart_required]
+    properties:
+      dns_restart_required:
+        type: boolean
+        description: Whether applying these values requires recreating the DNS runtime.
   types.SettingsAccepted:
     type: object
     required: [operation, target_revision, next_web]
@@ -769,12 +790,16 @@ paths:
       description: >-
         Requires same-origin JSON, the complete allowed settings projection and the
         revision from GET. Unknown fields and invalid types/ranges are rejected.
-        Application is queued only after a successful acknowledgement write; the
-        daemon recreates the runtime itself, preserving current collections and
-        DNS cache, then atomically saves its canonical YAML. DNS routing can be
-        interrupted temporarily while applying. Startup or persistence failures
-        trigger restoration of the previous settings; failed restoration is a
-        distinct operation result. GET confirms completion on the same origin.
+        Application is queued only after a successful acknowledgement write.
+        Preview determines whether the change requires a runtime restart. Live
+        changes atomically persist before updating existing runtime components;
+        they do not recreate DNS listeners. Other changes recreate the runtime,
+        preserving current collections and DNS cache, then atomically save the
+        canonical YAML. Only the latter can temporarily interrupt DNS routing.
+        Set allow_dns_restart to false after a preview that did not require one;
+        a changed runtime state must not silently escalate the operation. Startup
+        or persistence failures preserve or restore the previous settings; failed
+        restoration is a distinct operation result. GET confirms completion.
         For changed HTTP address/port use next_web to construct a new browser
         URL; wildcard addresses mean the browser's current host. Do not forward
         credentials across origins. Disabling HTTP removes browser access to the
@@ -799,13 +824,50 @@ paths:
         "401":
           description: Authentication required
         "409":
-          description: Stale settings revision or another application already in progress
+          description: Stale revision, another operation in progress, or SETTINGS_RESTART_REQUIRED when a restart was not allowed
           schema: {$ref: '#/definitions/types.SettingsError'}
         "500":
           description: Preparation failed before acceptance
           schema: {$ref: '#/definitions/types.SettingsError'}
         "503":
           description: Persistence or runtime application is unavailable
+          schema: {$ref: '#/definitions/types.SettingsError'}
+      tags: [config]
+  /api/v1/system/settings/preview:
+    post:
+      summary: Check whether changed application settings require a DNS restart
+      description: >-
+        Authenticated, same-origin JSON and not cached. Uses the same strict
+        settings validation and revision check as PUT. Returns the actual
+        application impact, including recovery when the current runtime no
+        longer matches the configuration. It does not write configuration,
+        reserve an operation, resolve DNS or restart components. A preview is
+        not a reservation; pass allow_dns_restart to PUT to enforce the approved
+        impact if runtime state changes before application.
+      consumes: [application/json]
+      produces: [application/json]
+      parameters:
+      - in: body
+        name: json
+        required: true
+        schema: {$ref: '#/definitions/types.SettingsPreviewRequest'}
+      responses:
+        "200":
+          description: Current application impact for the supplied settings
+          schema: {$ref: '#/definitions/types.SettingsPreview'}
+        "400":
+          description: Invalid settings or preview request
+          schema: {$ref: '#/definitions/types.SettingsError'}
+        "401":
+          description: Authentication required
+        "409":
+          description: Stale revision or another operation already in progress
+          schema: {$ref: '#/definitions/types.SettingsError'}
+        "500":
+          description: Preview could not be prepared
+          schema: {$ref: '#/definitions/types.SettingsError'}
+        "503":
+          description: Settings controller is unavailable
           schema: {$ref: '#/definitions/types.SettingsError'}
       tags: [config]
   /api/v1/system/config/save:

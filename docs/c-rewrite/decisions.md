@@ -4182,6 +4182,8 @@ tests remain the compatibility guard for the shared writer/apply paths.
 
 ## D-91 — General settings with immediate runtime application (2026-11-10)
 
+Application impact and warning behavior are refined by D-92 below.
+
 The unmerged YAML editor from D-90 is replaced by the **General / Общие** tab.
 Its form exposes 20 application settings not already managed by the routing,
 subscriptions, profiles, or Keenetic policy interfaces: HTTP enable/auth/listen
@@ -4278,3 +4280,74 @@ by narrow test transports; these tests do not establish real-router kernel
 rollback behavior. Browser and mock-API tests cover draft ownership, Save-all
 ordering, confirmation, reauthentication, ambiguous responses and responsive
 English/Russian controls separately from the native lifecycle.
+
+## D-92 — Warn only when applying settings recreates DNS processing (2026-11-10)
+
+The General form previously warned for every changed setting because D-91
+recreated the whole daemon runtime for every changed PUT. Suppressing the
+warning alone would not remove that interruption. General now distinguishes
+changes supported by existing live setters from changes requiring the existing
+runtime reconstruction.
+
+The following fields apply without recreating DNS processing when the running
+runtime still matches the current configuration:
+
+| Editable field | Existing runtime mechanism |
+| --- | --- |
+| `logLevel` | Update the log threshold. |
+| `showAllInterfaces` | Interface enumeration reads the current setting. |
+| `httpWeb.auth.enabled` | Authentication reads the current setting; revalidate existing streams. |
+| `dnsProxy.disableFakePTR` | Update the proxy's PTR handling flag. |
+| `dnsProxy.disableDropAAAA` | Update the proxy's AAAA handling flag. |
+| `netfilter.ipset.additionalTTLSeconds` | Update the pipeline's additional TTL for subsequent DNS results. |
+
+All other changed public fields retain the full-runtime application path,
+including HTTP listener enable/address/port changes. No independent HTTP-listener
+reconfiguration is introduced here. Changes are compared using the normalized
+public projection, so formatting differences and values changed back to their
+original values do not by themselves require a restart. An inactive runtime or
+a mismatch between the current and active revisions requires reconstruction,
+even when the request changes only a normally live field.
+
+`POST /api/v1/system/settings/preview` accepts `{settings, revision}` and returns
+`{dns_restart_required: boolean}`. It shares strict validation, revision checks,
+authentication and request-origin rules with PUT. It does not persist anything,
+reserve an operation, start a resolver or change the last operation result.
+The backend classifier is the authority for both preview and application; the
+browser does not maintain a separate list of settings that restart DNS.
+
+PUT accepts optional boolean `allow_dns_restart`, defaulting to true for older
+clients whose General saves already showed the warning. New clients send false
+after a preview that did not require a restart. If the runtime then requires
+reconstruction, PUT rejects the request with `409 SETTINGS_RESTART_REQUIRED`
+before acceptance. The condition is checked again after the acknowledgement and
+before application; a late change fails the accepted operation without silently
+restarting DNS. Preview is deliberately not a lock or reservation.
+
+Live application keeps the existing 202/operation confirmation protocol and
+waits for the complete HTTP acknowledgement. It skips upstream resolution,
+retains the loop, DNS proxy, pipeline, cache and routing components, and
+atomically persists the candidate configuration before applying the supported
+live values. Only those values change in the running model; unchanged owned
+strings borrowed by background components retain their lifetime. A persistence
+failure leaves the running model and DNS processing unchanged. Successful live
+application updates the active revision, so a later identical PUT is a true
+no-op. The existing reconstruction and rollback behavior remains responsible
+for changes that require a restart.
+
+Before writing any changed Settings section, the form obtains this preview.
+It shows the DNS interruption warning only when the preview requires a restart.
+Separate web-access and authentication notices still apply when relevant. If
+neither kind of notice is needed, saving proceeds without an empty confirmation
+dialog. General remains last in Save-all; failed preview, cancellation or an
+earlier section's failure prevents its write. Failed operations retain drafts,
+and the client never automatically repeats PUT after a refusal or an ambiguous
+response. A subsequent explicit Save obtains a fresh preview.
+If an older backend returns 404 for preview, the browser retains its DNS warning
+and sends the legacy two-field PUT. Other preview failures stop saving.
+
+Regression coverage checks actual UDP/TCP DNS service and runtime identity
+across live changes, persistence failure, mixed changes, degraded recovery and
+the preview/PUT race. Browser coverage checks conditional DNS/auth notices,
+reverted changes, Save-all ordering and preserved drafts on preview/refusal
+failures. These retain the native and browser test-transport limits in D-91.
