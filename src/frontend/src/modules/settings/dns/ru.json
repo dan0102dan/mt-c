@@ -17,5 +17,7 @@
   "Stored requests": "Хранимые запросы",
   "Viewing is paused; recording continues.": "Просмотр приостановлен; запись продолжается.",
   "DNS history unavailable; DNS forwarding is still running.": "Журнал DNS недоступен. Обработка DNS-запросов продолжает работать.",
-  "Queries not recorded": "Не удалось записать запросы"
+  "Queries not recorded": "Не удалось записать запросы",
+  "Show all clients": "Показать всех клиентов",
+  "Clients": "Клиенты"
 }
