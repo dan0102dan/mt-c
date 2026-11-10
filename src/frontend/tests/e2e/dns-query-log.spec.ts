@@ -604,3 +604,69 @@ for (const width of [1280, 390]) {
     expect(dns.state.connections).toBe(1);
   });
 }
+
+test("recording action morphs the circle into the stop square and back", async ({
+  page,
+  dns,
+}) => {
+  await setup(page, dns);
+
+  const changes: boolean[] = [];
+  await page.route("**/api/v1/system/dns/capture", async (route) => {
+    const headers = {
+      "access-control-allow-origin": "*",
+      "access-control-allow-methods": "PUT, OPTIONS",
+      "access-control-allow-headers": "authorization, content-type",
+    };
+    if (route.request().method() === "OPTIONS") {
+      await route.fulfill({ status: 204, headers });
+      return;
+    }
+    const { enabled } = route.request().postDataJSON() as { enabled: boolean };
+    changes.push(enabled);
+    await route.fulfill({
+      headers,
+      json: {
+        enabled,
+        memory_limit: 1024 * 1024,
+        memory_used: 0,
+        count: 0,
+        capacity: 1000,
+      },
+    });
+  });
+
+  const action = page.locator(".settings-page .context-add button");
+  const outline = action.locator("svg rect.outline");
+  await expect(action).toHaveAttribute("aria-label", "Start recording");
+  await expect(action).toBeEnabled();
+  await expect(outline).toHaveCount(1);
+  await expect.poll(() => outline.evaluate((node) => getComputedStyle(node).rx)).toBe("10px");
+  expect(await outline.evaluate((node) => getComputedStyle(node).transitionProperty)).toContain(
+    "rx",
+  );
+
+  await action.click();
+  await page
+    .getByRole("dialog", { name: "Enable DNS recording?" })
+    .getByRole("button", { name: "Start recording" })
+    .click();
+  await expect(action).toHaveAttribute("aria-label", "Stop recording");
+  await expect(action.locator("svg")).toHaveClass(/stop/);
+  await expect.poll(() => outline.evaluate((node) => getComputedStyle(node).rx)).toBe("2px");
+  await expect.poll(() => outline.evaluate((node) => getComputedStyle(node).width)).toBe("18px");
+
+  await expect(action).toBeEnabled();
+  await action.click();
+  await page
+    .getByRole("dialog", { name: "Stop recording?" })
+    .getByRole("button", { name: "Stop recording" })
+    .click();
+  await expect(action).toHaveAttribute("aria-label", "Start recording");
+  await expect.poll(() => outline.evaluate((node) => getComputedStyle(node).rx)).toBe("10px");
+  await expect.poll(() => outline.evaluate((node) => getComputedStyle(node).width)).toBe("20px");
+  expect(changes).toEqual([true, false]);
+
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  expect(await outline.evaluate((node) => getComputedStyle(node).transitionDuration)).toBe("0s");
+});
