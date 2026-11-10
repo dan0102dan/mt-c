@@ -54,6 +54,8 @@ class RuntimeTests(unittest.TestCase):
 set -eu
 test "$JOBS" = 2
 test -z "$PGO_NAND"
+# The actual build.sh child must inherit our scoped GitHub redirect.
+test "$(git config --get url.https://github.com/qemu/qemu.git.insteadOf)" = "https://gitlab.com/qemu-project/qemu.git"
 printf '%s' "$CONFIGURE_ARGS" | grep -q -- '--disable-gtk'
 '''
         if fail:
@@ -178,6 +180,32 @@ printf '%s' "$CONFIGURE_ARGS" | grep -q -- '--disable-gtk'
                 patch.object(runtime.subprocess, "check_output", side_effect=[COMMIT, "2" * 40]):
             with self.assertRaisesRegex(runtime.RuntimeFailure, "does not match"):
                 runtime.checkout_source(source, "v4.1", log)
+
+    def test_qemu_url_rewrite_uses_official_github_mirror_only_in_build_env(self):
+        # Reproduce Git's insteadOf behavior with a local remote: no network.
+        repo = self.root / "url-rewrite"
+        subprocess.run(["git", "init", "-q", str(repo)], check=True)
+        subprocess.run(["git", "-C", str(repo), "remote", "add",
+                        "qemu", runtime.QEMU_GITLAB], check=True)
+        subprocess.run(["git", "-C", str(repo), "remote", "add",
+                        "other", "https://gitlab.com/unrelated/other.git"], check=True)
+
+        def url(name, env):
+            return subprocess.check_output(
+                ["git", "-C", str(repo), "remote", "get-url", name],
+                env=env, text=True).strip()
+
+        # Ignore machine/user configs, but do not modify them.
+        with patch.dict(os.environ, {"GIT_CONFIG_COUNT": "0",
+                                     "GIT_CONFIG_NOSYSTEM": "1",
+                                     "HOME": str(self.root),
+                                     "XDG_CONFIG_HOME": str(self.root / "xdg")}):
+            unmodified = dict(os.environ)
+            self.assertEqual(url("qemu", unmodified), runtime.QEMU_GITLAB)
+            build_env = runtime.qemu_build_env(2)
+            self.assertEqual(url("qemu", build_env), runtime.QEMU_GITHUB)
+            self.assertEqual(url("other", build_env), "https://gitlab.com/unrelated/other.git")
+            self.assertEqual(url("qemu", unmodified), runtime.QEMU_GITLAB)
 
     def test_invalid_jobs_and_external_qemu_override_fail_before_build(self):
         for jobs in (0, -1, 33, True):
