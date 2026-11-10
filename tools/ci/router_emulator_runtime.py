@@ -16,6 +16,8 @@ import subprocess
 import tempfile
 
 UPSTREAM = "https://github.com/stavultras/router-emulator.git"
+QEMU_GITLAB = "https://gitlab.com/qemu-project/qemu.git"
+QEMU_GITHUB = "https://github.com/qemu/qemu.git"  # official QEMU mirror
 BUILD_PACKAGES = (
     "build-essential", "git", "ninja-build", "meson", "pkg-config",
     "python3", "python3-venv", "libglib2.0-dev", "libpixman-1-dev",
@@ -91,6 +93,19 @@ def checkout_source(source, tag, log):
     return commit
 
 
+def qemu_build_env(jobs):
+    """Redirect upstream build.sh's QEMU clone to the official GitHub mirror.
+
+    git reads GIT_CONFIG_* only in this subprocess tree; neither the release
+    build script nor the runner's global Git configuration is modified.
+    Keep the match exact so unrelated GitLab repositories are unaffected.
+    """
+    return dict(os.environ, JOBS=str(jobs), CONFIGURE_ARGS=CONFIGURE_ARGS, PGO_NAND="",
+                GIT_CONFIG_COUNT="1",
+                GIT_CONFIG_KEY_0=f"url.{QEMU_GITHUB}.insteadOf",
+                GIT_CONFIG_VALUE_0=QEMU_GITLAB)
+
+
 def ensure_runtime(emulator_dir, expected_version=None, *, install_build_deps=False, jobs=2):
     root = Path(emulator_dir).resolve()
     version = (root / "VERSION").read_text().strip()
@@ -138,7 +153,9 @@ def ensure_runtime(emulator_dir, expected_version=None, *, install_build_deps=Fa
             commit = checkout_source(source, tag, log)
             if version_numbers((source / "VERSION").read_text().strip()) != version_numbers(version):
                 raise RuntimeFailure("source VERSION differs from the selected release")
-            env = dict(os.environ, JOBS=str(jobs), CONFIGURE_ARGS=CONFIGURE_ARGS, PGO_NAND="")
+            env = qemu_build_env(jobs)
+            log.write(f"QEMU clone mirror: {QEMU_GITLAB} -> {QEMU_GITHUB}\n")
+            log.flush()
             checked(["bash", str(source / "build.sh")], log, cwd=source, env=env)
             built = source / "src/qemu/build/qemu-system-aarch64"
             if not probe(built, log):
