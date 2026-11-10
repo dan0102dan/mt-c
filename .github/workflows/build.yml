@@ -435,6 +435,7 @@ jobs:
           artifacts_dir="${RUNNER_TEMP}/mt-c-artifacts-${{ matrix.name }}"
           mkdir -p "$feed_dir/mt-c" "$artifacts_dir"
           cp tools/ci/entware-package/Makefile "$feed_dir/mt-c/Makefile"
+          cp files/entware/_ipk/control/postinst "$feed_dir/mt-c/postinst"
           {
             printf 'MAGITRICKLE_VERSION:=%s\n' "$PKG_VERSION"
             printf 'MAGITRICKLE_RELEASE:=%s\n' "$PKG_REVISION"
@@ -816,15 +817,9 @@ jobs:
 
             . .build/entware-package.env
             package=".build/mt-c_${PKG_VERSION}-${PKG_REVISION}_entware_${{ matrix.name }}.ipk"
-            # SDK-generated postinst requires an OpenWrt-style runtime helper
-            # absent from Entware/Keenetic. Use the same direct hook as the
-            # root Makefile, preserving the SDK payload and package metadata.
-            python3 tools/ci/finalize-entware-ipk.py \
-              --package "${packages[0]}" --output "$package" \
-              --postinst files/entware/_ipk/control/postinst
-            python3 tools/ci/finalize-entware-ipk.py \
-              --package "$package" --postinst files/entware/_ipk/control/postinst \
-              --check-only
+            cp "${packages[0]}" "$package"
+            python3 tools/ci/check-entware-ipk.py \
+              --package "$package" --postinst files/entware/_ipk/control/postinst
 
             data_archive=$(mktemp)
             binary=$(mktemp)

@@ -2093,6 +2093,24 @@ otherwise returns the init script's status. The `_kn` init script also stops
 a restart after a failed stop instead of treating the still-running old
 process as a successful start. Its timeout and signal policy are unchanged.
 
+**Entware SDK amendment (2026-11-10).** Upstream fix
+`e2fc214970794d05e8de847da3fc605a69a41fa2` restores direct `postinst` and
+`prerm` packaging; `cada8c625d387bff8cee6421435f14bd690874e9` introduced the
+regression. The four release archives used by our target matrix in
+ownik/entware-sdk `v2026.11.10` were downloaded and matched their GitHub
+SHA256 digests. Each archive's `include/package-pack.mk` matches the fixed
+file at Entware `e5da3bb34ba6df7426aeccc82ba68555a913fe36`, also recorded by
+that tag's `LastBuildRef.txt`. The pinned SDK action selects latest and
+verifies the asset digest, so changing the action pin is unnecessary.
+
+The feed recipe now reads the canonical guarded hook from its staged
+`postinst` file. CI copies the SDK IPK unchanged and validates its packaged
+hook with `check-entware-ipk.py`; it no longer rewrites the archive. Old or
+incompatible SDK output fails validation. The restart failure handling,
+OpenWrt lifecycle fixes, and upgrade tests remain in place. Archive/source
+verification and isolated maintainer-script tests do not establish a full
+firmware upgrade or routing result.
+
 ## D-49: Wire per-platform filesystem paths into the build (fixes Entware `/opt` paths)
 
 **Status: accepted.** Closes the gap left open in D-24: `paths.h` had
