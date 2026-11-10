@@ -28,8 +28,7 @@
     --morph-ease: cubic-bezier(0.4, 0, 0.2, 1);
   }
 
-  /* Both arms round into the same dot, rather than collapsing a stroked path
-     to scale(0) while a separate dot starts a non-reversible bounce. */
+  /* Both arms round into the same dot without swapping SVG elements. */
   .bar,
   .outline {
     transition:
@@ -67,11 +66,29 @@
   }
   /* Fade the union, not each overlapping arm, so the centre stays uniform. */
   .symbol {
+    transform-origin: 12px 12px;
     opacity: 1;
     transition: opacity var(--morph-duration) var(--morph-ease);
   }
   .stop .symbol {
     opacity: 0;
+  }
+
+  /* A gentle bounce once the plus has nearly rounded into a dot. */
+  .record .symbol {
+    animation: dot-bounce calc(var(--morph-duration) + 100ms) var(--morph-ease) both;
+  }
+  @keyframes dot-bounce {
+    0%,
+    60% {
+      transform: scale(1);
+    }
+    80% {
+      transform: scale(1.14);
+    }
+    100% {
+      transform: scale(1);
+    }
   }
 
   /* Keep one outline mounted through the circle <-> square transition. */
@@ -93,6 +110,9 @@
   }
 
   @media (prefers-reduced-motion: reduce) {
+    .record .symbol {
+      animation: none;
+    }
     .bar,
     .symbol,
     .outline {
