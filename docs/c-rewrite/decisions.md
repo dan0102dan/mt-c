@@ -4297,13 +4297,14 @@ runtime still matches the current configuration:
 | `logLevel` | Update the log threshold. |
 | `showAllInterfaces` | Interface enumeration reads the current setting. |
 | `httpWeb.auth.enabled` | Authentication reads the current setting; revalidate existing streams. |
+| `httpWeb.enabled` | Only the TCP WebUI listener is created or destroyed; DNS stays active. |
 | `dnsProxy.disableFakePTR` | Update the proxy's PTR handling flag. |
 | `dnsProxy.disableDropAAAA` | Update the proxy's AAAA handling flag. |
 | `netfilter.ipset.additionalTTLSeconds` | Update the pipeline's additional TTL for subsequent DNS results. |
 
 All other changed public fields retain the full-runtime application path,
-including HTTP listener enable/address/port changes. No independent HTTP-listener
-reconfiguration is introduced here. Changes are compared using the normalized
+including HTTP listener address/port changes. WebUI enable/disable uses a
+separate HTTP-only transition, not DNS runtime reconstruction. Changes are compared using the normalized
 public projection, so formatting differences and values changed back to their
 original values do not by themselves require a restart. An inactive runtime or
 a mismatch between the current and active revisions requires reconstruction,
@@ -4325,7 +4326,12 @@ before application; a late change fails the accepted operation without silently
 restarting DNS. Preview is deliberately not a lock or reservation.
 
 Live application keeps the existing 202/operation confirmation protocol and
-waits for the complete HTTP acknowledgement. It skips upstream resolution,
+waits for the complete HTTP acknowledgement. WebUI listener removal is deferred
+until the HTTP response callback has returned so that its connection cannot be
+freed during the callback. Enabling WebUI prebinds the HTTP listener before
+persistence and disposes it on failure; disabling closes it only after
+persistence. Both leave the DNS listener, pipeline, cache, routing and Unix
+administrative API running. Live application skips upstream resolution,
 retains the loop, DNS proxy, pipeline, cache and routing components, and
 atomically persists the candidate configuration before applying the supported
 live values. Only those values change in the running model; unchanged owned
