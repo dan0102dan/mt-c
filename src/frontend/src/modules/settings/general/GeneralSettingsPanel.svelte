@@ -1,5 +1,6 @@
 <script lang="ts">
-  import { getContext, onDestroy, untrack } from "svelte";
+  import { Collapsible } from "bits-ui";
+  import { getContext, onDestroy, tick, untrack } from "svelte";
 
   import Button from "../../../components/ui/Button.svelte";
   import GenericDialog from "../../../components/ui/GenericDialog.svelte";
@@ -10,6 +11,7 @@
   import { t } from "../../../data/locale.svelte";
   import { GeneralSettingsState } from "./settings-state.svelte";
 
+  import { Add, GroupCollapse, GroupExpand } from "../../../components/ui/icons";
   import {
     CONFIG_TRANSFER_CONTEXT,
     type ConfigTransferControls,
@@ -23,6 +25,7 @@
     webTarget,
     webTargetUrl,
     type DraftField,
+    type GeneralDraft,
     type SwitchField,
     type TextField,
   } from "./config";
@@ -32,8 +35,10 @@
   const section = settingsSection();
   const transfer = getContext<ConfigTransferControls | undefined>(CONFIG_TRANSFER_CONTEXT);
   const config = new GeneralSettingsState();
-  let confirmation = $state<"apply" | "reload" | null>(null);
+  let confirmation = $state(false);
   let advancedOpen = $state(false);
+  let interfaceCandidate = $state("");
+  let submittedDraft = $state.raw<GeneralDraft>();
   let resolveConfirmation: ((confirmed: boolean) => void) | undefined;
   const proposed = $derived(config.built.settings);
   const connectionChange = $derived(
@@ -57,12 +62,34 @@
     disabled: "Disabled",
   };
   const logOptions = $derived(logLevels.map((value) => ({ value, label: t(logLabels[value]) })));
-  const suggestedInterfaces = $derived([
-    ...new Set([
-      ...interfaces.list.map((item) => item.id),
-      ...(config.snapshot?.settings.link ?? []),
-    ]),
-  ]);
+  const enteredInterfaces = $derived(
+    config.draft.links
+      .trim()
+      .split(/[\s,]+/)
+      .filter(Boolean),
+  );
+  const interfaceOptions = $derived(
+    [
+      ...new Set([
+        ...interfaces.list.map((item) => item.id),
+        ...(config.snapshot?.settings.link ?? []),
+      ]),
+    ]
+      .filter((id) => id !== "blackhole" && !enteredInterfaces.includes(id))
+      .map((id) => ({
+        value: id,
+        label: id,
+        description: interfaces.list.find((item) => item.id === id)?.name,
+      })),
+  );
+
+  async function addInterface(id: string) {
+    if (!formDisabled && interfaceOptions.some((item) => item.value === id)) {
+      config.draft.links = [...enteredInterfaces, id].join(", ");
+    }
+    await tick();
+    interfaceCandidate = "";
+  }
   const proposedUrl = $derived(
     proposed ? webTargetUrl(webTarget(proposed), window.location.href) : undefined,
   );
@@ -91,9 +118,7 @@
   $effect(() => {
     if (
       config.snapshot &&
-      (config.built.errors.timeoutMs ||
-        config.built.errors.maxConcurrent ||
-        config.built.errors.maxIdleConns)
+      (fieldError("timeoutMs") || fieldError("maxConcurrent") || fieldError("maxIdleConns"))
     )
       advancedOpen = true;
   });
@@ -101,13 +126,13 @@
   function answerConfirmation(confirmed: boolean) {
     const resolve = resolveConfirmation;
     resolveConfirmation = undefined;
-    confirmation = null;
+    confirmation = false;
     resolve?.(confirmed);
   }
 
   async function confirmSave(): Promise<boolean> {
     if (!config.canSave || blocked) return false;
-    confirmation = "apply";
+    confirmation = true;
     return new Promise((resolve) => {
       resolveConfirmation = resolve;
     });
@@ -117,6 +142,7 @@
     if (blocked)
       throw new Error("Save changes in Groups and Subscriptions before changing web access.");
     const previous = config.snapshot?.settings.showAllInterfaces;
+    submittedDraft = { ...config.draft };
     await config.save();
     if (previous !== config.snapshot?.settings.showAllInterfaces) void fetchInterfaces();
   }
@@ -128,24 +154,12 @@
       void fetchInterfaces();
   }
 
-  async function reload() {
-    if (config.busy || pageSaving) return;
-    if (config.dirty || config.pending) {
-      confirmation = "reload";
-      if (
-        !(await new Promise<boolean>((resolve) => {
-          resolveConfirmation = resolve;
-        }))
-      )
-        return;
-    }
-    await config.load(true);
-  }
-
   function fieldError(key: DraftField): string | undefined {
     return (
       config.built.errors[key] ??
-      (config.error?.field && fieldForPath(config.error.field) === key
+      (config.error?.field &&
+      fieldForPath(config.error.field) === key &&
+      submittedDraft?.[key] === config.draft[key]
         ? config.error.message
         : undefined)
     );
@@ -167,39 +181,31 @@
 
 {#snippet confirmationDialog()}
   <GenericDialog
-    open={confirmation !== null}
-    title={confirmation === "reload" ? t("Reload current settings?") : t("Apply general settings?")}
+    open={confirmation}
+    title={t("Apply general settings?")}
     maxWidth={480}
     on:close={() => answerConfirmation(false)}
     on:submit={() => answerConfirmation(true)}
     onOpenAutoFocus={() => document.getElementById("general-confirm-cancel")?.focus()}
   >
     <div slot="body" class="confirmation-body">
-      {#if confirmation === "reload"}
+      <p>{t("DNS routing may be temporarily unavailable while settings are being applied.")}</p>
+      {#if proposed && !proposed.httpWeb.enabled}
         <p>
           {t(
-            "Discard this draft and load the current settings? This will not cancel an application already accepted by the server.",
+            "The web interface will be disabled. To enable it again, you will need to change the settings on the device.",
           )}
         </p>
-      {:else}
-        <p>{t("DNS routing may be temporarily unavailable while settings are being applied.")}</p>
-        {#if proposed && !proposed.httpWeb.enabled}
-          <p>
-            {t(
-              "The web interface will be disabled. To enable it again, you will need to change the settings on the device.",
-            )}
-          </p>
-        {:else if addressChanges}
-          <p>
-            {t("The web address will change. Use the new address to reconnect after applying.")}
-          </p>
-          {#if proposedUrl}<p class="web-url">{proposedUrl}</p>{/if}
-        {/if}
-        {#if authChanges && proposed?.httpWeb.auth.enabled}
-          <p>{t("You may need to sign in again. Your open drafts will be kept.")}</p>
-        {:else if authChanges}
-          <p>{t("Sign-in will no longer be required for the web interface.")}</p>
-        {/if}
+      {:else if addressChanges}
+        <p>
+          {t("The web address will change. Use the new address to reconnect after applying.")}
+        </p>
+        {#if proposedUrl}<p class="web-url">{proposedUrl}</p>{/if}
+      {/if}
+      {#if authChanges && proposed?.httpWeb.auth.enabled}
+        <p>{t("You may need to sign in again. Your open drafts will be kept.")}</p>
+      {:else if authChanges}
+        <p>{t("Sign-in will no longer be required for the web interface.")}</p>
       {/if}
     </div>
     <div slot="actions" class="confirmation-actions">
@@ -207,7 +213,7 @@
         >{t("Cancel")}</Button
       >
       <Button type="button" class="accent" onclick={() => answerConfirmation(true)}>
-        {confirmation === "reload" ? t("Reload settings") : t("Apply")}
+        {t("Apply")}
       </Button>
     </div>
   </GenericDialog>
@@ -219,13 +225,17 @@
   type: "text" | "number" = "text",
   min?: number,
   max?: number,
-  hint?: string,
 )}
   <div class="setting-field">
     <label for={`general-${key}`}>{t(label)}</label>
     <input
       id={`general-${key}`}
       {type}
+      aria-label={key === "webAddress"
+        ? t("Web listen address")
+        : key === "webPort"
+          ? t("Web port")
+          : undefined}
       value={config.draft[key]}
       oninput={(event) => {
         config.draft[key] = event.currentTarget.value;
@@ -237,25 +247,20 @@
       autocomplete="off"
       spellcheck="false"
       aria-invalid={Boolean(fieldError(key))}
-      aria-describedby={fieldError(key)
-        ? `general-${key}-error`
-        : hint
-          ? `general-${key}-hint`
-          : undefined}
+      aria-describedby={fieldError(key) ? `general-${key}-error` : undefined}
     />
     {#if fieldError(key)}
       <p id={`general-${key}-error`} class="field-error">{t(fieldError(key) ?? "")}</p>
-    {:else if hint}
-      <p id={`general-${key}-hint`} class="field-hint">{t(hint)}</p>
     {/if}
   </div>
 {/snippet}
 
-{#snippet toggle(key: SwitchField, label: string)}
+{#snippet toggle(key: SwitchField, label: string, ariaLabel: string = label)}
   <div class="switch-row">
     <Switch
       id={`general-${key}`}
-      aria-label={t(label)}
+      aria-label={t(ariaLabel)}
+      disabled={formDisabled || (key === "authEnabled" && !config.draft.webEnabled)}
       bind:checked={
         () => config.draft[key],
         (value) => {
@@ -273,12 +278,12 @@
       {t("Save changes in Groups and Subscriptions before changing web access.")}
     </p>
   {/if}
-  {#if config.error}
+  {#if config.snapshot && config.error && (!config.error.field || !fieldForPath(config.error.field))}
     <div class="application-error" role="alert">
       {#if config.error.code === "SETTINGS_CONFLICT"}
         <p>
           {t(
-            "General settings changed elsewhere. Your draft is preserved. Reload current settings before saving again.",
+            "General settings changed elsewhere. Your draft is preserved. Reload the page before saving again.",
           )}
         </p>
       {:else if config.error.code === "SETTINGS_BUSY"}
@@ -298,8 +303,6 @@
     <p class="application-status" role="status">{t("Applying settings…")}</p>
   {:else if config.outcome === "succeeded" && !config.dirty}
     <p class="application-status" role="status">{t("Settings applied")}</p>
-  {:else if config.dirty && !config.pending}
-    <p class="application-status" role="status">{t("Unsaved changes")}</p>
   {/if}
   {#if config.nextWeb}
     <div class="connection-notice" role="status">
@@ -349,16 +352,6 @@
   })}
 >
   <h2 id="general-heading" class="sr-only">{t("General settings")}</h2>
-  <div class="description-row">
-    <p class="settings-description">
-      {t("Configure DNS, network interfaces and access to the web interface.")}
-    </p>
-    {#if config.snapshot}<Button
-        small
-        disabled={config.busy || pageSaving}
-        onclick={() => void reload()}>{t("Reload settings")}</Button
-      >{/if}
-  </div>
   {#if !config.snapshot}
     <Placeholder variant={config.error ? "error" : "loading"} minHeight="auto">
       {config.error ? t("Failed to load general settings") : t("Loading settings…")}
@@ -374,81 +367,88 @@
       <div class="settings-group">
         <h3>{t("DNS")}</h3>
         <div class="field-grid endpoint-grid">
-          {@render field("upstreamAddress", "Upstream DNS address")}
-          {@render field("upstreamPort", "Upstream DNS port", "number", 1, 65535)}
-          {@render field("dnsAddress", "DNS listen address")}
-          {@render field("dnsPort", "DNS listen port", "number", 1, 65535)}
+          {@render field("upstreamAddress", "Upstream DNS server")}
+          {@render field("upstreamPort", "Upstream server port", "number", 1, 65535)}
+          {@render field("dnsAddress", "Local DNS address")}
+          {@render field("dnsPort", "Local DNS port", "number", 1, 65535)}
         </div>
         <div class="switches">
-          {@render toggle("interceptDns", "Intercept DNS on port 53")}
-          {@render toggle("blockPtr", "Block reverse DNS queries (PTR)")}
-          {@render toggle("filterAaaa", "Remove IPv6 addresses from DNS answers (AAAA)")}
+          {@render toggle("interceptDns", "Intercept queries on port 53")}
+          {@render toggle("blockPtr", "Block reverse lookups (PTR)")}
+          {@render toggle("filterAaaa", "Filter IPv6 answers (AAAA)")}
         </div>
-        <details class="advanced" bind:open={advancedOpen}>
-          <summary>{t("DNS limits and timeout")}</summary>
-          <div class="field-grid">
-            {@render field("timeoutMs", "DNS response timeout (ms)", "number", 1, UINT32_MAX)}
-            {@render field("maxConcurrent", "Concurrent DNS queries", "number", 1, UINT32_MAX)}
-            {@render field("maxIdleConns", "Idle DNS connections", "number", 0, UINT32_MAX)}
-          </div>
-        </details>
+        <Collapsible.Root class="advanced" bind:open={advancedOpen}>
+          <Collapsible.Trigger class="advanced-trigger" disabled={formDisabled}>
+            {#if advancedOpen}<GroupCollapse size={18} />{:else}<GroupExpand size={18} />{/if}
+            {t("Timeout and limits")}
+          </Collapsible.Trigger>
+          <Collapsible.Content>
+            <div class="field-grid">
+              {@render field("timeoutMs", "Response timeout (ms)", "number", 1, UINT32_MAX)}
+              {@render field("maxConcurrent", "Concurrent query limit", "number", 1, UINT32_MAX)}
+              {@render field("maxIdleConns", "Idle connection limit", "number", 0, UINT32_MAX)}
+            </div>
+          </Collapsible.Content>
+        </Collapsible.Root>
       </div>
 
       <div class="settings-group">
-        <h3>{t("Network interfaces")}</h3>
+        <h3>{t("Traffic routing")}</h3>
         <div class="setting-field interface-field">
-          <label for="general-links">{t("Interfaces for DNS interception")}</label>
-          <input
-            id="general-links"
-            type="text"
-            bind:value={config.draft.links}
-            list="general-interface-suggestions"
-            autocomplete="off"
-            spellcheck="false"
-            placeholder={t("Example: br0, br-lan")}
-            aria-invalid={Boolean(fieldError("links"))}
-            aria-describedby="general-links-help"
-          />
-          <datalist id="general-interface-suggestions">
-            {#each suggestedInterfaces as name}<option value={name}></option>{/each}
-          </datalist>
-          <p
-            id="general-links-help"
-            class:field-error={Boolean(fieldError("links"))}
-            class:field-hint={!fieldError("links")}
-          >
-            {t(
-              fieldError("links") ??
-                "Enter interface names separated by commas. Names do not have to be in the suggestions.",
-            )}
-          </p>
+          <label for="general-links">{t("DNS interception interfaces")}</label>
+          <div class="interface-picker">
+            <input
+              id="general-links"
+              type="text"
+              bind:value={config.draft.links}
+              autocomplete="off"
+              spellcheck="false"
+              placeholder={t("Example: br0, br-lan")}
+              aria-invalid={Boolean(fieldError("links"))}
+              aria-describedby={fieldError("links") ? "general-links-error" : undefined}
+            />
+            <Select
+              options={interfaceOptions}
+              bind:selected={interfaceCandidate}
+              onValueChange={addInterface}
+              ariaLabel={t("Add interface")}
+              disabled={formDisabled || !interfaceOptions.length}
+              bounded
+            >
+              {#snippet trigger()}<Add size={20} /><span class="add-interface-label"
+                  >{t("Add interface")}</span
+                >{/snippet}
+            </Select>
+          </div>
+          {#if fieldError("links")}
+            <p id="general-links-error" class="field-error">{t(fieldError("links") ?? "")}</p>
+          {/if}
         </div>
         <div class="switches">
-          {@render toggle("ipv4", "Route IPv4 traffic")}
-          {@render toggle("ipv6", "Route IPv6 traffic")}
-          {@render toggle("showAllInterfaces", "Show all network interfaces")}
+          {@render toggle("ipv4", "Process IPv4 traffic")}
+          {@render toggle("ipv6", "Process IPv6 traffic")}
+          {@render toggle("showAllInterfaces", "Show all interfaces in selectors")}
         </div>
         <div class="field-grid">
           {@render field(
             "additionalTTLSeconds",
-            "Additional IP retention (seconds)",
+            "Additional IP address TTL (seconds)",
             "number",
             0,
             UINT32_MAX,
-            "Added to the DNS answer TTL when keeping IP addresses in routing rules.",
           )}
         </div>
       </div>
 
       <div class="settings-group">
-        <h3>{t("Web access")}</h3>
-        {@render toggle("webEnabled", "Enable web interface")}
+        <h3>{t("Web interface")}</h3>
+        {@render toggle("webEnabled", "Enable", "Enable web interface")}
         <fieldset class="web-fields" disabled={formDisabled || !config.draft.webEnabled}>
           <legend class="sr-only">{t("Web access options")}</legend>
-          {@render toggle("authEnabled", "Require sign-in")}
+          {@render toggle("authEnabled", "Enable authentication")}
           <div class="field-grid endpoint-grid">
-            {@render field("webAddress", "Web listen address")}
-            {@render field("webPort", "Web port", "number", 1, 65535)}
+            {@render field("webAddress", "Address")}
+            {@render field("webPort", "Port", "number", 1, 65535)}
           </div>
         </fieldset>
       </div>
@@ -456,16 +456,19 @@
       <div class="settings-group">
         <h3>{t("Logging")}</h3>
         <div class="setting-field log-field">
-          <span id="general-log-label">{t("Log level")}</span>
+          <label for="general-log-level">{t("Log detail level")}</label>
           <Select
             options={logOptions}
             bind:selected={config.draft.logLevel}
-            ariaLabel={t("Log level")}
+            ariaLabel={t("Log detail level")}
+            triggerId="general-log-level"
+            triggerInvalid={Boolean(fieldError("logLevel"))}
+            triggerDescribedBy={fieldError("logLevel") ? "general-log-level-error" : undefined}
             disabled={formDisabled}
             compact
             bounded
           />
-          {#if fieldError("logLevel")}<p class="field-error">
+          {#if fieldError("logLevel")}<p id="general-log-level-error" class="field-error">
               {t(fieldError("logLevel") ?? "")}
             </p>{/if}
         </div>
@@ -480,15 +483,6 @@
     padding: 0;
     min-width: 0;
     border: 0;
-  }
-  .description-row {
-    display: flex;
-    align-items: start;
-    gap: 1rem;
-    justify-content: space-between;
-  }
-  .description-row .settings-description {
-    flex: 1;
   }
   .general-form {
     display: grid;
@@ -522,8 +516,7 @@
     align-content: start;
     gap: 0.4rem;
   }
-  .setting-field > label,
-  .setting-field > span {
+  .setting-field > label {
     color: var(--text-2);
     font-size: 0.9rem;
     line-height: 1.5;
@@ -534,22 +527,35 @@
     min-width: 0;
     padding: 0.5rem 0.65rem;
     border: 1px solid var(--bg-light-extra);
-    border-radius: 0.35rem;
+    border-radius: 0.5rem;
     background: var(--bg-light);
     color: var(--text);
     font: 400 0.95rem/1.4 var(--font);
   }
-  input[aria-invalid="true"] {
+  input[type="number"] {
+    appearance: textfield;
+  }
+  input[type="number"]::-webkit-inner-spin-button,
+  input[type="number"]::-webkit-outer-spin-button {
+    -webkit-appearance: none;
+    margin: 0;
+  }
+  input[aria-invalid="true"],
+  .log-field :global([data-select-trigger][aria-invalid="true"]) {
     border-color: var(--red);
   }
-  input:disabled {
+  input:disabled,
+  .interface-picker :global([data-select-trigger]:disabled),
+  .log-field :global([data-select-trigger]:disabled) {
     opacity: 0.55;
   }
   input:focus-visible,
-  summary:focus-visible,
+  :global(#general .advanced-trigger:focus-visible),
+  .interface-picker :global([data-select-trigger]:focus-visible),
+  .log-field :global([data-select-trigger]:focus-visible),
   :global(#general [data-switch-root]:focus-visible) {
-    outline: 2px solid var(--accent);
-    outline-offset: 2px;
+    outline: 1px solid var(--accent);
+    outline-offset: 1px;
   }
   .switches {
     margin-top: 0.75rem;
@@ -565,18 +571,46 @@
   .switch-row label {
     cursor: pointer;
   }
-  .advanced {
+  :global(#general .advanced) {
     margin-top: 0.85rem;
   }
-  summary {
-    width: fit-content;
+  :global(#general .advanced-trigger) {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+    max-width: 100%;
+    padding: 0;
+    border: 0;
+    background: transparent;
     color: var(--text-2);
     cursor: pointer;
-    font-size: 0.9rem;
-    line-height: 1.5;
+    font: 400 0.9rem/1.5 var(--font);
+    text-align: left;
   }
-  .advanced .field-grid {
+  :global(#general .advanced-trigger:disabled) {
+    opacity: 0.55;
+    cursor: default;
+  }
+  :global(#general .advanced) .field-grid {
     margin-top: 1rem;
+  }
+  .interface-picker {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    min-width: 0;
+  }
+  .interface-picker input {
+    flex: 1;
+  }
+  .interface-picker :global([data-select-trigger]) {
+    padding: 0.5rem;
+    gap: 0.35rem;
+    color: var(--text-2);
+  }
+  .add-interface-label {
+    font-size: 0.85rem;
+    white-space: nowrap;
   }
   .interface-field {
     max-width: 100%;
@@ -597,10 +631,9 @@
     padding: 0.5rem 0.65rem;
     background: var(--bg-light);
     border: 1px solid var(--bg-light-extra);
-    border-radius: 0.35rem;
+    border-radius: 0.5rem;
   }
-  .field-error,
-  .field-hint {
+  .field-error {
     margin: 0;
     font-size: 0.8rem;
     line-height: 1.5;
@@ -610,7 +643,6 @@
   .application-error {
     color: var(--red);
   }
-  .field-hint,
   .application-status {
     color: var(--text-2);
   }
@@ -661,18 +693,13 @@
     border: 0;
   }
   @media (max-width: 700px) {
+    .add-interface-label {
+      display: none;
+    }
     .field-grid,
     .endpoint-grid {
       grid-template-columns: minmax(0, 1fr);
       gap: 0.85rem;
-    }
-    .description-row {
-      flex-direction: column;
-      gap: 0;
-      margin-bottom: 1rem;
-    }
-    .description-row .settings-description {
-      margin-bottom: 0.75rem;
     }
   }
 </style>

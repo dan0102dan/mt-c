@@ -23,6 +23,7 @@ async function backend(page: Page) {
   const config = generalServerConfig();
   const state = {
     settings: generalSettings(),
+    interfaces: ["blackhole", "br0", "tun0", "tun1"].map((id) => ({ id, name: "" })),
     version: 1,
     operation: null as Operation | null,
     pending: null as { settings: MockGeneralSettings; version: number } | null,
@@ -88,7 +89,7 @@ async function backend(page: Page) {
       return route.fulfill({ status: 401, json: { error: "Unauthorized" } });
     if (path === "/system/interfaces")
       return route.fulfill({
-        json: { interfaces: ["blackhole", "br0", "tun0", "tun1"].map((id) => ({ id, name: "" })) },
+        json: { interfaces: state.interfaces },
       });
     if (path === "/system/settings") {
       if (request.method() === "GET") {
@@ -206,13 +207,14 @@ async function showPage(page: Page, name: "Groups" | "Subscriptions" | "Settings
 
 async function openGeneral(page: Page) {
   await showPage(page, "Settings");
+  await expect(page.locator(".settings-tabs").getByRole("tab").first()).toHaveText("General");
   await page.getByRole("tab", { name: "General", exact: true }).click();
   await expect(
-    page.getByRole("textbox", { name: "Upstream DNS address", exact: true }),
+    page.getByRole("textbox", { name: "Upstream DNS server", exact: true }),
   ).toBeVisible();
-  const timeout = page.getByRole("spinbutton", { name: "DNS response timeout (ms)", exact: true });
+  const timeout = page.getByRole("spinbutton", { name: "Response timeout (ms)", exact: true });
   if (!(await timeout.isVisible()))
-    await page.getByText("DNS limits and timeout", { exact: true }).click();
+    await page.getByText("Timeout and limits", { exact: true }).click();
   await expect(timeout).toBeVisible();
   return timeout;
 }
@@ -242,6 +244,12 @@ test("General edits typed settings, saves and reloads without exposing YAML or i
   const { state, revision } = await backend(page);
   await page.goto("/");
   const timeout = await openGeneral(page);
+  await expect(
+    page.getByText("Configure DNS, network interfaces and access to the web interface.", {
+      exact: true,
+    }),
+  ).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Reload settings", exact: true })).toHaveCount(0);
   await expect(timeout).toHaveValue("5000");
   await expect(page.getByRole("tab", { name: "YAML", exact: true })).toHaveCount(0);
   await expect(page.getByRole("textbox", { name: "YAML configuration", exact: true })).toHaveCount(
@@ -250,14 +258,15 @@ test("General edits typed settings, saves and reloads without exposing YAML or i
   await expect(page.getByLabel(/chain prefix|table prefix|skin|mark table/i)).toHaveCount(0);
   const baseline = revision();
   await timeout.fill("7500");
-  await page.getByRole("textbox", { name: "Upstream DNS address", exact: true }).fill("8.8.8.8");
+  await expect(page.getByText("Unsaved changes", { exact: true })).toHaveCount(0);
+  await page.getByRole("textbox", { name: "Upstream DNS server", exact: true }).fill("8.8.8.8");
   await page
-    .getByRole("spinbutton", { name: "Additional IP retention (seconds)", exact: true })
+    .getByRole("spinbutton", { name: "Additional IP address TTL (seconds)", exact: true })
     .fill("0");
   await page
-    .getByRole("combobox", { name: "Interfaces for DNS interception", exact: true })
+    .getByRole("textbox", { name: "DNS interception interfaces", exact: true })
     .fill("br0, tun1");
-  await page.locator('[data-select-trigger][aria-label="Log level"]').click();
+  await page.locator('[data-select-trigger][aria-label="Log detail level"]').click();
   await page.getByRole("option", { name: "Debug", exact: true }).click();
   const expected = generalSettings();
   expected.dnsProxy.timeoutMs = 7500;
@@ -275,9 +284,9 @@ test("General edits typed settings, saves and reloads without exposing YAML or i
   await page.reload();
   await openGeneral(page);
   await expect(timeout).toHaveValue("7500");
-  await expect(
-    page.getByRole("textbox", { name: "Upstream DNS address", exact: true }),
-  ).toHaveValue("8.8.8.8");
+  await expect(page.getByRole("textbox", { name: "Upstream DNS server", exact: true })).toHaveValue(
+    "8.8.8.8",
+  );
 });
 
 test("cancelling the DNS interruption warning starts no General or profile writes", async ({
@@ -320,8 +329,10 @@ test("Save applies General only after other changed Settings sections have succe
     .first()
     .fill("Saved before restart");
   await confirmSave(page);
+  await expect.poll(() => state.settings.dnsProxy.timeoutMs).toBe(7500);
   await page.getByRole("tab", { name: "General", exact: true }).click();
-  await applied(page);
+  // Reopening a clean section refreshes it and clears the transient success status.
+  await expect(timeout).toHaveValue("7500");
   expect(state.actions).toEqual(["profiles", "settings"]);
   expect(state.profiles[0].name).toBe("Saved before restart");
   expect(state.settings.dnsProxy.timeoutMs).toBe(7500);
@@ -618,7 +629,7 @@ test("enabling sign-in preserves the accepted General save through authenticatio
   await page.goto("/");
   const timeout = await openGeneral(page);
   await timeout.fill("7500");
-  await page.getByRole("switch", { name: "Require sign-in", exact: true }).click();
+  await page.getByRole("switch", { name: "Enable authentication", exact: true }).click();
   await confirmSave(page);
   await expect.poll(() => state.checkReads).toBeGreaterThan(0);
   expect(state.writes).toHaveLength(1);
@@ -641,7 +652,9 @@ test("enabling sign-in preserves the accepted General save through authenticatio
   await login.getByRole("button", { name: "Sign In", exact: true }).click();
   await expect(login).toHaveCount(0);
   await expect(timeout).toHaveValue("7500");
-  await expect(page.getByRole("switch", { name: "Require sign-in", exact: true })).toBeChecked();
+  await expect(
+    page.getByRole("switch", { name: "Enable authentication", exact: true }),
+  ).toBeChecked();
   await expect(page.getByText("Settings applied", { exact: true })).toHaveCount(0);
   const check = page.getByRole("button", { name: "Check application", exact: true });
   await expect(check).toBeEnabled();
@@ -718,8 +731,8 @@ test("invalid numeric and interface fields block Save until corrected", async ({
   await port.fill("65536");
   await expect(page.locator("#save-settings")).toBeDisabled();
   await port.fill("8080");
-  const links = page.getByRole("combobox", {
-    name: "Interfaces for DNS interception",
+  const links = page.getByRole("textbox", {
+    name: "DNS interception interfaces",
     exact: true,
   });
   await links.fill("br0, br0");
@@ -795,16 +808,36 @@ for (const russian of [false, true]) {
     await page.getByRole("tab", { name: russian ? "Настройки" : "Settings", exact: true }).click();
     const tab = page.getByRole("tab", { name: russian ? "Общие" : "General", exact: true });
     await tab.click();
+    const web = page.locator(".settings-group").filter({
+      has: page.getByRole("heading", {
+        name: russian ? "Веб-интерфейс" : "Web interface",
+        exact: true,
+      }),
+    });
+    await expect(web.locator("label")).toHaveText(
+      russian
+        ? ["Включить", "Включить авторизацию", "Адрес", "Порт"]
+        : ["Enable", "Enable authentication", "Address", "Port"],
+    );
     await page
-      .getByText(russian ? "Ограничения DNS и время ожидания" : "DNS limits and timeout", {
+      .getByText(russian ? "Таймаут и лимиты" : "Timeout and limits", {
         exact: true,
       })
       .click();
     const timeout = page.getByRole("spinbutton", {
-      name: russian ? "Время ожидания DNS-ответа (мс)" : "DNS response timeout (ms)",
+      name: russian ? "Таймаут ответа (мс)" : "Response timeout (ms)",
       exact: true,
     });
     await timeout.fill("7500");
+    await expect(
+      page.getByRole("button", {
+        name: russian ? "Загрузить настройки заново" : "Reload settings",
+        exact: true,
+      }),
+    ).toHaveCount(0);
+    await expect(
+      page.getByText(russian ? "Несохранённые изменения" : "Unsaved changes", { exact: true }),
+    ).toHaveCount(0);
     const save = page.getByRole("button", {
       name: russian ? "Сохранить изменения" : "Save Changes",
       exact: true,
@@ -835,3 +868,140 @@ for (const russian of [false, true]) {
     expect(state.writes).toEqual([]);
   });
 }
+
+for (const width of [1280, 390, 320]) {
+  test(`General uses the shared interface picker and keeps custom names at ${width}px`, async ({
+    page,
+  }) => {
+    await page.setViewportSize({ width, height: 900 });
+    const { state } = await backend(page);
+    state.interfaces.find((item) => item.id === "tun1")!.name =
+      "A long interface description ".repeat(8);
+    await page.goto("/");
+    await openGeneral(page);
+    const links = page.getByRole("textbox", {
+      name: "DNS interception interfaces",
+      exact: true,
+    });
+    await expect(links).not.toHaveAttribute("list");
+    await expect(page.locator("#general datalist")).toHaveCount(0);
+    await links.fill("br0, custom0");
+    const picker = page.getByRole("combobox", { name: "Add interface", exact: true });
+    await picker.click();
+    await expect(page.getByRole("option", { name: "blackhole", exact: true })).toHaveCount(0);
+    await expect(page.getByRole("option", { name: "br0", exact: true })).toHaveCount(0);
+    const option = page.getByRole("option", { name: /^tun1/ });
+    const box = await option.boundingBox();
+    expect(box!.x).toBeGreaterThanOrEqual(0);
+    expect(box!.x + box!.width).toBeLessThanOrEqual(width);
+    await page.keyboard.press("Escape");
+    await expect(picker).toBeFocused();
+    await picker.click();
+    await option.click();
+    await expect(links).toHaveValue("br0, custom0, tun1");
+    await picker.click();
+    await expect(page.getByRole("option", { name: /^tun1/ })).toHaveCount(0);
+    await page.keyboard.press("Escape");
+    // Removing then adding the same candidate must work again.
+    await links.fill("br0, custom0");
+    await picker.click();
+    await page.getByRole("option", { name: /^tun1/ }).click();
+    await expect(links).toHaveValue("br0, custom0, tun1");
+    expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(
+      width,
+    );
+    await confirmSave(page);
+    await applied(page);
+    expect(state.settings.link).toEqual(["br0", "custom0", "tun1"]);
+  });
+}
+
+for (const failure of ["network", "malformed"] as const) {
+  test(`General shows one load error and Retry recovers after ${failure}`, async ({ page }) => {
+    const { state } = await backend(page);
+    state.readFailure = failure;
+    await page.goto("/");
+    await showPage(page, "Settings");
+    await page.getByRole("tab", { name: "General", exact: true }).click();
+    await expect(page.getByRole("alert")).toHaveCount(1);
+    await expect(page.getByText("Failed to load general settings", { exact: true })).toBeVisible();
+    state.readFailure = null;
+    await page.getByRole("button", { name: "Retry", exact: true }).click();
+    await expect(
+      page.getByRole("textbox", { name: "Upstream DNS server", exact: true }),
+    ).toHaveValue("127.0.0.1");
+    await expect(page.getByRole("alert")).toHaveCount(0);
+    expect(state.writes).toHaveLength(0);
+  });
+}
+
+test("General shows a server field error once and clears it after correcting that field", async ({
+  page,
+}) => {
+  const { state } = await backend(page);
+  state.putFailure = "validation";
+  await page.goto("/");
+  const timeout = await openGeneral(page);
+  await timeout.fill("7500");
+  await confirmSave(page);
+  await expect(page.getByText("Timeout rejected by server", { exact: true })).toHaveCount(1);
+  await expect(timeout).toHaveAttribute("aria-invalid", "true");
+  await expect(timeout).toHaveAttribute("aria-describedby", "general-timeoutMs-error");
+  await timeout.fill("8000");
+  await expect(page.getByText("Timeout rejected by server", { exact: true })).toHaveCount(0);
+  await expect(timeout).toHaveAttribute("aria-invalid", "false");
+  state.putFailure = null;
+  await confirmSave(page);
+  await applied(page);
+  expect(state.settings.dnsProxy.timeoutMs).toBe(8000);
+});
+
+test("General disables shared controls during application and restores them afterwards", async ({
+  page,
+}) => {
+  const { state, complete } = await backend(page);
+  state.holdApplying = true;
+  await page.goto("/");
+  const timeout = await openGeneral(page);
+  await timeout.fill("7500");
+  await confirmSave(page);
+  await expect.poll(() => state.pending).not.toBeNull();
+  const controls = [
+    timeout,
+    page.getByRole("combobox", { name: "Add interface", exact: true }),
+    page.getByRole("combobox", { name: "Log detail level", exact: true }),
+    page.getByRole("switch", { name: "Intercept queries on port 53", exact: true }),
+    page.getByRole("button", { name: "Timeout and limits", exact: true }),
+  ];
+  for (const control of controls) await expect(control).toBeDisabled();
+  complete();
+  await applied(page);
+  for (const control of controls) await expect(control).toBeEnabled();
+});
+
+test("General fields and sections support keyboard focus without native suggestion popups", async ({
+  page,
+}) => {
+  await backend(page);
+  await page.goto("/");
+  const timeout = await openGeneral(page);
+  const disclosure = page.getByRole("button", { name: "Timeout and limits", exact: true });
+  await disclosure.focus();
+  await page.keyboard.press("Space");
+  await expect(disclosure).toHaveAttribute("aria-expanded", "false");
+  await expect(timeout).not.toBeVisible();
+  await page.keyboard.press("Space");
+  await expect(timeout).toBeVisible();
+  await page.getByText("Log detail level", { exact: true }).click();
+  const logLevel = page.getByRole("combobox", { name: "Log detail level", exact: true });
+  await expect(logLevel).toBeFocused();
+  await page.keyboard.press("Enter");
+  await expect(page.getByRole("option", { name: "Debug", exact: true })).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(logLevel).toBeFocused();
+  await page.getByRole("switch", { name: "Enable web interface", exact: true }).click();
+  await expect(
+    page.getByRole("switch", { name: "Enable authentication", exact: true }),
+  ).toBeDisabled();
+  await expect(page.getByRole("spinbutton", { name: "Web port", exact: true })).toBeDisabled();
+});

@@ -10,20 +10,26 @@ for (const viewport of [
     page,
   }) => {
     await page.setViewportSize(viewport);
-    await page.route("**/auth", (route) => route.fulfill({ json: { enabled: false } }));
-    await page.route("**/groups?with_rules=true", (route) =>
-      route.fulfill({ json: { groups: [] } }),
-    );
-    await page.route("**/interfaces", (route) =>
-      route.fulfill({
-        json: {
+    // All mounted sections load at startup. Keep their reads isolated from a
+    // running backend so an unrelated 401 cannot replace the page with login.
+    await page.route("**/api/v1/**", (route) => {
+      if (route.request().method() === "OPTIONS") return route.fulfill({ status: 204 });
+      const path = new URL(route.request().url()).pathname.replace("/api/v1", "");
+      const fixtures: Record<string, unknown> = {
+        "/auth": { enabled: false },
+        "/groups": { groups: [] },
+        "/subscriptions": { subscriptions: [] },
+        "/profiles": { profiles: [] },
+        "/system/update/status": { stage: "idle" },
+        "/system/interfaces": {
           interfaces: Array.from({ length: 8 }, (_, i) => ({
             id: `eth${i}`,
             name: `Network ${i}`,
           })),
         },
-      }),
-    );
+      };
+      return route.fulfill({ json: fixtures[path] ?? {} });
+    });
     const groups = new GroupsPage(page);
     await groups.goto();
     await groups.createGroup();

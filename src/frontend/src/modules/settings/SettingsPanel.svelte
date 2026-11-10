@@ -25,11 +25,15 @@
   let selected = $state("profiles");
   const visibleSection = $derived(sections.find((section) => section.element.id === selected));
   const tabLabels = $derived<Record<string, string>>({
+    general: t("General"),
     profiles: t("Profiles"),
     keenetic: "Keenetic",
     dns: t("DNS queries"),
-    general: t("General"),
   });
+  const tabSections = $derived([
+    ...sections.filter((section) => section.element.id === "general"),
+    ...sections.filter((section) => section.element.id !== "general"),
+  ]);
   const visibleControls = $derived(visibleSection?.controls());
   const dirty = $derived(sections.some((section) => section.controls().dirty));
   const invalid = $derived(
@@ -131,7 +135,7 @@
     >
       {#snippet search()}
         <Tabs.List class="settings-tabs" aria-label={t("Settings")}>
-          {#each sections as section (section.element.id)}
+          {#each tabSections as section (section.element.id)}
             <Tabs.Trigger value={section.element.id}>{tabLabels[section.element.id]}</Tabs.Trigger>
           {/each}
         </Tabs.List>

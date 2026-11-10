@@ -26,13 +26,7 @@ type PendingApplication = {
   targetRevision?: string;
 };
 type Outcome =
-  | "idle"
-  | "applying"
-  | "succeeded"
-  | "failed"
-  | "rollback_failed"
-  | "unknown"
-  | "awaiting_auth";
+  "idle" | "applying" | "succeeded" | "failed" | "rollback_failed" | "unknown" | "awaiting_auth";
 
 const POLL_TIMEOUT_MS = 20000;
 const POLL_INTERVAL_MS = 750;
@@ -101,8 +95,8 @@ export class GeneralSettingsState {
     return true;
   }
 
-  async load(discardDraft = false): Promise<void> {
-    if (this.busy || (!discardDraft && (this.dirty || this.pending))) return;
+  async load(): Promise<void> {
+    if (this.busy || this.dirty || this.pending) return;
     const { controller, generation } = this.begin();
     this.loading = true;
     this.error = undefined;
