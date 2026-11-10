@@ -1,0 +1,20 @@
+name: Logs worktree preparation
+on:
+  push:
+    branches: [feature/application-logs]
+    paths: [.github/workflows/logs-worktree.yml]
+permissions:
+  contents: read
+jobs:
+  source:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Archive tracked source only
+        run: git archive --format=tar HEAD -o source.tar
+      - uses: actions/upload-artifact@v4
+        with:
+          name: logs-worktree-source
+          path: source.tar
+          retention-days: 1
