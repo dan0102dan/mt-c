@@ -491,7 +491,7 @@
               {#each groupedPage as item (item.domain)}<tr>
                   <td class="domain"
                     ><span class="cell-label" aria-hidden="true">{t("Domain")}</span><span
-                      class="cell-value">{item.domain}</span
+                      class="cell-value" title={item.domain}>{item.domain}</span
                     ></td
                   >
                   <td class="number"
@@ -502,9 +502,33 @@
                   <td
                     ><span class="cell-label" aria-hidden="true">{t("Clients")}</span><span
                       class="cell-value client-identities"
-                      >{#each item.clients as client (client)}{@render clientIdentity(
-                          client,
-                        )}{/each}</span
+                      >
+                      {#each item.clients.slice(0, item.clients.length > 2 ? 1 : 2) as client (client)}
+                        {@render clientIdentity(client)}
+                      {/each}
+                      {#if item.clients.length > 2}
+                        <Popover.Root>
+                          <Popover.Trigger
+                            class="dns-more-clients"
+                            aria-label={`${t("Show all clients")} (${item.clients.length})`}
+                          >+{item.clients.length - 1}</Popover.Trigger>
+                          <Popover.Portal>
+                            <Popover.Content
+                              role="dialog"
+                              class="dns-query-popover dns-clients-popover"
+                              aria-label={t("Clients")}
+                              sideOffset={6}
+                              collisionPadding={12}
+                            >
+                              {#each item.clients as client (client)}
+                                <div class="dns-client-popover-row">
+                                  {@render clientIdentity(client)}
+                                </div>
+                              {/each}
+                            </Popover.Content>
+                          </Popover.Portal>
+                        </Popover.Root>
+                      {/if}</span
                     ></td
                   >
                   <td class="timestamp"
@@ -624,6 +648,42 @@
     overflow: hidden;
     white-space: nowrap;
     text-overflow: ellipsis;
+  }
+  /* Reserve two single-line slots so name resolution cannot resize rows.
+   * More clients are available in the popover instead of growing the table. */
+  .dns-table.grouped .client-identities {
+    height: 2.5rem;
+    gap: 0.1rem;
+    justify-content: center;
+  }
+  .dns-table.grouped .client-identity {
+    flex-direction: row;
+    align-items: baseline;
+    gap: 0.35rem;
+    line-height: 1.2rem;
+    white-space: nowrap;
+    overflow-wrap: normal;
+  }
+  .dns-table.grouped .client-identity .client-name {
+    min-width: 0;
+  }
+  .dns-table.grouped .client-identity .client-address {
+    flex-shrink: 0;
+    max-width: 48%;
+  }
+  .dns-table :global(button.dns-more-clients) {
+    width: fit-content;
+    min-height: 1.2rem;
+    padding: 0;
+    border: 0;
+    background: transparent;
+    color: var(--text-2);
+    font: inherit;
+    line-height: 1.2rem;
+    cursor: pointer;
+  }
+  .dns-table :global(button.dns-more-clients:hover) {
+    color: var(--text);
   }
   .dns-panel {
     min-width: 0;
@@ -776,6 +836,16 @@
   .dns-table:not(.grouped) td {
     height: 3rem;
   }
+  .dns-table.grouped td {
+    height: 3.25rem;
+  }
+  .dns-table.grouped .domain .cell-value {
+    display: -webkit-box;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+    line-clamp: 2;
+    overflow: hidden;
+  }
   .dns-table:not(.grouped) .domain .cell-value,
   .dns-table:not(.grouped) :global(.query-details) {
     display: -webkit-box;
@@ -838,6 +908,13 @@
   }
   :global(.dns-query-popover .raw-query) {
     display: block;
+  }
+  :global(.dns-clients-popover) {
+    max-height: min(24rem, calc(100vh - 24px));
+    overflow-y: auto;
+  }
+  :global(.dns-clients-popover .dns-client-popover-row + .dns-client-popover-row) {
+    margin-top: 0.5rem;
   }
   .dns-summary {
     display: flex;
@@ -910,7 +987,8 @@
       padding: 0.5rem 0.35rem 0.45rem;
     }
     .dns-table td,
-    .dns-table:not(.grouped) td {
+    .dns-table:not(.grouped) td,
+    .dns-table.grouped td {
       display: grid;
       grid-template-columns: 5.6rem minmax(0, 1fr);
       align-items: baseline;
@@ -918,6 +996,11 @@
       min-width: 0;
       height: auto;
       padding: 0.05rem 0;
+    }
+    /* Baseline alignment depends on the client's font metrics: switching from
+     * an IP-only label to a name+IP used to move the card by one pixel. */
+    .dns-table.grouped td {
+      align-items: start;
     }
     .dns-table td.domain {
       order: -1;

@@ -36,7 +36,7 @@ struct mt_dns_clients {
     size_t result_count;
     mt_err_t result_error;
     /* Remaining fields are touched on the loop thread only. */
-    bool inflight;
+    bool inflight, ready; /* ready is loop-owned; reset with the final viewer */
     size_t listeners;
     client_listener_t subscriptions[MT_DNS_CLIENT_SUBSCRIBERS];
     mt_dns_client_t *entries;
@@ -52,6 +52,10 @@ const mt_dns_client_t *mt_dns_clients_at(const mt_dns_clients_t *s, size_t index
 uint64_t mt_dns_clients_revision(const mt_dns_clients_t *s)
 {
     return s ? s->revision : 0;
+}
+bool mt_dns_clients_ready(const mt_dns_clients_t *s)
+{
+    return !s || s->ready;
 }
 const char *mt_dns_clients_lookup(const mt_dns_clients_t *s, const char *address)
 {
@@ -194,7 +198,11 @@ static void clients_completed(mt_loop_t *loop, int fd, uint32_t events, void *ud
     if (err != MT_OK || !s->listeners || count > MT_DNS_CLIENT_LIMIT || (count && !entries)) {
         free(entries); entries = NULL; count = 0;
     }
-    if (same_clients(s, entries, count)) { free(entries); return; }
+    /* A first empty result is still a completed inventory. Notify streams so
+     * they can retire provisional names retained across tab suspension. */
+    bool changed = !s->ready || !same_clients(s, entries, count);
+    s->ready = true;
+    if (!changed) { free(entries); return; }
     free(s->entries); s->entries = entries; s->count = count; s->revision++;
     for (size_t i = 0; i < MT_DNS_CLIENT_SUBSCRIBERS; i++) {
         client_listener_t listener = s->subscriptions[i];
@@ -274,7 +282,8 @@ void mt_dns_clients_unsubscribe(mt_dns_clients_t *s, int id)
         s->source_active = false; s->epoch++;
         wake_worker(s);
         pthread_mutex_unlock(&s->mu);
-        free(s->entries); s->entries = NULL; s->count = 0; s->revision++;
+        free(s->entries); s->entries = NULL; s->count = 0;
+        s->ready = false; s->revision++;
     }
 }
 

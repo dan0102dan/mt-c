@@ -10,6 +10,7 @@ function createBackend() {
   const state = {
     manualGets: 0,
     snapshots: 0,
+    deferLabelsOnConnect: false,
     history: [
       {
         id: 3,
@@ -65,7 +66,7 @@ function createBackend() {
     }
     if (req.url?.endsWith("/stream")) {
       res.writeHead(200, { "Content-Type": "text/event-stream", "Cache-Control": "no-store" });
-      labels(res);
+      if (!state.deferLabelsOnConnect) labels(res);
       snapshot(res);
       streams.add(res);
       res.on("close", () => streams.delete(res));
@@ -180,6 +181,102 @@ for (const width of [1280, 390]) {
     expect(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth)).toBe(
       false,
     );
+  });
+}
+
+test("background tab keeps current names until a completed replacement arrives", async ({
+  page,
+  dns,
+}) => {
+  const region = await setup(page, dns);
+  const first = region.locator("tbody tr").first();
+  await expect(first.locator(".client-name")).toHaveText("Phone");
+  dns.state.deferLabelsOnConnect = true;
+  await page.evaluate(() => {
+    Object.defineProperty(document, "hidden", { configurable: true, value: true });
+    document.dispatchEvent(new Event("visibilitychange"));
+  });
+  await expect.poll(() => dns.streams.size).toBe(0);
+  await page.evaluate(() => {
+    Object.defineProperty(document, "hidden", { configurable: true, value: false });
+    document.dispatchEvent(new Event("visibilitychange"));
+  });
+  await expect.poll(() => dns.streams.size).toBe(1);
+  await expect.poll(() => dns.state.snapshots).toBe(2);
+  // DNS snapshots contain raw queries, not names. Waiting for the router's
+  // inventory must not temporarily replace the previous label with an IP.
+  await expect(first.locator(".client-name")).toHaveText("Phone");
+  await expect(first.locator(".client-address")).toHaveText("192.168.1.42");
+
+  dns.state.history[0].client_name = "Renamed phone";
+  dns.updateLabels();
+  await expect(first.locator(".client-name")).toHaveText("Renamed phone");
+  delete dns.state.history[0].client_name;
+  delete dns.state.history[1].client_name;
+  dns.updateLabels();
+  await expect(first.locator(".client-address")).toHaveCount(0);
+  await expect(first.locator(".client-name")).toHaveText("192.168.1.42");
+  expect(dns.state.manualGets).toBe(0);
+  expect(dns.state.snapshots).toBe(2);
+});
+
+for (const width of [1280, 390]) {
+  test(`grouped rows keep their height through client label changes at ${width}px`, async ({
+    page,
+    dns,
+  }) => {
+    await page.setViewportSize({ width, height: 844 });
+    for (const row of dns.state.history) delete row.client_name;
+    const region = await setup(page, dns);
+    await region.getByRole("button", { name: "Group by domain" }).click();
+    const rows = region.locator("tbody tr");
+    await expect(rows).toHaveCount(2);
+    await page.evaluate(() => document.fonts.ready.then(() => undefined));
+    const heights = () =>
+      rows.evaluateAll((elements) =>
+        elements.map((element) => element.getBoundingClientRect().height),
+      );
+    const original = await heights();
+
+    dns.state.history[0].client_name = "ubuntu-desktop";
+    dns.state.history[1].client_name = "redosHyperV";
+    dns.updateLabels();
+    await expect(rows.first()).toContainText("ubuntu-desktop");
+    await expect(rows.first()).toContainText("192.168.1.42");
+    await expect.poll(heights).toEqual(original);
+
+    dns.state.history[0].client_name = "a".repeat(126);
+    dns.updateLabels();
+    await expect(rows.first()).toContainText("a".repeat(126));
+    await expect.poll(heights).toEqual(original);
+
+    // A domain with more than two clients stays compact, but every IP is
+    // still reachable from a keyboard-accessible detail popover.
+    const extra = {
+      id: 4,
+      time_ms: 4000,
+      client: "192.168.1.44",
+      domain: "example.org",
+      qtype: 1,
+      protocol: "udp" as const,
+    };
+    dns.state.history.unshift(extra);
+    for (const stream of dns.streams) stream.write(frame("query", { ...extra, retained_from: 1 }));
+    await expect(rows.first().locator(".dns-more-clients")).toHaveText("+2");
+    await expect.poll(heights).toEqual(original);
+    await rows.first().getByRole("button", { name: /Show all clients/ }).click();
+    const details = page.getByRole("dialog", { name: "Clients" });
+    await expect(details).toContainText("192.168.1.42");
+    await expect(details).toContainText("192.168.1.43");
+    await expect(details).toContainText("192.168.1.44");
+    await page.keyboard.press("Escape");
+
+    delete dns.state.history[1].client_name;
+    dns.updateLabels();
+    await expect(rows.first()).not.toContainText("a".repeat(126));
+    await expect.poll(heights).toEqual(original);
+    expect(dns.state.manualGets).toBe(0);
+    expect(dns.state.snapshots).toBe(1);
   });
 }
 

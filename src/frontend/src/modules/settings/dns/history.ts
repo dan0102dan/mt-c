@@ -67,7 +67,10 @@ export function createDnsHistory(initial: DnsHistoryView) {
   let count = 0;
   let newest = 0;
   let capture = initial.capture ? { ...initial.capture } : null;
-  let labelsKnown = false;
+  /* Reusing a viewer's last committed labels keeps them visible while a
+   * resumed SSE waits for the router's first fresh inventory. An explicit
+   * clients event (even an empty one) always replaces this provisional map. */
+  let labelsKnown = initial.clientNames.size > 0;
   let names = new Map(initial.clientNames);
   let cachedNames: ReadonlyMap<string, string> = names;
   let namesDirty = true;
@@ -107,6 +110,12 @@ export function createDnsHistory(initial: DnsHistoryView) {
     if (event.event === "capture") {
       const state = parseCaptureState(JSON.parse(event.data));
       if (!state.enabled || state.capacity !== capacity) reset(state.capacity);
+      if (!state.enabled) {
+        // Stopping capture is a new lifecycle, not a transient tab suspension.
+        names = new Map();
+        labelsKnown = false;
+        namesDirty = true;
+      }
       capture = { ...state };
       return;
     }

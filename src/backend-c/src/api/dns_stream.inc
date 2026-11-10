@@ -135,7 +135,12 @@ static char *dns_stream_next(void *ud, size_t *len) {
         s->dropped = stats.dropped;
         return dns_event("capture", dns_capture_json(s->log), len);
     }
-    if (s->clients_phase != CLIENTS_IDLE || s->clients_revision != mt_dns_clients_revision(s->clients)) {
+    /* A newly connected viewer may have just released the last subscription.
+     * Do not send the worker's not-yet-fetched empty map as an authoritative
+     * removal: let DNS history flow, then publish the first completed inventory.
+     * An actual empty result or fetch failure DOES publish and clears old names. */
+    if (mt_dns_clients_ready(s->clients) &&
+        (s->clients_phase != CLIENTS_IDLE || s->clients_revision != mt_dns_clients_revision(s->clients))) {
         return dns_clients_event(s, len);
     }
     if (s->phase == DNS_SNAPSHOT_BEGIN) { return dns_snapshot_start(s, len); }
