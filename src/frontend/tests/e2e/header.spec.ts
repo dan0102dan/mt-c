@@ -8,6 +8,8 @@ test.describe("Header Settings", () => {
       route.fulfill({ json: { groups: [] } }),
     );
     await page.route("**/interfaces", async (route) => route.fulfill({ json: { interfaces: [] } }));
+    await page.route("**/profiles", (route) => route.fulfill({ json: { profiles: [] } }));
+    await page.route("**/subscriptions", (route) => route.fulfill({ json: { subscriptions: [] } }));
     // The header always mounts the updater; keep unrelated UI checks offline.
     await page.route("**/system/update/status", (route) =>
       route.fulfill({ json: { stage: "idle" } }),

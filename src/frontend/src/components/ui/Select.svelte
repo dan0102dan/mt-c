@@ -10,9 +10,6 @@
     selected?: string;
     onValueChange?: (v: string) => void;
     ariaLabel?: string;
-    triggerId?: string;
-    triggerDescribedBy?: string;
-    triggerInvalid?: boolean;
     trigger?: Snippet;
     triggerClass?: string;
     disabled?: boolean;
@@ -27,9 +24,6 @@
     selected = $bindable<string>(),
     onValueChange,
     ariaLabel = "Select",
-    triggerId,
-    triggerDescribedBy,
-    triggerInvalid,
     trigger,
     triggerClass,
     disabled = false,
@@ -62,13 +56,7 @@
 
 <div class="select-wrap" class:missing={missing_selection} class:bounded {...rest}>
   <Select.Root type="single" {onValueChange} {disabled} items={options} bind:value={selected}>
-    <Select.Trigger
-      id={triggerId}
-      aria-label={ariaLabel}
-      aria-describedby={triggerDescribedBy}
-      aria-invalid={triggerInvalid}
-      class={triggerClass}
-    >
+    <Select.Trigger aria-label={ariaLabel} class={triggerClass}>
       {#if trigger}
         {@render trigger()}
       {:else}

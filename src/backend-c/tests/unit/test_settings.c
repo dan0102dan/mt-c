@@ -292,6 +292,21 @@ static void diagnostic(mt_http_req_t *req, mt_http_res_t *res, void *userdata)
     cJSON_AddBoolToObject(json, "ipv4", h->daemon.ipt4 != NULL);
     cJSON_AddBoolToObject(json, "ipv6", h->daemon.ipt6 != NULL);
     cJSON_AddBoolToObject(json, "remap", h->daemon.port_remap != NULL);
+    mt_ipt_rules_snapshot_t *rules = NULL;
+    cJSON *targets = cJSON_AddArrayToObject(json, "remap_targets");
+    if (h->daemon.ipt4 && mt_ipt_get_current_rules(h->daemon.ipt4, &rules) == MT_OK) {
+        const mt_ipt_table_rules_t *nat = mt_ipt_rules_snapshot_find_table(rules, "nat");
+        const mt_ipt_chain_rules_t *chain = nat ? mt_ipt_table_rules_find_chain(nat, "MT_DNSOR") : NULL;
+        for (size_t i = 0; chain && i < chain->n_rules; i++) {
+            const mt_ipt_rule_t *rule = chain->rules[i];
+            for (size_t j = 0; j + 1 < rule->n_parts; j++) {
+                if (!strcmp(rule->parts[j], "--to-destination")) {
+                    cJSON_AddItemToArray(targets, cJSON_CreateString(rule->parts[j + 1]));
+                }
+            }
+        }
+    }
+    mt_ipt_rules_snapshot_free(rules);
     mt_http_res_write_json(res, 200, json);
 }
 static void register_diagnostic(harness_t *h)
@@ -323,6 +338,11 @@ static harness_t *harness_start_ports(uint16_t upstream, bool enabled_group, boo
     mt_strset(&app->dns_proxy.host.address, "127.0.0.1"); app->dns_proxy.host.port = ephemeral ? 0 : unused_port();
     mt_strset(&app->dns_proxy.upstream.address, "127.0.0.1"); app->dns_proxy.upstream.port = upstream;
     app->dns_proxy.disable_remap53 = true; app->netfilter.disable_ipv4 = app->netfilter.disable_ipv6 = true;
+    if (ephemeral) {
+        app->dns_proxy.disable_remap53 = false;
+        app->netfilter.disable_ipv4 = false;
+        mt_strset(&app->link[0], "lo");
+    }
     mt_strset(&app->log_level, "error");
     if (enabled_group) {
         const char *group = "configVersion: 0.9\ngroups: [{id: aabbccdd, name: Keep, enable: true, interface: blackhole, rules: [{id: 11223344, type: domain, rule: example.test, enable: true}]}]\n";
@@ -762,6 +782,14 @@ TEST legacy_ephemeral_ports_are_usable_and_rollback_restores_both_transports(voi
     dns_stub_t stub; ASSERT(stub_start(&stub, 12)); harness_t *h = harness_start_ports(stub.port, false, true); ASSERT(h);
     uint16_t web = h->daemon.ports.http, dns = h->daemon.ports.dns;
     ASSERT(web > 0); ASSERT(dns > 0);
+    cJSON *diag = NULL;
+    ASSERT_EQ(200, request(web, "GET", "/test/state", NULL, &diag));
+    cJSON *targets = item(diag, "remap_targets");
+    ASSERT_EQ(2, cJSON_GetArraySize(targets));
+    char destination[16]; snprintf(destination, sizeof(destination), ":%u", dns);
+    ASSERT_STR_EQ(destination, cJSON_GetArrayItem(targets, 0)->valuestring);
+    ASSERT_STR_EQ(destination, cJSON_GetArrayItem(targets, 1)->valuestring);
+    cJSON_Delete(diag);
     ASSERT_EQ(1, dns_query(dns, false, false, NULL)); ASSERT_EQ(1, dns_query(dns, true, false, NULL));
     cJSON *snapshot = NULL, *ack = NULL;
     ASSERT_EQ(200, request(web, "GET", "/api/v1/system/settings", NULL, &snapshot));

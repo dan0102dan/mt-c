@@ -992,8 +992,8 @@ test("General fields and sections support keyboard focus without native suggesti
   await expect(timeout).not.toBeVisible();
   await page.keyboard.press("Space");
   await expect(timeout).toBeVisible();
-  await page.getByText("Log detail level", { exact: true }).click();
   const logLevel = page.getByRole("combobox", { name: "Log detail level", exact: true });
+  await logLevel.focus();
   await expect(logLevel).toBeFocused();
   await page.keyboard.press("Enter");
   await expect(page.getByRole("option", { name: "Debug", exact: true })).toBeVisible();
@@ -1004,4 +1004,61 @@ test("General fields and sections support keyboard focus without native suggesti
     page.getByRole("switch", { name: "Enable authentication", exact: true }),
   ).toBeDisabled();
   await expect(page.getByRole("spinbutton", { name: "Web port", exact: true })).toBeDisabled();
+});
+
+test("a delayed unauthorized response cannot discard a renewed login or the General draft", async ({
+  page,
+}) => {
+  await page.addInitScript(() =>
+    localStorage.setItem("auth", JSON.stringify({ value: "initial-token" })),
+  );
+  const { state } = await backend(page);
+  state.settings.httpWeb.auth.enabled = true;
+  await page.goto("/");
+  const timeout = await openGeneral(page);
+  await timeout.fill("7500");
+  let release: () => void = () => {};
+  const delayed = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  let entered: () => void = () => {};
+  const captured = new Promise<void>((resolve) => {
+    entered = resolve;
+  });
+  let held = false;
+  await page.route("**/api/v1/profiles", async (route) => {
+    if (!held && route.request().method() === "GET") {
+      held = true;
+      entered();
+      await delayed;
+      return route.fulfill({ status: 401, json: { error: "Expired credentials" } });
+    }
+    return route.fallback();
+  });
+  await showPage(page, "Groups");
+  state.acceptedToken = "renewed-token";
+  await showPage(page, "Settings");
+  await captured;
+  await confirmSave(page);
+  const login = page.getByRole("dialog", { name: "Sign In", exact: true });
+  await expect(login).toBeVisible();
+  await login.locator("#login").fill("root");
+  await login.locator("#password").fill("correct-password");
+  await login.getByRole("button", { name: "Sign In", exact: true }).click();
+  await expect(login).toHaveCount(0);
+  const response = page.waitForResponse(
+    (response) => response.url().endsWith("/profiles") && response.status() === 401,
+  );
+  release();
+  await response;
+  await page.evaluate(() => new Promise<void>((resolve) => requestAnimationFrame(() => resolve())));
+  expect(await page.evaluate(() => JSON.parse(localStorage.getItem("auth") ?? "{}").value)).toBe(
+    "renewed-token",
+  );
+  await expect(login).toHaveCount(0);
+  await expect(timeout).toHaveValue("7500");
+  await confirmSave(page);
+  await applied(page);
+  expect(state.logins).toBe(1);
+  expect(state.settings.dnsProxy.timeoutMs).toBe(7500);
 });

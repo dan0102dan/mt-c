@@ -536,6 +536,8 @@ mt_err_t mt_config_save_buffer(const mt_config_t *cfg, const char *version,
     return *out != NULL ? MT_OK : MT_ERR_NOMEM;
 }
 
+static mt_err_t write_file_atomic(const char *path, const char *data, size_t len);
+
 mt_err_t mt_config_save_file(const mt_config_t *cfg, const char *version,
                              const char *path)
 {
@@ -546,12 +548,12 @@ mt_err_t mt_config_save_file(const mt_config_t *cfg, const char *version,
         return err;
     }
 
-    err = mt_config_write_buffer(path, data, len);
+    err = write_file_atomic(path, data, len);
     free(data);
     return err;
 }
 
-mt_err_t mt_config_write_buffer(const char *path, const char *data, size_t len)
+static mt_err_t write_file_atomic(const char *path, const char *data, size_t len)
 {
     if (!path || (!data && len)) { return MT_ERR_INVAL; }
     mt_err_t err = MT_OK;
@@ -575,7 +577,7 @@ mt_err_t mt_config_write_buffer(const char *path, const char *data, size_t len)
     while (written < len) {
         ssize_t rc = write(fd, data + written, len - written);
         if (rc <= 0) {
-            if (errno == EINTR) {
+            if (rc < 0 && errno == EINTR) {
                 continue;
             }
             err = rc == 0 ? MT_ERR_IO : mt_err_from_errno(errno);

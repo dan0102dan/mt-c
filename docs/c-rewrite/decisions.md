@@ -4178,7 +4178,9 @@ The projection represents legacy zero timeout/concurrency and unknown log level
 using their existing effective defaults. Fractional duration units use the same
 integer truncation as the runtime. Legacy listener port zero is reported as the
 actual bound port; DNS now shares that selected port between UDP and TCP instead
-of binding two unrelated ephemeral ports. A disabled HTTP listener with port zero
+of binding two unrelated ephemeral ports. DNS interception targets that actual bound
+port too, including after rollback; the stored legacy zero is left unchanged.
+A disabled HTTP listener with port zero
 uses the default 8080 in the form. These projections do not rewrite the file on
 GET.
 
@@ -4236,14 +4238,17 @@ access, a changed address/port and authentication changes. The browser reports
 success only after observing the matching completed operation, target revision
 and full projection. It never repeats an ambiguous PUT automatically. Lost
 acknowledgements, timeouts, stale drafts and failed application keep the draft
-and offer a deliberate reload or application check. Polling is bounded and
+and offer a page reload or application check. Polling is bounded and
 same-origin; a changed web endpoint is a user-opened link without transferred
 credentials. Reauthentication keeps mounted drafts but disables the hidden
-application and its keyboard shortcuts.
+application and its keyboard shortcuts. Unauthorized responses to requests sent
+with an older token do not invalidate a renewed login.
 
 The raw YAML API, editor, validation-only parser and editor dependencies are
 removed. The shared atomic writer, numeric-overflow guards, existing portable
-snapshot/import API and unrelated draft/persistence protections remain.
+snapshot/import API and unrelated draft/persistence protections remain. Unused
+raw-editor persistence callbacks are removed; app configuration writes use the
+existing direct serializer path, with the atomic file helper kept private.
 
 `test_settings` executes the production daemon lifecycle with real HTTP and
 UDP/TCP DNS sockets, temporary configuration files and upstream stubs. It checks

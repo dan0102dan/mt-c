@@ -704,7 +704,7 @@ static mt_err_t daemon_start(struct daemon *d, mt_config_t *cfg, const char *con
         }
         d->port_remap =
             mt_port_remap_new(cfg->app.netfilter.iptables.chain_prefix, 53,
-                              cfg->app.dns_proxy.host.port, addrs, n_addrs, d->ipt4, d->ipt6);
+                              mt_dnsproxy_listen_port(d->proxy), addrs, n_addrs, d->ipt4, d->ipt6);
         free(addrs);
         if (d->port_remap == NULL) {
             MT_ERROR("failed to override DNS: out of memory");

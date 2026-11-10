@@ -41,8 +41,4 @@ mt_err_t mt_config_save_json(const mt_config_t *cfg, const char *version, cJSON 
 mt_err_t mt_config_save_file(const mt_config_t *cfg, const char *version,
                              const char *path);
 
-/* Atomically persist already validated bytes without reformatting them.
- * No errors are reported after the rename commit point. */
-mt_err_t mt_config_write_buffer(const char *path, const char *data, size_t len);
-
 #endif /* MAGITRICKLE_YAMLIO_H */

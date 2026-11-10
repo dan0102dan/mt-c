@@ -319,13 +319,6 @@ mt_err_t mt_app_config_snapshot_json(mt_app_t *app, const char *version, cJSON *
  * File reload supplies its overlay semantics before calling this same operation. */
 mt_err_t mt_app_apply_config(mt_app_t *app, mt_config_t *candidate,
                               const char *path, const char *version);
-/* Same transaction with a custom atomic persistence commit.
- * The callback runs after model/kernel preparation and must not return an
- * error after committing its file. A failure restores the previous registry. */
-typedef mt_err_t (*mt_app_config_persist_fn)(const mt_config_t *cfg, void *userdata);
-mt_err_t mt_app_apply_config_with_persistence(mt_app_t *app, mt_config_t *candidate,
-                                               mt_app_config_persist_fn persist, void *userdata);
-
 /* Called from the netfilterd webhook to bring the netfilter tables back
  * in line with the live groups.
  *

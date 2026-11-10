@@ -16,10 +16,11 @@ export type FetchOptions = RequestInit & {
 
 export async function fetcher<T>(url: string, settings: FetchOptions = {}): Promise<T> {
   const { silent = false, timeoutMs, authFailure = "reset", ...options } = settings;
-  if (token.current) {
+  const requestToken = token.current;
+  if (requestToken) {
     options.headers = {
       ...options.headers,
-      Authorization: `Bearer ${token.current}`,
+      Authorization: `Bearer ${requestToken}`,
     };
   }
 
@@ -38,6 +39,8 @@ export async function fetcher<T>(url: string, settings: FetchOptions = {}): Prom
     const res = await fetch(`${API_BASE}${url}`, options);
 
     if (res.status === 401 || res.status === 403) {
+      // A reply to an old request must not invalidate a renewed login.
+      if (token.current !== requestToken) throw new Error("Unauthorized");
       if (authFailure === "preserve") throw new HttpError(res.status, await res.text());
       requireAuthentication();
       throw new Error("Unauthorized");

@@ -456,19 +456,17 @@
       <div class="settings-group">
         <h3>{t("Logging")}</h3>
         <div class="setting-field log-field">
-          <label for="general-log-level">{t("Log detail level")}</label>
+          <span>{t("Log detail level")}</span>
           <Select
             options={logOptions}
             bind:selected={config.draft.logLevel}
             ariaLabel={t("Log detail level")}
-            triggerId="general-log-level"
-            triggerInvalid={Boolean(fieldError("logLevel"))}
-            triggerDescribedBy={fieldError("logLevel") ? "general-log-level-error" : undefined}
+            triggerClass={fieldError("logLevel") ? "invalid" : undefined}
             disabled={formDisabled}
             compact
             bounded
           />
-          {#if fieldError("logLevel")}<p id="general-log-level-error" class="field-error">
+          {#if fieldError("logLevel")}<p class="field-error" role="alert">
               {t(fieldError("logLevel") ?? "")}
             </p>{/if}
         </div>
@@ -516,7 +514,8 @@
     align-content: start;
     gap: 0.4rem;
   }
-  .setting-field > label {
+  .setting-field > label,
+  .setting-field > span {
     color: var(--text-2);
     font-size: 0.9rem;
     line-height: 1.5;
@@ -541,7 +540,7 @@
     margin: 0;
   }
   input[aria-invalid="true"],
-  .log-field :global([data-select-trigger][aria-invalid="true"]) {
+  .log-field :global([data-select-trigger].invalid) {
     border-color: var(--red);
   }
   input:disabled,

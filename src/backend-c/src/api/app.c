@@ -1272,9 +1272,9 @@ mt_err_t mt_app_reload_config(mt_app_t *app, const char *path) {
     return mt_app_apply_config(app, &next, NULL, NULL);
 }
 
-mt_err_t mt_app_apply_config_with_persistence(mt_app_t *app, mt_config_t *candidate,
-                                               mt_app_config_persist_fn persist, void *userdata) {
-    if (!app || !candidate || candidate == app->cfg) { return MT_ERR_INVAL; }
+mt_err_t mt_app_apply_config(mt_app_t *app, mt_config_t *candidate,
+                              const char *path, const char *version) {
+    if (!app || !candidate || candidate == app->cfg || (path && !version)) { return MT_ERR_INVAL; }
     /* Ownership moves even on failure, so every caller has one cleanup rule. */
     mt_config_t next = *candidate;
     memset(candidate, 0, sizeof(*candidate));
@@ -1371,8 +1371,8 @@ mt_err_t mt_app_apply_config_with_persistence(mt_app_t *app, mt_config_t *candid
         if (err != MT_OK) { goto done; }
     }
 #endif
-    if (persist) {
-        err = persist(app->cfg, userdata);
+    if (path) {
+        err = mt_config_save_file(app->cfg, version, path);
         if (err != MT_OK) { goto done; }
     }
     for (size_t i = 0; i < old_ng; i++) { mt_ruleset_free(previous_groups[i]); }
@@ -1432,24 +1432,6 @@ done:
     mt_ruleset_snapshot_free(snapshot); mt_config_clear(&next);
     app_nf_leave(app);
     return err;
-}
-
-typedef struct config_file_commit {
-    const char *path;
-    const char *version;
-} config_file_commit_t;
-
-static mt_err_t persist_config_file(const mt_config_t *cfg, void *userdata) {
-    const config_file_commit_t *file = userdata;
-    return mt_config_save_file(cfg, file->version, file->path);
-}
-
-mt_err_t mt_app_apply_config(mt_app_t *app, mt_config_t *candidate,
-                              const char *path, const char *version) {
-    if (path && !version) { return MT_ERR_INVAL; }
-    config_file_commit_t file = {.path = path, .version = version};
-    return mt_app_apply_config_with_persistence(app, candidate,
-                path ? persist_config_file : NULL, &file);
 }
 
 mt_err_t mt_app_save_config(mt_app_t *app, const char *path, const char *version) {
