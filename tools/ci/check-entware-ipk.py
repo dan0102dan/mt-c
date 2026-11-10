@@ -1,18 +1,13 @@
 #!/usr/bin/env python3
-"""Give an SDK-built mt-c Entware IPK its self-contained postinst.
+"""Validate an SDK-built mt-c Entware IPK without modifying it.
 
-Entware SDKs can generate an OpenWrt-style wrapper which silently skips the
-package hook when /opt/lib/functions.sh is absent. Replace that wrapper with
-the repository's canonical hook without changing the compressed data payload
-or any other control file. Both tar.gz and ar IPK containers are supported.
-
---check-only checks the final artifact and executes its canonical hook with
-/opt paths rebound to a temporary fixture; it does not start a host service.
+The SDK recipe must supply the repository's canonical, self-contained hook.
+Execute it with /opt paths rebound to a temporary fixture; no host service
+is started. Both tar.gz and ar IPK containers are supported.
 """
 
 import argparse
 import copy
-import gzip
 import io
 import os
 from pathlib import Path, PurePosixPath
@@ -47,21 +42,6 @@ def read_tar(payload, label):
             body = archive.extractfile(entry).read() if entry.isfile() else None
             entries.append((copy.copy(entry), body))
     return entries
-
-
-def write_tar(original, entries):
-    output = io.BytesIO()
-    # Retain the source gzip timestamp; tar entry metadata is copied below.
-    with gzip.GzipFile(fileobj=output, mode="wb", mtime=int.from_bytes(original[4:8], "little")) as compressed:
-        with tarfile.open(fileobj=compressed, mode="w") as archive:
-            for source, body in entries:
-                entry = copy.copy(source)
-                if body is not None:
-                    entry.size = len(body)
-                    entry.pax_headers = dict(entry.pax_headers)
-                    entry.pax_headers.pop("size", None)
-                archive.addfile(entry, io.BytesIO(body) if body is not None else None)
-    return output.getvalue()
 
 
 def read_ar(payload):
@@ -108,7 +88,7 @@ def read_package(package):
         raise PackageError("IPK has no regular control file")
     fields = files["control"][1].decode("utf-8")
     if re.findall(r"^Package:[ \t]*(.*)$", fields, re.MULTILINE) != ["mt-c"]:
-        raise PackageError("finalizer only accepts the mt-c package")
+        raise PackageError("checker only accepts the mt-c package")
     for field in ("Version", "Architecture"):
         values = re.findall(rf"^{field}:[ \t]*(.*)$", fields, re.MULTILINE)
         if len(values) != 1 or not values[0].strip():
@@ -119,7 +99,7 @@ def read_package(package):
     data = read_tar(parts["data.tar.gz"], "payload")
     payload = {safe_name(entry.name): (entry, body) for entry, body in data}
     if any(name and name != "opt" and not name.startswith("opt/") for name in payload):
-        raise PackageError("finalizer only accepts an Entware /opt payload")
+        raise PackageError("checker only accepts an Entware /opt payload")
     for name in ("opt/bin/magitrickled", "opt/etc/init.d/S99magitrickle"):
         if name not in payload or payload[name][1] is None or not payload[name][0].mode & 0o111:
             raise PackageError(f"Entware payload is missing executable {name}")
@@ -189,55 +169,14 @@ def check_package(package, postinst):
     check_postinst_runtime(packaged_hook)
 
 
-def finalize_package(package, output, postinst):
-    original, is_ar, entries, parts, control = read_package(package)
-    canonical = canonical_postinst(postinst)
-    check_postinst_runtime(canonical)
-    updated = []
-    for entry, body in control:
-        name = safe_name(entry.name)
-        if name == "postinst-pkg":
-            continue
-        if name == "postinst":
-            entry.mode = 0o755
-            body = canonical
-        updated.append((entry, body))
-    parts["control.tar.gz"] = write_tar(parts["control.tar.gz"], updated)
-    if is_ar:
-        result = bytearray(b"!<arch>\n")
-        for name, header, _ in entries:
-            body = parts[name]
-            result.extend(header[:48] + f"{len(body):<10}".encode() + header[58:])
-            result.extend(body)
-            if len(body) % 2:
-                result.extend(b"\n")
-    else:
-        result = write_tar(original, [(entry, parts[safe_name(entry.name)] if body is not None else None)
-                                      for entry, body in entries])
-    output.parent.mkdir(parents=True, exist_ok=True)
-    with tempfile.TemporaryDirectory(prefix="mt-c-finalize-", dir=output.parent) as temporary:
-        staged = Path(temporary) / "final.ipk"
-        staged.write_bytes(result)
-        staged.chmod(0o644)
-        staged.replace(output)
-
-
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--package", type=Path, required=True)
     parser.add_argument("--postinst", type=Path, required=True)
-    parser.add_argument("--output", type=Path)
-    parser.add_argument("--check-only", action="store_true")
     args = parser.parse_args()
-    if args.check_only == (args.output is not None):
-        parser.error("use either --output or --check-only")
     try:
-        if args.check_only:
-            check_package(args.package, args.postinst)
-            print(f"PASS: {args.package} has a self-contained Entware postinst; runtime hook checks passed")
-        else:
-            finalize_package(args.package, args.output, args.postinst)
-            print(f"Finalized Entware postinst: {args.output} (data.tar.gz unchanged)")
+        check_package(args.package, args.postinst)
+        print(f"PASS: {args.package} has a self-contained Entware postinst; runtime hook checks passed")
     except (PackageError, OSError, ValueError, tarfile.TarError, subprocess.TimeoutExpired) as error:
         print(f"FAIL: {error}", file=sys.stderr)
         return 1

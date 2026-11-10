@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Exercise Entware package finalization and the packaged postinst contract."""
+"""Validate Entware packages and the packaged postinst contract."""
 
 from contextlib import redirect_stdout
 import importlib.util
@@ -11,7 +11,7 @@ import unittest
 from unittest.mock import patch
 
 
-SCRIPT = Path(__file__).resolve().parents[1] / "finalize-entware-ipk.py"
+SCRIPT = Path(__file__).resolve().parents[1] / "check-entware-ipk.py"
 POSTINST = SCRIPT.parents[2] / "files/entware/_ipk/control/postinst"
 SPEC = importlib.util.spec_from_file_location("entware_ipk", SCRIPT)
 package = importlib.util.module_from_spec(SPEC)
@@ -49,24 +49,16 @@ def make_ar(entries):
     return bytes(result)
 
 
-def member_snapshot(entries):
-    return {package.safe_name(entry.name): (
-        body, entry.mode, entry.uid, entry.gid, entry.uname, entry.gname,
-        entry.mtime, entry.type, entry.linkname, entry.pax_headers,
-    ) for entry, body in entries}
-
-
 class EntwareIPKTest(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.directory = Path(self.temp.name)
         self.input = self.directory / "sdk.ipk"
-        self.output = self.directory / "final.ipk"
 
-    def create_package(self, container=make_tar, nested=True, hook=SDK_POSTINST,
+    def create_package(self, container=make_tar, nested=False, hook=POSTINST.read_bytes(),
                        name="mt-c", prefix="opt", extra_control=(), extra_data=(),
-                       hook_mode=0o600):
+                       hook_mode=0o755):
         control = [
             ("control", (f"Package: {name}\nVersion: 0.8.6-r1\n"
                          "Architecture: mipsel-3.4\nDepends: libc, socat\n"
@@ -95,26 +87,13 @@ class EntwareIPKTest(unittest.TestCase):
             ("data.tar.gz", make_tar(data), 0o644),
         ]))
 
-    def test_both_formats_preserve_payload_and_all_unrelated_control_metadata(self):
+    def test_both_formats_validate_without_changing_any_package_bytes(self):
         for container in (make_tar, make_ar):
-            for nested in (True, False):
-                with self.subTest(container=container.__name__, nested=nested):
-                    self.create_package(container, nested)
-                    original = self.input.read_bytes()
-                    _, _, _, original_parts, original_control = package.read_package(self.input)
-                    package.finalize_package(self.input, self.output, POSTINST)
-                    _, is_ar, _, final_parts, final_control = package.read_package(self.output)
-                    self.assertEqual(container is make_ar, is_ar)
-                    self.assertEqual(original, self.input.read_bytes())
-                    self.assertEqual(original_parts["data.tar.gz"], final_parts["data.tar.gz"])
-                    before, after = member_snapshot(original_control), member_snapshot(final_control)
-                    self.assertNotIn("postinst-pkg", after)
-                    self.assertEqual(POSTINST.read_bytes(), after["postinst"][0])
-                    self.assertEqual(0o755, after["postinst"][1])
-                    self.assertEqual(before["postinst"][2:], after["postinst"][2:])
-                    for name in set(before) - {"postinst", "postinst-pkg"}:
-                        self.assertEqual(before[name], after[name], name)
-                    package.check_package(self.output, POSTINST)
+            with self.subTest(container=container.__name__):
+                self.create_package(container)
+                original = self.input.read_bytes()
+                package.check_package(self.input, POSTINST)
+                self.assertEqual(original, self.input.read_bytes())
 
     def test_canonical_hook_runs_install_upgrade_failure_and_skip_contracts(self):
         package.check_postinst_runtime(POSTINST.read_bytes())
@@ -127,40 +106,31 @@ class EntwareIPKTest(unittest.TestCase):
         with self.assertRaisesRegex(package.PackageError, "postinst restart failure: exit 0"):
             package.check_postinst_runtime(OLD_RAW_POSTINST)
 
-    def test_already_finalized_package_can_be_finalized_in_place(self):
-        self.create_package(nested=False, hook=POSTINST.read_bytes(), hook_mode=0o755)
-        package.check_package(self.input, POSTINST)
-        payload = package.read_package(self.input)[3]["data.tar.gz"]
-        package.finalize_package(self.input, self.input, POSTINST)
-        package.check_package(self.input, POSTINST)
-        self.assertEqual(payload, package.read_package(self.input)[3]["data.tar.gz"])
-
-    def test_check_only_cli_validates_final_artifact_without_rewriting_it(self):
+    def test_cli_validates_sdk_artifact_without_rewriting_it(self):
         self.create_package()
-        package.finalize_package(self.input, self.output, POSTINST)
-        original = self.output.read_bytes()
-        with patch("sys.argv", [str(SCRIPT), "--package", str(self.output),
-                                "--postinst", str(POSTINST), "--check-only"]), \
+        original = self.input.read_bytes()
+        with patch("sys.argv", [str(SCRIPT), "--package", str(self.input),
+                                "--postinst", str(POSTINST)]), \
                 redirect_stdout(io.StringIO()) as stdout:
             self.assertEqual(0, package.main())
         self.assertIn("runtime hook checks passed", stdout.getvalue())
-        self.assertEqual(original, self.output.read_bytes())
+        self.assertEqual(original, self.input.read_bytes())
 
-    def test_check_rejects_generated_wrapper_and_retained_nested_hook(self):
-        for hook, nested in ((SDK_POSTINST, False), (POSTINST.read_bytes(), True)):
-            with self.subTest(nested=nested):
-                self.create_package(hook=hook, nested=nested, hook_mode=0o755)
+    def test_check_rejects_wrapper_nested_hook_and_nonexecutable_hook(self):
+        for hook, nested, mode in ((SDK_POSTINST, False, 0o755),
+                                   (POSTINST.read_bytes(), True, 0o755),
+                                   (POSTINST.read_bytes(), False, 0o644)):
+            with self.subTest(nested=nested, mode=mode):
+                self.create_package(hook=hook, nested=nested, hook_mode=mode)
                 with self.assertRaises(package.PackageError):
                     package.check_package(self.input, POSTINST)
 
-    def test_wrong_package_and_openwrt_payload_are_rejected_before_output_changes(self):
+    def test_wrong_package_and_openwrt_payload_are_rejected(self):
         for changes in ({"name": "other"}, {"prefix": "usr"}):
             with self.subTest(changes=changes):
                 self.create_package(**changes)
-                self.output.write_bytes(b"existing output")
                 with self.assertRaises(package.PackageError):
-                    package.finalize_package(self.input, self.output, POSTINST)
-                self.assertEqual(b"existing output", self.output.read_bytes())
+                    package.check_package(self.input, POSTINST)
 
     def test_unsafe_paths_and_duplicate_members_are_rejected(self):
         for changes in (
@@ -172,14 +142,13 @@ class EntwareIPKTest(unittest.TestCase):
             with self.subTest(changes=changes):
                 self.create_package(**changes)
                 with self.assertRaises(package.PackageError):
-                    package.finalize_package(self.input, self.output, POSTINST)
-                self.assertFalse(self.output.exists())
+                    package.check_package(self.input, POSTINST)
 
     def test_truncated_ar_and_payload_links_are_rejected(self):
         self.create_package(make_ar)
         self.input.write_bytes(self.input.read_bytes()[:-10])
         with self.assertRaisesRegex(package.PackageError, "truncated"):
-            package.finalize_package(self.input, self.output, POSTINST)
+            package.check_package(self.input, POSTINST)
         archive = io.BytesIO()
         with tarfile.open(fileobj=archive, mode="w:gz") as tar:
             link = tarfile.TarInfo("opt/bin/magitrickled")
