@@ -83,7 +83,6 @@
 
     // An already visible toolbar animates directly from its current geometry.
     if (!untrack(() => resetting)) {
-      resetting = false;
       showAdd = next;
       iconMode = nextIconMode;
       return;
