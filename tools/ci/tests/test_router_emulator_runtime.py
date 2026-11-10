@@ -66,6 +66,57 @@ printf '%s' "$CONFIGURE_ARGS" | grep -q -- '--disable-gtk'
         (source / "build.sh").write_text(contents)
         return COMMIT
 
+    def clone_fixture(self, source, tag, log, *, mode):
+        """Simulate the upstream shell build with real subprocess/Git config."""
+        self.assertEqual(tag, "v4.1")
+        (source / "VERSION").write_text("4.1\n")
+        trace = self.root / "clone-attempts.txt"
+        # This comment mirrors the exact clone command in upstream build.sh.
+        # Test both the presence and absence of the Git URL rewrite.
+        script = '''#!/bin/sh
+set -eu
+# git clone --depth 1 --branch v10.1.0 https://gitlab.com/qemu-project/qemu.git src/qemu
+TRACE=''' + repr(str(trace)) + '''
+mode=''' + repr(mode) + '''
+if [ "$mode" = preflight-fail ]; then
+  echo preflight >> "$TRACE"
+  echo missing-build-dependencies >&2
+  exit 22
+fi
+if [ "$(git config --get url.https://github.com/qemu/qemu.git.insteadOf || true)" = "https://gitlab.com/qemu-project/qemu.git" ]; then
+  echo github >> "$TRACE"
+  test ! -e src/qemu || { echo "incomplete clone not cleaned" >&2; exit 77; }
+  if [ "$mode" = both-fail ]; then
+    echo "Cloning into 'src/qemu'..." >&2
+    echo "fatal: GitHub unavailable" >&2
+    exit 128
+  fi
+else
+  echo gitlab >> "$TRACE"
+  if [ "$mode" = gitlab-fail ] || [ "$mode" = both-fail ]; then
+    echo "Cloning into 'src/qemu'..." >&2
+    mkdir -p src/qemu
+    echo "fatal: remote error: GitLab is currently unable to handle this request due to load" >&2
+    exit 128
+  fi
+  if [ "$mode" = compile-fail ]; then
+    mkdir -p src/qemu/.git
+    echo "Cloning into 'src/qemu'..." >&2
+    echo "fatal: patch/compile failed" >&2
+    exit 22
+  fi
+fi
+mkdir -p src/qemu/.git src/qemu/build
+cat > src/qemu/build/qemu-system-aarch64 <<'EOS'
+''' + COMPATIBLE + '''EOS
+chmod +x src/qemu/build/qemu-system-aarch64
+'''
+        (source / "build.sh").write_text(script)
+        return COMMIT
+
+    def clone_attempts(self):
+        return (self.root / "clone-attempts.txt").read_text().splitlines()
+
     def evidence(self):
         return json.loads((self.root / "work/ci-emulator-runtime.log").read_text())
 
@@ -178,6 +229,83 @@ printf '%s' "$CONFIGURE_ARGS" | grep -q -- '--disable-gtk'
                 patch.object(runtime.subprocess, "check_output", side_effect=[COMMIT, "2" * 40]):
             with self.assertRaisesRegex(runtime.RuntimeFailure, "does not match"):
                 runtime.checkout_source(source, "v4.1", log)
+
+    def test_qemu_url_rewrite_uses_official_github_mirror_only_in_build_env(self):
+        # Reproduce Git's insteadOf behavior with a local remote: no network.
+        repo = self.root / "url-rewrite"
+        subprocess.run(["git", "init", "-q", str(repo)], check=True)
+        subprocess.run(["git", "-C", str(repo), "remote", "add",
+                        "qemu", runtime.QEMU_GITLAB], check=True)
+        subprocess.run(["git", "-C", str(repo), "remote", "add",
+                        "other", "https://gitlab.com/unrelated/other.git"], check=True)
+
+        def url(name, env):
+            return subprocess.check_output(
+                ["git", "-C", str(repo), "remote", "get-url", name],
+                env=env, text=True).strip()
+
+        # Ignore machine/user configs, but do not modify them.
+        with patch.dict(os.environ, {"GIT_CONFIG_COUNT": "0",
+                                     "GIT_CONFIG_NOSYSTEM": "1",
+                                     "HOME": str(self.root),
+                                     "XDG_CONFIG_HOME": str(self.root / "xdg")}):
+            unmodified = dict(os.environ)
+            self.assertEqual(url("qemu", unmodified), runtime.QEMU_GITLAB)
+            upstream_env = runtime.qemu_build_env(2)
+            self.assertEqual(url("qemu", upstream_env), runtime.QEMU_GITLAB)
+            build_env = runtime.qemu_build_env(2, github_mirror=True)
+            self.assertEqual(url("qemu", build_env), runtime.QEMU_GITHUB)
+            self.assertEqual(url("other", build_env), "https://gitlab.com/unrelated/other.git")
+            self.assertEqual(url("qemu", unmodified), runtime.QEMU_GITLAB)
+
+    def test_gitlab_clone_success_never_contacts_github(self):
+        executable(self.binary, INCOMPATIBLE)
+        with patch.object(runtime, "checkout_source",
+                          side_effect=lambda *args: self.clone_fixture(*args, mode="gitlab-ok")):
+            selected = runtime.ensure_runtime(self.root, "4.1")
+        self.assertTrue(selected.is_file())
+        self.assertEqual(self.clone_attempts(), ["gitlab"])
+        self.assertEqual(self.evidence()["status"], "ready")
+
+    def test_failed_gitlab_clone_cleans_partial_dir_and_retries_github(self):
+        executable(self.binary, INCOMPATIBLE)
+        with patch.object(runtime, "checkout_source",
+                          side_effect=lambda *args: self.clone_fixture(*args, mode="gitlab-fail")):
+            selected = runtime.ensure_runtime(self.root, "4.1")
+        self.assertTrue(selected.is_file())
+        self.assertEqual(self.clone_attempts(), ["gitlab", "github"])
+        self.assertEqual(self.evidence()["origin"], "source")
+        log = (self.root / "work/ci-emulator-runtime-build.log").read_text()
+        self.assertIn("Retry QEMU clone:", log)
+        self.assertIn(runtime.QEMU_GITHUB, log)
+
+    def test_gitlab_successful_clone_with_compile_error_does_not_retry(self):
+        executable(self.binary, INCOMPATIBLE)
+        with patch.object(runtime, "checkout_source",
+                          side_effect=lambda *args: self.clone_fixture(*args, mode="compile-fail")):
+            with self.assertRaisesRegex(runtime.RuntimeFailure, "command failed"):
+                runtime.ensure_runtime(self.root, "4.1")
+        self.assertEqual(self.clone_attempts(), ["gitlab"])
+        self.assertEqual(self.evidence()["status"], "failed")
+        self.assertFalse((self.root / "src/qemu").exists())
+
+    def test_failure_before_gitlab_clone_does_not_retry(self):
+        executable(self.binary, INCOMPATIBLE)
+        with patch.object(runtime, "checkout_source",
+                          side_effect=lambda *args: self.clone_fixture(*args, mode="preflight-fail")):
+            with self.assertRaisesRegex(runtime.RuntimeFailure, "command failed"):
+                runtime.ensure_runtime(self.root, "4.1")
+        self.assertEqual(self.clone_attempts(), ["preflight"])
+
+    def test_both_gitlab_and_github_clone_fail_instead_of_skipping_smoke(self):
+        executable(self.binary, INCOMPATIBLE)
+        with patch.object(runtime, "checkout_source",
+                          side_effect=lambda *args: self.clone_fixture(*args, mode="both-fail")):
+            with self.assertRaisesRegex(runtime.RuntimeFailure, "command failed"):
+                runtime.ensure_runtime(self.root, "4.1")
+        self.assertEqual(self.clone_attempts(), ["gitlab", "github"])
+        self.assertEqual(self.evidence()["status"], "failed")
+        self.assertFalse((self.root / "src/qemu").exists())
 
     def test_invalid_jobs_and_external_qemu_override_fail_before_build(self):
         for jobs in (0, -1, 33, True):
