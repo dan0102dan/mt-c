@@ -639,7 +639,7 @@ TEST preview_classifies_actual_changes_without_mutating_or_resolving(void)
     free(before); free(after); cJSON_Delete(snapshot); cJSON_Delete(response); harness_stop(h); stub_stop(&stub); PASS();
 }
 
-TEST(toggling_webui_does_not_restart_dns_or_routing)
+TEST toggling_webui_does_not_restart_dns_or_routing(void)
 {
     dns_stub_t stub; ASSERT(stub_start(&stub, 23));
     harness_t *h = harness_start(stub.port, false); ASSERT(h);
@@ -690,7 +690,7 @@ TEST(toggling_webui_does_not_restart_dns_or_routing)
     harness_stop(h); stub_stop(&stub); PASS();
 }
 
-TEST(webui_disable_write_failure_keeps_webui_and_dns_running)
+TEST webui_disable_write_failure_keeps_webui_and_dns_running(void)
 {
     dns_stub_t stub; ASSERT(stub_start(&stub, 19));
     harness_t *h = harness_start(stub.port, false); ASSERT(h);
