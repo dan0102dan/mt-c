@@ -112,6 +112,10 @@
       config.snapshot.settings.httpWeb.auth.enabled !== proposed.httpWeb.auth.enabled,
     ),
   );
+  const disablingWeb = $derived(
+    Boolean(config.snapshot?.settings.httpWeb.enabled && proposed && !proposed.httpWeb.enabled),
+  );
+  const accessWarning = $derived(disablingWeb || addressChanges || authChanges);
 
   $effect(() => {
     if (active) untrack(() => void config.load());
@@ -136,10 +140,10 @@
     if (!config.canSave || blocked) return false;
     preparedSave = undefined;
     submittedDraft = { ...config.draft };
-    const plan = await config.prepareSave();
+    const plan = config.prepareSave();
     if (!plan) return false;
     preparedSave = plan;
-    if (!plan.dnsRestartRequired && !connectionChange) return true;
+    if (!plan.dnsRestartRequired && !accessWarning) return true;
     confirmation = true;
     return new Promise((resolve) => {
       resolveConfirmation = resolve;
@@ -203,7 +207,7 @@
       {#if preparedSave?.dnsRestartRequired}
         <p>{t("DNS routing may be temporarily unavailable while settings are being applied.")}</p>
       {/if}
-      {#if proposed && !proposed.httpWeb.enabled}
+      {#if disablingWeb}
         <p>
           {t(
             "The web interface will be disabled. To enable it again, you will need to change the settings on the device.",
@@ -293,7 +297,7 @@
   {/if}
   {#if config.snapshot && config.error && (!config.error.field || !fieldForPath(config.error.field))}
     <div class="application-error" role="alert">
-      {#if config.error.code === "SETTINGS_CONFLICT"}
+      {#if config.error.code === "SETTINGS_CONFLICT" || config.error.code === "SETTINGS_RESTART_REQUIRED"}
         <p>
           {t(
             "General settings changed elsewhere. Your draft is preserved. Reload the page before saving again.",
@@ -301,12 +305,6 @@
         </p>
       {:else if config.error.code === "SETTINGS_BUSY"}
         <p>{t("Another settings application is in progress. Your draft is preserved.")}</p>
-      {:else if config.error.code === "SETTINGS_RESTART_REQUIRED"}
-        <p>
-          {t(
-            "The service now needs a DNS restart. Your draft is preserved. Save again to review the warning.",
-          )}
-        </p>
       {/if}
       {#if config.outcome === "rollback_failed"}
         <p>
@@ -317,13 +315,6 @@
       {/if}
       {#if config.error.code !== "SETTINGS_RESTART_REQUIRED"}<p>{t(config.error.message)}</p>{/if}
     </div>
-  {/if}
-  {#if config.preparing}
-    <p class="application-status" role="status">{t("Checking settings…")}</p>
-  {:else if (config.busy && !config.loading) || externalApplication}
-    <p class="application-status" role="status">{t("Applying settings…")}</p>
-  {:else if config.outcome === "succeeded" && !config.dirty}
-    <p class="application-status" role="status">{t("Settings applied")}</p>
   {/if}
   {#if config.nextWeb}
     <div class="connection-notice" role="status">
@@ -352,6 +343,7 @@
   id="general"
   aria-labelledby="general-heading"
   aria-busy={config.busy}
+  data-application-state={config.outcome}
   use:section={() => ({
     dirty: config.dirty,
     canSave: config.canSave && !blocked,
@@ -359,13 +351,9 @@
     prepareSave: confirmSave,
     dialog: confirmationDialog,
     toolbarFeedback:
-      active ||
-      config.pending ||
-      config.error ||
-      config.nextWeb ||
-      config.preparing ||
-      config.saving ||
-      config.checking
+      !config.busy &&
+      !pageSaving &&
+      (blocked || config.error || config.nextWeb || config.pending || externalApplication)
         ? feedback
         : undefined,
     validationMessage: blocked
@@ -669,10 +657,6 @@
   .application-error {
     color: var(--red);
   }
-  .application-status {
-    color: var(--text-2);
-  }
-  .application-status,
   .notice {
     margin: 0.5rem 0;
     font-size: 0.9rem;

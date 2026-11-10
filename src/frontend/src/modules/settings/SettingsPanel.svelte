@@ -74,8 +74,7 @@
           failed++;
         }
       }
-      if (!failed) toast.success(t("Settings saved"));
-      else if (succeeded) toast.warning(t("Some settings could not be saved"));
+      if (failed && succeeded) toast.warning(t("Some settings could not be saved"));
     } finally {
       saving = false;
     }
@@ -116,6 +115,7 @@
   <div class="settings-toolbar">
     <PageControls
       {canSave}
+      saveBusy={saving}
       controlsClass="settings-controls"
       {active}
       onSave={() => void saveAll()}
