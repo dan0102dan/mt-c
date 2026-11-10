@@ -9,7 +9,7 @@
 </script>
 
 <script lang="ts">
-  import { getContext, type Snippet } from "svelte";
+  import { getContext, untrack, type Snippet } from "svelte";
 
   import Button from "../ui/Button.svelte";
   import Tooltip from "../ui/Tooltip.svelte";
@@ -64,10 +64,14 @@
   const targetIconMode = $derived(contextAction?.icon ?? "add");
   let iconMode = $state<"add" | "record" | "stop">("add");
   let showAdd = $state(false);
-  let resetting = $state(false);
+  // Inactive toolbars must be primed from the last visible toolbar before animating.
+  let resetting = $state(true);
 
   $effect(() => {
-    if (!active) return;
+    if (!active) {
+      resetting = true;
+      return;
+    }
     const next = hasAdd;
     const previous = motion?.hasAdd ?? next;
     const nextIconMode = targetIconMode;
@@ -76,7 +80,13 @@
       motion.hasAdd = next;
       motion.iconMode = nextIconMode;
     }
-    resetting = true;
+
+    // An already visible toolbar animates directly from its current geometry.
+    if (!untrack(() => resetting)) {
+      showAdd = next;
+      iconMode = nextIconMode;
+      return;
+    }
     showAdd = previous;
     iconMode = previousIconMode;
 
