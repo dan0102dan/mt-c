@@ -234,7 +234,7 @@ for (const width of [1280, 390]) {
     await expect(details).toContainText("192.168.1.44");
     await page.keyboard.press("Escape");
 
-    delete dns.state.history[0].client_name;
+    delete dns.state.history[1].client_name;
     dns.updateLabels();
     await expect(rows.first()).not.toContainText("a".repeat(126));
     await expect.poll(heights).toEqual(original);
