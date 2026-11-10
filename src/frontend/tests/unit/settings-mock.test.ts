@@ -43,6 +43,7 @@ Deno.test("settings preview distinguishes live changes and remains read-only", a
   const { get, preview, state } = fixture();
   const initial = await get();
   const settings = generalSettings();
+  settings.httpWeb.enabled = false;
   settings.logLevel = "debug";
   settings.showAllInterfaces = true;
   settings.httpWeb.auth.enabled = true;
