@@ -1,15 +1,19 @@
 <script lang="ts">
   import PlatformSettings from "#platform/settings";
-  import { Tabs } from "bits-ui";
-  import { getContext, setContext } from "svelte";
+  import { Popover, Tabs } from "bits-ui";
+  import { getContext, onMount, setContext } from "svelte";
 
   import PageControls from "../../components/layout/PageControls.svelte";
+  import Tooltip from "../../components/ui/Tooltip.svelte";
   import { t } from "../../data/locale.svelte";
+  import { hide } from "../../lib/tooltip/tooltip.svelte";
+  import { persistedState } from "../../utils/persisted-state.svelte";
   import LogsView from "../logs/LogsView.svelte";
   import DnsQueryLog from "./dns/DnsQueryLog.svelte";
   import GeneralSettingsPanel from "./general/GeneralSettingsPanel.svelte";
   import ProfilesPanel from "./ProfilesPanel.svelte";
 
+  import { TriangleAlert } from "../../components/ui/icons";
   import { toast } from "../../utils/events";
   import { CONFIG_TRANSFER_CONTEXT, type ConfigTransferControls } from "../config-transfer/context";
   import {
@@ -23,7 +27,15 @@
   const transfer = getContext<ConfigTransferControls>(CONFIG_TRANSFER_CONTEXT);
   let sections = $state.raw<SettingsSection[]>([]);
   let saving = $state(false);
-  let selected = $state("profiles");
+  const lastSelected = persistedState("settings_tab", "profiles");
+  let selected = $state(lastSelected.current);
+  onMount(() => {
+    // Stored tabs may no longer exist, for example after changing the platform build.
+    if (!sections.some((section) => section.element.id === selected)) selected = "profiles";
+  });
+  $effect(() => {
+    lastSelected.current = selected;
+  });
   const visibleSection = $derived(sections.find((section) => section.element.id === selected));
   const tabLabels = $derived<Record<string, string>>({
     general: t("General"),
@@ -47,6 +59,16 @@
       return controls.dirty && controls.validationMessage;
     }),
   );
+
+  // Section feedback belongs behind an explicit action, never in a second
+  // header row (including feedback from a currently hidden settings section).
+  const feedbackSections = $derived(
+    sections.filter((section) => section.controls().toolbarFeedback),
+  );
+  let feedbackOpen = $state(false);
+  $effect(() => {
+    if (!active || !feedbackSections.length) feedbackOpen = false;
+  });
 
   const canSave = $derived(dirty && !saving && !invalid);
 
@@ -126,27 +148,71 @@
       saveDescriptionId={validationSections.length
         ? validationSections.map((section) => `settings-validation-${section.element.id}`).join(" ")
         : undefined}
-      exportLabel={t("Export Config")}
+      exportLabel={visibleControls?.exportAction?.label ?? t("Export Config")}
+      canExport={!visibleControls?.exportAction?.disabled}
       importLabel={t("Import Config")}
-      onExport={() => void transfer.exportConfig()}
-      onImport={(event) => void transfer.importConfig(event)}
+      onExport={visibleControls?.exportAction?.onclick ?? (() => void transfer.exportConfig())}
+      onImport={visibleControls?.hideImport
+        ? undefined
+        : (event) => void transfer.importConfig(event)}
       addLabel={visibleControls?.addLabel}
       canAdd={visibleControls?.canAdd ?? false}
       onAdd={visibleControls?.onAdd}
       contextAction={visibleControls?.contextAction}
     >
       {#snippet search()}
-        <Tabs.List class="settings-tabs" aria-label={t("Settings")}>
-          {#each tabSections as section (section.element.id)}
-            <Tabs.Trigger value={section.element.id}>{tabLabels[section.element.id]}</Tabs.Trigger>
-          {/each}
-        </Tabs.List>
+        <div class="settings-navigation">
+          <Tabs.List class="settings-tabs" aria-label={t("Settings")}>
+            {#each tabSections as section (section.element.id)}
+              <Tabs.Trigger value={section.element.id}>{tabLabels[section.element.id]}</Tabs.Trigger
+              >
+            {/each}
+          </Tabs.List>
+          <div class="settings-feedback-slot">
+            <Popover.Root bind:open={feedbackOpen}>
+              <Tooltip value={t("Settings need attention")}>
+                <Popover.Trigger
+                  class="settings-status"
+                  hidden={!feedbackSections.length}
+                  aria-label={t("Settings need attention")}
+                  onclick={hide}
+                >
+                  <TriangleAlert size={18} aria-hidden="true" />
+                </Popover.Trigger>
+              </Tooltip>
+              <Popover.Portal>
+                <Popover.Content
+                  class="settings-feedback"
+                  role="dialog"
+                  aria-label={t("Settings need attention")}
+                  align="end"
+                  sideOffset={6}
+                  collisionPadding={12}
+                  onCloseAutoFocus={(event) => {
+                    if (!feedbackSections.length) {
+                      event.preventDefault();
+                      document
+                        .querySelector<HTMLButtonElement>('.settings-tabs [data-state="active"]')
+                        ?.focus();
+                    }
+                  }}
+                >
+                  {#each feedbackSections as section (section.element.id)}
+                    {@const feedback = section.controls().toolbarFeedback}
+                    {#if feedback}
+                      <div class="settings-feedback-section">
+                        <h3>{tabLabels[section.element.id]}</h3>
+                        {@render feedback()}
+                      </div>
+                    {/if}
+                  {/each}
+                </Popover.Content>
+              </Popover.Portal>
+            </Popover.Root>
+          </div>
+        </div>
       {/snippet}
     </PageControls>
-    {#each sections as section (section.element.id)}
-      {@const feedback = section.controls().toolbarFeedback}
-      {#if feedback}{@render feedback()}{/if}
-    {/each}
     {#each validationSections as section (section.element.id)}
       <span
         id={`settings-validation-${section.element.id}`}
@@ -171,6 +237,60 @@
 </Tabs.Root>
 
 <style>
+  .settings-navigation {
+    display: flex;
+    align-items: center;
+    gap: 0.35rem;
+    min-width: 0;
+  }
+  .settings-navigation :global(.settings-tabs) {
+    min-width: 0;
+  }
+  .settings-feedback-slot {
+    flex: 0 0 2rem;
+    width: 2rem;
+    height: 2rem;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  :global(.settings-status) {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0.35rem;
+    border: 0;
+    border-radius: 0.35rem;
+    color: var(--text-2);
+    background: transparent;
+    cursor: pointer;
+  }
+  :global(.settings-status[hidden]) {
+    display: none;
+  }
+  :global(.settings-status:focus-visible) {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+  }
+  :global(.settings-feedback) {
+    z-index: 20;
+    box-sizing: border-box;
+    max-width: min(28rem, calc(100vw - 24px));
+    max-height: min(30rem, calc(100vh - 24px));
+    overflow-y: auto;
+    padding: 0.75rem;
+    border: 1px solid var(--bg-light-extra);
+    border-radius: 0.5rem;
+    background: var(--bg-dark-extra);
+    color: var(--text);
+    font: 400 0.9rem/1.5 var(--font);
+    overflow-wrap: anywhere;
+  }
+  .settings-feedback-section h3 {
+    margin: 0;
+    font-size: 0.95rem;
+    font-weight: 600;
+  }
   :global(.settings-page) {
     min-width: 0;
   }

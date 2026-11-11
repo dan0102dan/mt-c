@@ -1,11 +1,19 @@
 <script lang="ts">
-  import { tooltip } from "./tooltip.svelte";
+  import { hide, tooltip } from "./tooltip.svelte";
 </script>
+
+<svelte:window
+  onkeydown={(event) => {
+    if (event.key === "Escape" && tooltip.visible) hide();
+  }}
+/>
 
 {#if tooltip.visible}
   <div
     id="global-tooltip"
     class="tooltip-content"
+    class:focused={tooltip.focused}
+    role="tooltip"
     style:left="{tooltip.x}px"
     style:top="{tooltip.y}px"
     style:opacity={tooltip.opacity}
@@ -34,7 +42,7 @@
   }
 
   @media (hover: none), (pointer: coarse) {
-    .tooltip-content {
+    .tooltip-content:not(.focused) {
       display: none;
     }
   }

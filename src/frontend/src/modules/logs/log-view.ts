@@ -34,8 +34,8 @@ export function logText(value: string): string {
   });
 }
 
-export function matchesLog(entry: LogEntry, minimum: string, filter: string): boolean {
-  if (logLevel(entry.level)[0] < logLevel(minimum)[0]) return false;
+/** Capture severity is controlled by the service configuration, not a second UI threshold. */
+export function matchesLog(entry: LogEntry, filter: string): boolean {
   const needle = filter.trim().toLocaleLowerCase();
   return (
     !needle ||
@@ -77,10 +77,7 @@ export function logExportParts(entries: readonly LogEntry[]): BlobPart[] {
 export function logWindow(count: number, scrollTop: number, height: number) {
   const lineHeight = 16;
   const overscan = 20;
-  const first = Math.min(
-    Math.max(0, count - 1),
-    Math.max(0, Math.floor(scrollTop / lineHeight)),
-  );
+  const first = Math.min(Math.max(0, count - 1), Math.max(0, Math.floor(scrollTop / lineHeight)));
   return {
     start: Math.max(0, first - overscan),
     end: Math.min(count, first + Math.ceil(Math.max(0, height) / lineHeight) + overscan),

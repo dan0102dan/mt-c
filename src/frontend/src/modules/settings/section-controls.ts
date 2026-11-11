@@ -16,6 +16,8 @@ export type SectionControls = {
   canAdd?: boolean;
   onAdd?: () => void;
   contextAction?: ContextAction;
+  hideImport?: boolean;
+  exportAction?: { label: string; disabled: boolean; onclick: () => void };
 };
 export type SettingsSection = {
   element: HTMLElement;

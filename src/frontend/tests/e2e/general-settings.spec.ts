@@ -255,6 +255,27 @@ async function confirmSave(page: Page) {
   await dialog.getByRole("button", { name: "Apply", exact: true }).click();
 }
 
+async function openFeedback(page: Page) {
+  const trigger = page.getByRole("button", { name: "Settings need attention", exact: true });
+  await expect(trigger).toBeVisible();
+  await trigger.click();
+  await expect(
+    page.getByRole("dialog", { name: "Settings need attention", exact: true }),
+  ).toBeVisible();
+  await expect(
+    page.locator(
+      ".settings-toolbar .application-error, .settings-toolbar .connection-notice, .settings-toolbar .notice",
+    ),
+  ).toHaveCount(0);
+}
+
+async function closeFeedback(page: Page) {
+  await page.keyboard.press("Escape");
+  await expect(
+    page.getByRole("dialog", { name: "Settings need attention", exact: true }),
+  ).toHaveCount(0);
+}
+
 async function applied(page: Page) {
   await expect(page.locator("#general")).toHaveAttribute("data-application-state", "succeeded");
   await expect(page.locator("#general")).toHaveAttribute("aria-busy", "false");
@@ -494,9 +515,11 @@ test("a server restart refusal preserves the draft without another confirmation 
   await toggle.click();
   state.runtimeActive = false;
   await page.locator("#save-settings").click();
+  await openFeedback(page);
   await expect(page.getByRole("alert")).toContainText(
     "Applying these settings now requires a DNS restart. Nothing was saved; check the service before retrying.",
   );
+  await closeFeedback(page);
   await expect(toggle).toBeChecked();
   await expect(page.locator("#save-settings")).toBeEnabled();
   await expect(page.getByRole("dialog", { name: "Apply general settings?", exact: true })).toHaveCount(0);
@@ -672,6 +695,7 @@ test("a 202 response and unrelated operation never produce a premature success",
   const checks = state.checkReads;
   await expect.poll(() => state.checkReads).toBeGreaterThan(checks);
   await expect(page.locator("#general")).not.toHaveAttribute("data-application-state", "succeeded");
+  await openFeedback(page);
   const check = page.getByRole("button", { name: "Check application", exact: true });
   await expect(check).toBeEnabled();
   state.checkOperationId = null;
@@ -691,10 +715,12 @@ test("a DNS restart refusal is a single actionable error without another confirm
   await toggle.click();
   state.runtimeActive = false;
   await page.locator("#save-settings").click();
+  await openFeedback(page);
   const message = "Applying these settings now requires a DNS restart. Nothing was saved; check the service before retrying.";
   await expect(page.getByText(message, { exact: true })).toBeVisible();
   await expect(page.locator(".application-error p")).toHaveCount(1);
   await expect(page.getByRole("dialog", { name: "Apply general settings?" })).toHaveCount(0);
+  await closeFeedback(page);
   await expect(toggle).toBeChecked();
   expect(state.writes).toHaveLength(1);
   expect(state.writes[0].allow_dns_restart).toBe(false);
@@ -714,6 +740,7 @@ test("a stale settings revision preserves the General draft and never starts an 
   state.settings.dnsProxy.timeoutMs = 9000;
   state.version++;
   await confirmSave(page);
+  await openFeedback(page);
   await expect(page.getByText("General settings changed elsewhere. Your draft is preserved. Reload the page before saving again.", { exact: true })).toBeVisible();
   await expect(page.locator(".application-error p")).toHaveCount(1);
   await expect(timeout).toHaveValue("7500");
@@ -733,11 +760,13 @@ for (const failure of ["validation", "server"] as const) {
     const timeout = await openGeneral(page);
     await timeout.fill("7500");
     await confirmSave(page);
+    if (failure === "server") await openFeedback(page);
     await expect(page.getByText(failure === "validation" ? "Timeout rejected by server" : "Settings application is unavailable", { exact: false }).first()).toBeVisible();
     await expect(timeout).toHaveValue("7500");
     expect(state.settings.dnsProxy.timeoutMs).toBe(5000);
     expect(state.operation).toBeNull();
     expect(await hasUnloadWarning(page)).toBe(true);
+    if (failure === "server") await closeFeedback(page);
     state.putFailure = null;
     await timeout.fill("8000");
     await confirmSave(page);
@@ -759,6 +788,7 @@ for (const failure of ["lost-ack", "malformed"] as const) {
     await confirmSave(page);
     await expect.poll(() => state.checkReads).toBeGreaterThan(0);
     await page.clock.fastForward(30000);
+    await openFeedback(page);
     const check = page.getByRole("button", { name: "Check application", exact: true });
     await expect(check).toBeVisible();
     await expect(check).toBeEnabled();
@@ -781,7 +811,9 @@ for (const failure of ["failed", "rollback_failed"] as const) {
     const timeout = await openGeneral(page);
     await timeout.fill("7500");
     await confirmSave(page);
+    await openFeedback(page);
     await expect(page.getByText("Could not start the requested DNS listener", { exact: false }).first()).toBeVisible();
+    await closeFeedback(page);
     await expect(timeout).toHaveValue("7500");
     await expect(page.locator("#general")).toHaveAttribute("data-application-state", failure);
     await expect(page.getByText("Settings applied", { exact: true })).toHaveCount(0);
@@ -877,6 +909,7 @@ test("a changed web port offers a clean destination without sending credentials 
   const originalUrl = page.url();
   await page.getByRole("spinbutton", { name: "Web port", exact: true }).fill("8081");
   await confirmSave(page);
+  await openFeedback(page);
   const destination = page.getByRole("link", { name: /^Open new web address/ });
   await expect(destination).toHaveAttribute("href", /:8081\/$/);
   const href = await destination.getAttribute("href");
@@ -902,6 +935,7 @@ test("disabling the web interface explains only the expected loss of web access"
   expect(state.previews).toEqual([]);
   expect(state.writes).toHaveLength(0);
   await warning.getByRole("button", { name: "Apply", exact: true }).click();
+  await openFeedback(page);
   await expect(page.getByText("If web access is disabled, this page cannot confirm the result. Your draft is preserved.", { exact: true })).toBeVisible();
   expect(state.writes).toHaveLength(1);
   expect(state.writes[0].settings.httpWeb.enabled).toBe(false);
@@ -937,6 +971,7 @@ test("enabling sign-in preserves the accepted General save through authenticatio
   await expect(timeout).toHaveValue("7500");
   await expect(page.getByRole("switch", { name: "Enable authentication", exact: true })).toBeChecked();
   await expect(page.locator("#general")).not.toHaveAttribute("data-application-state", "succeeded");
+  await openFeedback(page);
   const check = page.getByRole("button", { name: "Check application", exact: true });
   await expect(check).toBeEnabled();
   await check.click();
@@ -1017,6 +1052,7 @@ test("a failed application check preserves the pending save and retry only reads
   await confirmSave(page);
   await expect.poll(() => state.checkReads).toBeGreaterThan(0);
   await page.clock.fastForward(30000);
+  await openFeedback(page);
   const check = page.getByRole("button", { name: "Check application", exact: true });
   await expect(check).toBeEnabled();
   await expect(page.getByText("Could not confirm whether the settings were applied. Your draft is preserved.", { exact: true })).toBeVisible();
@@ -1039,6 +1075,7 @@ test("web access changes cannot discard unrelated drafts through navigation", as
   await page.locator(".group-name").first().fill("Keep this draft");
   await openGeneral(page);
   await expect(page.locator("#save-settings")).toBeDisabled();
+  await openFeedback(page);
   await expect(page.getByText("Save changes in Groups and Subscriptions before changing web access.", { exact: true })).toBeVisible();
   await expect(page.getByRole("spinbutton", { name: "Web port", exact: true })).toHaveValue("8081");
   expect(state.writes).toEqual([]);
@@ -1134,6 +1171,7 @@ for (const failure of ["network", "malformed"] as const) {
     await showPage(page, "Settings");
     await page.getByRole("tab", { name: "General", exact: true }).click();
     await expect(page.getByRole("alert")).toHaveCount(1);
+    await expect(page.getByRole("button", { name: "Settings need attention" })).toHaveCount(0);
     await expect(page.getByText("Failed to load general settings", { exact: true })).toBeVisible();
     state.readFailure = null;
     await page.getByRole("button", { name: "Retry", exact: true }).click();
@@ -1153,6 +1191,7 @@ test("General shows a server field error once and clears it after correcting tha
   await expect(page.getByText("Timeout rejected by server", { exact: true })).toHaveCount(1);
   await expect(timeout).toHaveAttribute("aria-invalid", "true");
   await expect(timeout).toHaveAttribute("aria-describedby", "general-timeoutMs-error");
+  await expect(page.getByRole("button", { name: "Settings need attention" })).toHaveCount(0);
   await timeout.fill("8000");
   await expect(page.getByText("Timeout rejected by server", { exact: true })).toHaveCount(0);
   await expect(timeout).toHaveAttribute("aria-invalid", "false");
@@ -1251,3 +1290,51 @@ test("a delayed unauthorized response cannot discard a renewed login or the Gene
   expect(state.settings.dnsProxy.timeoutMs).toBe(7500);
   expect(state.previews).toEqual([]);
 });
+
+
+for (const russian of [false, true]) {
+  test(`settings failures do not create under-tab banners (${russian ? "ru" : "en"})`, async ({
+    page,
+  }) => {
+    await page.setViewportSize({ width: 390, height: 844 });
+    if (russian)
+      await page.addInitScript(() =>
+        localStorage.setItem("locale", JSON.stringify({ value: "ru" })),
+      );
+    const { state } = await backend(page);
+    await page.goto("/");
+    await page.getByRole("button", { name: "Open menu", exact: true }).click();
+    await page.getByRole("tab", { name: russian ? "Настройки" : "Settings", exact: true }).click();
+    await page.getByRole("tab", { name: russian ? "Общие" : "General", exact: true }).click();
+    await expect(page.locator("#general-additionalTTLSeconds")).toHaveValue("3600");
+    const header = page.locator(".settings-toolbar");
+    const before = (await header.boundingBox())!;
+    // A read failure after a successful snapshot retains the usable form.
+    state.readFailure = "network";
+    await page.getByRole("tab", { name: russian ? "Профили" : "Profiles", exact: true }).click();
+    await page.getByRole("tab", { name: russian ? "Общие" : "General", exact: true }).click();
+    const attention = page.getByRole("button", {
+      name: russian ? "Настройки требуют внимания" : "Settings need attention",
+      exact: true,
+    });
+    await expect(attention).toBeVisible();
+    await expect(header.locator(".application-error, .connection-notice, .notice")).toHaveCount(0);
+    expect(Math.abs((await header.boundingBox())!.height - before.height)).toBeLessThanOrEqual(1);
+    await page.getByRole("tab", { name: russian ? "Профили" : "Profiles", exact: true }).click();
+    await expect(page.getByRole("alert")).toHaveCount(0);
+    await attention.focus();
+    await page.keyboard.press("Enter");
+    const details = page.getByRole("dialog", {
+      name: russian ? "Настройки требуют внимания" : "Settings need attention",
+      exact: true,
+    });
+    await expect(details.getByRole("alert")).toBeVisible();
+    await page.keyboard.press("Escape");
+    await expect(details).toHaveCount(0);
+    await expect(attention).toBeFocused();
+    await expect(header.locator(".application-error, .connection-notice, .notice")).toHaveCount(0);
+    expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(
+      390,
+    );
+  });
+}

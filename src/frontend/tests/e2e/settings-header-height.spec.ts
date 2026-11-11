@@ -236,7 +236,9 @@ test("recording replaces Add without shifting the toolbar during tab changes", a
   );
   await expect
     .poll(async () => {
-      const barWidth = await horizontalBar.evaluate((node) => parseFloat(getComputedStyle(node).width));
+      const barWidth = await horizontalBar.evaluate((node) =>
+        parseFloat(getComputedStyle(node).width),
+      );
       return Math.abs(barWidth - initialBarWidth);
     })
     .toBeLessThan(0.1);
@@ -322,4 +324,44 @@ for (const width of [390, 1280]) {
       );
     });
   }
+}
+
+for (const tab of ["General", "Profiles", "DNS queries", "Logs"]) {
+  test(`settings remembers ${tab} after reload`, async ({ page, dnsUrl }) => {
+    const writes = await setup(page, dnsUrl, "en");
+    await page.getByRole("tab", { name: tab, exact: true }).click();
+    await page.reload();
+    await expect(page.getByRole("tab", { name: "Settings", exact: true })).toHaveAttribute(
+      "data-state",
+      "active",
+    );
+    await expect(page.getByRole("tab", { name: tab, exact: true })).toHaveAttribute(
+      "data-state",
+      "active",
+    );
+    expect(writes).toEqual([]);
+  });
+}
+
+for (const tab of ["removed-tab", "keenetic"]) {
+  test(`settings falls back from unavailable stored tab ${tab}`, async ({ page, dnsUrl }) => {
+    test.skip(
+      tab === "keenetic" && process.env.VITE_ENTWARE_KN === "1",
+      "Keenetic tab exists in this build",
+    );
+    await page.addInitScript((value) => {
+      if (!localStorage.getItem("settings_tab"))
+        localStorage.setItem("settings_tab", JSON.stringify({ value }));
+    }, tab);
+    await setup(page, dnsUrl, "en");
+    await expect(page.getByRole("tab", { name: "Profiles", exact: true })).toHaveAttribute(
+      "data-state",
+      "active",
+    );
+    await page.reload();
+    await expect(page.getByRole("tab", { name: "Profiles", exact: true })).toHaveAttribute(
+      "data-state",
+      "active",
+    );
+  });
 }

@@ -2,7 +2,6 @@ import { Hono } from "hono";
 import { cors } from "hono/cors";
 import { serveStatic } from "hono/deno";
 import { logger } from "hono/logger";
-import { streamSSE } from "hono/streaming";
 
 import type { ServerConfig } from "../src/modules/config-transfer/adapter.ts";
 import { applyRuleOverrides, type RuleOverride } from "../src/modules/config-transfer/model.ts";
@@ -16,6 +15,7 @@ import {
   withPriorityDefault,
 } from "../src/utils/priority.ts";
 import { registerMockDnsRoutes } from "./dns-mock.ts";
+import { registerMockLogRoutes } from "./logs-mock.ts";
 import { registerMockPolicyRoutes } from "./keenetic-policy-mock.ts";
 import { registerMockSettingsRoutes } from "./settings-mock.ts";
 import { registerMockUpdateRoutes } from "./update-mock.ts";
@@ -71,32 +71,6 @@ const SUBSCRIPTIONS: Subscription[] = [
     ],
   },
 ];
-
-function randomLogLine() {
-  function randomIndex(array: any[]) {
-    return array[Math.round(Math.random() * (array.length - 1))];
-  }
-  function randomIP(): string {
-    return `${Math.round(Math.random() * 255)}.${Math.round(Math.random() * 255)}.${Math.round(
-      Math.random() * 255,
-    )}.${Math.round(Math.random() * 255)}`;
-  }
-
-  const level = randomIndex(["trace", "debug", "info", "warn", "error", "fatal", "panic"]);
-
-  return {
-    time: new Date().toISOString(),
-    level: level,
-    error: ["error", "fatal", "panic"].includes(level) ? "random error" : undefined,
-    message: ["error", "fatal", "panic"].includes(level)
-      ? "error message"
-      : `group: ${randomIndex(DATA.groups).name}, ip: ${randomIP()} > int: ${randomIndex(
-          INTERFACES.interfaces.map((item) => item.id),
-        )}`,
-  };
-}
-
-let sse_id = 0;
 
 const PORT = Number(Deno.env.get("MOCK_PORT") ?? 6969);
 const STATIC_TOKEN = "magitrickle_mock_token_2026";
@@ -489,16 +463,9 @@ app.post(`${API_BASE}/system/config/apply`, async (c) => {
 registerMockSettingsRoutes(app, { get: mockConfig, apply: applyMockConfig });
 
 app.get(`${API_BASE}/system/interfaces`, (c) => c.json(INTERFACES));
-app.get(`${API_BASE}/logs`, async (c) => {
-  return streamSSE(c, async (stream) => {
-    while (true) {
-      await stream.writeSSE({
-        data: JSON.stringify(randomLogLine()),
-        id: String(sse_id++),
-      });
-      await stream.sleep(Math.round(Math.random() * 1000));
-    }
-  });
+registerMockLogRoutes(app, {
+  getLogLevel: () => appSettings.logLevel,
+  getRoutes: () => DATA.groups,
 });
 
 app.get("*", serveStatic({ root: "./dist" }));
