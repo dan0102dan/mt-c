@@ -1,10 +1,12 @@
-/** Presentation model, not the wire format. Validate and bound incoming data in the store. */
+/** Validated presentation records. History belongs to the application, not the view. */
 export type LogEntry = {
-  /** Stable identity; the future store must include the daemon boot ID. */
   id: string;
   level: string;
   message: string;
   fields: { time: string; [key: string]: string };
+  /** Exact received bytes, including embedded NUL/invalid UTF-8 and final newline. */
+  raw?: readonly Uint8Array<ArrayBuffer>[];
+  kind?: "session";
 };
 
 export const LOG_LEVELS: Readonly<Record<string, readonly [number, string]>> = {
@@ -21,7 +23,7 @@ export function logLevel(level: string): readonly [number, string] {
   return Object.hasOwn(LOG_LEVELS, level) ? LOG_LEVELS[level] : [6, "???"];
 }
 
-/** Also used by rendering: embedded newlines must not break fixed-height rows. */
+/** Display-only escaping; the .log export uses original bytes. */
 export function logText(value: string): string {
   return value.replace(/[\\\r\n\t\u0000-\u001f\u007f\u2028\u2029]/g, (char) => {
     if (char === "\\") return "\\\\";
@@ -44,7 +46,7 @@ export function matchesLog(entry: LogEntry, minimum: string, filter: string): bo
   );
 }
 
-/** Entirely local: export must still work when the daemon is unavailable. */
+/** Legacy presentation formatting, also useful for synthetic session markers. */
 export function formatLogs(entries: readonly LogEntry[]): string {
   return entries
     .map(({ fields, level, message }) => {
@@ -55,6 +57,21 @@ export function formatLogs(entries: readonly LogEntry[]): string {
       return `${logText(fields.time)} ${logLevel(level)[1]} ${logText(message)}${extra ? ` ${extra}` : ""}`;
     })
     .join("\n");
+}
+
+/** No server request and no giant joined copy of the entire log. */
+export function logExportParts(entries: readonly LogEntry[]): BlobPart[] {
+  const parts: BlobPart[] = [];
+  for (const entry of entries) {
+    if (entry.kind === "session") {
+      parts.push(`# Recording session ${entry.fields.session}\n`);
+    } else if (entry.raw) {
+      for (const bytes of entry.raw) parts.push(bytes);
+    } else {
+      parts.push(`${formatLogs([entry])}\n`);
+    }
+  }
+  return parts;
 }
 
 export function logWindow(count: number, scrollTop: number, height: number) {

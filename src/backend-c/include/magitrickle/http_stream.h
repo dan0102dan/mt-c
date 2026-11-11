@@ -21,4 +21,8 @@ typedef void (*mt_http_stream_close_fn)(void *ud);
 mt_http_stream_t *mt_http_stream_open(mt_http_req_t *req, mt_http_res_t *res,
     mt_http_stream_next_fn next, mt_http_stream_close_fn closed, void *ud);
 void mt_http_stream_wake(mt_http_stream_t *stream);
+/* Loop-local attach of one borrowed NONBLOCK pipe read end. Other threads
+ * only write wakeup bytes, never touch stream/loop objects. Removed before
+ * closed(ud); the owner closes the fd there. Failure terminates the stream. */
+void mt_http_stream_watch_fd(mt_http_stream_t *stream, int fd);
 #endif

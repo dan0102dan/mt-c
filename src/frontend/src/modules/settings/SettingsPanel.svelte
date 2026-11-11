@@ -5,6 +5,7 @@
 
   import PageControls from "../../components/layout/PageControls.svelte";
   import { t } from "../../data/locale.svelte";
+  import LogsView from "../logs/LogsView.svelte";
   import DnsQueryLog from "./dns/DnsQueryLog.svelte";
   import GeneralSettingsPanel from "./general/GeneralSettingsPanel.svelte";
   import ProfilesPanel from "./ProfilesPanel.svelte";
@@ -29,6 +30,7 @@
     profiles: t("Profiles"),
     keenetic: "Keenetic",
     dns: t("DNS queries"),
+    logs: t("Logs"),
   });
   const tabSections = $derived([
     ...sections.filter((section) => section.element.id === "general"),
@@ -160,6 +162,9 @@
   <Tabs.Content value="dns" class="settings-content"
     ><DnsQueryLog active={active && selected === "dns"} /></Tabs.Content
   >
+  <Tabs.Content value="logs" class="settings-content">
+    <LogsView active={active && selected === "logs"} />
+  </Tabs.Content>
   <Tabs.Content value="general" class="settings-content">
     <GeneralSettingsPanel active={active && selected === "general"} pageSaving={saving} />
   </Tabs.Content>
@@ -210,7 +215,6 @@
     margin: -1px;
     overflow: hidden;
     clip-path: inset(50%);
-    white-space: nowrap;
     border: 0;
   }
   :global(.settings-content .settings-description) {

@@ -1,7 +1,7 @@
 <script lang="ts">
   import "./app.css";
 
-  import { onMount } from "svelte";
+  import { onDestroy, onMount, untrack } from "svelte";
 
   import AuthPage from "./components/AuthPage.svelte";
   import AppLayout from "./components/layout/AppLayout.svelte";
@@ -10,6 +10,8 @@
   import { t } from "./data/locale.svelte";
   import { fetchProfiles } from "./data/profiles.svelte";
   import TooltipLayer from "./lib/tooltip/TooltipLayer.svelte";
+
+  import { applicationLogs } from "./modules/logs/logs.svelte";
 
   import { fetcher } from "./utils/fetcher";
 
@@ -21,6 +23,13 @@
   $effect(() => {
     if (authState.checked && !needsAuthentication) opened = true;
   });
+
+  $effect(() => {
+    const allowed = authState.checked && !needsAuthentication;
+    const credential = token.current ?? "";
+    untrack(() => applicationLogs.authorize(allowed, credential));
+  });
+  onDestroy(() => applicationLogs.destroy());
 
   function showAuthentication(dialog: HTMLDialogElement) {
     dialog.showModal();

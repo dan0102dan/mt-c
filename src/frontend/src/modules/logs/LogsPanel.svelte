@@ -1,7 +1,7 @@
 <script lang="ts">
   // Design port: MagiTrickle/MagiTrickle@4f94aa6 by shevernitskiy.
-  // The application-level store owns retention and transport, never this view.
-  import { onDestroy, tick, untrack } from "svelte";
+  // The application store owns transport/history, never this virtualized view.
+  import { onDestroy, tick, untrack, type Snippet } from "svelte";
 
   import Button from "../../components/ui/Button.svelte";
   import { Clear, Filter, Save, ScrollToBottom } from "../../components/ui/icons";
@@ -9,8 +9,8 @@
   import Tooltip from "../../components/ui/Tooltip.svelte";
 
   import {
-    formatLogs,
     LOG_LEVELS,
+    logExportParts,
     logLevel,
     logText,
     logWindow,
@@ -20,8 +20,9 @@
 
   type Props = {
     entries: readonly LogEntry[];
+    revision?: number;
     onclear: () => void;
-    /** Supply localized t() values at the application integration boundary. */
+    controls?: Snippet;
     labels: {
       filter: string;
       level: string;
@@ -30,24 +31,30 @@
       scrollToBottom: string;
       results: string;
       empty: string;
+      session?: string;
     };
     status?: string;
   };
 
-  let { entries, onclear, labels, status = "" }: Props = $props();
+  let { entries, revision = 0, onclear, controls, labels, status = "" }: Props = $props();
   const LINE_HEIGHT = 16;
   const SCROLL_TO_BOTTOM_DELTA = 40;
-  let level = $state("info");
+  let level = $state("trace");
   let filter = $state("");
   let container = $state<HTMLDivElement>();
   let container_height = $state(0);
   let scroll_top = $state(0);
   let follow_tail = $state(true);
   let export_url: string | undefined;
+  let export_timer: ReturnType<typeof setTimeout> | undefined;
 
-  let items_filtered = $derived(entries.filter((item) => matchesLog(item, level, filter)));
+  let items_filtered = $derived.by(() => {
+    void revision; // Plain ingest array is published once per batch, not per record.
+    return entries.filter((item) => matchesLog(item, level, filter));
+  });
   let window = $derived(logWindow(items_filtered.length, scroll_top, container_height));
   let visible_items = $derived(items_filtered.slice(window.start, window.end));
+  let hasEntries = $derived.by(() => { void revision; return entries.length > 0; });
 
   function scrollTopChanges() {
     if (!container) return;
@@ -59,6 +66,7 @@
   function scrollToBottom() {
     if (!container) return;
     follow_tail = true;
+    container.focus({ preventScroll: true });
     container.scrollTop = container.scrollHeight;
     scroll_top = container.scrollTop;
   }
@@ -70,7 +78,6 @@
   }
 
   $effect(() => {
-    // Track the last ID as well as count: a bounded ring can stay the same size.
     void items_filtered.at(-1)?.id;
     void items_filtered.length;
     void container_height;
@@ -85,9 +92,7 @@
         }
       });
     }
-    return () => {
-      cancelled = true;
-    };
+    return () => { cancelled = true; };
   });
 
   function clearLines() {
@@ -97,27 +102,24 @@
     follow_tail = true;
   }
 
+  function releaseExport() {
+    clearTimeout(export_timer);
+    if (export_url) URL.revokeObjectURL(export_url);
+    export_url = undefined;
+  }
   function saveLogs() {
     if (!entries.length) return;
-    if (export_url) URL.revokeObjectURL(export_url);
-    // Export all retained rows, including rows hidden by the current filter.
-    export_url = URL.createObjectURL(
-      new Blob([formatLogs(entries)], { type: "text/plain;charset=utf-8" }),
-    );
+    releaseExport();
+    // All received records, not just the filter; works with a dead backend.
+    export_url = URL.createObjectURL(new Blob(logExportParts(entries), { type: "text/plain" }));
     const link = document.createElement("a");
     link.href = export_url;
     link.download = `${new Date().toISOString().replace(/[:.]/g, "-")}-mt-c.log`;
     document.body.appendChild(link);
-    try {
-      link.click();
-    } finally {
-      link.remove();
-    }
+    try { link.click(); } finally { link.remove(); }
+    export_timer = setTimeout(releaseExport, 30000);
   }
-
-  onDestroy(() => {
-    if (export_url) URL.revokeObjectURL(export_url);
-  });
+  onDestroy(releaseExport);
 </script>
 
 <div class="logs-controls">
@@ -141,41 +143,26 @@
     />
   </div>
   <div class="logs-controls-actions">
+    {#if controls}{@render controls()}{/if}
     <Tooltip value={labels.save}>
-      <Button
-        type="button"
-        onclick={saveLogs}
-        aria-label={labels.save}
-        disabled={!entries.length}
-      >
+      <Button type="button" onclick={saveLogs} aria-label={labels.save} disabled={!hasEntries}>
         <Save size={22} />
       </Button>
     </Tooltip>
     <Tooltip value={labels.clear}>
-      <Button
-        type="button"
-        onclick={clearLines}
-        aria-label={labels.clear}
-        disabled={!entries.length}
-      >
+      <Button type="button" onclick={clearLines} aria-label={labels.clear} disabled={!hasEntries}>
         <Clear size={22} />
       </Button>
     </Tooltip>
     <Tooltip value={labels.scrollToBottom}>
-      <Button
-        type="button"
-        onclick={scrollToBottom}
-        aria-label={labels.scrollToBottom}
-      >
+      <Button type="button" onclick={scrollToBottom} aria-label={labels.scrollToBottom}>
         <ScrollToBottom size={22} />
       </Button>
     </Tooltip>
   </div>
 </div>
 
-{#if status}
-  <div class="status" role="status">{status}</div>
-{/if}
+{#if status}<div class="status" role="status">{status}</div>{/if}
 
 <div
   bind:this={container}
@@ -184,24 +171,26 @@
   class="container"
   role="region"
   aria-label={labels.results}
-  tabindex="0"
+  tabindex="-1"
 >
   <div class="spacer" style:height={`${items_filtered.length * LINE_HEIGHT + 10}px`}></div>
-  {#if !items_filtered.length}
-    <div class="empty">{labels.empty}</div>
-  {/if}
+  {#if !items_filtered.length}<div class="empty">{labels.empty}</div>{/if}
   {#each visible_items as item, index (item.id)}
-    <div class="line" style:top={`${(window.start + index) * LINE_HEIGHT + 5}px`}>
+    <div class="line" class:session={item.kind === "session"}
+      style:top={`${(window.start + index) * LINE_HEIGHT + 5}px`}>
       <span class="time">{logText(item.fields.time)}</span>
-      <span class={Object.hasOwn(LOG_LEVELS, item.level) ? item.level : "unknown"}
-        >{logLevel(item.level)[1]}</span
-      >
-      {logText(item.message)}
-      {#each Object.entries(item.fields) as [key, value]}
-        {#if key !== "time"}
-          <span class="key">{logText(key)}=</span><span class="value">{logText(value)}</span>{" "}
-        {/if}
-      {/each}
+      {#if item.kind === "session"}
+        {labels.session ?? item.message}
+      {:else}
+        <span class={Object.hasOwn(LOG_LEVELS, item.level) ? item.level : "unknown"}
+          >{logLevel(item.level)[1]}</span>
+        {logText(item.message)}
+        {#each Object.entries(item.fields) as [key, value]}
+          {#if key !== "time"}
+            <span class="key">{logText(key)}=</span><span class="value">{logText(value)}</span>{" "}
+          {/if}
+        {/each}
+      {/if}
     </div>
   {/each}
 </div>
@@ -209,7 +198,7 @@
 <style>
   .container {
     position: relative;
-    height: calc(100vh - 250px);
+    height: calc(100vh - 310px);
     min-height: 12rem;
     overflow: auto;
     overflow-anchor: none;
@@ -218,9 +207,7 @@
     background-color: var(--bg-dark-extra);
     border: 1px solid var(--bg-light-extra);
   }
-  .spacer {
-    position: relative;
-  }
+  .spacer { position: relative; }
   .logs-controls {
     display: flex;
     align-items: end;
@@ -255,10 +242,7 @@
     width: 100%;
     min-width: 0;
   }
-  .filter-input:focus-visible {
-    outline: none;
-    border-bottom-color: var(--accent);
-  }
+  .filter-input:focus-visible { outline: none; border-bottom-color: var(--accent); }
   .line {
     position: absolute;
     height: 16px;
@@ -267,52 +251,20 @@
     font-size: 0.8rem;
     white-space: nowrap;
   }
-  .time,
-  .status,
-  .empty,
-  .unknown {
-    color: var(--text-2);
-  }
-  .status {
-    margin-bottom: 0.5rem;
-  }
-  .empty {
-    position: absolute;
-    top: 0.5rem;
-  }
-  .key {
-    color: var(--violet);
-  }
-  .trace {
-    color: #00aaff;
-  }
-  .debug {
-    color: var(--text-2);
-  }
-  .info {
-    color: #66bb6a;
-  }
-  .warn {
-    color: #ffd600;
-  }
-  .error {
-    color: #ff3d3d;
-  }
-  .fatal {
-    color: #ff4500;
-  }
-  .panic {
-    color: #ff1493;
-  }
+  .time, .status, .empty, .unknown, .session { color: var(--text-2); }
+  .status { margin-bottom: 0.5rem; }
+  .empty { position: absolute; top: 0.5rem; }
+  .key { color: var(--violet); }
+  .trace { color: #00aaff; }
+  .debug { color: var(--text-2); }
+  .info { color: #66bb6a; }
+  .warn { color: #ffd600; }
+  .error { color: #ff3d3d; }
+  .fatal { color: #ff4500; }
+  .panic { color: #ff1493; }
   @media (max-width: 700px) {
-    .logs-controls {
-      flex-wrap: wrap;
-    }
-    .filter {
-      flex-basis: 100%;
-    }
-    .logs-controls-actions {
-      margin-left: auto;
-    }
+    .logs-controls { flex-wrap: wrap; }
+    .filter { flex-basis: 100%; }
+    .logs-controls-actions { margin-left: auto; }
   }
 </style>

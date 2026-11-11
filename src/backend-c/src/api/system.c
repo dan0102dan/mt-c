@@ -453,6 +453,7 @@ static cJSON *dns_page(mt_dns_query_log_t *log, const mt_dns_clients_t *clients,
  * There is no snapshot/subscribe race or per-subscriber event queue. */
 #include "dns_capture.inc"
 #include "dns_stream.inc"
+#include "application_logs.inc"
 
 static void handle_dns_queries(mt_http_req_t *req, mt_http_res_t *res, void *ud) {
     mt_system_ctx_t *ctx = ud;
@@ -484,6 +485,7 @@ static void handle_dns_clear(mt_http_req_t *req, mt_http_res_t *res, void *ud)
 }
 
 void mt_system_register_routes(mt_httpd_t *h, mt_system_ctx_t *ctx) {
+    application_logs_register(h);
     must_route(h, "GET", "/api/v1/system/dns/capture", handle_dns_capture, ctx);
     must_route(h, "PUT", "/api/v1/system/dns/capture", handle_dns_capture, ctx);
     mt_profiles_register_routes(h, ctx);
