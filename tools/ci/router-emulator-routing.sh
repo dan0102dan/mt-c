@@ -134,6 +134,33 @@ ip netns exec "$SERVER" wget -T 5 -q -O /tmp/mtci-local-body \
 grep -q 'route-ok' /tmp/mtci-local-body ||
   die "test server returned unexpected content"
 
+# The IPv6 negative control is only meaningful if the isolated client can
+# reach its directly connected LAN gateway. On some OpenWrt/kernel runs, veth
+# neighbor discovery is not ready immediately after interface and fw4 setup.
+# Wait for REAL IPv6 LAN connectivity; never change the route, mark or ipset.
+# If NDP stays broken, fail explicitly instead of blaming mt-c's subnet6 rule.
+wait_ipv6_gateway() {
+  attempt=1
+  while [ "$attempt" -le 10 ]; do
+    if ip netns exec "$CLIENT" ping -6 -c 1 -W 1 2001:db8:1::1 >/dev/null 2>&1; then
+      if [ "$attempt" -gt 1 ]; then
+        log "IPv6 LAN gateway reachable after $attempt attempts"
+      fi
+      return 0
+    fi
+    attempt=$((attempt + 1))
+    sleep 1
+  done
+  log "IPv6 LAN preflight diagnostics:"
+  ip -n "$CLIENT" -6 addr show dev mtci-client0 >&2 || :
+  ip -n "$CLIENT" -6 route show >&2 || :
+  ip -n "$CLIENT" -6 neigh show dev mtci-client0 >&2 || :
+  ip -6 addr show dev "$LAN" >&2 || :
+  ip -6 neigh show dev "$LAN" >&2 || :
+  die "IPv6 LAN gateway unreachable before subnet6 routing test"
+}
+wait_ipv6_gateway
+
 # Main-table blackholes make success depend on mt-c's policy routing,
 # rather than the router's connected route or a permissive firewall.
 ip -4 route add blackhole "$DEST"/32
@@ -232,6 +259,14 @@ EOF
 
   if ! client_http "$URL"; then
     log "forwarding diagnostics for $TYPE:"
+    if [ "$FAMILY" = 6 ]; then
+      log "IPv6 client-side diagnostics:"
+      ip -n "$CLIENT" -6 addr show dev mtci-client0 >&2 || :
+      ip -n "$CLIENT" -6 route show >&2 || :
+      ip -n "$CLIENT" -6 route get "$TARGET" >&2 || :
+      ip -n "$CLIENT" -6 neigh show dev mtci-client0 >&2 || :
+      ip -6 neigh show dev "$LAN" >&2 || :
+    fi
     ip -"$FAMILY" rule show >&2 || :
     ip -"$FAMILY" route show table "$MARK_DEC" >&2 || :
     ip -"$FAMILY" route show table main >&2 || :
