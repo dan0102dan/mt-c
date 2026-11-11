@@ -16,6 +16,8 @@ import subprocess
 import tempfile
 
 UPSTREAM = "https://github.com/stavultras/router-emulator.git"
+QEMU_GITLAB = "https://gitlab.com/qemu-project/qemu.git"
+QEMU_GITHUB = "https://github.com/qemu/qemu.git"  # official QEMU mirror
 BUILD_PACKAGES = (
     "build-essential", "git", "ninja-build", "meson", "pkg-config",
     "python3", "python3-venv", "libglib2.0-dev", "libpixman-1-dev",
@@ -91,6 +93,54 @@ def checkout_source(source, tag, log):
     return commit
 
 
+def qemu_build_env(jobs, *, github_mirror=False):
+    """Use upstream GitLab first; redirect only a failed QEMU clone to GitHub."""
+    env = dict(os.environ, JOBS=str(jobs), CONFIGURE_ARGS=CONFIGURE_ARGS, PGO_NAND="")
+    if github_mirror:
+        # Git reads these only for build.sh and its children. Do not change
+        # either the selected upstream release or the runner's global config.
+        env.update(GIT_CONFIG_COUNT="1",
+                   GIT_CONFIG_KEY_0=f"url.{QEMU_GITHUB}.insteadOf",
+                   GIT_CONFIG_VALUE_0=QEMU_GITLAB)
+    return env
+
+
+def build_qemu_with_fallback(source, log, jobs):
+    """Retry only an unsuccessful upstream QEMU clone, not a broken build."""
+    command = ["bash", str(source / "build.sh")]
+    log.flush()
+    start = os.path.getsize(log.name)
+    try:
+        checked(command, log, cwd=source, env=qemu_build_env(jobs))
+        return
+    except RuntimeFailure:
+        # The upstream build script starts with the QEMU clone. If the repo
+        # exists, cloning succeeded and the failure is in patches/compilation;
+        # rerunning against a mirror would mask that real failure.
+        git_dir = source / "src/qemu/.git"
+        log.flush()
+        with open(log.name, "rb") as output:
+            output.seek(start)
+            first_lines = output.read(32768)
+        if (git_dir.exists() or b"Cloning into 'src/qemu'..." not in first_lines
+                or QEMU_GITLAB not in (source / "build.sh").read_text()):
+            raise
+        # git clone may leave a partially populated destination on failure.
+        # Only clean the uncommitted checkout in our fresh temporary source.
+        incomplete = source / "src/qemu"
+        if incomplete.is_symlink():
+            raise RuntimeFailure("refusing to clean a symlinked QEMU checkout")
+        if incomplete.exists():
+            if not incomplete.is_dir():
+                raise RuntimeFailure("QEMU checkout path is not a directory")
+            shutil.rmtree(incomplete)
+        print("Router Emulator: QEMU GitLab clone failed; retrying via official GitHub mirror",
+              flush=True)
+        log.write(f"Retry QEMU clone: {QEMU_GITLAB} -> {QEMU_GITHUB}\n")
+        log.flush()
+        checked(command, log, cwd=source, env=qemu_build_env(jobs, github_mirror=True))
+
+
 def ensure_runtime(emulator_dir, expected_version=None, *, install_build_deps=False, jobs=2):
     root = Path(emulator_dir).resolve()
     version = (root / "VERSION").read_text().strip()
@@ -138,8 +188,7 @@ def ensure_runtime(emulator_dir, expected_version=None, *, install_build_deps=Fa
             commit = checkout_source(source, tag, log)
             if version_numbers((source / "VERSION").read_text().strip()) != version_numbers(version):
                 raise RuntimeFailure("source VERSION differs from the selected release")
-            env = dict(os.environ, JOBS=str(jobs), CONFIGURE_ARGS=CONFIGURE_ARGS, PGO_NAND="")
-            checked(["bash", str(source / "build.sh")], log, cwd=source, env=env)
+            build_qemu_with_fallback(source, log, jobs)
             built = source / "src/qemu/build/qemu-system-aarch64"
             if not probe(built, log):
                 raise RuntimeFailure(f"rebuilt QEMU failed runtime preflight; see {log_path}")

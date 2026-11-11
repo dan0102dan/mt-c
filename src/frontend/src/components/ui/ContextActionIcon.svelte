@@ -15,69 +15,106 @@
   class:record={mode === "record"}
   class:stop={mode === "stop"}
 >
-  <circle class="outline" cx="12" cy="12" r="10" />
-  <path class="plus" d="M8 12h8" />
-  <path class="plus" d="M12 8v8" />
-  <circle class="dot" cx="12" cy="12" r="2" fill="currentColor" stroke="none" />
-  <rect class="square" x="3" y="3" width="18" height="18" rx="2" />
+  <rect class="outline" x="2" y="2" width="20" height="20" rx="10" ry="10" />
+  <g class="symbol" fill="currentColor" stroke="none">
+    <rect class="bar horizontal" x="7" y="11" width="10" height="2" rx="1" ry="1" />
+    <rect class="bar vertical" x="11" y="7" width="2" height="10" rx="1" ry="1" />
+  </g>
 </svg>
 
 <style>
-  .plus,
-  .dot,
-  .square,
+  svg {
+    --morph-duration: 300ms;
+    --morph-ease: cubic-bezier(0.4, 0, 0.2, 1);
+  }
+
+  /* Both arms round into the same dot without swapping SVG elements. */
+  .bar,
   .outline {
-    transform-origin: 12px 12px;
     transition:
-      transform 220ms cubic-bezier(0.2, 0, 0.2, 1),
-      opacity 160ms ease;
+      x var(--morph-duration) var(--morph-ease),
+      y var(--morph-duration) var(--morph-ease),
+      width var(--morph-duration) var(--morph-ease),
+      height var(--morph-duration) var(--morph-ease),
+      rx var(--morph-duration) var(--morph-ease),
+      ry var(--morph-duration) var(--morph-ease);
   }
-  .plus {
-    vector-effect: non-scaling-stroke;
+  .bar {
+    rx: 1px;
+    ry: 1px;
   }
-  .dot,
-  .square {
-    transform: scale(0);
+  .horizontal {
+    x: 7px;
+    y: 11px;
+    width: 10px;
+    height: 2px;
+  }
+  .vertical {
+    x: 11px;
+    y: 7px;
+    width: 2px;
+    height: 10px;
+  }
+  .record .bar,
+  .stop .bar {
+    x: 10px;
+    y: 10px;
+    width: 4px;
+    height: 4px;
+    rx: 2px;
+    ry: 2px;
+  }
+  /* Fade the union, not each overlapping arm, so the centre stays uniform. */
+  .symbol {
+    transform-origin: 12px 12px;
+    opacity: 1;
+    transition: opacity var(--morph-duration) var(--morph-ease);
+  }
+  .stop .symbol {
     opacity: 0;
   }
-  .record .plus,
-  .stop .plus {
-    transform: scale(0);
-  }
-  .record .dot,
-  .stop .square {
-    transform: scale(1);
-    opacity: 1;
-  }
-  .record .dot {
-    transition: none;
-    animation: dot-bounce 320ms cubic-bezier(0.2, 0, 0.2, 1);
+
+  /* A gentle bounce once the plus has nearly rounded into a dot. */
+  .record .symbol {
+    animation: dot-bounce calc(var(--morph-duration) + 100ms) var(--morph-ease) both;
   }
   @keyframes dot-bounce {
-    0% {
-      transform: scale(0);
-      opacity: 0;
+    0%,
+    60% {
+      transform: scale(1);
     }
-    70% {
-      transform: scale(1.1);
-      opacity: 1;
+    80% {
+      transform: scale(1.14);
     }
     100% {
       transform: scale(1);
-      opacity: 1;
     }
+  }
+
+  /* Keep one outline mounted through the circle <-> square transition. */
+  .outline {
+    x: 2px;
+    y: 2px;
+    width: 20px;
+    height: 20px;
+    rx: 10px;
+    ry: 10px;
   }
   .stop .outline {
-    opacity: 0;
-    transform: scale(0.9);
+    x: 3px;
+    y: 3px;
+    width: 18px;
+    height: 18px;
+    rx: 2px;
+    ry: 2px;
   }
+
   @media (prefers-reduced-motion: reduce) {
-    .record .dot {
+    .record .symbol {
       animation: none;
     }
-    .plus,
-    .dot,
-    .square,
+    .bar,
+    .symbol,
     .outline {
       transition: none;
     }

@@ -188,12 +188,14 @@ test("recording replaces Add without shifting the toolbar during tab changes", a
   await expect(page.getByRole("button", { name: "Add profile", exact: true })).toBeVisible();
   const icon = page.locator(".settings-toolbar .context-add svg");
   const iconNode = await icon.elementHandle();
-  const plusLine = icon.locator("path").first();
-  const initialLineWidth = (await plusLine.boundingBox())!.width;
+  const horizontalBar = icon.locator("rect.horizontal");
+  const initialBarWidth = await horizontalBar.evaluate((node) =>
+    parseFloat(getComputedStyle(node).width),
+  );
   const [frames] = await Promise.all([
     page.evaluate(async () => {
       const row = document.querySelector(".settings-toolbar .page-controls-actions")!;
-      const frames: { positions: number[]; width: number; count: number; lineWidth: number }[] = [];
+      const frames: { positions: number[]; width: number; count: number; barWidth: number }[] = [];
       const until = performance.now() + 450;
       while (performance.now() < until) {
         await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
@@ -203,7 +205,9 @@ test("recording replaces Add without shifting the toolbar during tab changes", a
             (button) => button.getBoundingClientRect().x,
           ),
           count: row.querySelectorAll("button").length,
-          lineWidth: row.querySelector(".context-add svg path")!.getBoundingClientRect().width,
+          barWidth: parseFloat(
+            getComputedStyle(row.querySelector(".context-add svg .horizontal")!).width,
+          ),
           width: document.documentElement.scrollWidth,
         });
       }
@@ -219,9 +223,9 @@ test("recording replaces Add without shifting the toolbar during tab changes", a
     expect(frame.width).toBeLessThanOrEqual(390);
   }
   expect(
-    frames.some((frame) => frame.lineWidth > 0.1 && frame.lineWidth < initialLineWidth - 0.1),
+    frames.some((frame) => frame.barWidth > 4.1 && frame.barWidth < initialBarWidth - 0.1),
   ).toBe(true);
-  expect(frames.at(-1)!.lineWidth).toBeLessThan(0.1);
+  expect(frames.at(-1)!.barWidth).toBeCloseTo(4, 1);
   const actions = page.locator(".settings-toolbar .page-controls-actions");
   await expect(actions.getByRole("button", { name: "Start recording", exact: true })).toBeVisible();
   await expect(actions.getByRole("button", { name: "Add profile", exact: true })).toHaveCount(0);
@@ -231,7 +235,10 @@ test("recording replaces Add without shifting the toolbar during tab changes", a
     0,
   );
   await expect
-    .poll(async () => Math.abs((await plusLine.boundingBox())!.width - initialLineWidth))
+    .poll(async () => {
+      const barWidth = await horizontalBar.evaluate((node) => parseFloat(getComputedStyle(node).width));
+      return Math.abs(barWidth - initialBarWidth);
+    })
     .toBeLessThan(0.1);
   expect(
     await iconNode!.evaluate(
@@ -257,10 +264,7 @@ for (const width of [390, 1280]) {
         activeRow.getByRole("button", { name: "Start recording", exact: true }),
       ).toBeVisible();
       await expect(activeRow.locator(".context-add-motion")).toHaveCSS("opacity", "1");
-      await expect(activeRow.locator(".context-add svg .dot")).toHaveCSS(
-        "transform",
-        "matrix(1, 0, 0, 1, 0, 0)",
-      );
+      await expect(activeRow.locator(".context-add svg .horizontal")).toHaveCSS("width", "4px");
 
       async function switchSection(name: string) {
         const menu = page.getByRole("button", { name: "Open menu", exact: true });
@@ -271,8 +275,7 @@ for (const width of [390, 1280]) {
               positions: number[];
               count: number;
               width: number;
-              lineWidth: number;
-              dotWidth: number;
+              barWidth: number;
             }[] = [];
             const until = performance.now() + 450;
             while (performance.now() < until) {
@@ -286,9 +289,9 @@ for (const width of [390, 1280]) {
                   (button) => button.getBoundingClientRect().x,
                 ),
                 count: row.querySelectorAll("button").length,
-                lineWidth: row.querySelector(".context-add svg path")!.getBoundingClientRect()
-                  .width,
-                dotWidth: row.querySelector(".context-add svg .dot")!.getBoundingClientRect().width,
+                barWidth: parseFloat(
+                  getComputedStyle(row.querySelector(".context-add svg .horizontal")!).width,
+                ),
                 width: document.documentElement.scrollWidth,
               });
             }
@@ -303,14 +306,9 @@ for (const width of [390, 1280]) {
           });
           expect(frame.width).toBeLessThanOrEqual(width);
         }
-        expect(frames.some((frame) => frame.lineWidth > 0.1 && frame.lineWidth < 7)).toBe(true);
-        if (name === "Settings") {
-          expect(frames.at(-1)!.lineWidth).toBeLessThan(0.1);
-          expect(frames.some((frame) => frame.dotWidth > frames.at(-1)!.dotWidth + 0.1)).toBe(true);
-        } else {
-          expect(frames.at(-1)!.lineWidth).toBeGreaterThan(7);
-          expect(frames.at(-1)!.dotWidth).toBeLessThan(0.1);
-        }
+        // The same pair of rounded bars changes width, instead of swapping a path and a dot.
+        expect(frames.some((frame) => frame.barWidth > 4.1 && frame.barWidth < 9.9)).toBe(true);
+        expect(frames.at(-1)!.barWidth).toBeCloseTo(name === "Settings" ? 4 : 10, 1);
       }
 
       await switchSection(section);
