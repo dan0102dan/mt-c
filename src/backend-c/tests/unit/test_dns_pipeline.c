@@ -155,6 +155,33 @@ TEST warm_cname_last_ttl_and_independent_groups(void)
     mt_cache_destroy(ca); mt_cache_destroy(cr); PASS();
 }
 
+TEST additional_ttl_saturates_instead_of_wrapping(void)
+{
+    mt_cache_t *cache;
+    mt_dns_pipeline_t *p = pipeline(&cache, &actual, 1, UINT32_MAX);
+    uint8_t ip[4] = {192, 0, 2, 30}, target[256];
+    size_t target_len = make_name(target, "target.test");
+    mt_dns_rr_t records[] = {
+        rr("alias.test", MT_DNS_TYPE_CNAME, 30, target, target_len),
+        rr("target.test", MT_DNS_TYPE_A, 30, ip, sizeof(ip)),
+    };
+    mt_dns_msg_t msg = {.answers = records, .n_answers = 2};
+    reset_capture(&actual);
+    mt_dns_pipeline_handle_message(p, &msg, 1000);
+    ASSERT(actual.n > 0u);
+    for (size_t i = 0; i < actual.n; i++) {
+        ASSERT_EQ(UINT32_MAX, actual.rows[i].ttl);
+    }
+    mt_dns_pipeline_set_additional_ttl(p, 4);
+    reset_capture(&actual);
+    mt_dns_pipeline_handle_message(p, &msg, 1000);
+    ASSERT(actual.n > 0u);
+    for (size_t i = 0; i < actual.n; i++) {
+        ASSERT_EQ(34u, actual.rows[i].ttl);
+    }
+    mt_dns_pipeline_destroy(p); mt_cache_destroy(cache); PASS();
+}
+
 TEST boundaries_are_lossless_and_own_transient_names(void)
 {
     const size_t sizes[] = {1, 31, 32, 33, 65, 100};
@@ -345,6 +372,7 @@ int main(int argc, char **argv)
 {
     GREATEST_MAIN_BEGIN(); mt_log_set_level(MT_LOG_ERROR);
     RUN_TEST(warm_cname_last_ttl_and_independent_groups);
+    RUN_TEST(additional_ttl_saturates_instead_of_wrapping);
     RUN_TEST(boundaries_are_lossless_and_own_transient_names);
     RUN_TEST(mixed_stream_reference_and_reload);
     RUN_TEST(cname_only_retains_cached_addresses_and_null_sink);

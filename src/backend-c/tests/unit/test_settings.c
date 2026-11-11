@@ -587,6 +587,30 @@ TEST projection_is_strict_and_preserves_hidden_settings(void)
     mt_app_config_clear(&parsed); cJSON_Delete(json); mt_config_clear(&config); PASS();
 }
 
+TEST large_general_limits_remain_usable_without_eager_socket_pool_allocation(void)
+{
+    dns_stub_t stub; ASSERT(stub_start(&stub, 12));
+    harness_t *h = harness_start(stub.port, false); ASSERT(h);
+    uint16_t web = h->daemon.ports.http, dns = h->daemon.ports.dns;
+    cJSON *snapshot = NULL, *ack = NULL, *response = NULL;
+    ASSERT_EQ(200, request(web, "GET", "/api/v1/system/settings", NULL, &snapshot));
+    replace_setting(snapshot, "dnsProxy.maxIdleConns", "4294967295");
+    replace_setting(snapshot, "dnsProxy.maxConcurrent", "4294967295");
+    ASSERT_EQ(202, submit(web, snapshot, &ack));
+    response = await_operation(0, text_value(item(ack, "operation"), "id"), "succeeded");
+    ASSERT(response);
+    ASSERT_EQ(UINT32_MAX, h->config.app.dns_proxy.max_idle_conns);
+    ASSERT_EQ(UINT32_MAX, h->config.app.dns_proxy.max_concurrent);
+    ASSERT_EQ(1, dns_query(dns, false, false, NULL));
+    ASSERT_EQ(1, dns_query(dns, true, false, NULL));
+    cJSON *saved = NULL;
+    ASSERT_EQ(200, request(web, "GET", "/api/v1/system/settings", NULL, &saved));
+    ASSERT_EQ(UINT32_MAX, item(item(saved, "settings"), "dnsProxy")
+                          ? (uint32_t)item(item(item(saved, "settings"), "dnsProxy"), "maxIdleConns")->valuedouble : 0u);
+    cJSON_Delete(saved); cJSON_Delete(snapshot); cJSON_Delete(ack); cJSON_Delete(response);
+    harness_stop(h); stub_stop(&stub); PASS();
+}
+
 TEST preview_classifies_actual_changes_without_mutating_or_resolving(void)
 {
     dns_stub_t stub; ASSERT(stub_start(&stub, 12)); harness_t *h = harness_start(stub.port, false); ASSERT(h);
@@ -1127,6 +1151,7 @@ int main(int argc, char **argv)
     RUN_TEST(dns_stub_retries_cross_protocol_port_collision_without_leaking_sockets);
     RUN_TEST(projection_is_strict_and_preserves_hidden_settings);
     RUN_TEST(preview_classifies_actual_changes_without_mutating_or_resolving);
+    RUN_TEST(large_general_limits_remain_usable_without_eager_socket_pool_allocation);
     RUN_TEST(toggling_webui_does_not_restart_dns_or_routing);
     RUN_TEST(webui_disable_write_failure_keeps_webui_and_dns_running);
     RUN_TEST(live_settings_preserve_dns_runtime_and_revoke_unauthenticated_streams);

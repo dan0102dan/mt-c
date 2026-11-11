@@ -475,10 +475,41 @@ TEST ptr_eligibility_preserves_qr_class_and_question_count(void)
     }
     mt_loop_destroy(loop); PASS();
 }
+TEST idle_socket_pool_grows_only_on_demand_for_large_limit(void)
+{
+    sock_pool_t p = {0};
+    pool_init(&p, UINT32_MAX);
+    ASSERT(p.fds == NULL);
+    ASSERT_EQ(0u, p.allocated);
+    int sockets[9];
+    for (size_t i = 0; i < 9; i++) {
+        sockets[i] = socket(AF_INET, SOCK_DGRAM | SOCK_CLOEXEC, 0);
+        ASSERT(sockets[i] >= 0);
+        pool_put(&p, sockets[i]);
+    }
+    ASSERT_EQ(9u, p.len);
+    ASSERT(p.allocated >= 9u && p.allocated < 32u);
+    for (size_t i = 9; i > 0; i--) {
+        ASSERT_EQ(sockets[i - 1], pool_get(&p));
+        close(sockets[i - 1]);
+    }
+    pool_clear(&p);
+    ASSERT_EQ(0u, p.allocated);
+    pool_init(&p, 0);
+    int fd = socket(AF_INET, SOCK_DGRAM | SOCK_CLOEXEC, 0);
+    ASSERT(fd >= 0);
+    pool_put(&p, fd);
+    ASSERT_EQ(0u, p.len);
+    ASSERT(fcntl(fd, F_GETFD) == -1 && errno == EBADF);
+    pool_clear(&p);
+    PASS();
+}
+
 GREATEST_MAIN_DEFS();
 int main(int argc, char **argv)
 {
     GREATEST_MAIN_BEGIN();
+    RUN_TEST(idle_socket_pool_grows_only_on_demand_for_large_limit);
     RUN_TEST(unchanged_udp_is_verbatim_and_tcp_retains_baseline_filtering_pack);
     RUN_TEST(answer_filter_keeps_original_hook_and_additional_records);
     RUN_TEST(compressed_cname_multi_a_and_authority_preserve_transport_policy);

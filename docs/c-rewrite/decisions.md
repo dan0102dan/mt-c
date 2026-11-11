@@ -4,6 +4,22 @@ Format: ID, status (proposed/accepted/superseded), context, decision,
 consequences. Phase 0 entries are **proposed** unless marked otherwise —
 final acceptance happens when the implementing phase starts.
 
+## D-94 — Bounded DNS resource use and TTL arithmetic for General limits (2026-11-11)
+
+Status: **accepted correctness fix**. General accepts the full unsigned 32-bit
+range for `dnsProxy.maxIdleConns` and `netfilter.ipset.additionalTTLSeconds`.
+A large idle-socket limit must not allocate an equally large fd array at DNS
+startup. The UDP socket pool now allocates small chunks only as returned
+sockets are actually retained, up to the configured limit. If an optional pool
+growth allocation fails, the socket is closed; active DNS forwarding is not
+failed. A zero limit retains no idle sockets.
+
+For both address and CNAME records, adding `additionalTTLSeconds` now
+saturates at UINT32_MAX instead of wrapping through zero. This deliberately
+corrects previously overflowed TTLs, preserving ordinary values and wire
+formats. Native regression tests exercise the maximum editable limits,
+on-demand pooling, live UDP/TCP DNS and saturated vs ordinary TTLs.
+
 ## D-93 — DNS-safe WebUI toggles and immediate, quiet settings saves (2026-11-11)
 
 Status: **accepted at the user's request**. This entry supersedes D-92's

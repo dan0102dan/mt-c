@@ -27,7 +27,8 @@
 typedef struct sock_pool {
     int *fds;
     size_t len;
-    size_t cap;
+    size_t allocated;
+    size_t cap; /* configured maximum, not eager allocation size */
 } sock_pool_t;
 
 typedef struct exchange exchange_t;
@@ -55,8 +56,11 @@ struct mt_dnsproxy {
 
 static void pool_init(sock_pool_t *p, size_t cap)
 {
-    p->fds = calloc(cap > 0 ? cap : 1, sizeof(int));
+    /* A user can configure up to UINT32_MAX idle sockets. Reserving that
+     * many slots at startup is unnecessary and can exhaust virtual memory. */
+    p->fds = NULL;
     p->len = 0;
+    p->allocated = 0;
     p->cap = cap;
 }
 
@@ -68,6 +72,7 @@ static void pool_clear(sock_pool_t *p)
     free(p->fds);
     p->fds = NULL;
     p->len = 0;
+    p->allocated = 0;
 }
 
 static int pool_get(sock_pool_t *p)
@@ -80,11 +85,19 @@ static int pool_get(sock_pool_t *p)
 
 static void pool_put(sock_pool_t *p, int fd)
 {
-    if (p->len < p->cap) {
-        p->fds[p->len++] = fd;
-    } else {
-        close(fd);
+    if (p->len >= p->cap) { close(fd); return; }
+    if (p->len == p->allocated) {
+        size_t new_cap = p->allocated ? p->allocated * 2 : 8;
+        if (new_cap < p->allocated || new_cap > p->cap) { new_cap = p->cap; }
+        if (new_cap > SIZE_MAX / sizeof(*p->fds)) { close(fd); return; }
+        int *fds = realloc(p->fds, new_cap * sizeof(*p->fds));
+        /* Pooling is optional. On memory pressure close the socket and let
+         * the next exchange establish a fresh connection. */
+        if (!fds) { close(fd); return; }
+        p->fds = fds;
+        p->allocated = new_cap;
     }
+    p->fds[p->len++] = fd;
 }
 
 /* ---- address helpers ---- */
@@ -954,7 +967,7 @@ mt_err_t mt_dnsproxy_create_resolved(const mt_dnsproxy_config_t *cfg, mt_loop_t 
     p->cfg.listen_addr = strdup(cfg->listen_addr ? cfg->listen_addr : "0.0.0.0");
     p->cfg.upstream_addr = strdup(cfg->upstream_addr);
     pool_init(&p->udp_pool, cfg->max_idle_conns);
-    if (!p->cfg.listen_addr || !p->cfg.upstream_addr || !p->udp_pool.fds) {
+    if (!p->cfg.listen_addr || !p->cfg.upstream_addr) {
         mt_dnsproxy_destroy(p); return MT_ERR_NOMEM;
     }
     *out = p;
