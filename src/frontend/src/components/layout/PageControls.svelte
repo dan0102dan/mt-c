@@ -33,6 +33,7 @@
     saveLabel: string;
     saveDescriptionId?: string;
     exportLabel?: string;
+    canExport?: boolean;
     importAccept?: string;
     importLabel?: string;
     onExport?: () => void;
@@ -50,6 +51,7 @@
     controlsClass = "",
     active = true,
     exportLabel,
+    canExport = true,
     importAccept = ".mtrickle",
     importLabel,
     onAdd,
@@ -157,7 +159,7 @@
 
     {#if onExport && exportLabel}
       <Tooltip value={exportLabel}>
-        <Button onclick={onExport} aria-label={exportLabel}>
+        <Button onclick={onExport} aria-label={exportLabel} disabled={!canExport}>
           <Export size={22} />
         </Button>
       </Tooltip>

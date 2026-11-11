@@ -1,12 +1,13 @@
 <script lang="ts">
   import PlatformSettings from "#platform/settings";
   import { Popover, Tabs } from "bits-ui";
-  import { getContext, setContext } from "svelte";
+  import { getContext, onMount, setContext } from "svelte";
 
   import PageControls from "../../components/layout/PageControls.svelte";
   import Tooltip from "../../components/ui/Tooltip.svelte";
   import { t } from "../../data/locale.svelte";
   import { hide } from "../../lib/tooltip/tooltip.svelte";
+  import { persistedState } from "../../utils/persisted-state.svelte";
   import LogsView from "../logs/LogsView.svelte";
   import DnsQueryLog from "./dns/DnsQueryLog.svelte";
   import GeneralSettingsPanel from "./general/GeneralSettingsPanel.svelte";
@@ -26,7 +27,15 @@
   const transfer = getContext<ConfigTransferControls>(CONFIG_TRANSFER_CONTEXT);
   let sections = $state.raw<SettingsSection[]>([]);
   let saving = $state(false);
-  let selected = $state("profiles");
+  const lastSelected = persistedState("settings_tab", "profiles");
+  let selected = $state(lastSelected.current);
+  onMount(() => {
+    // Stored tabs may no longer exist, for example after changing the platform build.
+    if (!sections.some((section) => section.element.id === selected)) selected = "profiles";
+  });
+  $effect(() => {
+    lastSelected.current = selected;
+  });
   const visibleSection = $derived(sections.find((section) => section.element.id === selected));
   const tabLabels = $derived<Record<string, string>>({
     general: t("General"),
@@ -139,10 +148,13 @@
       saveDescriptionId={validationSections.length
         ? validationSections.map((section) => `settings-validation-${section.element.id}`).join(" ")
         : undefined}
-      exportLabel={t("Export Config")}
+      exportLabel={visibleControls?.exportAction?.label ?? t("Export Config")}
+      canExport={!visibleControls?.exportAction?.disabled}
       importLabel={t("Import Config")}
-      onExport={() => void transfer.exportConfig()}
-      onImport={(event) => void transfer.importConfig(event)}
+      onExport={visibleControls?.exportAction?.onclick ?? (() => void transfer.exportConfig())}
+      onImport={visibleControls?.hideImport
+        ? undefined
+        : (event) => void transfer.importConfig(event)}
       addLabel={visibleControls?.addLabel}
       canAdd={visibleControls?.canAdd ?? false}
       onAdd={visibleControls?.onAdd}

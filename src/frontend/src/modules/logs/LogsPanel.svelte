@@ -1,57 +1,29 @@
 <script lang="ts">
   // Design port: MagiTrickle/MagiTrickle@4f94aa6 by shevernitskiy.
   // The application store owns transport/history, never this virtualized view.
-  import { onDestroy, tick, untrack, type Snippet } from "svelte";
+  import { tick, untrack } from "svelte";
 
   import Button from "../../components/ui/Button.svelte";
   import Tooltip from "../../components/ui/Tooltip.svelte";
 
-  import {
-    Clear,
-    Export,
-    Filter,
-    LoaderCircle,
-    ScrollToBottom,
-    TriangleAlert,
-  } from "../../components/ui/icons";
-  import {
-    LOG_LEVELS,
-    logExportParts,
-    logLevel,
-    logText,
-    logWindow,
-    matchesLog,
-    type LogEntry,
-  } from "./log-view";
+  import { Clear, Filter, ScrollToBottom } from "../../components/ui/icons";
+  import { LOG_LEVELS, logLevel, logText, logWindow, matchesLog, type LogEntry } from "./log-view";
 
   type Props = {
     entries: readonly LogEntry[];
     revision?: number;
     onclear: () => void;
-    controls?: Snippet;
     labels: {
       filter: string;
-      export: string;
       clear: string;
       scrollToBottom: string;
       results: string;
       empty: string;
       session?: string;
     };
-    /** Only transient connection problems or data loss, not routine recording state. */
-    status?: string;
-    statusLoading?: boolean;
   };
 
-  let {
-    entries,
-    revision = 0,
-    onclear,
-    controls,
-    labels,
-    status = "",
-    statusLoading = false,
-  }: Props = $props();
+  let { entries, revision = 0, onclear, labels }: Props = $props();
   const LINE_HEIGHT = 16;
   const SCROLL_TO_BOTTOM_DELTA = 40;
   let filter = $state("");
@@ -59,8 +31,6 @@
   let container_height = $state(0);
   let scroll_top = $state(0);
   let follow_tail = $state(true);
-  let export_url: string | undefined;
-  let export_timer: ReturnType<typeof setTimeout> | undefined;
 
   let items_filtered = $derived.by(() => {
     void revision; // Plain ingest array is published once per batch, not per record.
@@ -120,29 +90,6 @@
     resetScroll();
     follow_tail = true;
   }
-
-  function releaseExport() {
-    clearTimeout(export_timer);
-    if (export_url) URL.revokeObjectURL(export_url);
-    export_url = undefined;
-  }
-  function saveLogs() {
-    if (!entries.length) return;
-    releaseExport();
-    // All received records, not just the filter; works with a dead backend.
-    export_url = URL.createObjectURL(new Blob(logExportParts(entries), { type: "text/plain" }));
-    const link = document.createElement("a");
-    link.href = export_url;
-    link.download = `${new Date().toISOString().replace(/[:.]/g, "-")}-mt-c.log`;
-    document.body.appendChild(link);
-    try {
-      link.click();
-    } finally {
-      link.remove();
-    }
-    export_timer = setTimeout(releaseExport, 30000);
-  }
-  onDestroy(releaseExport);
 </script>
 
 <div class="logs-controls">
@@ -159,26 +106,6 @@
     />
   </div>
   <div class="logs-controls-actions">
-    {#if status}
-      <Tooltip value={status}>
-        <span class="connection-status" role="status" aria-label={status}>
-          <button type="button" class="status-trigger" aria-label={status}>
-            {#if statusLoading}
-              <LoaderCircle size={18} aria-hidden="true" />
-            {:else}
-              <TriangleAlert size={18} aria-hidden="true" />
-            {/if}
-          </button>
-          <span class="sr-only">{status}</span>
-        </span>
-      </Tooltip>
-    {/if}
-    {#if controls}{@render controls()}{/if}
-    <Tooltip value={labels.export}>
-      <Button type="button" onclick={saveLogs} aria-label={labels.export} disabled={!hasEntries}>
-        <Export size={22} />
-      </Button>
-    </Tooltip>
     <Tooltip value={labels.clear}>
       <Button type="button" onclick={clearLines} aria-label={labels.clear} disabled={!hasEntries}>
         <Clear size={22} />
@@ -257,38 +184,6 @@
     justify-content: end;
     gap: 0.5rem;
     flex-shrink: 0;
-  }
-  .connection-status {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    color: var(--text-2);
-  }
-  .status-trigger {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    padding: 0.35rem;
-    border: 0;
-    border-radius: 0.35rem;
-    background: transparent;
-    color: inherit;
-    cursor: help;
-  }
-  .status-trigger:focus-visible {
-    outline: 2px solid var(--accent);
-    outline-offset: 2px;
-  }
-  .sr-only {
-    position: absolute;
-    width: 1px;
-    height: 1px;
-    padding: 0;
-    margin: -1px;
-    overflow: hidden;
-    clip-path: inset(50%);
-    white-space: nowrap;
-    border: 0;
   }
   .filter {
     display: flex;

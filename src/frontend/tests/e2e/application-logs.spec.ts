@@ -166,15 +166,33 @@ test("log recording is opt-in; stopping and tab changes keep received records", 
     const panel = page.locator(".application-logs");
     const rows = panel.locator(".line:not(.session)");
     await expect(
-      panel.getByRole("button", { name: "Start log recording", exact: true }),
+      page
+        .locator(".settings-toolbar")
+        .getByRole("button", { name: "Start log recording", exact: true }),
     ).toBeEnabled();
     await expect(panel.getByRole("combobox")).toHaveCount(0);
     await expect(panel.locator(".settings-description, .empty")).toHaveCount(0);
     await expect(panel.getByRole("status")).toHaveCount(0);
-    expect(api.enabled).toBe(false);
-    await panel.getByRole("button", { name: "Start log recording", exact: true }).click();
     await expect(
-      panel.getByRole("button", { name: "Stop log recording", exact: true }),
+      page.locator(".settings-toolbar").getByRole("button", { name: "Import Config", exact: true }),
+    ).toHaveCount(0);
+    await expect(
+      page.locator(".settings-toolbar").getByRole("button", { name: "Export Config", exact: true }),
+    ).toHaveCount(0);
+    await expect(
+      page
+        .locator(".settings-toolbar")
+        .getByRole("button", { name: "Export application logs", exact: true }),
+    ).toBeDisabled();
+    expect(api.enabled).toBe(false);
+    await page
+      .locator(".settings-toolbar")
+      .getByRole("button", { name: "Start log recording", exact: true })
+      .click();
+    await expect(
+      page
+        .locator(".settings-toolbar")
+        .getByRole("button", { name: "Stop log recording", exact: true }),
     ).toBeEnabled();
     api.emit("captured after start");
     await expect(rows).toHaveCount(1);
@@ -183,15 +201,25 @@ test("log recording is opt-in; stopping and tab changes keep received records", 
     api.emit("captured on another tab");
     await openLogs(page);
     await expect(rows).toHaveCount(2);
-    await panel.getByRole("button", { name: "Stop log recording", exact: true }).click();
+    await page
+      .locator(".settings-toolbar")
+      .getByRole("button", { name: "Stop log recording", exact: true })
+      .click();
     await expect(
-      panel.getByRole("button", { name: "Start log recording", exact: true }),
+      page
+        .locator(".settings-toolbar")
+        .getByRole("button", { name: "Start log recording", exact: true }),
     ).toBeEnabled();
     await expect(rows).toHaveCount(2);
     api.emit("not captured after stop");
-    await panel.getByRole("button", { name: "Start log recording", exact: true }).click();
+    await page
+      .locator(".settings-toolbar")
+      .getByRole("button", { name: "Start log recording", exact: true })
+      .click();
     await expect(
-      panel.getByRole("button", { name: "Stop log recording", exact: true }),
+      page
+        .locator(".settings-toolbar")
+        .getByRole("button", { name: "Stop log recording", exact: true }),
     ).toBeEnabled();
     api.emit("new recording session");
     await expect(rows).toHaveCount(3);
@@ -218,12 +246,17 @@ test("replay, backend loss, offline export and resume do not erase or duplicate 
     const rows = panel.locator(".line:not(.session)");
     await expect(rows).toHaveCount(2);
     api.disconnect();
-    await expect(panel.getByRole("status", { name: "Connection lost", exact: true })).toBeVisible();
+    await expect(
+      page
+        .locator(".settings-toolbar")
+        .getByRole("button", { name: "Stop log recording", exact: true }),
+    ).toBeDisabled();
+    await expect(panel.getByRole("status")).toHaveCount(0);
     await panel.getByRole("searchbox").fill("earliest");
     await expect(rows).toHaveCount(1);
     await expect(rows).toContainText("earliest recorded message");
     const downloadEvent = page.waitForEvent("download");
-    const exportButton = panel.getByRole("button", {
+    const exportButton = page.locator(".settings-toolbar").getByRole("button", {
       name: "Export application logs",
       exact: true,
     });
@@ -239,7 +272,9 @@ test("replay, backend loss, offline export and resume do not erase or duplicate 
     expect(content).toContain("Ж🙂".repeat(22000) + " LONG-END\n");
     api.recover();
     await expect(
-      panel.getByRole("button", { name: "Stop log recording", exact: true }),
+      page
+        .locator(".settings-toolbar")
+        .getByRole("button", { name: "Stop log recording", exact: true }),
     ).toBeEnabled({ timeout: 15000 });
     await expect(panel.getByRole("status")).toHaveCount(0);
     await panel.getByRole("searchbox").fill("");
@@ -284,7 +319,7 @@ for (const locale of ["en", "ru"]) {
       await expect(panel.getByRole("combobox")).toHaveCount(0);
       await expect(panel.locator(".settings-description, .status")).toHaveCount(0);
       await expect(panel.getByRole("status")).toHaveCount(0);
-      const exportButton = panel.getByRole("button", {
+      const exportButton = page.locator(".settings-toolbar").getByRole("button", {
         name: locale === "ru" ? "Экспортировать логи" : "Export application logs",
         exact: true,
       });
@@ -307,9 +342,7 @@ for (const locale of ["en", "ru"]) {
   });
 }
 
-test("unsupported logs have a compact actionable status instead of empty-state prose", async ({
-  page,
-}) => {
+test("unsupported logs leave recording disabled without a warning", async ({ page }) => {
   const api = await backend();
   try {
     await setup(page, api.url);
@@ -318,14 +351,14 @@ test("unsupported logs have a compact actionable status instead of empty-state p
     );
     await openLogs(page);
     const panel = page.locator(".application-logs");
-    const status = panel.getByRole("status", {
-      name: "Update the service to view logs",
-      exact: true,
-    });
-    await expect(status).toBeVisible();
-    await expect(status.locator("svg.lucide-triangle-alert")).toHaveCount(1);
+    await expect(panel.getByRole("status")).toHaveCount(0);
+    await expect(panel.locator("svg.lucide-triangle-alert, svg.lucide-loader-circle")).toHaveCount(
+      0,
+    );
     await expect(
-      panel.getByRole("button", { name: "Start log recording", exact: true }),
+      page
+        .locator(".settings-toolbar")
+        .getByRole("button", { name: "Start log recording", exact: true }),
     ).toBeDisabled();
     await expect(panel.locator(".settings-description, .status, .empty")).toHaveCount(0);
     await expect(panel).not.toContainText("Received records");
@@ -335,7 +368,7 @@ test("unsupported logs have a compact actionable status instead of empty-state p
   }
 });
 
-test("capture losses remain visible in the compact status", async ({ page }) => {
+test("capture losses do not add warnings or interrupt received logs", async ({ page }) => {
   const api = await backend();
   try {
     api.set(true);
@@ -345,11 +378,13 @@ test("capture losses remain visible in the compact status", async ({ page }) => 
     const panel = page.locator(".application-logs");
     await expect(panel.locator(".line:not(.session)")).toHaveCount(1);
     api.drop("3");
+    api.emit("message after capture loss");
+    await expect(panel.locator(".line:not(.session)")).toHaveCount(2);
+    await expect(panel.getByRole("status")).toHaveCount(0);
     await expect(
-      panel.getByRole("status", { name: "Records not saved: 3", exact: true }),
-    ).toBeVisible();
-    await expect(
-      panel.getByRole("button", { name: "Export application logs", exact: true }),
+      page
+        .locator(".settings-toolbar")
+        .getByRole("button", { name: "Export application logs", exact: true }),
     ).toBeEnabled();
   } finally {
     await api.close();

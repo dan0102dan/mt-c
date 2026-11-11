@@ -1,12 +1,6 @@
 {
   "Start log recording": "Начать запись",
   "Stop log recording": "Остановить запись",
-  "Recording continues until stopped or the service restarts.": "Запись продолжается до остановки или перезапуска сервиса.",
-  "Stop recording for all viewers and free server history. Received logs stay in this browser.": "Остановить запись для всех и освободить историю на сервере. Полученные логи останутся в этом браузере.",
-  "Connection lost": "Соединение потеряно",
-  "Update the service to view logs": "Обновите сервис для просмотра логов",
-  "Loading log history...": "Загрузка истории логов…",
-  "Records not saved": "Не удалось сохранить записей",
   "Search application logs...": "Поиск по логам…",
   "Export application logs": "Экспортировать логи",
   "Clear local logs": "Очистить логи в браузере",
