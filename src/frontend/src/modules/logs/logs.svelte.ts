@@ -1,4 +1,5 @@
 import { requireAuthentication, token } from "../../data/auth.svelte";
+
 import { API_BASE, fetcher } from "../../utils/fetcher";
 import { subscribeApplicationLogs, type LogConnectionState } from "./connection";
 import { LogHistory, parseLogCapture, type LogCapture } from "./history";
@@ -14,6 +15,7 @@ function createLogsStore() {
   let authorized = false;
   let credential = "";
   let generation = 0;
+  let mutation = 0;
   let stop: (() => void) | undefined;
   let publishTimer: ReturnType<typeof setTimeout> | undefined;
 
@@ -37,8 +39,10 @@ function createLogsStore() {
     const attempt = generation;
     const requestToken = credential;
     stop = subscribeApplicationLogs({
-      url: `${API_BASE}/logs/stream`, token: requestToken,
-      cursor: () => history.cursor(), receiver: () => history.receiver(),
+      url: `${API_BASE}/logs/stream`,
+      token: requestToken,
+      cursor: () => history.cursor(),
+      receiver: () => history.receiver(),
       onChange: schedule,
       onState: (state) => {
         if (attempt !== generation) return;
@@ -52,20 +56,42 @@ function createLogsStore() {
     });
   };
   return {
-    get entries() { void revision; return history.entries; },
-    get count() { void revision; return history.count; },
-    get revision() { return revision; },
-    get capture() { return capture; },
-    get connection() { return connection; },
-    get changing() { return changing; },
+    get entries() {
+      void revision;
+      return history.entries;
+    },
+    get count() {
+      void revision;
+      return history.count;
+    },
+    get revision() {
+      return revision;
+    },
+    get capture() {
+      return capture;
+    },
+    get connection() {
+      return connection;
+    },
+    get changing() {
+      return changing;
+    },
     authorize(allowed: boolean, nextCredential: string) {
       if (allowed === authorized && nextCredential === credential) return;
       const clear = authorized && (!allowed || nextCredential !== credential);
       disconnect();
       authorized = allowed;
       credential = nextCredential;
-      if (clear) { history = new LogHistory(); changing = false; publish(); }
-      if (!allowed) { connection = "idle"; return; }
+      if (clear) {
+        mutation++;
+        history = new LogHistory();
+        changing = false;
+        publish();
+      }
+      if (!allowed) {
+        connection = "idle";
+        return;
+      }
       connect();
     },
     open() {
@@ -73,25 +99,35 @@ function createLogsStore() {
       requested = true;
       connect();
     },
-    clear() { history.clear(); publish(); },
+    clear() {
+      history.clear();
+      publish();
+    },
     async setRecording(enabled: boolean) {
       if (!authorized || changing) return;
       changing = true;
       const identity = credential;
+      const operation = ++mutation;
       try {
         const result = await fetcher<unknown>("/logs/capture", {
-          method: "PUT", headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ enabled }), timeoutMs: 10000,
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ enabled }),
+          timeoutMs: 10000,
         });
         parseLogCapture(result);
       } finally {
-        changing = false;
-        // Even a lost PUT response may have applied. Read authoritative state,
-        // without replacing local records or rewinding their accepted cursor.
-        if (authorized && identity === credential) connect();
+        // A late response belonging to a former login must not unlock or
+        // reconnect a newer account's recording operation.
+        if (operation === mutation) {
+          changing = false;
+          // A lost PUT response may have applied; reconcile by reading state.
+          if (authorized && identity === credential) connect();
+        }
       }
     },
     destroy() {
+      mutation++;
       disconnect();
       clearTimeout(publishTimer);
       publishTimer = undefined;
