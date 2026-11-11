@@ -657,6 +657,31 @@ test("a 202 response and unrelated operation never produce a premature success",
   expect(state.writes).toHaveLength(1);
 });
 
+test("a DNS restart refusal is a single actionable error without another confirmation", async ({ page }) => {
+  const { state } = await backend(page);
+  await page.goto("/");
+  await openGeneral(page);
+  const toggle = page.getByRole("switch", {
+    name: "Show all interfaces in selectors",
+    exact: true,
+  });
+  await toggle.click();
+  state.runtimeActive = false;
+  await page.locator("#save-settings").click();
+  const message = "Applying these settings now requires a DNS restart. Nothing was saved; check the service before retrying.";
+  await expect(page.getByText(message, { exact: true })).toBeVisible();
+  await expect(page.locator(".application-error p")).toHaveCount(1);
+  await expect(page.getByRole("dialog", { name: "Apply general settings?" })).toHaveCount(0);
+  await expect(toggle).toBeChecked();
+  expect(state.writes).toHaveLength(1);
+  expect(state.writes[0].allow_dns_restart).toBe(false);
+  state.runtimeActive = true;
+  await page.locator("#save-settings").click();
+  await applied(page);
+  expect(state.writes).toHaveLength(2);
+  expect(state.settings.showAllInterfaces).toBe(true);
+});
+
 test("a stale settings revision preserves the General draft and never starts an operation", async ({ page }) => {
   const { state, revision } = await backend(page);
   await page.goto("/");
@@ -666,7 +691,8 @@ test("a stale settings revision preserves the General draft and never starts an 
   state.settings.dnsProxy.timeoutMs = 9000;
   state.version++;
   await confirmSave(page);
-  await expect(page.getByText("General settings changed; reload before saving", { exact: false }).first()).toBeVisible();
+  await expect(page.getByText("General settings changed elsewhere. Your draft is preserved. Reload the page before saving again.", { exact: true })).toBeVisible();
+  await expect(page.locator(".application-error p")).toHaveCount(1);
   await expect(timeout).toHaveValue("7500");
   expect(state.previews).toEqual([]);
   expect(state.writes).toHaveLength(1);

@@ -297,10 +297,16 @@
   {/if}
   {#if config.snapshot && config.error && (!config.error.field || !fieldForPath(config.error.field))}
     <div class="application-error" role="alert">
-      {#if config.error.code === "SETTINGS_CONFLICT" || config.error.code === "SETTINGS_RESTART_REQUIRED"}
+      {#if config.error.code === "SETTINGS_CONFLICT"}
         <p>
           {t(
             "General settings changed elsewhere. Your draft is preserved. Reload the page before saving again.",
+          )}
+        </p>
+      {:else if config.error.code === "SETTINGS_RESTART_REQUIRED"}
+        <p>
+          {t(
+            "Applying these settings now requires a DNS restart. Nothing was saved; check the service before retrying.",
           )}
         </p>
       {:else if config.error.code === "SETTINGS_BUSY"}
@@ -313,7 +319,9 @@
           )}
         </p>
       {/if}
-      {#if config.error.code !== "SETTINGS_RESTART_REQUIRED"}<p>{t(config.error.message)}</p>{/if}
+      {#if !["SETTINGS_CONFLICT", "SETTINGS_RESTART_REQUIRED", "SETTINGS_BUSY"].includes(config.error.code ?? "")}
+        <p>{t(config.error.message)}</p>
+      {/if}
     </div>
   {/if}
   {#if config.nextWeb}

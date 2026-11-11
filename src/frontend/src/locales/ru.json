@@ -387,6 +387,7 @@
   "Sign-in will no longer be required for the web interface.": "Для доступа к веб-интерфейсу больше не потребуется вход.",
   "Save changes in Groups and Subscriptions before changing web access.": "Перед изменением веб-доступа сохраните изменения в группах и подписках.",
   "General settings changed elsewhere. Your draft is preserved. Reload the page before saving again.": "Общие настройки изменились в другом месте. Ваш черновик сохранён. Перед повторным сохранением обновите страницу.",
+  "Applying these settings now requires a DNS restart. Nothing was saved; check the service before retrying.": "Для применения этих настроек теперь требуется перезапуск DNS. Изменения не сохранены; проверьте состояние службы перед повторной попыткой.",
   "Another settings application is in progress. Your draft is preserved.": "Выполняется другое применение настроек. Ваш черновик сохранён.",
   "The service now needs a DNS restart. Your draft is preserved. Save again to review the warning.": "Теперь сервису требуется перезапуск DNS. Ваш черновик сохранён. Нажмите «Сохранить» ещё раз, чтобы подтвердить применение.",
   "The service could not restore the previous settings. Check the device before trying again.": "Сервису не удалось восстановить предыдущие настройки. Проверьте устройство перед повторной попыткой.",
