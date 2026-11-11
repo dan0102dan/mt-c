@@ -20,7 +20,9 @@
   import {
     changesWebAccess,
     fieldForPath,
+    formatInterfaceNames,
     logLevels,
+    parseInterfaceNames,
     UINT32_MAX,
     webTarget,
     webTargetUrl,
@@ -63,12 +65,7 @@
     disabled: "Disabled",
   };
   const logOptions = $derived(logLevels.map((value) => ({ value, label: t(logLabels[value]) })));
-  const enteredInterfaces = $derived(
-    config.draft.links
-      .trim()
-      .split(/[\s,]+/)
-      .filter(Boolean),
-  );
+  const enteredInterfaces = $derived(parseInterfaceNames(config.draft.links));
   const interfaceOptions = $derived(
     [
       ...new Set([
@@ -86,7 +83,7 @@
 
   async function addInterface(id: string) {
     if (!formDisabled && interfaceOptions.some((item) => item.value === id)) {
-      config.draft.links = [...enteredInterfaces, id].join(", ");
+      config.draft.links = formatInterfaceNames([...enteredInterfaces, id]);
     }
     await tick();
     interfaceCandidate = "";
@@ -112,6 +109,10 @@
       config.snapshot.settings.httpWeb.auth.enabled !== proposed.httpWeb.auth.enabled,
     ),
   );
+  const disablingWeb = $derived(
+    Boolean(config.snapshot?.settings.httpWeb.enabled && proposed && !proposed.httpWeb.enabled),
+  );
+  const accessWarning = $derived(disablingWeb || addressChanges || authChanges);
 
   $effect(() => {
     if (active) untrack(() => void config.load());
@@ -136,10 +137,10 @@
     if (!config.canSave || blocked) return false;
     preparedSave = undefined;
     submittedDraft = { ...config.draft };
-    const plan = await config.prepareSave();
+    const plan = config.prepareSave();
     if (!plan) return false;
     preparedSave = plan;
-    if (!plan.dnsRestartRequired && !connectionChange) return true;
+    if (!plan.dnsRestartRequired && !accessWarning) return true;
     confirmation = true;
     return new Promise((resolve) => {
       resolveConfirmation = resolve;
@@ -203,7 +204,7 @@
       {#if preparedSave?.dnsRestartRequired}
         <p>{t("DNS routing may be temporarily unavailable while settings are being applied.")}</p>
       {/if}
-      {#if proposed && !proposed.httpWeb.enabled}
+      {#if disablingWeb}
         <p>
           {t(
             "The web interface will be disabled. To enable it again, you will need to change the settings on the device.",
@@ -299,14 +300,14 @@
             "General settings changed elsewhere. Your draft is preserved. Reload the page before saving again.",
           )}
         </p>
-      {:else if config.error.code === "SETTINGS_BUSY"}
-        <p>{t("Another settings application is in progress. Your draft is preserved.")}</p>
       {:else if config.error.code === "SETTINGS_RESTART_REQUIRED"}
         <p>
           {t(
-            "The service now needs a DNS restart. Your draft is preserved. Save again to review the warning.",
+            "Applying these settings now requires a DNS restart. Nothing was saved; check the service before retrying.",
           )}
         </p>
+      {:else if config.error.code === "SETTINGS_BUSY"}
+        <p>{t("Another settings application is in progress. Your draft is preserved.")}</p>
       {/if}
       {#if config.outcome === "rollback_failed"}
         <p>
@@ -315,15 +316,10 @@
           )}
         </p>
       {/if}
-      {#if config.error.code !== "SETTINGS_RESTART_REQUIRED"}<p>{t(config.error.message)}</p>{/if}
+      {#if !["SETTINGS_CONFLICT", "SETTINGS_RESTART_REQUIRED", "SETTINGS_BUSY"].includes(config.error.code ?? "")}
+        <p>{t(config.error.message)}</p>
+      {/if}
     </div>
-  {/if}
-  {#if config.preparing}
-    <p class="application-status" role="status">{t("Checking settings…")}</p>
-  {:else if (config.busy && !config.loading) || externalApplication}
-    <p class="application-status" role="status">{t("Applying settings…")}</p>
-  {:else if config.outcome === "succeeded" && !config.dirty}
-    <p class="application-status" role="status">{t("Settings applied")}</p>
   {/if}
   {#if config.nextWeb}
     <div class="connection-notice" role="status">
@@ -352,6 +348,7 @@
   id="general"
   aria-labelledby="general-heading"
   aria-busy={config.busy}
+  data-application-state={config.outcome}
   use:section={() => ({
     dirty: config.dirty,
     canSave: config.canSave && !blocked,
@@ -359,13 +356,9 @@
     prepareSave: confirmSave,
     dialog: confirmationDialog,
     toolbarFeedback:
-      active ||
-      config.pending ||
-      config.error ||
-      config.nextWeb ||
-      config.preparing ||
-      config.saving ||
-      config.checking
+      !config.busy &&
+      !pageSaving &&
+      (blocked || config.error || config.nextWeb || config.pending || externalApplication)
         ? feedback
         : undefined,
     validationMessage: blocked
@@ -669,10 +662,6 @@
   .application-error {
     color: var(--red);
   }
-  .application-status {
-    color: var(--text-2);
-  }
-  .application-status,
   .notice {
     margin: 0.5rem 0;
     font-size: 0.9rem;

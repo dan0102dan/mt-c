@@ -547,18 +547,59 @@ static const char *static_skin_fn(void *ud)
     return cfg->app.http_web.skin;
 }
 
-/* The controller calls this only on the loop owner after a complete ACK.
- * Keep live listeners, in-flight DNS exchanges and immutable app pointers.
- * Persist first: all following live updates are infallible. */
+/* Create a complete WebUI listener without disturbing DNS or any of its
+ * routing machinery. The returned server is owned by the caller. */
+static mt_err_t daemon_open_web(struct daemon *d, const mt_app_config_t *app,
+                                uint16_t fallback_port, mt_httpd_t **out)
+{
+    mt_httpd_t *http = NULL;
+    mt_err_t err = mt_httpd_create(d->loop, &http);
+    if (err != MT_OK) { return err; }
+    mt_groups_register_routes(http, &d->groups_ctx);
+    mt_system_register_routes(http, &d->system_ctx);
+#ifdef MT_ENTWARE_KN
+    err = mt_kn_policy_register_routes(http, d->policy_service);
+    if (err != MT_OK) { mt_httpd_destroy(http); return err; }
+#endif
+    mt_subs_register_routes(http, &d->subs_ctx);
+    mt_httpd_route(http, "GET", "/api/v1/auth", mt_auth_status_handler, &d->auth_ctx);
+    mt_httpd_route(http, "POST", "/api/v1/auth", mt_auth_login_handler, &d->auth_ctx);
+    mt_httpd_set_middleware(http, mt_auth_middleware, &d->auth_ctx);
+    mt_httpd_set_not_found(http, mt_static_handler, &d->static_ctx);
+    err = mt_httpd_listen_tcp(http, app->http_web.host.address,
+                             app->http_web.host.port ? app->http_web.host.port : fallback_port);
+    if (err != MT_OK) { mt_httpd_destroy(http); return err; }
+    *out = http;
+    return MT_OK;
+}
+
+/* The controller calls this after the ACK handler unwound.
+ * Prebind a newly enabled WebUI before changing the file. Disabling WebUI
+ * happens only after persistence, without touching DNS listeners or routing. */
 static mt_err_t daemon_apply_live_settings(mt_app_config_t *next, void *userdata)
 {
     struct daemon *d = userdata;
+    bool toggle_web = d->cfg->app.http_web.enabled != next->http_web.enabled;
+    mt_httpd_t *new_web = NULL;
+    mt_err_t err = MT_OK;
+    if (toggle_web && next->http_web.enabled) {
+        err = daemon_open_web(d, next, next->http_web.host.port, &new_web);
+        if (err != MT_OK) { return err; }
+    }
     mt_config_t persisted = *d->cfg; /* borrowed collections and non-live fields */
     mt_settings_overlay_live(&persisted.app, next);
-    mt_err_t err = mt_config_save_file(&persisted, MT_VERSION, d->config_path);
-    if (err != MT_OK) { return err; }
+    /* Legacy port 0 is projected to the actual bound port. Store that same
+     * port when toggling so the accepted target revision remains accurate. */
+    if (toggle_web && !persisted.app.http_web.host.port) {
+        persisted.app.http_web.host.port = next->http_web.host.port;
+    }
+    err = mt_config_save_file(&persisted, MT_VERSION, d->config_path);
+    if (err != MT_OK) { mt_httpd_destroy(new_web); return err; }
     char *previous_log_level = d->cfg->app.log_level;
     mt_settings_overlay_live(&d->cfg->app, next);
+    if (toggle_web && !d->cfg->app.http_web.host.port) {
+        d->cfg->app.http_web.host.port = next->http_web.host.port;
+    }
     next->log_level = NULL; /* transfer this single owned string */
     free(previous_log_level);
     mt_log_set_level(mt_log_level_from_str(d->cfg->app.log_level));
@@ -566,6 +607,13 @@ static mt_err_t daemon_apply_live_settings(mt_app_config_t *next, void *userdata
                                   d->cfg->app.dns_proxy.disable_drop_aaaa);
     mt_dns_pipeline_set_additional_ttl(d->pipeline,
         (uint32_t)(d->cfg->app.netfilter.ipset.additional_ttl / MT_DURATION_SEC));
+    if (toggle_web) {
+        mt_httpd_t *previous_web = d->http_tcp;
+        d->http_tcp = new_web;
+        d->ports.http = mt_httpd_tcp_port(new_web);
+        mt_settings_bound_ports(d->settings, d->ports.http, d->ports.dns);
+        mt_httpd_destroy(previous_web);
+    }
     mt_httpd_revalidate_streams(d->http_tcp);
     return MT_OK;
 }
@@ -904,29 +952,12 @@ static mt_err_t daemon_start(struct daemon *d, mt_config_t *cfg, const char *con
     };
     if (cfg->app.http_web.enabled) {
         d->failure_stage = "bind web interface";
-        if (mt_httpd_create(d->loop, &d->http_tcp) != MT_OK) {
-            MT_ERROR("failed to create HTTP server");
-            return err != MT_OK ? err : MT_ERR_SYS;
-        }
-        mt_groups_register_routes(d->http_tcp, &d->groups_ctx);
-        mt_system_register_routes(d->http_tcp, &d->system_ctx);
-#ifdef MT_ENTWARE_KN
-        if (mt_kn_policy_register_routes(d->http_tcp, d->policy_service) != MT_OK) {
-            MT_ERROR("failed to register Keenetic policy routes");
-            return err != MT_OK ? err : MT_ERR_SYS;
-        }
-#endif
-        mt_subs_register_routes(d->http_tcp, &d->subs_ctx);
-        mt_httpd_route(d->http_tcp, "GET", "/api/v1/auth", mt_auth_status_handler, &d->auth_ctx);
-        mt_httpd_route(d->http_tcp, "POST", "/api/v1/auth", mt_auth_login_handler, &d->auth_ctx);
-        mt_httpd_set_middleware(d->http_tcp, mt_auth_middleware, &d->auth_ctx);
-        mt_httpd_set_not_found(d->http_tcp, mt_static_handler, &d->static_ctx);
-        err = mt_httpd_listen_tcp(d->http_tcp, cfg->app.http_web.host.address,
-                                  cfg->app.http_web.host.port ? cfg->app.http_web.host.port : restore_ports ? restore_ports->http : 0);
+        err = daemon_open_web(d, &cfg->app,
+                              restore_ports ? restore_ports->http : 0, &d->http_tcp);
         if (err != MT_OK) {
             MT_ERROR("failed to listen HTTP %s:%u: %s", cfg->app.http_web.host.address,
                      cfg->app.http_web.host.port, mt_err_str(err));
-        return err != MT_OK ? err : MT_ERR_SYS;
+            return err;
         }
         MT_INFO("HTTP WebUI listening on %s:%u", cfg->app.http_web.host.address,
                 cfg->app.http_web.host.port);

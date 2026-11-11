@@ -16,7 +16,7 @@ mt_err_t mt_settings_revision(const mt_app_config_t *app, char revision[65]);
  * On error out is empty; field identifies the invalid public field. */
 mt_err_t mt_settings_parse(const cJSON *json, const mt_app_config_t *base,
                            mt_app_config_t *out, char field[96]);
-/* Borrow the six live fields from source, retaining all other values/pointers.
+/* Borrow live fields (including WebUI enable state) from source, retaining all other values/pointers.
  * The caller must transfer or retain ownership of source->log_level. */
 void mt_settings_overlay_live(mt_app_config_t *target, const mt_app_config_t *source);
 
@@ -26,9 +26,10 @@ void mt_settings_destroy(mt_settings_t *settings);
 /* NULL detaches preparation before the old loop is destroyed. The controller
  * itself must remain alive until its HTTP responses have been torn down. */
 void mt_settings_attach_loop(mt_settings_t *settings, mt_loop_t *loop);
-/* Called on the loop owner after ACK and revision/impact checks. A successful
- * callback may transfer candidate->log_level; all other candidate data remains
- * controller-owned. Failure must leave the live configuration unchanged. */
+/* Called on a later loop dispatch after ACK and revision/impact checks.
+ * The callback may replace the WebUI listener and transfer candidate->log_level;
+ * all other candidate data remains controller-owned. Failure must leave the
+ * active configuration unchanged. */
 void mt_settings_set_live_apply(mt_settings_t *settings, mt_settings_live_apply_fn apply,
                                 void *userdata);
 void mt_settings_bound_ports(mt_settings_t *settings, uint16_t http, uint16_t dns);

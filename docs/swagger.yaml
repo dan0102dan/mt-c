@@ -791,9 +791,10 @@ paths:
         Requires same-origin JSON, the complete allowed settings projection and the
         revision from GET. Unknown fields and invalid types/ranges are rejected.
         Application is queued only after a successful acknowledgement write.
-        Preview determines whether the change requires a runtime restart. Live
-        changes atomically persist before updating existing runtime components;
-        they do not recreate DNS listeners. Other changes recreate the runtime,
+        Preview determines whether the change requires a DNS runtime restart.
+        Live changes atomically persist before updating existing runtime components;
+        WebUI enable/disable replaces only the HTTP listener after the ACK is
+        flushed and does not interrupt DNS. Other changes recreate the runtime,
         preserving current collections and DNS cache, then atomically save the
         canonical YAML. Only the latter can temporarily interrupt DNS routing.
         Set allow_dns_restart to false after a preview that did not require one;

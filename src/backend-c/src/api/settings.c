@@ -260,6 +260,7 @@ void mt_settings_overlay_live(mt_app_config_t *target, const mt_app_config_t *so
 {
     target->log_level = source->log_level;
     target->show_all_interfaces = source->show_all_interfaces;
+    target->http_web.enabled = source->http_web.enabled;
     target->http_web.auth.enabled = source->http_web.auth.enabled;
     target->dns_proxy.disable_fake_ptr = source->dns_proxy.disable_fake_ptr;
     target->dns_proxy.disable_drop_aaaa = source->dns_proxy.disable_drop_aaaa;
@@ -267,7 +268,8 @@ void mt_settings_overlay_live(mt_app_config_t *target, const mt_app_config_t *so
 }
 
 /* Compare effective public values, including legacy zero/default projections.
- * The same overlay defines classification, persistence and live mutation. */
+ * Toggling the WebUI listener is handled independently from DNS; the same
+ * live overlay defines classification, persistence and runtime mutation. */
 static mt_err_t needs_dns_restart(const mt_settings_t *s, const mt_app_config_t *current,
                                   const mt_app_config_t *candidate, const char *revision,
                                   const char *target_revision, bool *required)
@@ -280,6 +282,31 @@ static mt_err_t needs_dns_restart(const mt_settings_t *s, const mt_app_config_t 
     mt_err_t err = mt_settings_revision(&live, live_revision);
     if (err == MT_OK) { *required = strcmp(live_revision, target_revision) != 0; }
     return err;
+}
+
+/* Process live changes on a later event-loop dispatch, never from the
+ * HTTP response's on_sent stack: WebUI toggles can destroy that listener. */
+static void apply_live_after_ack(mt_loop_t *loop, void *userdata)
+{
+    mt_settings_t *s = userdata;
+    if (s->loop != loop || !s->state || strcmp(s->state, "applying")) { return; }
+    mt_app_config_t effective = effective_settings(s);
+    char revision[65];
+    if (mt_settings_revision(&effective, revision) != MT_OK || strcmp(revision, s->revision)) {
+        mt_app_config_clear(&s->candidate); memset(&s->candidate, 0, sizeof(s->candidate));
+        mt_settings_finish(s, "Settings changed before they could be applied", false);
+        return;
+    }
+    mt_err_t err = s->live_apply(&s->candidate, s->live_userdata);
+    mt_app_config_clear(&s->candidate); memset(&s->candidate, 0, sizeof(s->candidate));
+    if (err == MT_OK) {
+        mt_settings_runtime_started(s);
+        mt_settings_finish(s, NULL, false);
+    } else {
+        char message[160];
+        snprintf(message, sizeof(message), "Cannot save live settings (%s); settings were not changed", mt_err_str(err));
+        mt_settings_finish(s, message, false);
+    }
 }
 
 /* Called only on the event-loop owner. No other request can mutate cfg
@@ -304,15 +331,12 @@ static void maybe_apply(mt_settings_t *s)
     cJSON_Delete(json);
     if (err != MT_OK) { fail_operation(s, "Cannot prepare settings"); return; }
     if (!restart) {
-        err = s->live_apply(&s->candidate, s->live_userdata);
-        mt_app_config_clear(&s->candidate); memset(&s->candidate, 0, sizeof(s->candidate));
-        if (err == MT_OK) {
-            mt_settings_runtime_started(s);
-            mt_settings_finish(s, NULL, false);
-        } else {
-            char message[160];
-            snprintf(message, sizeof(message), "Cannot save live settings (%s); settings were not changed", mt_err_str(err));
-            mt_settings_finish(s, message, false);
+        /* A WebUI disable destroys the HTTP server that delivered this ACK.
+         * Defer all live mutations until its on_sent callback unwinds, or
+         * destroying the connection here would use freed HTTP state. */
+        if (mt_loop_post(s->loop, apply_live_after_ack, s) != MT_OK) {
+            mt_app_config_clear(&s->candidate); memset(&s->candidate, 0, sizeof(s->candidate));
+            fail_operation(s, "Cannot schedule live settings application");
         }
         return;
     }

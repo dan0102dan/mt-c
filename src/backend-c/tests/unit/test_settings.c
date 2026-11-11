@@ -587,6 +587,30 @@ TEST projection_is_strict_and_preserves_hidden_settings(void)
     mt_app_config_clear(&parsed); cJSON_Delete(json); mt_config_clear(&config); PASS();
 }
 
+TEST large_general_limits_remain_usable_without_eager_socket_pool_allocation(void)
+{
+    dns_stub_t stub; ASSERT(stub_start(&stub, 12));
+    harness_t *h = harness_start(stub.port, false); ASSERT(h);
+    uint16_t web = h->daemon.ports.http, dns = h->daemon.ports.dns;
+    cJSON *snapshot = NULL, *ack = NULL, *response = NULL;
+    ASSERT_EQ(200, request(web, "GET", "/api/v1/system/settings", NULL, &snapshot));
+    replace_setting(snapshot, "dnsProxy.maxIdleConns", "4294967295");
+    replace_setting(snapshot, "dnsProxy.maxConcurrent", "4294967295");
+    ASSERT_EQ(202, submit(web, snapshot, &ack));
+    response = await_operation(0, text_value(item(ack, "operation"), "id"), "succeeded");
+    ASSERT(response);
+    ASSERT_EQ(UINT32_MAX, h->config.app.dns_proxy.max_idle_conns);
+    ASSERT_EQ(UINT32_MAX, h->config.app.dns_proxy.max_concurrent);
+    ASSERT_EQ(1, dns_query(dns, false, false, NULL));
+    ASSERT_EQ(1, dns_query(dns, true, false, NULL));
+    cJSON *saved = NULL;
+    ASSERT_EQ(200, request(web, "GET", "/api/v1/system/settings", NULL, &saved));
+    ASSERT_EQ(UINT32_MAX, item(item(saved, "settings"), "dnsProxy")
+                          ? (uint32_t)item(item(item(saved, "settings"), "dnsProxy"), "maxIdleConns")->valuedouble : 0u);
+    cJSON_Delete(saved); cJSON_Delete(snapshot); cJSON_Delete(ack); cJSON_Delete(response);
+    harness_stop(h); stub_stop(&stub); PASS();
+}
+
 TEST preview_classifies_actual_changes_without_mutating_or_resolving(void)
 {
     dns_stub_t stub; ASSERT(stub_start(&stub, 12)); harness_t *h = harness_start(stub.port, false); ASSERT(h);
@@ -597,7 +621,7 @@ TEST preview_classifies_actual_changes_without_mutating_or_resolving(void)
     int started = atomic_load(&starts);
     atomic_store(&resolver_entered, false); atomic_store(&hold_resolver, true);
     const struct { const char *path, *value; bool restart; } cases[] = {
-        {"httpWeb.enabled", "false", true}, {"httpWeb.auth.enabled", "true", false},
+        {"httpWeb.enabled", "false", false}, {"httpWeb.auth.enabled", "true", false},
         {"httpWeb.host.address", "\"0.0.0.0\"", true}, {"httpWeb.host.port", "1", true},
         {"dnsProxy.host.address", "\"0.0.0.0\"", true}, {"dnsProxy.host.port", "1", true},
         {"dnsProxy.upstream.address", "\"unresolvable.invalid\"", true}, {"dnsProxy.upstream.port", "1", true},
@@ -637,6 +661,83 @@ TEST preview_classifies_actual_changes_without_mutating_or_resolving(void)
     ASSERT_STR_EQ(text_value(snapshot, "revision"), text_value(response, "revision")); ASSERT(cJSON_IsNull(item(response, "operation")));
     char *after = read_file(h->path); ASSERT(after); ASSERT_STR_EQ(before, after);
     free(before); free(after); cJSON_Delete(snapshot); cJSON_Delete(response); harness_stop(h); stub_stop(&stub); PASS();
+}
+
+TEST toggling_webui_does_not_restart_dns_or_routing(void)
+{
+    dns_stub_t stub; ASSERT(stub_start(&stub, 23));
+    harness_t *h = harness_start(stub.port, false); ASSERT(h);
+    uint16_t web = h->daemon.ports.http, dns = h->daemon.ports.dns;
+    mt_loop_t *loop = h->daemon.loop;
+    mt_dnsproxy_t *proxy = h->daemon.proxy;
+    mt_dns_pipeline_t *pipeline = h->daemon.pipeline;
+    mt_app_t *app = h->daemon.app;
+    mt_httpd_t *admin = h->daemon.http_unix;
+    int started = atomic_load(&starts);
+    uint8_t answer = 0;
+    ASSERT_EQ(1, dns_query(dns, false, false, &answer)); ASSERT_EQ(23, answer);
+    cJSON *snapshot = NULL, *ack = NULL, *response = NULL;
+    ASSERT_EQ(200, request(web, "GET", "/api/v1/system/settings", NULL, &snapshot));
+    replace_setting(snapshot, "httpWeb.enabled", "false");
+    ASSERT_EQ(200, preview(web, snapshot, &response));
+    ASSERT(cJSON_IsFalse(item(response, "dns_restart_required"))); cJSON_Delete(response);
+    ASSERT_EQ(202, submit_without_restart(web, snapshot, &ack));
+    response = await_operation(0, text_value(item(ack, "operation"), "id"), "succeeded"); ASSERT(response);
+    ASSERT_STR_EQ(text_value(ack, "target_revision"), text_value(response, "revision"));
+    ASSERT(!h->config.app.http_web.enabled); ASSERT(h->daemon.http_tcp == NULL);
+    ASSERT(connection(web) < 0);
+    ASSERT_EQ(started, atomic_load(&starts)); ASSERT(h->daemon.loop == loop);
+    ASSERT(h->daemon.proxy == proxy); ASSERT(h->daemon.pipeline == pipeline);
+    ASSERT(h->daemon.app == app); ASSERT(h->daemon.http_unix == admin);
+    ASSERT_EQ(1, dns_query(dns, false, false, &answer)); ASSERT_EQ(23, answer);
+    ASSERT_EQ(1, dns_query(dns, true, false, &answer)); ASSERT_EQ(23, answer);
+    mt_config_t saved; ASSERT_EQ(MT_OK, mt_config_init_defaults(&saved));
+    ASSERT_EQ(MT_OK, mt_config_load_file(&saved, h->path));
+    ASSERT(!saved.app.http_web.enabled); mt_config_clear(&saved);
+    cJSON_Delete(snapshot); snapshot = response; cJSON_Delete(ack);
+    replace_setting(snapshot, "httpWeb.enabled", "true");
+    ASSERT_EQ(200, preview((uint16_t)atomic_load(&admin_port), snapshot, &response));
+    ASSERT(cJSON_IsFalse(item(response, "dns_restart_required"))); cJSON_Delete(response);
+    ASSERT_EQ(202, submit_without_restart((uint16_t)atomic_load(&admin_port), snapshot, &ack));
+    response = await_operation(0, text_value(item(ack, "operation"), "id"), "succeeded"); ASSERT(response);
+    ASSERT(h->config.app.http_web.enabled); ASSERT(h->daemon.http_tcp != NULL);
+    ASSERT_EQ(web, mt_httpd_tcp_port(h->daemon.http_tcp));
+    ASSERT_EQ(started, atomic_load(&starts)); ASSERT(h->daemon.loop == loop);
+    ASSERT(h->daemon.proxy == proxy); ASSERT(h->daemon.pipeline == pipeline);
+    ASSERT(h->daemon.app == app); ASSERT(h->daemon.http_unix == admin);
+    ASSERT_EQ(1, dns_query(dns, false, false, &answer)); ASSERT_EQ(23, answer);
+    ASSERT_EQ(1, dns_query(dns, true, false, &answer)); ASSERT_EQ(23, answer);
+    cJSON *confirmed_web = NULL;
+    ASSERT_EQ(200, request(web, "GET", "/api/v1/system/settings", NULL, &confirmed_web));
+    ASSERT_STR_EQ(text_value(ack, "target_revision"), text_value(confirmed_web, "revision"));
+    cJSON_Delete(confirmed_web); cJSON_Delete(snapshot); cJSON_Delete(ack); cJSON_Delete(response);
+    harness_stop(h); stub_stop(&stub); PASS();
+}
+
+TEST webui_disable_write_failure_keeps_webui_and_dns_running(void)
+{
+    dns_stub_t stub; ASSERT(stub_start(&stub, 19));
+    harness_t *h = harness_start(stub.port, false); ASSERT(h);
+    uint16_t web = h->daemon.ports.http, dns = h->daemon.ports.dns;
+    mt_loop_t *loop = h->daemon.loop;
+    mt_dnsproxy_t *proxy = h->daemon.proxy;
+    int started = atomic_load(&starts);
+    char *before = read_file(h->path); ASSERT(before);
+    cJSON *snapshot = NULL, *ack = NULL;
+    ASSERT_EQ(200, request(web, "GET", "/api/v1/system/settings", NULL, &snapshot));
+    replace_setting(snapshot, "httpWeb.enabled", "false");
+    atomic_store(&fail_rename, 1);
+    ASSERT_EQ(202, submit_without_restart(web, snapshot, &ack));
+    cJSON *failed = await_operation(web, text_value(item(ack, "operation"), "id"), "failed"); ASSERT(failed);
+    ASSERT(h->config.app.http_web.enabled); ASSERT(h->daemon.http_tcp != NULL);
+    ASSERT(h->daemon.loop == loop); ASSERT(h->daemon.proxy == proxy);
+    ASSERT_EQ(started, atomic_load(&starts));
+    cJSON *still_web = NULL; ASSERT_EQ(200, request(web, "GET", "/api/v1/system/settings", NULL, &still_web));
+    ASSERT_STR_EQ(text_value(snapshot, "revision"), text_value(still_web, "revision"));
+    ASSERT_EQ(1, dns_query(dns, false, false, NULL)); ASSERT_EQ(1, dns_query(dns, true, false, NULL));
+    char *after = read_file(h->path); ASSERT(after); ASSERT_STR_EQ(before, after);
+    free(before); free(after); cJSON_Delete(snapshot); cJSON_Delete(ack); cJSON_Delete(failed); cJSON_Delete(still_web);
+    harness_stop(h); stub_stop(&stub); PASS();
 }
 
 TEST live_settings_preserve_dns_runtime_and_revoke_unauthenticated_streams(void)
@@ -1050,6 +1151,9 @@ int main(int argc, char **argv)
     RUN_TEST(dns_stub_retries_cross_protocol_port_collision_without_leaking_sockets);
     RUN_TEST(projection_is_strict_and_preserves_hidden_settings);
     RUN_TEST(preview_classifies_actual_changes_without_mutating_or_resolving);
+    RUN_TEST(large_general_limits_remain_usable_without_eager_socket_pool_allocation);
+    RUN_TEST(toggling_webui_does_not_restart_dns_or_routing);
+    RUN_TEST(webui_disable_write_failure_keeps_webui_and_dns_running);
     RUN_TEST(live_settings_preserve_dns_runtime_and_revoke_unauthenticated_streams);
     RUN_TEST(live_persistence_failure_preserves_memory_file_and_dns);
     RUN_TEST(live_acknowledgement_cannot_escalate_to_dns_restart);

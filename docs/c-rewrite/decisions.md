@@ -4,6 +4,68 @@ Format: ID, status (proposed/accepted/superseded), context, decision,
 consequences. Phase 0 entries are **proposed** unless marked otherwise —
 final acceptance happens when the implementing phase starts.
 
+## D-94 — Bounded DNS resource use and TTL arithmetic for General limits (2026-11-11)
+
+Status: **accepted correctness fix**. General accepts the full unsigned 32-bit
+range for `dnsProxy.maxIdleConns` and `netfilter.ipset.additionalTTLSeconds`.
+A large idle-socket limit must not allocate an equally large fd array at DNS
+startup. The UDP socket pool now allocates small chunks only as returned
+sockets are actually retained, up to the configured limit. If an optional pool
+growth allocation fails, the socket is closed; active DNS forwarding is not
+failed. A zero limit retains no idle sockets.
+
+For both address and CNAME records, adding `additionalTTLSeconds` now
+saturates at UINT32_MAX instead of wrapping through zero. This deliberately
+corrects previously overflowed TTLs, preserving ordinary values and wire
+formats. Native regression tests exercise the maximum editable limits,
+on-demand pooling, live UDP/TCP DNS and saturated vs ordinary TTLs.
+
+## D-93 — DNS-safe WebUI toggles and immediate, quiet settings saves (2026-11-11)
+
+Status: **accepted at the user's request**. This entry supersedes D-92's
+original browser-preview workflow and its earlier full-runtime treatment of
+HTTP enable changes. Historical decisions below remain for context.
+
+Changing only `httpWeb.enabled` creates or removes the TCP WebUI listener;
+it does not recreate the DNS proxy, DNS pipeline, cache, routing components,
+event loop or Unix administrative API. The operation waits for the entire
+HTTP acknowledgement to flush, and listener removal runs only after that
+response callback has returned. Enabling first binds the new HTTP listener,
+then persists the configuration; a persistence failure disposes the new
+listener and retains the previous configuration. Disabling persists first,
+then closes the HTTP listener. The browser warns about losing web access,
+not a DNS interruption. Changing `httpWeb.host.address` or
+`httpWeb.host.port` still follows full-runtime reconstruction and therefore
+retains the DNS-interruption warning; mixed DNS changes do too.
+
+Saving no longer calls `POST /system/settings/preview`, nor replaces that
+request with background or debounced previews. The already loaded normalized
+settings and edited values determine the necessary warning immediately.
+The frontend comparison covers the same restart-requiring fields as the
+native classifier, with regression tests for every editable field and for
+reverted values. WebUI enable/disable, authentication, logging, interface-list
+visibility, PTR/AAAA flags and additional TTL do not by themselves require a
+DNS warning. Save-all still confirms before any writes and saves General
+last, after the other changed settings sections succeed.
+
+The existing preview API remains available for API clients. The actual PUT
+retains strict validation, revision conflict detection and
+`allow_dns_restart` enforcement. A changed runtime must not silently turn an
+unapproved live save into a DNS restart. Refusal is an ordinary save error
+with the draft preserved, not an automatic retry or an extra confirmation
+flow. A 202 response means accepted, not applied: bounded operation-result
+reconciliation after PUT remains, including lost-acknowledgement and
+reauthentication handling, without automatically resending the mutation.
+
+Normal progress and success do not create text rows, banners or success
+toasts in Settings. The fixed-size Save button indicates work in progress;
+its dimensions and the settings header/content positions remain stable.
+Actionable validation, save errors and reconnection instructions remain
+available, and failures never discard the draft. Browser tests cover the
+absence of preflight requests and normal status captions, stable geometry
+while saving and after completion, conditional warnings, preserved drafts
+and safe Save-all ordering.
+
 ## D-01 — Source layout `src/backend-c/`
 
 Status: proposed. Adopt the spec's suggested tree (include/magitrickle/ +
@@ -4297,13 +4359,14 @@ runtime still matches the current configuration:
 | `logLevel` | Update the log threshold. |
 | `showAllInterfaces` | Interface enumeration reads the current setting. |
 | `httpWeb.auth.enabled` | Authentication reads the current setting; revalidate existing streams. |
+| `httpWeb.enabled` | Only the TCP WebUI listener is created or destroyed; DNS stays active. |
 | `dnsProxy.disableFakePTR` | Update the proxy's PTR handling flag. |
 | `dnsProxy.disableDropAAAA` | Update the proxy's AAAA handling flag. |
 | `netfilter.ipset.additionalTTLSeconds` | Update the pipeline's additional TTL for subsequent DNS results. |
 
 All other changed public fields retain the full-runtime application path,
-including HTTP listener enable/address/port changes. No independent HTTP-listener
-reconfiguration is introduced here. Changes are compared using the normalized
+including HTTP listener address/port changes. WebUI enable/disable uses a
+separate HTTP-only transition, not DNS runtime reconstruction. Changes are compared using the normalized
 public projection, so formatting differences and values changed back to their
 original values do not by themselves require a restart. An inactive runtime or
 a mismatch between the current and active revisions requires reconstruction,
@@ -4325,7 +4388,12 @@ before application; a late change fails the accepted operation without silently
 restarting DNS. Preview is deliberately not a lock or reservation.
 
 Live application keeps the existing 202/operation confirmation protocol and
-waits for the complete HTTP acknowledgement. It skips upstream resolution,
+waits for the complete HTTP acknowledgement. WebUI listener removal is deferred
+until the HTTP response callback has returned so that its connection cannot be
+freed during the callback. Enabling WebUI prebinds the HTTP listener before
+persistence and disposes it on failure; disabling closes it only after
+persistence. Both leave the DNS listener, pipeline, cache, routing and Unix
+administrative API running. Live application skips upstream resolution,
 retains the loop, DNS proxy, pipeline, cache and routing components, and
 atomically persists the candidate configuration before applying the supported
 live values. Only those values change in the running model; unchanged owned

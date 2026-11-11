@@ -152,6 +152,13 @@ static const char *first_match(mt_matcher_t *m, char **names, size_t n)
     return NULL;
 }
 
+/* A large additional TTL is valid in YAML and in the General form.
+ * Saturate instead of wrapping the effective lifetime back toward zero. */
+static uint32_t effective_ttl(uint32_t original, uint32_t additional)
+{
+    return original > UINT32_MAX - additional ? UINT32_MAX : original + additional;
+}
+
 static void handle_address_record(mt_dns_pipeline_t *p, const mt_dns_rr_t *rr,
                                   uint8_t addr_len, const char *kind,
                                   int64_t now, action_batch_t *batch)
@@ -168,7 +175,7 @@ static void handle_address_record(mt_dns_pipeline_t *p, const mt_dns_rr_t *rr,
     }
     trim_fqdn(domain);
 
-    uint32_t ttl = rr->ttl + p->additional_ttl;
+    uint32_t ttl = effective_ttl(rr->ttl, p->additional_ttl);
     mt_cache_add_address(p->cache, domain, rr->rdata, addr_len, ttl, now);
 
     char **names = NULL;
@@ -215,7 +222,7 @@ static void handle_cname_record(mt_dns_pipeline_t *p, const mt_dns_rr_t *rr,
     }
     trim_fqdn(target);
 
-    uint32_t ttl = rr->ttl + p->additional_ttl;
+    uint32_t ttl = effective_ttl(rr->ttl, p->additional_ttl);
     mt_cache_add_alias(p->cache, domain, target, ttl, now);
 
     mt_cache_addr_t *addrs = NULL;
