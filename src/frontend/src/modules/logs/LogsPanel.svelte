@@ -161,12 +161,14 @@
   <div class="logs-controls-actions">
     {#if status}
       <Tooltip value={status}>
-        <span class="connection-status" role="status" aria-label={status} title={status}>
-          {#if statusLoading}
-            <LoaderCircle size={18} aria-hidden="true" />
-          {:else}
-            <TriangleAlert size={18} aria-hidden="true" />
-          {/if}
+        <span class="connection-status" role="status" aria-label={status}>
+          <button type="button" class="status-trigger" aria-label={status}>
+            {#if statusLoading}
+              <LoaderCircle size={18} aria-hidden="true" />
+            {:else}
+              <TriangleAlert size={18} aria-hidden="true" />
+            {/if}
+          </button>
           <span class="sr-only">{status}</span>
         </span>
       </Tooltip>
@@ -261,6 +263,21 @@
     align-items: center;
     justify-content: center;
     color: var(--text-2);
+  }
+  .status-trigger {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0.35rem;
+    border: 0;
+    border-radius: 0.35rem;
+    background: transparent;
+    color: inherit;
+    cursor: help;
+  }
+  .status-trigger:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
   }
   .sr-only {
     position: absolute;

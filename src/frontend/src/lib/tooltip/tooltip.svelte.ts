@@ -2,6 +2,7 @@ import { tick } from "svelte";
 
 export const tooltip = $state({
   visible: false,
+  focused: false,
   text: "",
   x: 0,
   y: 0,
@@ -9,9 +10,12 @@ export const tooltip = $state({
 });
 
 let activeAnchor: HTMLElement | undefined;
+let activeFocus = false;
 
-export async function show(anchor: HTMLElement, text: string) {
+export async function show(anchor: HTMLElement, text: string, focused = false) {
   activeAnchor = anchor;
+  activeFocus = focused;
+  tooltip.focused = focused;
   tooltip.text = text;
   tooltip.visible = true;
   tooltip.opacity = 0;
@@ -44,7 +48,7 @@ export function hideFor(anchor: HTMLElement) {
 }
 
 export function updateFor(anchor: HTMLElement, text: string) {
-  if (activeAnchor === anchor) void show(anchor, text);
+  if (activeAnchor === anchor) void show(anchor, text, activeFocus);
 }
 
 export function hide() {
