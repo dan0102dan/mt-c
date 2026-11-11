@@ -28,18 +28,21 @@ Deno.test("log levels retain upstream order and labels", () => {
 Deno.test("unknown and prototype-named levels cannot crash the viewer", () => {
   for (const level of ["nolevel", "unexpected", "__proto__", "constructor", "toString"]) {
     equal(logLevel(level), [6, "???"]);
-    equal(matchesLog({ ...row, level }, "error", ""), true);
+    equal(matchesLog({ ...row, level }, ""), true);
   }
 });
-Deno.test("severity filter is a minimum", () => {
-  equal(matchesLog(row, "warn", ""), false);
-  equal(matchesLog(row, "debug", ""), true);
+Deno.test("all received severities remain visible without a second minimum", () => {
+  for (const level of ["trace", "debug", "info", "warn", "error", "fatal", "panic", "nolevel"]) {
+    equal(matchesLog({ ...row, level }, ""), true);
+    equal(matchesLog({ ...row, level }, "ready"), true);
+    equal(matchesLog({ ...row, level }, "missing"), false);
+  }
 });
 Deno.test("search covers message, field names and values without case sensitivity", () => {
   for (const filter of [" READY ", "CLIENT=192.168", "example.ORG"]) {
-    equal(matchesLog(row, "info", filter), true);
+    equal(matchesLog(row, filter), true);
   }
-  equal(matchesLog(row, "info", "missing"), false);
+  equal(matchesLog(row, "missing"), false);
 });
 Deno.test("exports available rows without a server or DOM", () => {
   equal(

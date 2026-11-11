@@ -4,10 +4,16 @@
   import { onDestroy, tick, untrack, type Snippet } from "svelte";
 
   import Button from "../../components/ui/Button.svelte";
-  import { Clear, Filter, Save, ScrollToBottom } from "../../components/ui/icons";
-  import Select from "../../components/ui/Select.svelte";
   import Tooltip from "../../components/ui/Tooltip.svelte";
 
+  import {
+    Clear,
+    Export,
+    Filter,
+    LoaderCircle,
+    ScrollToBottom,
+    TriangleAlert,
+  } from "../../components/ui/icons";
   import {
     LOG_LEVELS,
     logExportParts,
@@ -25,21 +31,29 @@
     controls?: Snippet;
     labels: {
       filter: string;
-      level: string;
-      save: string;
+      export: string;
       clear: string;
       scrollToBottom: string;
       results: string;
       empty: string;
       session?: string;
     };
+    /** Only transient connection problems or data loss, not routine recording state. */
     status?: string;
+    statusLoading?: boolean;
   };
 
-  let { entries, revision = 0, onclear, controls, labels, status = "" }: Props = $props();
+  let {
+    entries,
+    revision = 0,
+    onclear,
+    controls,
+    labels,
+    status = "",
+    statusLoading = false,
+  }: Props = $props();
   const LINE_HEIGHT = 16;
   const SCROLL_TO_BOTTOM_DELTA = 40;
-  let level = $state("trace");
   let filter = $state("");
   let container = $state<HTMLDivElement>();
   let container_height = $state(0);
@@ -50,11 +64,14 @@
 
   let items_filtered = $derived.by(() => {
     void revision; // Plain ingest array is published once per batch, not per record.
-    return entries.filter((item) => matchesLog(item, level, filter));
+    return entries.filter((item) => matchesLog(item, filter));
   });
   let window = $derived(logWindow(items_filtered.length, scroll_top, container_height));
   let visible_items = $derived(items_filtered.slice(window.start, window.end));
-  let hasEntries = $derived.by(() => { void revision; return entries.length > 0; });
+  let hasEntries = $derived.by(() => {
+    void revision;
+    return entries.length > 0;
+  });
 
   function scrollTopChanges() {
     if (!container) return;
@@ -92,7 +109,9 @@
         }
       });
     }
-    return () => { cancelled = true; };
+    return () => {
+      cancelled = true;
+    };
   });
 
   function clearLines() {
@@ -116,7 +135,11 @@
     link.href = export_url;
     link.download = `${new Date().toISOString().replace(/[:.]/g, "-")}-mt-c.log`;
     document.body.appendChild(link);
-    try { link.click(); } finally { link.remove(); }
+    try {
+      link.click();
+    } finally {
+      link.remove();
+    }
     export_timer = setTimeout(releaseExport, 30000);
   }
   onDestroy(releaseExport);
@@ -134,19 +157,24 @@
       bind:value={filter}
       oninput={resetScroll}
     />
-    <Select
-      options={Object.keys(LOG_LEVELS).map((value) => ({ label: value, value }))}
-      bind:selected={level}
-      onValueChange={resetScroll}
-      ariaLabel={labels.level}
-      style="width: 100px; flex-shrink: 0"
-    />
   </div>
   <div class="logs-controls-actions">
+    {#if status}
+      <Tooltip value={status}>
+        <span class="connection-status" role="status" aria-label={status} title={status}>
+          {#if statusLoading}
+            <LoaderCircle size={18} aria-hidden="true" />
+          {:else}
+            <TriangleAlert size={18} aria-hidden="true" />
+          {/if}
+          <span class="sr-only">{status}</span>
+        </span>
+      </Tooltip>
+    {/if}
     {#if controls}{@render controls()}{/if}
-    <Tooltip value={labels.save}>
-      <Button type="button" onclick={saveLogs} aria-label={labels.save} disabled={!hasEntries}>
-        <Save size={22} />
+    <Tooltip value={labels.export}>
+      <Button type="button" onclick={saveLogs} aria-label={labels.export} disabled={!hasEntries}>
+        <Export size={22} />
       </Button>
     </Tooltip>
     <Tooltip value={labels.clear}>
@@ -162,8 +190,6 @@
   </div>
 </div>
 
-{#if status}<div class="status" role="status">{status}</div>{/if}
-
 <div
   bind:this={container}
   bind:clientHeight={container_height}
@@ -174,16 +200,22 @@
   tabindex="-1"
 >
   <div class="spacer" style:height={`${items_filtered.length * LINE_HEIGHT + 10}px`}></div>
-  {#if !items_filtered.length}<div class="empty">{labels.empty}</div>{/if}
+  {#if hasEntries && filter.trim() && !items_filtered.length}
+    <div class="empty">{labels.empty}</div>
+  {/if}
   {#each visible_items as item, index (item.id)}
-    <div class="line" class:session={item.kind === "session"}
-      style:top={`${(window.start + index) * LINE_HEIGHT + 5}px`}>
+    <div
+      class="line"
+      class:session={item.kind === "session"}
+      style:top={`${(window.start + index) * LINE_HEIGHT + 5}px`}
+    >
       <span class="time">{logText(item.fields.time)}</span>
       {#if item.kind === "session"}
         {labels.session ?? item.message}
       {:else}
         <span class={Object.hasOwn(LOG_LEVELS, item.level) ? item.level : "unknown"}
-          >{logLevel(item.level)[1]}</span>
+          >{logLevel(item.level)[1]}</span
+        >
         {logText(item.message)}
         {#each Object.entries(item.fields) as [key, value]}
           {#if key !== "time"}
@@ -207,7 +239,9 @@
     background-color: var(--bg-dark-extra);
     border: 1px solid var(--bg-light-extra);
   }
-  .spacer { position: relative; }
+  .spacer {
+    position: relative;
+  }
   .logs-controls {
     display: flex;
     align-items: end;
@@ -217,10 +251,27 @@
   }
   .logs-controls-actions {
     display: flex;
-    align-items: end;
+    align-items: center;
     justify-content: end;
     gap: 0.5rem;
     flex-shrink: 0;
+  }
+  .connection-status {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--text-2);
+  }
+  .sr-only {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+    border: 0;
   }
   .filter {
     display: flex;
@@ -242,7 +293,10 @@
     width: 100%;
     min-width: 0;
   }
-  .filter-input:focus-visible { outline: none; border-bottom-color: var(--accent); }
+  .filter-input:focus-visible {
+    outline: none;
+    border-bottom-color: var(--accent);
+  }
   .line {
     position: absolute;
     height: 16px;
@@ -251,20 +305,49 @@
     font-size: 0.8rem;
     white-space: nowrap;
   }
-  .time, .status, .empty, .unknown, .session { color: var(--text-2); }
-  .status { margin-bottom: 0.5rem; }
-  .empty { position: absolute; top: 0.5rem; }
-  .key { color: var(--violet); }
-  .trace { color: #00aaff; }
-  .debug { color: var(--text-2); }
-  .info { color: #66bb6a; }
-  .warn { color: #ffd600; }
-  .error { color: #ff3d3d; }
-  .fatal { color: #ff4500; }
-  .panic { color: #ff1493; }
+  .time,
+  .empty,
+  .unknown,
+  .session {
+    color: var(--text-2);
+  }
+  .empty {
+    position: absolute;
+    top: 0.5rem;
+  }
+  .key {
+    color: var(--violet);
+  }
+  .trace {
+    color: #00aaff;
+  }
+  .debug {
+    color: var(--text-2);
+  }
+  .info {
+    color: #66bb6a;
+  }
+  .warn {
+    color: #ffd600;
+  }
+  .error {
+    color: #ff3d3d;
+  }
+  .fatal {
+    color: #ff4500;
+  }
+  .panic {
+    color: #ff1493;
+  }
   @media (max-width: 700px) {
-    .logs-controls { flex-wrap: wrap; }
-    .filter { flex-basis: 100%; }
-    .logs-controls-actions { margin-left: auto; }
+    .logs-controls {
+      flex-wrap: wrap;
+    }
+    .filter {
+      flex-basis: 100%;
+    }
+    .logs-controls-actions {
+      margin-left: auto;
+    }
   }
 </style>
