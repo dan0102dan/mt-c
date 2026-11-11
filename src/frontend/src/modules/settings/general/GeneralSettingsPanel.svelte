@@ -358,7 +358,13 @@
     toolbarFeedback:
       !config.busy &&
       !pageSaving &&
-      (blocked || config.error || config.nextWeb || config.pending || externalApplication)
+      (blocked ||
+        (config.snapshot &&
+          config.error &&
+          (!config.error.field || !fieldForPath(config.error.field))) ||
+        config.nextWeb ||
+        config.pending ||
+        externalApplication)
         ? feedback
         : undefined,
     validationMessage: blocked
