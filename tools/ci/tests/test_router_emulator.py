@@ -4,7 +4,9 @@
 from contextlib import ExitStack, nullcontext, redirect_stdout
 import importlib.util
 import io
+import os
 from pathlib import Path
+import subprocess
 import tempfile
 import unittest
 from unittest.mock import MagicMock, patch
@@ -211,6 +213,64 @@ class RouterEmulatorTest(unittest.TestCase):
             with self.assertRaises(urllib.error.HTTPError) as error:
                 urllib.request.urlopen(f"http://127.0.0.1:{port}/mt-c.apk")
             self.assertEqual(error.exception.code, 404)
+
+
+    def test_ipv6_gateway_preflight_retries_nondisruptively_and_fails_closed(self):
+        # Exercise the real POSIX-shell preflight with a fake client-side ping.
+        # No root, network namespaces, QEMU or network access required.
+        routing = smoke.ROUTING_SCRIPT.read_text()
+        prefix = "wait_ipv6_gateway() {\n"
+        begin = routing.index(prefix)
+        end = routing.index("\n}\nwait_ipv6_gateway", begin) + 2
+        helper = routing[begin:end]
+        self.assertLess(routing.index("\nwait_ipv6_gateway\n", end),
+                        routing.index("# Main-table blackholes"))
+        self.assertIn('ip -n "$CLIENT" -6 neigh show dev mtci-client0', helper)
+        self.assertIn('ip -n "$CLIENT" -6 route get "$TARGET"', routing)
+        self.assertNotIn('ipset add', helper)
+        self.assertNotIn('ip -6 route add', helper)
+
+        bin_dir = self.directory / "bin"
+        bin_dir.mkdir()
+        ping_count = self.directory / "ping-count"
+        fake_ip = bin_dir / "ip"
+        fake_ip.write_text("""#!/bin/sh
+if [ "$1" = netns ] && [ "$2" = exec ] && [ "$4" = ping ]; then
+    count=$(cat "$CI_PING_COUNT" 2>/dev/null || echo 0)
+    count=$((count + 1))
+    echo "$count" > "$CI_PING_COUNT"
+    [ "$CI_SUCCEED_AT" -gt 0 ] && [ "$count" -ge "$CI_SUCCEED_AT" ]
+    exit $?
+fi
+exit 0
+""")
+        fake_ip.chmod(0o755)
+        fake_sleep = bin_dir / "sleep"
+        fake_sleep.write_text("#!/bin/sh\nexit 0\n")
+        fake_sleep.chmod(0o755)
+        shell = ("""set -eu
+CLIENT=mtci-client
+LAN=br-lan
+log() { echo "mt-c routing smoke: $*" >&2; }
+die() { log "FAIL: $*"; exit 23; }
+""" + helper + "\nwait_ipv6_gateway\n")
+        env = dict(os.environ, PATH=f"{bin_dir}:{os.environ['PATH']}",
+                   CI_PING_COUNT=str(ping_count))
+        env["CI_SUCCEED_AT"] = "3"
+        success = subprocess.run(["sh", "-c", shell], env=env,
+                                 text=True, capture_output=True, timeout=5)
+        self.assertEqual(0, success.returncode, success.stderr)
+        self.assertEqual("3", ping_count.read_text().strip())
+        self.assertIn("reachable after 3 attempts", success.stderr)
+
+        ping_count.unlink()
+        env["CI_SUCCEED_AT"] = "0"
+        failed = subprocess.run(["sh", "-c", shell], env=env,
+                                text=True, capture_output=True, timeout=5)
+        self.assertEqual(23, failed.returncode, failed.stderr)
+        self.assertEqual("10", ping_count.read_text().strip())
+        self.assertIn("IPv6 LAN gateway unreachable before subnet6 routing test",
+                      failed.stderr)
 
 
 if __name__ == "__main__":
