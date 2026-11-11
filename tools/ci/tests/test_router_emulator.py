@@ -219,11 +219,11 @@ class RouterEmulatorTest(unittest.TestCase):
         # Exercise the real POSIX-shell preflight with a fake client-side ping.
         # No root, network namespaces, QEMU or network access required.
         routing = smoke.ROUTING_SCRIPT.read_text()
-        prefix = "wait_ipv6_gateway() {\\n"
+        prefix = "wait_ipv6_gateway() {\n"
         begin = routing.index(prefix)
-        end = routing.index("\\n}\\nwait_ipv6_gateway", begin) + 2
+        end = routing.index("\n}\nwait_ipv6_gateway", begin) + 2
         helper = routing[begin:end]
-        self.assertLess(routing.index("\\nwait_ipv6_gateway\\n", end),
+        self.assertLess(routing.index("\nwait_ipv6_gateway\n", end),
                         routing.index("# Main-table blackholes"))
         self.assertIn('ip -n "$CLIENT" -6 neigh show dev mtci-client0', helper)
         self.assertIn('ip -n "$CLIENT" -6 route get "$TARGET"', routing)
@@ -246,14 +246,14 @@ exit 0
 """)
         fake_ip.chmod(0o755)
         fake_sleep = bin_dir / "sleep"
-        fake_sleep.write_text("#!/bin/sh\\nexit 0\\n")
+        fake_sleep.write_text("#!/bin/sh\nexit 0\n")
         fake_sleep.chmod(0o755)
         shell = ("""set -eu
 CLIENT=mtci-client
 LAN=br-lan
 log() { echo "mt-c routing smoke: $*" >&2; }
 die() { log "FAIL: $*"; exit 23; }
-""" + helper + "\\nwait_ipv6_gateway\\n")
+""" + helper + "\nwait_ipv6_gateway\n")
         env = dict(os.environ, PATH=f"{bin_dir}:{os.environ['PATH']}",
                    CI_PING_COUNT=str(ping_count))
         env["CI_SUCCEED_AT"] = "3"
