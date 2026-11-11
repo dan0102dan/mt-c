@@ -5,8 +5,10 @@
  * "<RFC3339 UTC> <LVL> <message>". Level names match the Go config values
  * ("trace".."disabled") so `logLevel` keeps working unchanged.
  *
- * Thread-safe: each event is formatted into a stack buffer and emitted with
- * a single write(2). Log calls never allocate.
+ * Thread-safe: short events use a stack buffer; longer events allocate just
+ * enough space to preserve the whole message. Concurrent output is serialized
+ * and partial/EINTR writes are retried. Allocation/format failures produce an
+ * explicit diagnostic marker instead of silently truncating a record.
  */
 #ifndef MAGITRICKLE_LOG_H
 #define MAGITRICKLE_LOG_H
