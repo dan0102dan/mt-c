@@ -61,6 +61,20 @@ static void wait_file(const char *path) {
     assert(!"timed out waiting for fixture");
 }
 
+static void download_write_failure(void) {
+    /* Removing the guessed preflight must not hide an actual ENOSPC. */
+    int fd = open("/dev/full", O_WRONLY | O_CLOEXEC);
+    assert(fd >= 0);
+    char chunk[] = "package bytes";
+    transfer_t transfer = {.fd = fd, .limit = sizeof(chunk) - 1};
+    mt_sha256_init(&transfer.hash);
+    errno = 0;
+    assert(receive(chunk, 1, sizeof(chunk) - 1, &transfer) == 0);
+    assert(errno == ENOSPC);
+    assert(transfer.len == 0);
+    assert(close(fd) == 0);
+}
+
 static void handoff(bool apk, bool fail, unsigned closed_stdio) {
     char root[] = "/tmp/mt-package-handoff-XXXXXX";
     assert(mkdtemp(root));
@@ -77,12 +91,13 @@ static void handoff(bool apk, bool fail, unsigned closed_stdio) {
     assert(mkdir(temp, 0700) == 0);
     script(package, "verified package fixture\n");
     char text[4096];
+    /* Exact argument counts also reject flags that bypass manager space checks. */
     snprintf(text, sizeof(text),
         "#!/bin/sh\nset -eu\n[ ! -e /proc/self/fd/3 ]\n[ ! -e /proc/self/fd/19 ]\n"
-        "[ \"$1\" = '%s' ]\n%s[ -f \"$%d\" ]\n"
+        "[ \"$#\" -eq %d ]\n[ \"$1\" = '%s' ]\n%s[ -f \"$%d\" ]\n"
         "echo package-manager-progress\necho package-manager-diagnostics >&2\ntouch '%s'\n"
         "while [ ! -f '%s' ]; do sleep 0.01; done\nexit %d\n",
-        apk ? "add" : "install", apk ? "[ \"$2\" = '--allow-untrusted' ]\n" : "",
+        apk ? 3 : 2, apk ? "add" : "install", apk ? "[ \"$2\" = '--allow-untrusted' ]\n" : "",
         apk ? 3 : 2, ready, gate, fail ? 7 : 0);
     script(manager, text);
     snprintf(text, sizeof(text), "#!/bin/sh\nset -eu\n[ \"$1\" = restart ]\n"
@@ -142,6 +157,7 @@ static void handoff(bool apk, bool fail, unsigned closed_stdio) {
 }
 
 int main(void) {
+    download_write_failure();
 #if defined(MT_TEST_ENTWARE_SHELL)
     char suffix[192];
     assert(strcmp(INSTALL_SHELL, "/opt/bin/sh") == 0);

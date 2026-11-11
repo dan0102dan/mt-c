@@ -108,8 +108,9 @@ export class GeneralSettingsState {
     return true;
   }
 
-  async load(): Promise<void> {
-    if (this.busy || this.dirty || this.pending) return;
+  /** Reuse the loaded snapshot on tab activation; only explicit checks refresh it. */
+  async load(refresh = false): Promise<void> {
+    if ((!refresh && this.snapshot) || this.busy || this.dirty || this.pending) return;
     const { controller, generation } = this.begin();
     this.loading = true;
     this.error = undefined;
@@ -236,7 +237,7 @@ export class GeneralSettingsState {
   async checkApplication(): Promise<void> {
     if (this.busy) return;
     if (!this.pending) {
-      await this.load();
+      await this.load(true);
       return;
     }
     const { controller, generation } = this.begin();

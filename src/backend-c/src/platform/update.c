@@ -17,7 +17,6 @@
 #include <string.h>
 #include <sys/file.h>
 #include <sys/stat.h>
-#include <sys/statvfs.h>
 #include <sys/socket.h>
 #include <sys/wait.h>
 #include <unistd.h>
@@ -40,11 +39,9 @@
  * Use Entware's own shell, with no fallback to the incompatible wrapper. */
 #define INSTALL_SHELL "/opt/bin/sh"
 #define INIT_SCRIPT "/opt/etc/init.d/S99magitrickle"
-#define INSTALL_ROOT "/opt"
 #else
 #define INSTALL_SHELL "/bin/sh"
 #define INIT_SCRIPT "/etc/init.d/magitrickle"
-#define INSTALL_ROOT "/"
 #endif
 
 static const char *str(const cJSON *obj, const char *key) {
@@ -441,14 +438,6 @@ static bool download(const mt_update_asset_t *asset, transfer_t *t) {
     return false;
 }
 
-static bool space_for(const char *path, size_t size) {
-    struct statvfs st;
-    if (statvfs(path, &st)) { return false; }
-    /* Conservative preflight, not a promise of transactional package storage. */
-    uint64_t need = (uint64_t)size * 6U + UINT64_C(8) * 1024U * 1024U;
-    return (uint64_t)st.f_bavail * (uint64_t)st.f_frsize >= need;
-}
-
 static void *prepare_install(void *ud) {
     update_job_t *job = ud;
     const char *error = "Cannot contact GitHub; try again later";
@@ -464,8 +453,8 @@ static void *prepare_install(void *ud) {
         job->release_id, job->suffix, MT_VERSION, MT_PACKAGE_REVISION, &asset);
     free(metadata.data); metadata.data = NULL;
     if (error) { goto done; }
-    error = "Not enough free space";
-    if (!space_for("/tmp", asset.size) || !space_for(INSTALL_ROOT, asset.size)) { goto done; }
+    /* Let the package manager check installation space. Download storage errors
+     * are handled by write_all()/fsync(), not a guessed free-space threshold. */
     error = "Cannot prepare package download";
     if (!mkdtemp(temp)) { goto done; }
     temp_ready = true;
