@@ -2,6 +2,12 @@ import assert from "node:assert/strict";
 import { Hono } from "hono";
 
 import { registerMockSettingsRoutes } from "../../dev/settings-mock.ts";
+import {
+  buildGeneralSettings,
+  formatInterfaceNames,
+  parseInterfaceNames,
+  settingsToDraft,
+} from "../../src/modules/settings/general/config.ts";
 import type { ServerConfig } from "../../src/modules/config-transfer/adapter.ts";
 import { generalServerConfig, generalSettings } from "../mocks/general-settings.ts";
 
@@ -38,6 +44,19 @@ function fixture() {
       }),
   };
 }
+
+Deno.test("General interface names containing commas and backslashes round-trip", () => {
+  const names = ["br0", "vpn,corp", "tun\\edge", "wan0"];
+  const formatted = formatInterfaceNames(names);
+  assert.equal(formatted, "br0, vpn\\,corp, tun\\\\edge, wan0");
+  assert.deepEqual(parseInterfaceNames(formatted), names);
+  assert.deepEqual(parseInterfaceNames("br0, tun0 br-lan"), ["br0", "tun0", "br-lan"]);
+  const settings = generalSettings();
+  settings.link = names;
+  const draft = settingsToDraft(settings);
+  assert.equal(draft.links, formatted);
+  assert.deepEqual(buildGeneralSettings(draft).settings?.link, names);
+});
 
 Deno.test("settings preview distinguishes live changes and remains read-only", async () => {
   const { get, preview, state } = fixture();

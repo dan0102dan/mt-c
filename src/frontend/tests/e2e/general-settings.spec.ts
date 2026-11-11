@@ -371,6 +371,27 @@ for (const field of ["logging", "interface visibility", "PTR", "AAAA", "TTL"] as
   });
 }
 
+test("General preserves escaped interface IDs when saving an unrelated field", async ({ page }) => {
+  const { state } = await backend(page);
+  state.settings.link = ["br0", "vpn,corp", "tun\\edge"];
+  state.interfaces.push({ id: "vpn,corp", name: "Company VPN" });
+  await page.goto("/");
+  await openGeneral(page);
+  const links = page.getByRole("textbox", {
+    name: "DNS interception interfaces",
+    exact: true,
+  });
+  await expect(links).toHaveValue("br0, vpn\\,corp, tun\\\\edge");
+  await expect(page.locator("#save-settings")).toBeDisabled();
+  await page.locator('[data-select-trigger][aria-label="Log detail level"]').click();
+  await page.getByRole("option", { name: "Debug", exact: true }).click();
+  await page.locator("#save-settings").click();
+  await applied(page);
+  expect(state.settings.link).toEqual(["br0", "vpn,corp", "tun\\edge"]);
+  expect(state.settings.logLevel).toBe("debug");
+  expect(state.writes[0].allow_dns_restart).toBe(false);
+});
+
 test("reverted DNS fields do not trigger a warning for a later live edit", async ({ page }) => {
   const { state } = await backend(page);
   await page.goto("/");

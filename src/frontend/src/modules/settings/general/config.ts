@@ -235,6 +235,34 @@ export function emptyDraft(): GeneralDraft {
   };
 }
 
+/** Linux interface names may contain commas or backslashes. Escape them in
+ * the compact list editor so a save of another setting cannot split a name. */
+export function formatInterfaceNames(names: readonly string[]): string {
+  return names.map((name) => name.replaceAll("\\", "\\\\").replaceAll(",", "\\,")).join(", ");
+}
+
+export function parseInterfaceNames(value: string): string[] {
+  const names: string[] = [];
+  let current = "";
+  for (let index = 0; index < value.length; index++) {
+    const char = value[index];
+    if (
+      char === "\\" &&
+      index + 1 < value.length &&
+      (value[index + 1] === "," || value[index + 1] === "\\")
+    ) {
+      current += value[++index];
+    } else if (char === "," || /\s/.test(char)) {
+      if (current) names.push(current);
+      current = "";
+    } else {
+      current += char;
+    }
+  }
+  if (current) names.push(current);
+  return names;
+}
+
 export function settingsToDraft(settings: GeneralSettings): GeneralDraft {
   return {
     upstreamAddress: settings.dnsProxy.upstream.address,
@@ -247,7 +275,7 @@ export function settingsToDraft(settings: GeneralSettings): GeneralDraft {
     timeoutMs: String(settings.dnsProxy.timeoutMs),
     maxConcurrent: String(settings.dnsProxy.maxConcurrent),
     maxIdleConns: String(settings.dnsProxy.maxIdleConns),
-    links: settings.link.join(", "),
+    links: formatInterfaceNames(settings.link),
     ipv4: !settings.netfilter.disableIPv4,
     ipv6: !settings.netfilter.disableIPv6,
     additionalTTLSeconds: String(settings.netfilter.ipset.additionalTTLSeconds),
@@ -311,12 +339,7 @@ export function buildGeneralSettings(draft: GeneralDraft): {
       disableIPv6: !draft.ipv6,
       ipset: { additionalTTLSeconds: numeric(draft.additionalTTLSeconds) },
     },
-    link: draft.links.trim()
-      ? draft.links
-          .trim()
-          .split(/[\s,]+/)
-          .filter(Boolean)
-      : [],
+    link: parseInterfaceNames(draft.links),
     showAllInterfaces: draft.showAllInterfaces,
     logLevel: draft.logLevel,
   });

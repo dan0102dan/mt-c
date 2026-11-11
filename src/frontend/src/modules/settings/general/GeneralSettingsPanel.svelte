@@ -20,7 +20,9 @@
   import {
     changesWebAccess,
     fieldForPath,
+    formatInterfaceNames,
     logLevels,
+    parseInterfaceNames,
     UINT32_MAX,
     webTarget,
     webTargetUrl,
@@ -63,12 +65,7 @@
     disabled: "Disabled",
   };
   const logOptions = $derived(logLevels.map((value) => ({ value, label: t(logLabels[value]) })));
-  const enteredInterfaces = $derived(
-    config.draft.links
-      .trim()
-      .split(/[\s,]+/)
-      .filter(Boolean),
-  );
+  const enteredInterfaces = $derived(parseInterfaceNames(config.draft.links));
   const interfaceOptions = $derived(
     [
       ...new Set([
@@ -86,7 +83,7 @@
 
   async function addInterface(id: string) {
     if (!formDisabled && interfaceOptions.some((item) => item.value === id)) {
-      config.draft.links = [...enteredInterfaces, id].join(", ");
+      config.draft.links = formatInterfaceNames([...enteredInterfaces, id]);
     }
     await tick();
     interfaceCandidate = "";
