@@ -494,7 +494,9 @@ test("a server restart refusal preserves the draft without another confirmation 
   await toggle.click();
   state.runtimeActive = false;
   await page.locator("#save-settings").click();
-  await expect(page.getByRole("alert")).toContainText("Your draft is preserved");
+  await expect(page.getByRole("alert")).toContainText(
+    "Applying these settings now requires a DNS restart. Nothing was saved; check the service before retrying.",
+  );
   await expect(toggle).toBeChecked();
   await expect(page.locator("#save-settings")).toBeEnabled();
   await expect(page.getByRole("dialog", { name: "Apply general settings?", exact: true })).toHaveCount(0);
