@@ -1,0 +1,22 @@
+{
+  "Recording starts only on request and uses RAM. Messages from before Start are not collected.": "Запись включается вручную и хранится только в ОЗУ. Сообщения до её запуска не собираются.",
+  "Start log recording": "Начать запись",
+  "Stop log recording": "Остановить запись",
+  "Recording continues until stopped or the service restarts.": "Запись продолжается до остановки или перезапуска сервиса.",
+  "Stop recording for all viewers and free server history. Received logs stay in this browser.": "Остановить запись для всех и освободить историю на сервере. Полученные логи останутся в этом браузере.",
+  "Connection lost. Received logs remain available.": "Соединение потеряно. Полученные логи остаются доступны.",
+  "Application logs are unavailable in this version.": "В этой версии сервиса просмотр логов недоступен.",
+  "Loading log history...": "Загрузка истории логов…",
+  "Recording application logs": "Идёт запись логов",
+  "Application log recording is off": "Запись логов выключена",
+  "Received records": "Получено записей",
+  "Records not saved": "Не удалось сохранить записей",
+  "Search application logs...": "Поиск по логам…",
+  "Minimum log level": "Минимальный уровень логов",
+  "Save application logs": "Сохранить логи",
+  "Clear local logs": "Очистить логи в браузере",
+  "Scroll to latest log": "К последней записи",
+  "Application log entries": "Логи приложения",
+  "No matching application logs": "Нет подходящих записей",
+  "Recording session": "Сеанс записи"
+}

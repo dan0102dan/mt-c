@@ -6,6 +6,7 @@ struct mt_http_stream {
     mt_http_stream_close_fn closed;
     void *ud;
     int maintenance_timer;
+    int notify_fd;
     uint64_t last_progress_ms, last_auth_ms;
     bool heartbeat_due, writable, failed;
 };
@@ -19,6 +20,7 @@ static void stream_cleanup(mt_http_conn_t *c) {
     mt_http_stream_t *s = c->stream;
     if (!s) { return; }
     c->stream = NULL;
+    if (s->notify_fd >= 0) (void)mt_loop_del_fd(c->server->loop, s->notify_fd);
     if (s->maintenance_timer) {
         (void)mt_loop_del_timer(c->server->loop, s->maintenance_timer);
     }
@@ -191,6 +193,7 @@ mt_http_stream_t *mt_http_stream_open(mt_http_req_t *req, mt_http_res_t *res,
     if (!s) { return NULL; }
     s->conn = c; s->next = next; s->closed = closed; s->ud = ud;
     s->writable = true;
+    s->notify_fd = -1;
     s->last_progress_ms = s->last_auth_ms = stream_now_ms();
     if (mt_loop_add_timer(c->server->loop, MT_HTTP_STREAM_AUTH_CHECK_MS,
         MT_HTTP_STREAM_AUTH_CHECK_MS, stream_maintenance, s, &s->maintenance_timer) != MT_OK) {
@@ -201,4 +204,31 @@ mt_http_stream_t *mt_http_stream_open(mt_http_req_t *req, mt_http_res_t *res,
     c->server->n_streams++;
     res->streaming = true;
     return s;
+}
+
+/* Producers may run on workers; this callback is always loop-owned. A closed
+ * stream detaches its fd before the owner unsubscribes and closes the pipe. */
+static void stream_notification(mt_loop_t *loop, int fd, uint32_t events, void *ud) {
+    (void)loop;
+    mt_http_stream_t *s = ud;
+    if (events & (EPOLLERR | EPOLLHUP)) { s->failed = true; return; }
+    char bytes[64];
+    ssize_t n;
+    do { n = read(fd, bytes, sizeof(bytes)); }
+    while (n > 0 || (n < 0 && errno == EINTR));
+    if (n == 0 || (errno != EAGAIN && errno != EWOULDBLOCK)) {
+        s->failed = true;
+        return;
+    }
+    mt_http_stream_wake(s);
+}
+void mt_http_stream_watch_fd(mt_http_stream_t *s, int fd) {
+    if (!s) return;
+    if (fd < 0 || s->notify_fd >= 0 ||
+        mt_loop_add_fd(s->conn->server->loop, fd, EPOLLIN,
+                       stream_notification, s) != MT_OK) {
+        s->failed = true;
+        return;
+    }
+    s->notify_fd = fd;
 }
