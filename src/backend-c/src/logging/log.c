@@ -119,9 +119,10 @@ void mt_log(mt_log_level_t level, const char *fmt, ...)
         return;
     }
     int off = snprintf(stack, sizeof(stack),
-                       "%04d-%02d-%02dT%02d:%02d:%02dZ %s ",
+                       "%04d-%02d-%02dT%02d:%02d:%02d.%03ldZ %s ",
                        tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday,
-                       tm.tm_hour, tm.tm_min, tm.tm_sec, level_tag(level));
+                       tm.tm_hour, tm.tm_min, tm.tm_sec, ts.tv_nsec / 1000000L,
+                       level_tag(level));
     if (off < 0 || (size_t)off >= sizeof(stack)) {
         errno = saved_errno;
         return;

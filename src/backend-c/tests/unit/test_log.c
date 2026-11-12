@@ -46,10 +46,14 @@ TEST line_format_has_timestamp_and_tag(void)
     char buf[256];
     mt_log_set_level(MT_LOG_TRACE);
     ASSERT(capture(MT_LOG_INFO, "fmt-check", buf, sizeof(buf)) > 0);
-    /* "YYYY-MM-DDTHH:MM:SSZ INF fmt-check\n" */
+    /* "YYYY-MM-DDTHH:MM:SS.mmmZ INF fmt-check\n" */
     ASSERT_EQ('2', buf[0]);
     ASSERT_EQ('T', buf[10]);
-    ASSERT_EQ('Z', buf[19]);
+    ASSERT_EQ('.', buf[19]);
+    ASSERT(buf[20] >= '0' && buf[20] <= '9');
+    ASSERT(buf[21] >= '0' && buf[21] <= '9');
+    ASSERT(buf[22] >= '0' && buf[22] <= '9');
+    ASSERT_EQ('Z', buf[23]);
     ASSERT(strstr(buf, " INF fmt-check\n") != NULL);
     mt_log_set_level(MT_LOG_INFO);
     PASS();
@@ -132,7 +136,7 @@ TEST long_message_is_never_truncated(void)
     ASSERT_EQ(0, memcmp(begin, message, message_len));
     ASSERT_EQ(0, strcmp(begin + message_len, ";code=42\n"));
     ASSERT_EQ((size_t)file_len,
-              strlen("2000-01-01T00:00:00Z") + strlen(header) +
+              strlen("2000-01-01T00:00:00.000Z") + strlen(header) +
               message_len + strlen(";code=42\n"));
     free(output);
     free(message);

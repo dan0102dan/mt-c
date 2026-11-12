@@ -72,14 +72,14 @@ static void test_full_messages(void) {
     size_t pos = 0;
     mt_log_history_piece_t part = {0};
     while (mt_log_history_read(s.session, 1, pos, out + pos, 17, &part)) pos += part.copied;
-    assert(pos == 25 + n + 1 && pos == part.length);
+    assert(pos == 29 + n + 1 && pos == part.length);
     assert(part.level == MT_LOG_WARN);
-    assert(memcmp(out + 25, message, n) == 0 && out[pos - 1] == '\n');
+    assert(memcmp(out + 29, message, n) == 0 && out[pos - 1] == '\n');
     free(out); free(message);
     mt_log(MT_LOG_INFO, "A%cB", 0);
     char bytes[128];
     assert(mt_log_history_read(s.session, 2, 0, bytes, sizeof(bytes), &part));
-    assert(part.length == 29 && bytes[25] == 'A' && bytes[26] == 0 && bytes[27] == 'B');
+    assert(part.length == 33 && bytes[29] == 'A' && bytes[30] == 0 && bytes[31] == 'B');
 }
 static void test_sessions_and_no_quota(void) {
     fresh();
@@ -89,7 +89,7 @@ static void test_sessions_and_no_quota(void) {
     assert(state().count == 11000);
     char row[128]; mt_log_history_piece_t p;
     assert(mt_log_history_read(old, 1, 0, row, sizeof(row), &p));
-    assert(memcmp(row + 25, "record=0\n", 9) == 0);
+    assert(memcmp(row + 29, "record=0\n", 9) == 0);
     assert(mt_log_history_enable(true)); /* Never clear on an idempotent Start. */
     assert(state().count == 11000 && strcmp(old, state().session) == 0);
     assert(mt_log_history_enable(false));

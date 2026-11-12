@@ -83,20 +83,20 @@ static void test_replay_and_resume(void) {
     handle_application_stream(&req,&res,NULL);assert(res.status==200 && opened.ud);
     const char *path=getenv("MT_LOG_TEST_DUMP");if(path){dump=fopen(path,"wb");assert(dump);}
     consume("capture");consume("log");
-    size_t received=0;char *bytes=malloc(140026);assert(bytes);
-    while(received<140026){
+    size_t received=0;char *bytes=malloc(140030);assert(bytes);
+    while(received<140030){
         cJSON *json=next_event("log");
         const cJSON *data=cJSON_GetObjectItemCaseSensitive(json,"data");
         assert(strcmp(cJSON_GetObjectItemCaseSensitive(json,"id")->valuestring,"2")==0);
         assert(cJSON_GetObjectItemCaseSensitive(json,"offset")->valuedouble==(double)received);
-        assert(cJSON_GetObjectItemCaseSensitive(json,"length")->valuedouble==140026);
+        assert(cJSON_GetObjectItemCaseSensitive(json,"length")->valuedouble==140030);
         size_t n=0;
-        assert(mt_base64_decode(data->valuestring,strlen(data->valuestring),(uint8_t *)bytes+received,140026-received,&n)==0);
+        assert(mt_base64_decode(data->valuestring,strlen(data->valuestring),(uint8_t *)bytes+received,140030-received,&n)==0);
         received+=n;
-        assert(!!cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(json,"end"))==(received==140026));
+        assert(!!cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(json,"end"))==(received==140030));
         cJSON_Delete(json);
     }
-    assert(memcmp(bytes+25,message,140000)==0 && bytes[140025]=='\n');
+    assert(memcmp(bytes+29,message,140000)==0 && bytes[140029]=='\n');
     consume("ready");
     if(dump){fclose(dump);dump=NULL;}
     size_t length=99;assert(opened.next(opened.ud,&length)==NULL && length==0);

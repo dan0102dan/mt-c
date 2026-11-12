@@ -96,3 +96,21 @@ The full-message formatter incorporates the independent logging fix from PR #42.
   for router hardware testing or killing a deployed daemon.
 
 No performance improvement is claimed without measurements.
+
+## Diagnostic message semantics
+
+TRACE preserves individual rtnetlink notifications; an RTM_NEWLINK record
+is an **observation**, not proof that the interface transitioned between
+states. Each record includes the interface index, administrative flag,
+operational state and carrier when present, MTU, notification type and
+kernel flags/change mask. No notification is suppressed or aggregated.
+These additional fields are *observational only*; link, address, route and
+recovery callbacks still run for every notification.
+
+DEBUG DNS responses identify the queried name/type, upstream server, client,
+response RCODE, transport, response size and elapsed time (milliseconds,
+negative if unavailable). A normal NXDOMAIN is not a routing warning.
+Applied routing-address messages identify the address, domain, match, group,
+configured interface/profile, effective TTL and actual attempt count.
+The logger prefixes records with UTC milliseconds; SSE and the browser retain
+and export the full original text.

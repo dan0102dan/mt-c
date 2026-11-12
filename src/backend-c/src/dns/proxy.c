@@ -163,6 +163,8 @@ struct exchange {
     struct in_addr dst4;
     struct in6_addr dst6;
     bool have_dst;
+    struct timespec diagnostic_start;
+    bool have_diagnostic_start;
 
     /* TCP client */
     int client_fd;
@@ -288,6 +290,70 @@ static void udp_reply(mt_dnsproxy_t *p, exchange_t *ex, const uint8_t *data,
     }
 }
 
+/* Diagnostics are best-effort: no logging path may change a DNS packet or
+ * the forwarding decision. These helpers run only at DEBUG/TRACE. */
+static const char *dns_rcode_name(unsigned code)
+{
+    switch (code) {
+    case 0: return "NOERROR";
+    case 1: return "FORMERR";
+    case 2: return "SERVFAIL";
+    case 3: return "NXDOMAIN";
+    case 4: return "NOTIMP";
+    case 5: return "REFUSED";
+    default: return "OTHER";
+    }
+}
+
+static const char *dns_client_address(const exchange_t *ex, char *buf, size_t len)
+{
+    const void *addr = NULL;
+    int family = ex->client.ss_family;
+    if (family == AF_INET) {
+        addr = &((const struct sockaddr_in *)&ex->client)->sin_addr;
+    } else if (family == AF_INET6) {
+        addr = &((const struct sockaddr_in6 *)&ex->client)->sin6_addr;
+    }
+    if (!addr || !inet_ntop(family, addr, buf, (socklen_t)len)) {
+        snprintf(buf, len, "unknown");
+    }
+    return buf;
+}
+
+static long long dns_diagnostic_elapsed_ms(const exchange_t *ex)
+{
+    if (!ex->have_diagnostic_start) return -1;
+    struct timespec end;
+    if (clock_gettime(CLOCK_MONOTONIC, &end) != 0) return -1;
+    int64_t seconds = (int64_t)end.tv_sec - (int64_t)ex->diagnostic_start.tv_sec;
+    int64_t nanos = (int64_t)end.tv_nsec - (int64_t)ex->diagnostic_start.tv_nsec;
+    int64_t elapsed = seconds * 1000 + nanos / 1000000;
+    return elapsed < 0 ? -1 : (long long)elapsed;
+}
+
+static void dns_log_response(const exchange_t *ex, const mt_dns_msg_t *msg, size_t bytes)
+{
+    if (mt_log_level() > MT_LOG_DEBUG) return;
+    char name[4 * MT_DNS_MAX_NAME + 2] = "unknown";
+    char client[INET6_ADDRSTRLEN];
+    unsigned qtype = 0;
+    if (msg->n_questions) {
+        const mt_dns_question_t *q = &msg->questions[0];
+        qtype = q->qtype;
+        if (mt_dns_name_to_string(q->name, q->name_len, name, sizeof(name)) != MT_OK) {
+            snprintf(name, sizeof(name), "invalid");
+        }
+    }
+    unsigned rcode = msg->flags & 0x0fu;
+    MT_DEBUG("dns upstream response: domain=%s qtype=%u id=%u "
+             "rcode=%s(%u) answers=%zu client=%s upstream=%s:%u "
+             "transport=%s bytes=%zu elapsed_ms=%lld",
+             name, qtype, msg->id, dns_rcode_name(rcode), rcode,
+             msg->n_answers, dns_client_address(ex, client, sizeof(client)),
+             ex->p->cfg.upstream_addr, ex->p->cfg.upstream_port,
+             ex->is_tcp ? "tcp" : "udp", bytes, dns_diagnostic_elapsed_ms(ex));
+}
+
 /* Common: process an upstream response (parse, hook, deliver). */
 static void deliver_response(exchange_t *ex, const uint8_t *resp,
                              size_t resp_len)
@@ -298,9 +364,13 @@ static void deliver_response(exchange_t *ex, const uint8_t *resp,
     mt_dns_msg_t *msg = NULL;
     if (mt_dns_msg_parse(resp, resp_len, &msg) != MT_OK) {
         /* Go drops on response parse failure (ResponseHook always set). */
+        MT_WARN("dns upstream response discarded: reason=malformed transport=%s "
+                "upstream=%s:%u bytes=%zu",
+                network, p->cfg.upstream_addr, p->cfg.upstream_port, resp_len);
         exchange_finish(ex, false);
         return;
     }
+    dns_log_response(ex, msg, resp_len);
     if (p->cb != NULL) {
         p->cb(msg, NULL, network, p->cb_ud);
     }
@@ -360,7 +430,15 @@ static void on_timeout(mt_loop_t *loop, void *ud)
     (void)loop;
     exchange_t *ex = ud;
     ex->timer_id = 0; /* already fired */
-    MT_DEBUG("upstream deadline exceeded");
+    if (mt_log_level() <= MT_LOG_DEBUG) {
+        char client[INET6_ADDRSTRLEN];
+        MT_DEBUG("dns exchange timeout: client=%s upstream=%s:%u transport=%s "
+                 "request_bytes=%zu sent=%zu response_bytes=%zu elapsed_ms=%lld",
+                 dns_client_address(ex, client, sizeof(client)),
+                 ex->p->cfg.upstream_addr, ex->p->cfg.upstream_port,
+                 ex->is_tcp ? "tcp" : "udp", ex->req_len, ex->req_sent,
+                 ex->resp_got, dns_diagnostic_elapsed_ms(ex));
+    }
     exchange_finish(ex, false);
 }
 
@@ -611,6 +689,10 @@ typedef enum request_disp {
 /* Decide: fake-PTR local reply, drop (malformed), or forward. */
 static request_disp_t handle_request_common(mt_dnsproxy_t *p, exchange_t *ex)
 {
+    if (mt_log_level() <= MT_LOG_DEBUG) {
+        ex->have_diagnostic_start =
+            clock_gettime(CLOCK_MONOTONIC, &ex->diagnostic_start) == 0;
+    }
     /* Go parses the request (hooks set) and drops on parse failure. */
     mt_dns_msg_t *req_msg = NULL;
     if (mt_dns_msg_parse(ex->req, ex->req_len, &req_msg) != MT_OK) {
