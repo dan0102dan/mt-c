@@ -16,9 +16,13 @@ fetch() {
 }
 fetch libubox eb9bcb64185ac155c02cc1a604692c4b00368324
 fetch ubus afa57cce0aff82f4a7a0e509d4387ebc23dd3be7
+# Pinned OpenWrt sources still declare pre-3.5 policies in subdirectories.
+# CMake 4 removed that compatibility; opt in externally without rewriting
+# vendor sources. CMake 3 accepts this cache variable without changing policy.
 for project in libubox ubus; do
     cmake -S "$prefix/src/$project" -B "$prefix/src/$project/build" \
         -DBUILD_LUA=OFF -DBUILD_EXAMPLES=OFF \
+        -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
         -DCMAKE_PREFIX_PATH="$prefix" -DCMAKE_INSTALL_PREFIX="$prefix"
     cmake --build "$prefix/src/$project/build" --parallel 2
     cmake --install "$prefix/src/$project/build"
