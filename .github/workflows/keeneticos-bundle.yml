@@ -1,0 +1,69 @@
+name: KeeneticOS isolated boot inputs
+on:
+  push:
+    branches: [test/keeneticos-emulator-20261112]
+    paths: [.github/workflows/keeneticos-bundle.yml]
+permissions:
+  contents: read
+  actions: read
+jobs:
+  bundle:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Fetch bootloader, preloader, Entware and mt-c
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p assets
+          curl -fL --retry 2 --max-time 180 https://osvault.project-athens.com/files/keenboot/aarch64/KB-51/KeenBOOT_AX3000T_KB-51.bin -o assets/keenboot.bin
+          echo '78621c84a4e0306ea44372be83260eed  assets/keenboot.bin' | md5sum -c -
+          base=https://downloads.openwrt.org/releases/24.10.4/targets/mediatek/filogic
+          name=openwrt-24.10.4-mediatek-filogic-xiaomi_mi-router-ax3000t-ubootmod-preloader.bin
+          curl -fL --retry 2 --max-time 180 "$base/$name" -o "assets/$name"
+          curl -fL --retry 2 --max-time 60 "$base/sha256sums" -o assets/openwrt-sha256sums
+          (cd assets && grep -F "$name" openwrt-sha256sums | sha256sum -c -)
+          curl -fL --retry 2 --max-time 180 https://osvault.project-athens.com/files/entware/Arch_Offline.tar.gz -o assets/Arch_Offline.tar.gz
+          curl -fL --retry 2 --max-time 60 https://osvault.project-athens.com/files/entware/md5sum -o assets/entware-md5sum
+          (cd assets && grep -F Arch_Offline.tar.gz entware-md5sum | md5sum -c -)
+          gh release download 0.8.6 --repo "$GITHUB_REPOSITORY" --pattern '*entware_aarch64-3.10_kn.ipk' --dir assets
+          curl -fL --retry 2 --max-time 60 https://bin.entware.net/aarch64-k3.10/Packages.gz -o assets/Packages.gz
+          sha256sum assets/* > assets/input-sha256.txt
+          strings assets/keenboot.bin | grep -E 'mtdparts|bootcmd|bootargs|firmware|spi-nand' | head -n 60 || true
+          tar -tzf assets/Arch_Offline.tar.gz | head -n 100 || true
+      - uses: actions/upload-artifact@v6
+        with:
+          name: keeneticos-boot-assets
+          path: assets/
+          retention-days: 7
+      - name: Fetch prepared emulator runtime and package host dependencies
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          for i in $(seq 1 60); do
+            id=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/43126713922/artifacts" --jq '.artifacts[] | select(.name=="keenetic-emulator-runtime" and .expired==false) | .id')
+            if [ -n "$id" ]; then break; fi
+            sleep 10
+          done
+          test -n "$id"
+          gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$id/zip" > runtime.zip
+          mkdir -p runtime
+          unzip -q runtime.zip -d runtime
+          tar -C runtime -xzf runtime/keenetic-runtime.tar.gz
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends squashfs-tools device-tree-compiler u-boot-tools libslirp0 libusb-1.0-0 libfdt1
+          mkdir -p runtime/host-libs runtime/host-bin
+          cp /usr/bin/unsquashfs /usr/bin/dtc /usr/bin/fdtget /usr/bin/dumpimage runtime/host-bin/
+          qemu=runtime/Router-Emulator/src/qemu/build/qemu-system-aarch64
+          ldd "$qemu" runtime/host-bin/* | tee runtime/host-ldd.txt
+          ldd "$qemu" runtime/host-bin/* | awk '/=> \// {print $3} /^\s*\/.*ld-linux/ {print $1}' | sort -u | while read -r library; do cp -L "$library" runtime/host-libs/; done
+          cp -L /lib64/ld-linux-x86-64.so.2 runtime/host-libs/
+          tar -C runtime -czf keenetic-portable-runtime.tar.gz Router-Emulator host-libs host-bin host-ldd.txt
+      - uses: actions/upload-artifact@v6
+        if: always()
+        with:
+          name: keenetic-portable-runtime
+          path: keenetic-portable-runtime.tar.gz
+          retention-days: 7
