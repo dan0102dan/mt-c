@@ -47,6 +47,28 @@ export type ServerConfig = {
 export type ServerSnapshot = { revision: string; config: ServerConfig };
 export type TransferPolicy = { enabled: boolean; policy_id: string; mode: "include" | "exclude" };
 
+/** Import snapshots contain definitions without runtime usage. Restore the
+ * counts from their actual consumers before exposing them to the profile UI. */
+export function profilesWithUsage(
+  definitions: readonly Profile[],
+  snapshot: Pick<Snapshot, "groups" | "subscriptions">,
+): Profile[] {
+  const counts = new Map<string, NonNullable<Profile["usage"]>>();
+  for (const { id } of definitions) counts.set(id, { groups: 0, subscriptions: 0 });
+  for (const { profile } of snapshot.groups) {
+    const usage = counts.get(profile ?? "");
+    if (usage) usage.groups++;
+  }
+  for (const { profile } of snapshot.subscriptions) {
+    const usage = counts.get(profile ?? "");
+    if (usage) usage.subscriptions++;
+  }
+  return definitions.map((definition) => ({
+    ...copy(definition),
+    usage: { ...counts.get(definition.id)! },
+  }));
+}
+
 function object(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }

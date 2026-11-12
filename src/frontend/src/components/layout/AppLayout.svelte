@@ -32,6 +32,7 @@
     configForApply,
     decodePortable,
     snapshotFromServer,
+    profilesWithUsage,
     subscriptionEditorsForImport,
     type SavedSubscription,
     type ServerSnapshot,
@@ -313,7 +314,7 @@
             // Even a no-op import may expose newer saved data than the mounted
             // editors. Rebase it read-only, retaining unrelated local drafts.
             importBaseline = baseline;
-            acceptImportSave(baseline, saved, before);
+            acceptImportSave(baseline, saved, before, { persisted: false });
           }
           closeImportPreview();
           toast.info(t("No changes to import"));
@@ -337,7 +338,8 @@
         );
         subscriptionRuleBaseline = copy(subscriptions);
       }
-      if (changed.has("profiles")) stageProfileImport(copy(saved.profiles), next.profiles);
+      if (changed.has("profiles"))
+        stageProfileImport(profilesWithUsage(saved.profiles, saved), profilesWithUsage(next.profiles, next));
       if (changed.has("settings") && policyBaseline && policyDraft)
         policySource?.stage(policyBaseline, policyDraft);
       importBaseline = baseline;
@@ -368,7 +370,12 @@
     policySettings(snapshot);
   }
 
-  function acceptImportSave(confirmed: ServerSnapshot, expected: Snapshot, editor: Snapshot) {
+  function acceptImportSave(
+    confirmed: ServerSnapshot,
+    expected: Snapshot,
+    editor: Snapshot,
+    { persisted = true }: { persisted?: boolean } = {},
+  ) {
     if (!importBaseline) return;
     const current = currentSnapshot(importBaseline);
     const saved = snapshotFromServer(confirmed.config);
@@ -379,17 +386,10 @@
       savedSubs,
       subscriptionsStore ? copy(subscriptionsStore.data) : [],
     );
-    groupsStore?.acceptImport(copy(saved.groups), retained.groups);
-    subscriptionsStore?.acceptImport(savedSubs, retainedSubs);
-    const acceptedProfiles = (confirmed.config.profiles ?? []).map((profile) => ({
-      ...copy(profile),
-      usage: {
-        groups: confirmed.config.groups.filter((group) => group.profile === profile.id).length,
-        subscriptions: confirmed.config.subscriptions.filter((sub) => sub.profile === profile.id)
-          .length,
-      },
-    }));
-    acceptProfileImport(acceptedProfiles, retained.profiles);
+    groupsStore?.acceptImport(copy(saved.groups), retained.groups, { persisted });
+    subscriptionsStore?.acceptImport(savedSubs, retainedSubs, { persisted });
+    const acceptedProfiles = profilesWithUsage(confirmed.config.profiles ?? [], saved);
+    acceptProfileImport(acceptedProfiles, retained.profiles, { persisted });
     const policyBaseline = policySettings(saved);
     const policyDraft = policySettings(retained);
     if (policyBaseline && policyDraft) policySource?.accept(policyBaseline, policyDraft);

@@ -359,9 +359,13 @@ export class GroupsStore {
   }
 
   /** A confirmed import save becomes the baseline; unrelated drafts stay editable. */
-  acceptImport(baseline: readonly Group[], retainedDraft: readonly Group[] = baseline) {
+  acceptImport(
+    baseline: readonly Group[],
+    retainedDraft: readonly Group[] = baseline,
+    { persisted = true }: { persisted?: boolean } = {},
+  ) {
     this.stageImport(baseline, retainedDraft);
-    this.persistencePending = false;
+    if (persisted) this.persistencePending = false;
   }
 
   handleSaveShortcut = (event: KeyboardEvent) => {

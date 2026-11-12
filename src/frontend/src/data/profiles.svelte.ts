@@ -108,9 +108,10 @@ export function stageProfileImport(baseline: readonly Profile[], draft: readonly
 export function acceptProfileImport(
   baseline: readonly Profile[],
   retainedDraft: readonly Profile[] = baseline,
+  { persisted = true }: { persisted?: boolean } = {},
 ) {
   stageProfileImport(baseline, retainedDraft);
-  profiles.persistencePending = false;
+  if (persisted) profiles.persistencePending = false;
 }
 export function fetchProfiles(
   options: { fresh?: boolean; rebaseDrafts?: boolean } = {},

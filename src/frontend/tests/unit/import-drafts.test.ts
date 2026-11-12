@@ -17,7 +17,7 @@ if (runtimeProcess)
 const { GroupsStore } = await import("../../src/modules/groups/groups.svelte");
 const { SubscriptionsStore } = await import("../../src/modules/subscriptions/subscriptions.svelte");
 const { ChangeTracker } = await import("../../src/utils/change-tracker.svelte");
-const { snapshotFromServer } = await import("../../src/modules/config-transfer/adapter");
+const { profilesWithUsage, snapshotFromServer } = await import("../../src/modules/config-transfer/adapter");
 const {
   acceptProfileImport,
   fetchProfiles,
@@ -446,3 +446,71 @@ Deno.test(
     }
   },
 );
+
+Deno.test("read-only import acceptance never clears an earlier pending disk write", async () => {
+  await withoutRequests(() => {
+    const groups = new GroupsStore();
+    const subscriptions = new SubscriptionsStore();
+    try {
+      // These flags are set by PERSISTENCE_FAILED + applied:true responses.
+      // Reconciliation makes no write and must keep Save and unload warnings.
+      groups.persistencePending = true;
+      groups.acceptImport([group()], [group()], { persisted: false });
+      assert.equal(groups.persistencePending, true);
+      assert.equal(groups.hasUnsavedChanges, true);
+      assert.equal(groups.canSave, true);
+
+      subscriptions.persistencePending = true;
+      subscriptions.acceptImport([subscription()], [subscription()], { persisted: false });
+      assert.equal(subscriptions.persistencePending, true);
+      assert.equal(subscriptions.hasUnsavedChanges, true);
+      assert.equal(subscriptions.canSave, true);
+
+      profiles.persistencePending = true;
+      acceptProfileImport([profile()], [profile()], { persisted: false });
+      assert.equal(profiles.persistencePending, true);
+      assert.equal(profilesDirty(), true);
+      assert.deepEqual(profileDraftIds(), new Set());
+
+      // Only a confirmed successful write is allowed to acknowledge them.
+      groups.acceptImport([group()]);
+      subscriptions.acceptImport([subscription()]);
+      acceptProfileImport([profile()]);
+      assert.equal(groups.persistencePending, false);
+      assert.equal(subscriptions.persistencePending, false);
+      assert.equal(profiles.persistencePending, false);
+      assert.equal(profilesDirty(), false);
+    } finally {
+      groups.destroy();
+      subscriptions.destroy();
+      profiles.persistencePending = false;
+    }
+  });
+});
+
+Deno.test("staging import restores profile usage from saved group and subscription consumers", () => {
+  const definitions = [profile("vpn", "Original"), profile("free", "Unused")];
+  const original = snapshot(definitions);
+  const server = {
+    groups: [
+      { ...group("11111111"), profile: "vpn" },
+      { ...group("22222222"), profile: "vpn" },
+    ],
+    subscriptions: [
+      { ...subscription("33333333"), profile: "vpn" },
+      { ...subscription("44444444"), profile: undefined },
+    ],
+  };
+  const counted = profilesWithUsage(definitions, server);
+  assert.deepEqual(counted.map((item) => item.usage), [
+    { groups: 2, subscriptions: 1 },
+    { groups: 0, subscriptions: 0 },
+  ]);
+  assert.deepEqual(definitions, original, "usage must not mutate portable definitions");
+  stageProfileImport(counted, [profile("vpn", "Imported"), profile("free", "Unused")]);
+  assert.deepEqual(profiles.list[0].usage, { groups: 2, subscriptions: 1 });
+  assert.equal(profiles.list[0].name, "Original");
+  assert.equal(profiles.draft[0].name, "Imported");
+  assert.equal(profilesDirty(), true);
+  acceptProfileImport(counted);
+});

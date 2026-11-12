@@ -340,6 +340,109 @@ for (const failure of ["ignored", "malformed", "rejected", "network", "stale"]) 
   });
 }
 
+
+test("staging a used profile keeps both consumer counts and disables Delete", async ({
+  page,
+  backend,
+}) => {
+  const initial = (await backend.snapshot()).config;
+  const usedSubscription = {
+    id: "abcd1234",
+    name: "Used list",
+    url: "https://example.com/list.txt",
+    interface: "wg0",
+    profile: "portable_vpn",
+    enable: true,
+    priority: 100,
+    interval: 86400,
+    last_update: 0,
+    rules: [],
+  };
+  await backend.save({
+    ...initial,
+    profiles: [profile()],
+    groups: [group],
+    subscriptions: [usedSubscription],
+  });
+  await page.goto("/");
+  await showPage(page, "Settings");
+  await expect(page.getByRole("button", { name: "Delete profile: Portable VPN" })).toBeDisabled();
+  const dialog = await upload(page, { profiles: [profile("Imported VPN")] });
+  await dialog.getByRole("switch", { name: "Replace", exact: true }).click();
+  await dialog.getByRole("button", { name: "Import", exact: true }).click();
+  await expect(dialog).toHaveCount(0);
+  await expect(page.getByLabel("Profile name", { exact: true })).toHaveValue("Imported VPN");
+  await expect(page.getByRole("button", { name: "Delete profile: Imported VPN" })).toBeDisabled();
+  await expect(page.locator('[data-profile-id="portable_vpn"] .usage')).toContainText(
+    "1 groups, 1 subscriptions",
+  );
+  expect(backend.writes).toEqual([]);
+  await page.reload();
+  await expect(page.getByRole("button", { name: "Delete profile: Portable VPN" })).toBeDisabled();
+});
+
+test("no-op import never acknowledges a previous applied-but-unpersisted group save", async ({
+  page,
+  backend,
+}) => {
+  const initial = (await backend.snapshot()).config;
+  await backend.save({ ...initial, groups: [group], profiles: [profile()] });
+  await page.goto("/");
+  await expect(page.locator("input.group-name")).toHaveValue("Portable group");
+
+  // Apply to the live mock, then report a failed disk write as the real API does.
+  await page.route("**/api/v1/groups?save=true", async (route) => {
+    const applied = await backend.api.put("/api/v1/groups?save=true", {
+      data: route.request().postDataJSON(),
+    });
+    expect(applied.ok()).toBe(true);
+    const response = await applied.json();
+    await route.fulfill({
+      status: 500,
+      json: {
+        ...response,
+        code: "PERSISTENCE_FAILED",
+        applied: true,
+        error: "Changes active in memory only",
+      },
+    });
+  });
+  await page.locator("input.group-name").fill("Applied in memory");
+  await page.locator("#save-changes").click();
+  await expect(page.locator("#save-changes")).toBeEnabled();
+  await expect.poll(async () => (await backend.snapshot()).config.groups[0].name).toBe(
+    "Applied in memory",
+  );
+  await page.unroute("**/api/v1/groups?save=true");
+
+  // Establish an import session, undo its staged profile edit, then import
+  // identical definitions. This enters the read-only acceptImportSave path.
+  await showPage(page, "Settings");
+  const staged = await upload(page, { profiles: [profile("Temporary name")] });
+  await staged.getByRole("switch", { name: "Replace", exact: true }).click();
+  await staged.getByRole("button", { name: "Import", exact: true }).click();
+  await expect(staged).toHaveCount(0);
+  await expect(page.getByLabel("Profile name", { exact: true })).toHaveValue("Temporary name");
+  await page.getByLabel("Profile name", { exact: true }).fill("Portable VPN");
+  const noop = await upload(page, { profiles: [profile()] });
+  await noop.getByRole("button", { name: "Import", exact: true }).click();
+  await expect(noop).toHaveCount(0);
+  await expect(page.getByText("No changes to import", { exact: true })).toBeVisible();
+
+  await showPage(page, "Groups");
+  await expect(page.locator("#save-changes")).toBeEnabled();
+  await expect.poll(() =>
+    page.evaluate(() => {
+      const event = new Event("beforeunload", { cancelable: true });
+      window.dispatchEvent(event);
+      return event.defaultPrevented;
+    }),
+  ).toBe(true);
+  expect(backend.writes.filter((write) => write.path.endsWith("/system/config/apply"))).toEqual(
+    [],
+  );
+});
+
 test("profile dependencies import with groups and Replace cannot remove a used profile", async ({
   page,
   backend,

@@ -333,9 +333,10 @@ export class SubscriptionsStore {
   acceptImport(
     baseline: readonly Subscription[],
     retainedDraft: readonly Subscription[] = baseline,
+    { persisted = true }: { persisted?: boolean } = {},
   ) {
     this.stageImport(baseline, retainedDraft);
-    this.persistencePending = false;
+    if (persisted) this.persistencePending = false;
   }
 
   handleSaveShortcut = (event: KeyboardEvent) => {
