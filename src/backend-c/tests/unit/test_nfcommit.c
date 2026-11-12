@@ -131,20 +131,22 @@ TEST request_does_not_wait_for_the_write(void) {
      * blocked, this test would hang rather than fail. */
     mt_nfcommit_request(c);
 
-    AWAIT(&p, p.interrupted >= 1);
+    bool canceled = mt_cancel_raised(mt_nfcommit_cancel(c));
 
     pthread_mutex_lock(&p.mu);
     p.release = true;
     pthread_mutex_unlock(&p.mu);
 
+    AWAIT(&p, p.finished >= 1);
     mt_nfcommit_free(c);
     probe_destroy(&p);
+    ASSERT_FALSE(canceled);
     PASS();
 }
 
-/* The whole point: a request arriving mid-write aborts it and a fresh
- * pass runs afterwards. */
-TEST request_interrupts_and_restarts(void) {
+/* Notifications cannot starve an in-flight repair. A burst while the first
+ * pass is deliberately parked must leave it uncanceled and owe just one pass. */
+TEST requests_during_write_queue_one_followup(void) {
     probe_t p;
     probe_init(&p);
     p.block = true;
@@ -153,21 +155,20 @@ TEST request_interrupts_and_restarts(void) {
     mt_nfcommit_request(c);
     AWAIT(&p, p.started >= 1);
 
-    mt_nfcommit_request(c);
-    AWAIT(&p, p.interrupted >= 1);
-
-    /* Wait until the retry is parked too, then release the callback itself:
-     * it copied p.block on entry, so changing only p.block is insufficient. */
-    AWAIT(&p, p.started >= 2);
+    for (unsigned i = 0; i < 200; i++) { mt_nfcommit_request(c); }
+    bool canceled = mt_cancel_raised(mt_nfcommit_cancel(c));
     pthread_mutex_lock(&p.mu);
-    p.block = false;
     p.release = true;
     pthread_mutex_unlock(&p.mu);
 
-    AWAIT(&p, p.finished >= 1);
-    ASSERT(p.started >= 2);
-
+    /* Also cleans up on the old implementation, which cancels the first pass
+     * and only finishes one. Assertions below then fail without leaking it. */
+    AWAIT(&p, p.finished >= (canceled ? 1 : 2));
     mt_nfcommit_free(c);
+    ASSERT_FALSE(canceled);
+    ASSERT_EQ(0, p.interrupted);
+    ASSERT_EQ(2, p.started);
+    ASSERT_EQ(2, p.finished);
     probe_destroy(&p);
     PASS();
 }
@@ -342,7 +343,7 @@ int main(int argc, char **argv) {
     GREATEST_MAIN_BEGIN();
     RUN_TEST(request_triggers_a_rebuild);
     RUN_TEST(request_does_not_wait_for_the_write);
-    RUN_TEST(request_interrupts_and_restarts);
+    RUN_TEST(requests_during_write_queue_one_followup);
     RUN_TEST(requests_coalesce);
     RUN_TEST(retries_until_the_table_holds_still);
     RUN_TEST(retries_unclassified_failures);

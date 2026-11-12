@@ -4419,3 +4419,48 @@ across live changes, persistence failure, mixed changes, degraded recovery and
 the preview/PUT race. Browser coverage checks conditional DNS/auth notices,
 reverted changes, Save-all ordering and preserved drafts on preview/refusal
 failures. These retain the native and browser test-transport limits in D-91.
+
+
+## D-93 — Preserve live rules during netfilter reconciliation (2026-11-12)
+
+**Status: accepted.** Supersedes D-63's destructive runtime cleanup and
+cancel-on-every-notification policy, not its threading/locking or retry model.
+The 0.8.6 code could successfully remove IPv4 managed chains, then return
+`MT_ERR_CANCELED` before reinstalling them. Eventual recovery was insufficient:
+new connections could start while `MT_POLICY`/`MT_DNSOR` were absent.
+
+A runtime rebuild now resets only the in-memory registrations, prepares the
+entire desired graph, and calls `mt_ipt_commit_reconcile`. Using the same kernel
+snapshot as the normal compiler, reconciliation stages deletion of obsolete
+owned-prefix chains and unwanted references. Existing desired overrides and
+ordered patch chains are retained/replaced, never first removed by a separate
+cleanup commit. Foreign rules not referencing managed chains are preserved;
+quoted comments mentioning managed targets do not establish ownership.
+Startup/shutdown cleanup and ordinary incremental `mt_ipt_commit` semantics are
+unchanged. The old chain names, config, HTTP API, priority ordering, ipsets,
+route tables, and DNS matching contracts do not change.
+
+Each table's COMMIT contains both removals and replacements. Cancellation or
+failure can leave some tables/families at the previous configuration and others
+at the replacement, but no successfully applied mt-c transaction deliberately
+leaves an empty intermediate active graph. This is NOT global atomicity across
+IPv4, IPv6, filter, mangle, and nat, and cannot prevent an external firmware
+writer from removing rules; the existing worker retries those races.
+
+Ordinary netfilter/link notifications now coalesce into one follow-up pass
+without aborting a running repair, so a stream of notifications cannot starve
+that repair by repeatedly canceling it. Explicit API mutation and shutdown
+still interrupt promptly. Clearing the cancellation token and publishing a
+running pass, and raising an explicit interrupt, are serialized by the worker
+mutex to avoid a lost interrupt or a late interrupt hitting the next pass.
+The bounded initial settle window remains intentional; it is not a quiet-time
+debounce that can be postponed indefinitely by incoming events.
+
+Regression coverage observes chain contents and entry jumps after each restore,
+not only after eventual retry; injects cancellation after either family and
+between table COMMITs; tests snapshot/apply failures, pre-cancellation, stale
+ordered dispatcher entries, external wipes, duplicate jumps, foreign rules,
+custom prefixes, and bursts during an active pass. `check-netfilter.yml` runs
+the same recovery tests with real legacy/nft backends in disposable network
+namespaces on every relevant push/PR. This validates the failure mechanism,
+not the exact event source or browser session on a physical Keenetic router.

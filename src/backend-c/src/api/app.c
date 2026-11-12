@@ -1451,31 +1451,16 @@ void mt_app_set_port_remap(mt_app_t *app, mt_port_remap_t *remap) {
 
 /* One pass of the rebuild, with the netfilter lock already held. */
 static mt_err_t rebuild_netfilter_locked(mt_app_t *app, mt_cancel_t *cancel) {
-    /* Take everything of ours out of the kernel before putting anything
-     * back. What is left in the tables after an aborted write, or after
-     * the firmware replaced them, is not something worth reasoning about
-     * -- starting from "none of it is there" makes the result depend only
-     * on the current group set. */
     if (mt_cancel_raised(cancel)) { return MT_ERR_CANCELED; }
 
-    /* Cleanup must compile ONLY removals discovered in the current kernel
-     * snapshot. Retained desired jumps/overrides from a previous attempt can
-     * otherwise recreate a jump while its target is being deleted (MT_DNSOR),
-     * poisoning every subsequent retry. Reset both families under nf_mu. */
+    /* Rebuild the complete desired graph in memory, not in the kernel.
+     * An eager cleanup used to remove working chains in a separate commit;
+     * cancellation between cleanup and installation left live IPv4 without
+     * routing/DNS rules until a later retry. Reconcile stale objects together
+     * with their replacements at the final per-table COMMIT instead. */
     mt_ipt_reset_staged(app->ipt4);
     mt_ipt_reset_staged(app->ipt6);
-    mt_err_t err = mt_netfilter_clean_iptables(app->ipt4, app->ipt6,
-                                               app->chain_prefix);
-
-    /* Delete registrations are temporary too, including after failed or
-     * canceled cleanup. Keep the engines/transports/cancel token themselves:
-     * groups and the DNS remap still borrow those exact objects. */
-    mt_ipt_reset_staged(app->ipt4);
-    mt_ipt_reset_staged(app->ipt6);
-    if (err != MT_OK) { return err; }
-    if (mt_cancel_raised(cancel)) { return MT_ERR_CANCELED; }
-
-    err = mt_netfilter_register_base_chains(app->ipt4, app->ipt6);
+    mt_err_t err = mt_netfilter_register_base_chains(app->ipt4, app->ipt6);
     if (err != MT_OK) { return err; }
 
 #ifdef MT_ENTWARE_KN
@@ -1499,11 +1484,11 @@ static mt_err_t rebuild_netfilter_locked(mt_app_t *app, mt_cancel_t *cancel) {
     if (mt_cancel_raised(cancel)) { return MT_ERR_CANCELED; }
 
     if (app->ipt4) {
-        err = mt_ipt_commit(app->ipt4);
+        err = mt_ipt_commit_reconcile(app->ipt4, app->chain_prefix);
         if (err != MT_OK) { return err; }
     }
     if (app->ipt6) {
-        err = mt_ipt_commit(app->ipt6);
+        err = mt_ipt_commit_reconcile(app->ipt6, app->chain_prefix);
         if (err != MT_OK) { return err; }
     }
     return MT_OK;
@@ -1591,8 +1576,8 @@ void mt_app_stop_netfilter_committer(mt_app_t *app) {
 
 mt_err_t mt_app_force_commit_iptables(mt_app_t *app) {
     if (app->committer) {
-        /* Nothing to wait for and nothing to report: the committer aborts
-         * whatever it is writing and rebuilds the table from scratch. */
+        /* No blocking or config mutation: the committer finishes its current
+         * replacement and coalesces notifications into one following pass. */
         mt_nfcommit_request(app->committer);
         return MT_OK;
     }

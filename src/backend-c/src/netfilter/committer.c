@@ -100,25 +100,22 @@ void mt_nfcommit_request(mt_nfcommit_t *c) {
 
     pthread_mutex_lock(&c->mu);
     c->pending = true;
-    bool abort_current = c->running;
+    /* A notification is not a config mutation. Let the complete replacement
+     * finish and owe one follow-up pass; repeated link/netfilter events must
+     * not keep canceling recovery before it can repair a firmware wipe. */
     pthread_cond_signal(&c->cv);
     pthread_mutex_unlock(&c->mu);
-
-    /* Raised outside the lock: the committer thread never blocks on the
-     * token, and raising is already thread-safe. */
-    if (abort_current) { mt_cancel_raise(c->cancel); }
 }
 
 void mt_nfcommit_interrupt(mt_nfcommit_t *c) {
     if (!c) { return; }
 
     pthread_mutex_lock(&c->mu);
-    bool abort_current = c->running;
+    /* Serialize with clearing/publishing the next pass: a late raise must
+     * not hit its successor, nor be erased just after running becomes true.
+     * Explicit API mutations still yield promptly; they are not hook noise. */
+    if (c->running) { mt_cancel_raise(c->cancel); }
     pthread_mutex_unlock(&c->mu);
-
-    /* No pending flag set here on purpose: committer_main re-arms itself
-     * for any pass that did not finish, this one included. */
-    if (abort_current) { mt_cancel_raise(c->cancel); }
 }
 
 /* Waits up to delay_ms, returning false if the committer should exit.
@@ -165,12 +162,11 @@ static void *committer_main(void *arg) {
             pthread_mutex_unlock(&c->mu);
             break;
         }
+        mt_cancel_clear(c->cancel);
         c->pending = false;
         c->running = true;
         c->passes++;
         pthread_mutex_unlock(&c->mu);
-
-        mt_cancel_clear(c->cancel);
 
         mt_err_t err = c->rebuild(c->ud, c->cancel);
 
