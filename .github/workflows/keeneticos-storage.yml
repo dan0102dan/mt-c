@@ -74,11 +74,17 @@ jobs:
           echo '__MTC_LAB_END__'
           SH
           chmod 755 root/lab/start.sh
-          sudo mkfs.ubifs -r root -m 2048 -e 126976 -c 664 -o out/storage.ubifs
+          # This port's 4.9 kernel has no UBIFS LZO decoder. Uncompressed
+          # nodes avoid assumptions about optional compression support.
+          sudo mkfs.ubifs -x none -r root -m 2048 -e 126976 -c 664 -o out/storage.ubifs
           printf '[storage]\nmode=ubi\nimage=out/storage.ubifs\nvol_id=0\nvol_type=dynamic\nvol_name=storage\nvol_flags=autoresize\n' > out/ubinize.cfg
           ubinize -m 2048 -p 131072 -s 2048 -o out/storage.ubi out/ubinize.cfg
           sha256sum out/* | tee out/sha256.txt
           cp root/lab/start.sh out/lab-start.sh
+          mkdir -p out/host-bin out/host-libs
+          cp /usr/sbin/mkfs.ubifs /usr/sbin/ubinize out/host-bin/
+          ldd out/host-bin/* | awk '/=> \// {print $3}' | sort -u | while read -r lib; do cp -L "$lib" out/host-libs/; done
+          cp -L /lib64/ld-linux-x86-64.so.2 out/host-libs/
       - uses: actions/upload-artifact@v6
         with:
           name: keeneticos-ubifs-storage
