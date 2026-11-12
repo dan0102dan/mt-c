@@ -1,0 +1,192 @@
+name: AX3000T and Keenetic routing lab
+on:
+  push:
+    branches: [test/ax3000t-routing-20261112]
+    paths: [.github/workflows/ax3000t-routing-lab.yml]
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: ax3000t-routing-lab-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  ax3000t:
+    name: AX3000T OpenWrt 24.10.4 / mt-c 0.8.6
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v5
+      - name: Prepare package and host tools
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends mtd-utils unzip
+          root="$GITHUB_WORKSPACE/.build/ax3000t"
+          mkdir -p "$root/package"
+          gh release download 0.8.6 --repo "$GITHUB_REPOSITORY" \
+            --pattern '*openwrt-24.10.4_aarch64_cortex-a53.ipk' --dir "$root/package"
+          mapfile -t packages < <(find "$root/package" -type f -name '*.ipk')
+          test "${#packages[@]}" -eq 1
+          printf 'PACKAGE=%s\n' "${packages[0]}" >> "$GITHUB_ENV"
+          sha256sum "${packages[0]}" | tee "$root/package-sha256.txt"
+          git rev-parse HEAD | tee "$root/harness-commit.txt"
+      - name: Resolve verified latest stable Router Emulator
+        id: release
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          python3 tools/ci/router_emulator_release.py \
+            --destination "$GITHUB_WORKSPACE/.build/ax3000t" --github-output "$GITHUB_OUTPUT"
+      - name: Prepare the actual AX3000T preset and flash layout
+        env:
+          EMULATOR_VERSION: ${{ steps.release.outputs.version }}
+        run: |
+          set -euo pipefail
+          root="$GITHUB_WORKSPACE/.build/ax3000t"
+          (cd "$root" && tar -xzf emulator.tar.gz && unzip -q presets.zip)
+          python3 - <<'PY'
+          import configparser, os, pathlib, subprocess, sys
+          sys.path.insert(0, 'tools/ci')
+          from router_emulator_runtime import ensure_runtime
+          root = pathlib.Path('.build/ax3000t/Router-Emulator').resolve()
+          ini = root / 'presets/xiaomi-mi-router-ax3000t.ini'
+          parser = configparser.ConfigParser(interpolation=None)
+          if not parser.read(ini):
+              raise SystemExit('AX3000T preset missing from downloaded release')
+          p = parser['preset']
+          expected = {'openwrt': 'xiaomi_mi-router-ax3000t', 'gmac0': 'mt7531',
+                      'flash-type': 'nand', 'flash-id': 'efaa21', 'ram': '256',
+                      'ddr': 'ddr3', 'dump-dir': 'nand-ax3000t'}
+          for key, value in expected.items():
+              if p.get(key) != value:
+                  raise SystemExit(f'Unsupported AX3000T preset change: {key}={p.get(key)!r}')
+          parts = ('BL2:0x100000,Nvram:0x40000,Bdata:0x40000,Factory:0x200000,'
+                   'FIP:0x200000,crash:0x40000,crash_log:0x40000,ubi:0x7000000,'
+                   'KF:0x40000,reserved:-')
+          if p.get('openwrt-parts') != parts:
+              raise SystemExit('Unexpected AX3000T flash partition layout')
+          ensure_runtime(root, os.environ['EMULATOR_VERSION'], install_build_deps=True)
+          subprocess.run([str(root/'tools/prepare-nand.sh'), '--flash-type', 'nand',
+                          '--flash-id', 'efaa21', '--flash-mb', '128', '--parts', parts,
+                          p['openwrt'], '24.10.4', p['dump-dir']], cwd=root, check=True)
+          pathlib.Path('.build/ax3000t/board-preset.ini').write_text(ini.read_text())
+          PY
+      - name: Boot AX3000T and exercise the release IPK
+        run: |
+          set -euo pipefail
+          python3 tools/ci/router-emulator-smoke.py \
+            --emulator-dir "$GITHUB_WORKSPACE/.build/ax3000t/Router-Emulator" \
+            --package "$PACKAGE" --preset xiaomi-mi-router-ax3000t \
+            --openwrt-version 24.10.4 2>&1 | tee .build/ax3000t/smoke.log
+      - name: Save emulator evidence
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: ax3000t-routing-lab-${{ github.run_attempt }}
+          path: |
+            .build/ax3000t/*.txt
+            .build/ax3000t/*.ini
+            .build/ax3000t/*.json
+            .build/ax3000t/*.log
+            .build/ax3000t/Router-Emulator/work/*.log
+            .build/ax3000t/Router-Emulator/work/logs/
+          retention-days: 7
+          if-no-files-found: warn
+  keenetic_rebuild:
+    name: Keenetic 0.8.6 rebuild / isolated real netfilter
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: '0.8.6'
+      - name: Install test dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends build-essential \
+            libyaml-dev libcjson-dev libpcre2-dev libmnl-dev libcurl4-openssl-dev \
+            iptables iproute2
+          mkdir -p .build/kn-routing-lab
+          git rev-parse HEAD | tee .build/kn-routing-lab/source-commit.txt
+      - name: Build a controlled cancellation probe against unchanged release code
+        run: |
+          cat > src/backend-c/tests/unit/test_lab_rebuild_gap.c <<'C'
+          /* Diagnostic only: reproduce cancellation after a successful cleanup.
+           * This does not establish the event source on a physical Keenetic. */
+          int upstream_test_main(int argc, char **argv);
+          #define main upstream_test_main
+          #include "test_nfrebuild_recovery.c"
+          #undef main
+          static bool lab_chain(unsigned family, const char *table, const char *name) {
+              mt_ipt_rules_snapshot_t *snap = NULL;
+              assert(mt_ipt_get_current_rules(fx.ipt[family], &snap) == MT_OK);
+              const mt_ipt_table_rules_t *t = mt_ipt_rules_snapshot_find_table(snap, table);
+              bool found = t && mt_ipt_table_rules_find_chain(t, name) != NULL;
+              mt_ipt_rules_snapshot_free(snap);
+              return found;
+          }
+          int main(void) {
+              struct stat self, init;
+              if (geteuid() != 0 || stat("/proc/self/ns/net", &self) != 0 ||
+                  stat("/proc/1/ns/net", &init) != 0 ||
+                  (self.st_dev == init.st_dev && self.st_ino == init.st_ino)) {
+                  fputs("Refusing test outside a separate root network namespace.\n", stderr);
+                  return 2;
+              }
+              real_backend = true;
+              setup(3u, "MT_");
+              assert(system("ip link set lo up") == 0);
+              mt_kn_policy_config_t config = {.enabled = true, .policy_id = "Policy0"};
+              assert(mt_app_policy_set(fx.app, &config, true, 0xffffd00) == MT_OK);
+              assert(lab_chain(0, "mangle", "MT_POLICY") && lab_chain(1, "mangle", "MT_POLICY"));
+              assert(lab_chain(0, "nat", "MT_DNSOR") && lab_chain(1, "nat", "MT_DNSOR"));
+              puts("BASELINE: IPv4/IPv6 policy and DNS chains present");
+              mt_cancel_t *cancel = mt_cancel_new();
+              assert(cancel);
+              fx.g[0]->cancel_after_restore = fx.g[0]->restores + 1;
+              mt_err_t result = mt_app_rebuild_netfilter(fx.app, cancel);
+              printf("CANCELLATION: result=%s v4_policy=%d v4_dns=%d v6_policy=%d v6_dns=%d\n",
+                     mt_err_str(result), (int)lab_chain(0,"mangle","MT_POLICY"),
+                     (int)lab_chain(0,"nat","MT_DNSOR"),
+                     (int)lab_chain(1,"mangle","MT_POLICY"),
+                     (int)lab_chain(1,"nat","MT_DNSOR"));
+              assert(result == MT_ERR_CANCELED);
+              assert(!lab_chain(0,"mangle","MT_POLICY") && !lab_chain(0,"nat","MT_DNSOR"));
+              assert(lab_chain(1,"mangle","MT_POLICY") && lab_chain(1,"nat","MT_DNSOR"));
+              puts("REPRODUCED: canceled rebuild leaves IPv4 without routing and DNS chains; IPv6 still present");
+              fx.g[0]->cancel_after_restore = 0;
+              mt_cancel_clear(cancel);
+              assert(mt_app_rebuild_netfilter(fx.app, cancel) == MT_OK);
+              assert(lab_chain(0,"mangle","MT_POLICY") && lab_chain(0,"nat","MT_DNSOR"));
+              assert(lab_chain(1,"mangle","MT_POLICY") && lab_chain(1,"nat","MT_DNSOR"));
+              puts("RECOVERY: subsequent complete pass restores both families");
+              mt_cancel_free(cancel);
+              teardown(NULL);
+              return 0;
+          }
+          C
+          make -C src/backend-c -j2 BUILD=kn-lab ENTWARE_KN=1 CFLAGS_EXTRA=-Werror \
+            build/kn-lab/tests/test_nfrebuild_recovery build/kn-lab/tests/test_lab_rebuild_gap
+          cp src/backend-c/tests/unit/test_lab_rebuild_gap.c .build/kn-routing-lab/
+      - name: Exercise legacy and nft frontends in disposable namespaces
+        run: |
+          set -euo pipefail
+          for backend in legacy nft; do
+            sudo update-alternatives --set iptables "/usr/sbin/iptables-$backend"
+            sudo update-alternatives --set ip6tables "/usr/sbin/ip6tables-$backend"
+            sudo unshare -n env MT_TEST_REAL_IPTABLES=1 \
+              src/backend-c/build/kn-lab/tests/test_nfrebuild_recovery \
+              2>&1 | tee ".build/kn-routing-lab/recovery-$backend.log"
+            sudo unshare -n src/backend-c/build/kn-lab/tests/test_lab_rebuild_gap \
+              2>&1 | tee ".build/kn-routing-lab/cancellation-$backend.log"
+          done
+      - name: Save test evidence
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: keenetic-rebuild-lab-${{ github.run_attempt }}
+          path: .build/kn-routing-lab/
+          retention-days: 7
+          if-no-files-found: warn
