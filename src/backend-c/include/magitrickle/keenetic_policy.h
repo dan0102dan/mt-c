@@ -19,6 +19,8 @@ typedef struct {
 typedef struct {
     mt_kn_policy_config_t config;
     bool ready;
+    /* Successful, validated RCI inventory confirmed the policy is absent. */
+    bool confirmed_absent;
     uint32_t mark;
     char gate[64], dispatch[64];
 } mt_kn_policy_scope_t;

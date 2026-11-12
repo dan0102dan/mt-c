@@ -1424,7 +1424,8 @@ done:
     }
 #ifdef MT_ENTWARE_KN
     if (err != MT_OK && policy_touched) {
-        mt_err_t restored = mt_app_policy_set(app, &old_desired.config, old_desired.ready, old_desired.mark);
+        mt_err_t restored = mt_app_policy_set_resolved(app, &old_desired.config,
+            old_desired.ready, old_desired.mark, old_desired.confirmed_absent);
         if (restored != MT_OK) { MT_ERROR("failed to restore policy after config apply: %s", mt_err_str(restored)); }
     }
 #endif
@@ -1754,17 +1755,21 @@ void mt_app_policy_get(const mt_app_t *app, mt_kn_policy_config_t *config,
     if (applied) { *applied = atomic_load(&app->policy_applied) == atomic_load(&app->policy_generation); }
     if (apply_error) { *apply_error = (mt_err_t)atomic_load(&app->policy_apply_error); }
 }
-mt_err_t mt_app_policy_set(mt_app_t *app, const mt_kn_policy_config_t *config, bool ready, uint32_t mark)
+mt_err_t mt_app_policy_set_resolved(mt_app_t *app, const mt_kn_policy_config_t *config,
+                                    bool ready, uint32_t mark, bool confirmed_absent)
 {
     mt_kn_policy_scope_t desired;
     mt_err_t err = mt_kn_policy_scope_init(&desired, config, app->chain_prefix);
-    if (err != MT_OK || (ready && mark > MT_KN_POLICY_MASK)) { return MT_ERR_INVAL; }
+    if (err != MT_OK || (ready && (mark > MT_KN_POLICY_MASK || confirmed_absent))) { return MT_ERR_INVAL; }
     desired.ready = config->enabled && ready;
     desired.mark = desired.ready ? mark : 0;
+    desired.confirmed_absent = config->enabled && !ready && confirmed_absent &&
+                               config->mode == MT_KN_POLICY_EXCLUDE;
     /* Desired state is loop-owned. An unchanged periodic RCI result must not
      * interrupt an in-flight netfilter rebuild or take its mutex. */
     bool changed = !mt_kn_policy_config_equal(&app->policy_desired.config, config) ||
-                   app->policy_desired.ready != desired.ready || app->policy_desired.mark != desired.mark;
+                   app->policy_desired.ready != desired.ready || app->policy_desired.mark != desired.mark ||
+                   app->policy_desired.confirmed_absent != desired.confirmed_absent;
     if (!changed) {
         if (!app->committer && atomic_load(&app->policy_apply_error) != MT_OK) {
             return mt_app_rebuild_netfilter(app, NULL);
@@ -1784,5 +1789,14 @@ mt_err_t mt_app_policy_set(mt_app_t *app, const mt_kn_policy_config_t *config, b
         else { return mt_app_rebuild_netfilter(app, NULL); }
     }
     return MT_OK;
+}
+/* Callers without a successful RCI inventory must not infer absence. */
+mt_err_t mt_app_policy_set(mt_app_t *app, const mt_kn_policy_config_t *config, bool ready, uint32_t mark)
+{
+    return mt_app_policy_set_resolved(app, config, ready, mark, false);
+}
+bool mt_app_policy_excludes_none(const mt_app_t *app)
+{
+    return app->policy_desired.confirmed_absent;
 }
 #endif

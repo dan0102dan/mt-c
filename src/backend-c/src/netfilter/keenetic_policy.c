@@ -36,6 +36,9 @@ mt_err_t mt_kn_policy_guard(const mt_kn_policy_scope_t *p, mt_ipt_t *ipt,
 {
     if (!ipt || !p || !p->config.enabled) { return MT_OK; }
     if (!p->ready) {
+        /* Excluding a confirmed absent policy excludes nobody. RCI errors
+         * and policies without marks must still fail closed. */
+        if (p->confirmed_absent && p->config.mode == MT_KN_POLICY_EXCLUDE) { return MT_OK; }
         const char *args[] = {"-j", "RETURN"};
         return mt_ipt_append(ipt, table, chain, args, 2);
     }
@@ -123,8 +126,8 @@ mt_err_t mt_kn_policy_prepare(const mt_kn_policy_scope_t *p, mt_ipt_t *ipt)
         err = guard_local_addresses(ipt, p->gate);
         if (err != MT_OK) { return err; }
     }
-    /* Until RCI resolves the policy, RETURN alone closes the scope. Do not
-     * make startup depend on address enumeration for an inactive gate. */
+    /* Before RCI confirms a policy, RETURN closes the scope. Confirmed
+     * absence in exclude mode leaves the gate open to regular routing. */
     err = mt_kn_policy_guard(p, ipt, "mangle", p->gate);
     if (err != MT_OK) { return err; }
     const char *dispatch[] = {"-j", p->dispatch};

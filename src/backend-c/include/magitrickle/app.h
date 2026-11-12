@@ -360,5 +360,9 @@ void mt_app_policy_get(const mt_app_t *app, mt_kn_policy_config_t *config,
  * existing committer. Config is saved separately, with existing retry semantics. */
 mt_err_t mt_app_policy_set(mt_app_t *app, const mt_kn_policy_config_t *config,
                             bool ready, uint32_t mark);
+/* Only a validated RCI inventory may assert confirmed_absent. */
+mt_err_t mt_app_policy_set_resolved(mt_app_t *app, const mt_kn_policy_config_t *config,
+                                    bool ready, uint32_t mark, bool confirmed_absent);
+bool mt_app_policy_excludes_none(const mt_app_t *app);
 #endif
 #endif /* MAGITRICKLE_APP_H */
