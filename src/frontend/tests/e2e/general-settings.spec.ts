@@ -307,7 +307,10 @@ async function geometry(page: Page) {
   });
 }
 
-function expectStableGeometry(before: Awaited<ReturnType<typeof geometry>>, after: Awaited<ReturnType<typeof geometry>>) {
+function expectStableGeometry(
+  before: Awaited<ReturnType<typeof geometry>>,
+  after: Awaited<ReturnType<typeof geometry>>,
+) {
   for (const key of Object.keys(before) as (keyof typeof before)[])
     expect(Math.abs(after[key] - before[key]), key).toBeLessThanOrEqual(1);
 }
@@ -326,14 +329,20 @@ test("General edits typed settings, saves and reloads without exposing YAML or i
   await expect(page.getByRole("button", { name: "Reload settings", exact: true })).toHaveCount(0);
   await expect(timeout).toHaveValue("5000");
   await expect(page.getByRole("tab", { name: "YAML", exact: true })).toHaveCount(0);
-  await expect(page.getByRole("textbox", { name: "YAML configuration", exact: true })).toHaveCount(0);
+  await expect(page.getByRole("textbox", { name: "YAML configuration", exact: true })).toHaveCount(
+    0,
+  );
   await expect(page.getByLabel(/chain prefix|table prefix|skin|mark table/i)).toHaveCount(0);
   const baseline = revision();
   await timeout.fill("7500");
   await expect(page.getByText("Unsaved changes", { exact: true })).toHaveCount(0);
   await page.getByRole("textbox", { name: "Upstream DNS server", exact: true }).fill("8.8.8.8");
-  await page.getByRole("spinbutton", { name: "Additional IP address TTL (seconds)", exact: true }).fill("0");
-  await page.getByRole("textbox", { name: "DNS interception interfaces", exact: true }).fill("br0, tun1");
+  await page
+    .getByRole("spinbutton", { name: "Additional IP address TTL (seconds)", exact: true })
+    .fill("0");
+  await page
+    .getByRole("textbox", { name: "DNS interception interfaces", exact: true })
+    .fill("br0, tun1");
   await page.locator('[data-select-trigger][aria-label="Log detail level"]').click();
   await page.getByRole("option", { name: "Debug", exact: true }).click();
   const expected = generalSettings();
@@ -345,7 +354,9 @@ test("General edits typed settings, saves and reloads without exposing YAML or i
   await confirmSave(page);
   await applied(page);
   expect(state.settings).toEqual(expected);
-  expect(state.writes).toEqual([{ settings: expected, revision: baseline, allow_dns_restart: true }]);
+  expect(state.writes).toEqual([
+    { settings: expected, revision: baseline, allow_dns_restart: true },
+  ]);
   expect(state.previews).toEqual([]);
   expect(state.structuredWrites).toEqual([]);
   expect(state.requests.some(({ path }) => path === "/system/config/yaml")).toBe(false);
@@ -353,11 +364,15 @@ test("General edits typed settings, saves and reloads without exposing YAML or i
   await page.reload();
   await openGeneral(page);
   await expect(timeout).toHaveValue("7500");
-  await expect(page.getByRole("textbox", { name: "Upstream DNS server", exact: true })).toHaveValue("8.8.8.8");
+  await expect(page.getByRole("textbox", { name: "Upstream DNS server", exact: true })).toHaveValue(
+    "8.8.8.8",
+  );
 });
 
 for (const field of ["logging", "interface visibility", "PTR", "AAAA", "TTL"] as const) {
-  test(`saving live ${field} settings applies without a DNS warning or empty dialog`, async ({ page }) => {
+  test(`saving live ${field} settings applies without a DNS warning or empty dialog`, async ({
+    page,
+  }) => {
     const { state } = await backend(page);
     const expected = generalSettings();
     await page.goto("/");
@@ -367,7 +382,9 @@ for (const field of ["logging", "interface visibility", "PTR", "AAAA", "TTL"] as
       await page.getByRole("option", { name: "Debug", exact: true }).click();
       expected.logLevel = "debug";
     } else if (field === "interface visibility") {
-      await page.getByRole("switch", { name: "Show all interfaces in selectors", exact: true }).click();
+      await page
+        .getByRole("switch", { name: "Show all interfaces in selectors", exact: true })
+        .click();
       expected.showAllInterfaces = true;
     } else if (field === "PTR") {
       await page.getByRole("switch", { name: "Block reverse lookups (PTR)", exact: true }).click();
@@ -376,16 +393,24 @@ for (const field of ["logging", "interface visibility", "PTR", "AAAA", "TTL"] as
       await page.getByRole("switch", { name: "Filter IPv6 answers (AAAA)", exact: true }).click();
       expected.dnsProxy.disableDropAAAA = true;
     } else {
-      await page.getByRole("spinbutton", { name: "Additional IP address TTL (seconds)", exact: true }).fill("120");
+      await page
+        .getByRole("spinbutton", { name: "Additional IP address TTL (seconds)", exact: true })
+        .fill("120");
       expected.netfilter.ipset.additionalTTLSeconds = 120;
     }
     const requestStart = state.requests.length;
     await page.locator("#save-settings").click();
     await applied(page);
-    await expect(page.getByRole("dialog", { name: "Apply general settings?", exact: true })).toHaveCount(0);
+    await expect(
+      page.getByRole("dialog", { name: "Apply general settings?", exact: true }),
+    ).toHaveCount(0);
     expect(state.settings).toEqual(expected);
     expect(state.previews).toEqual([]);
-    expect(state.requests.slice(requestStart).filter(({ path }) => path.startsWith("/system/settings"))[0].method).toBe("PUT");
+    expect(
+      state.requests
+        .slice(requestStart)
+        .filter(({ path }) => path.startsWith("/system/settings"))[0].method,
+    ).toBe("PUT");
     expect(state.writes).toHaveLength(1);
     expect(state.writes[0].allow_dns_restart).toBe(false);
     await expect(page.locator("#save-settings")).toBeDisabled();
@@ -424,7 +449,9 @@ test("reverted DNS fields do not trigger a warning for a later live edit", async
   await page.getByRole("switch", { name: "Show all interfaces in selectors", exact: true }).click();
   await page.locator("#save-settings").click();
   await applied(page);
-  await expect(page.getByRole("dialog", { name: "Apply general settings?", exact: true })).toHaveCount(0);
+  await expect(
+    page.getByRole("dialog", { name: "Apply general settings?", exact: true }),
+  ).toHaveCount(0);
   expect(state.settings.dnsProxy.timeoutMs).toBe(5000);
   expect(state.settings.showAllInterfaces).toBe(true);
   expect(state.writes[0].allow_dns_restart).toBe(false);
@@ -440,7 +467,9 @@ test("live General edits save from Profiles without a DNS confirmation", async (
   await page.getByRole("textbox", { name: "Profile name", exact: true }).first().fill("Live save");
   await page.locator("#save-settings").click();
   await applied(page);
-  await expect(page.getByRole("dialog", { name: "Apply general settings?", exact: true })).toHaveCount(0);
+  await expect(
+    page.getByRole("dialog", { name: "Apply general settings?", exact: true }),
+  ).toHaveCount(0);
   expect(state.actions).toEqual(["profiles", "settings"]);
   expect(state.profiles[0].name).toBe("Live save");
   expect(state.settings.showAllInterfaces).toBe(true);
@@ -448,8 +477,12 @@ test("live General edits save from Profiles without a DNS confirmation", async (
   expect(state.previews).toEqual([]);
 });
 
-test("an authentication-only edit keeps its web warning without a DNS interruption warning", async ({ page }) => {
-  await page.addInitScript(() => localStorage.setItem("auth", JSON.stringify({ value: "initial-token" })));
+test("an authentication-only edit keeps its web warning without a DNS interruption warning", async ({
+  page,
+}) => {
+  await page.addInitScript(() =>
+    localStorage.setItem("auth", JSON.stringify({ value: "initial-token" })),
+  );
   const { state } = await backend(page);
   state.settings.httpWeb.auth.enabled = true;
   await page.goto("/");
@@ -468,7 +501,9 @@ test("an authentication-only edit keeps its web warning without a DNS interrupti
   expect(state.writes[0].allow_dns_restart).toBe(false);
 });
 
-test("mixed live and DNS changes still require the DNS warning without a preflight", async ({ page }) => {
+test("mixed live and DNS changes still require the DNS warning without a preflight", async ({
+  page,
+}) => {
   const { state } = await backend(page);
   await page.goto("/");
   const timeout = await openGeneral(page);
@@ -478,7 +513,9 @@ test("mixed live and DNS changes still require the DNS warning without a preflig
   await page.locator("#save-settings").click();
   const dialog = page.getByRole("dialog", { name: "Apply general settings?", exact: true });
   await expect(dialog).toContainText("DNS routing may be temporarily unavailable");
-  expect(state.requests.slice(requestStart).filter(({ path }) => path.startsWith("/system/settings"))).toEqual([]);
+  expect(
+    state.requests.slice(requestStart).filter(({ path }) => path.startsWith("/system/settings")),
+  ).toEqual([]);
   expect(state.writes).toEqual([]);
   await dialog.getByRole("button", { name: "Apply", exact: true }).click();
   await applied(page);
@@ -487,19 +524,25 @@ test("mixed live and DNS changes still require the DNS warning without a preflig
 });
 
 for (const failure of ["network", "malformed", "server"] as const) {
-  test(`a ${failure} preview endpoint does not delay or block a direct Settings save`, async ({ page }) => {
+  test(`a ${failure} preview endpoint does not delay or block a direct Settings save`, async ({
+    page,
+  }) => {
     const { state } = await backend(page);
     state.previewFailure = failure;
     await page.goto("/");
     await openGeneral(page);
-    await page.getByRole("switch", { name: "Show all interfaces in selectors", exact: true }).click();
+    await page
+      .getByRole("switch", { name: "Show all interfaces in selectors", exact: true })
+      .click();
     await page.getByRole("tab", { name: "Profiles", exact: true }).click();
     const name = page.getByRole("textbox", { name: "Profile name", exact: true }).first();
     await name.fill("No preflight needed");
     await page.locator("#save-settings").click();
     await applied(page);
     await expect(name).toHaveValue("No preflight needed");
-    await expect(page.getByRole("dialog", { name: "Apply general settings?", exact: true })).toHaveCount(0);
+    await expect(
+      page.getByRole("dialog", { name: "Apply general settings?", exact: true }),
+    ).toHaveCount(0);
     expect(state.actions).toEqual(["profiles", "settings"]);
     expect(state.writes).toHaveLength(1);
     expect(state.settings.showAllInterfaces).toBe(true);
@@ -507,11 +550,16 @@ for (const failure of ["network", "malformed", "server"] as const) {
   });
 }
 
-test("a server restart refusal preserves the draft without another confirmation or automatic retry", async ({ page }) => {
+test("a server restart refusal preserves the draft without another confirmation or automatic retry", async ({
+  page,
+}) => {
   const { state } = await backend(page);
   await page.goto("/");
   await openGeneral(page);
-  const toggle = page.getByRole("switch", { name: "Show all interfaces in selectors", exact: true });
+  const toggle = page.getByRole("switch", {
+    name: "Show all interfaces in selectors",
+    exact: true,
+  });
   await toggle.click();
   state.runtimeActive = false;
   await page.locator("#save-settings").click();
@@ -522,7 +570,9 @@ test("a server restart refusal preserves the draft without another confirmation 
   await closeFeedback(page);
   await expect(toggle).toBeChecked();
   await expect(page.locator("#save-settings")).toBeEnabled();
-  await expect(page.getByRole("dialog", { name: "Apply general settings?", exact: true })).toHaveCount(0);
+  await expect(
+    page.getByRole("dialog", { name: "Apply general settings?", exact: true }),
+  ).toHaveCount(0);
   expect(state.writes).toHaveLength(1);
   expect(state.writes[0].allow_dns_restart).toBe(false);
   expect(state.settings.showAllInterfaces).toBe(false);
@@ -540,7 +590,9 @@ test("a server restart refusal preserves the draft without another confirmation 
   expect(state.previews).toEqual([]);
 });
 
-test("a backend without preview is not probed and a live PUT keeps restart permission false", async ({ page }) => {
+test("a backend without preview is not probed and a live PUT keeps restart permission false", async ({
+  page,
+}) => {
   const { state } = await backend(page);
   state.previewFailure = "not-found";
   await page.goto("/");
@@ -548,7 +600,9 @@ test("a backend without preview is not probed and a live PUT keeps restart permi
   await page.getByRole("switch", { name: "Show all interfaces in selectors", exact: true }).click();
   await page.locator("#save-settings").click();
   await applied(page);
-  await expect(page.getByRole("dialog", { name: "Apply general settings?", exact: true })).toHaveCount(0);
+  await expect(
+    page.getByRole("dialog", { name: "Apply general settings?", exact: true }),
+  ).toHaveCount(0);
   expect(state.writes).toHaveLength(1);
   expect(state.writes[0].allow_dns_restart).toBe(false);
   expect(state.previews).toEqual([]);
@@ -556,16 +610,22 @@ test("a backend without preview is not probed and a live PUT keeps restart permi
 
 for (const width of [1280, 390]) {
   for (const russian of [false, true]) {
-    test(`quiet save keeps header and form geometry at ${width}px in ${russian ? "Russian" : "English"}`, async ({ page }) => {
+    test(`quiet save keeps header and form geometry at ${width}px in ${russian ? "Russian" : "English"}`, async ({
+      page,
+    }) => {
       await page.setViewportSize({ width, height: 900 });
       if (russian)
-        await page.addInitScript(() => localStorage.setItem("locale", JSON.stringify({ value: "ru" })));
+        await page.addInitScript(() =>
+          localStorage.setItem("locale", JSON.stringify({ value: "ru" })),
+        );
       const { state, complete } = await backend(page);
       state.holdApplying = true;
       await page.goto("/");
       const menu = page.getByRole("button", { name: "Open menu", exact: true });
       if (await menu.isVisible()) await menu.click();
-      await page.getByRole("tab", { name: russian ? "Настройки" : "Settings", exact: true }).click();
+      await page
+        .getByRole("tab", { name: russian ? "Настройки" : "Settings", exact: true })
+        .click();
       await page.getByRole("tab", { name: russian ? "Общие" : "General", exact: true }).click();
       await expect(page.locator("#general-additionalTTLSeconds")).toHaveValue("3600");
       await page.locator("#general-additionalTTLSeconds").fill("120");
@@ -579,8 +639,22 @@ for (const width of [1280, 390]) {
       await expect(save).toBeDisabled();
       await expect(page.locator("#general")).toHaveAttribute("data-application-state", "applying");
       await expect(page.locator(".application-status")).toHaveCount(0);
-      await expect(page.getByRole("button", { name: russian ? "Проверить применение" : "Check application", exact: true })).toHaveCount(0);
-      for (const text of ["Checking settings…", "Applying settings…", "Settings applied", "Settings saved", "Проверка настроек…", "Применение настроек…", "Настройки применены", "Настройки сохранены"])
+      await expect(
+        page.getByRole("button", {
+          name: russian ? "Проверить применение" : "Check application",
+          exact: true,
+        }),
+      ).toHaveCount(0);
+      for (const text of [
+        "Checking settings…",
+        "Applying settings…",
+        "Settings applied",
+        "Settings saved",
+        "Проверка настроек…",
+        "Применение настроек…",
+        "Настройки применены",
+        "Настройки сохранены",
+      ])
         await expect(page.getByText(text, { exact: true })).toHaveCount(0);
       expectStableGeometry(before, await geometry(page));
       expect(state.writes).toHaveLength(1);
@@ -596,7 +670,9 @@ for (const width of [1280, 390]) {
   }
 }
 
-test("enabling WebUI alone saves without an empty confirmation or DNS warning", async ({ page }) => {
+test("enabling WebUI alone saves without an empty confirmation or DNS warning", async ({
+  page,
+}) => {
   const { state } = await backend(page);
   state.settings.httpWeb.enabled = false;
   await page.goto("/");
@@ -604,20 +680,27 @@ test("enabling WebUI alone saves without an empty confirmation or DNS warning", 
   await page.getByRole("switch", { name: "Enable web interface", exact: true }).click();
   await page.locator("#save-settings").click();
   await applied(page);
-  await expect(page.getByRole("dialog", { name: "Apply general settings?", exact: true })).toHaveCount(0);
+  await expect(
+    page.getByRole("dialog", { name: "Apply general settings?", exact: true }),
+  ).toHaveCount(0);
   expect(state.writes).toHaveLength(1);
   expect(state.writes[0].allow_dns_restart).toBe(false);
   expect(state.settings.httpWeb.enabled).toBe(true);
   expect(state.previews).toEqual([]);
 });
 
-test("cancelling the DNS interruption warning starts no General or profile writes", async ({ page }) => {
+test("cancelling the DNS interruption warning starts no General or profile writes", async ({
+  page,
+}) => {
   const { state } = await backend(page);
   await page.goto("/");
   const timeout = await openGeneral(page);
   await timeout.fill("7500");
   await page.getByRole("tab", { name: "Profiles", exact: true }).click();
-  await page.getByRole("textbox", { name: "Profile name", exact: true }).first().fill("Pending profile");
+  await page
+    .getByRole("textbox", { name: "Profile name", exact: true })
+    .first()
+    .fill("Pending profile");
   await page.getByRole("tab", { name: "General", exact: true }).click();
   await page.locator("#save-settings").click();
   const dialog = page.getByRole("dialog", { name: "Apply general settings?", exact: true });
@@ -629,16 +712,23 @@ test("cancelling the DNS interruption warning starts no General or profile write
   expect(state.previews).toEqual([]);
   expect(await hasUnloadWarning(page)).toBe(true);
   await page.getByRole("tab", { name: "Profiles", exact: true }).click();
-  await expect(page.getByRole("textbox", { name: "Profile name", exact: true }).first()).toHaveValue("Pending profile");
+  await expect(
+    page.getByRole("textbox", { name: "Profile name", exact: true }).first(),
+  ).toHaveValue("Pending profile");
 });
 
-test("Save applies General only after other changed Settings sections have succeeded", async ({ page }) => {
+test("Save applies General only after other changed Settings sections have succeeded", async ({
+  page,
+}) => {
   const { state } = await backend(page);
   await page.goto("/");
   const timeout = await openGeneral(page);
   await timeout.fill("7500");
   await page.getByRole("tab", { name: "Profiles", exact: true }).click();
-  await page.getByRole("textbox", { name: "Profile name", exact: true }).first().fill("Saved before restart");
+  await page
+    .getByRole("textbox", { name: "Profile name", exact: true })
+    .first()
+    .fill("Saved before restart");
   await confirmSave(page);
   await expect.poll(() => state.settings.dnsProxy.timeoutMs).toBe(7500);
   await page.getByRole("tab", { name: "General", exact: true }).click();
@@ -651,7 +741,9 @@ test("Save applies General only after other changed Settings sections have succe
 });
 
 for (const failure of ["server", "persistence"] as const) {
-  test(`${failure} failure in Profiles prevents General apply and keeps both drafts retryable`, async ({ page }) => {
+  test(`${failure} failure in Profiles prevents General apply and keeps both drafts retryable`, async ({
+    page,
+  }) => {
     const { state } = await backend(page);
     state.profileFailure = failure;
     await page.goto("/");
@@ -677,7 +769,9 @@ for (const failure of ["server", "persistence"] as const) {
   });
 }
 
-test("a 202 response and unrelated operation never produce a premature success", async ({ page }) => {
+test("a 202 response and unrelated operation never produce a premature success", async ({
+  page,
+}) => {
   const { state, complete } = await backend(page);
   state.holdApplying = true;
   await page.goto("/");
@@ -704,7 +798,9 @@ test("a 202 response and unrelated operation never produce a premature success",
   expect(state.writes).toHaveLength(1);
 });
 
-test("a DNS restart refusal is a single actionable error without another confirmation", async ({ page }) => {
+test("a DNS restart refusal is a single actionable error without another confirmation", async ({
+  page,
+}) => {
   const { state } = await backend(page);
   await page.goto("/");
   await openGeneral(page);
@@ -716,7 +812,8 @@ test("a DNS restart refusal is a single actionable error without another confirm
   state.runtimeActive = false;
   await page.locator("#save-settings").click();
   await openFeedback(page);
-  const message = "Applying these settings now requires a DNS restart. Nothing was saved; check the service before retrying.";
+  const message =
+    "Applying these settings now requires a DNS restart. Nothing was saved; check the service before retrying.";
   await expect(page.getByText(message, { exact: true })).toBeVisible();
   await expect(page.locator(".application-error p")).toHaveCount(1);
   await expect(page.getByRole("dialog", { name: "Apply general settings?" })).toHaveCount(0);
@@ -731,7 +828,9 @@ test("a DNS restart refusal is a single actionable error without another confirm
   expect(state.settings.showAllInterfaces).toBe(true);
 });
 
-test("a stale settings revision preserves the General draft and never starts an operation", async ({ page }) => {
+test("a stale settings revision preserves the General draft and never starts an operation", async ({
+  page,
+}) => {
   const { state, revision } = await backend(page);
   await page.goto("/");
   const timeout = await openGeneral(page);
@@ -741,7 +840,12 @@ test("a stale settings revision preserves the General draft and never starts an 
   state.version++;
   await confirmSave(page);
   await openFeedback(page);
-  await expect(page.getByText("General settings changed elsewhere. Your draft is preserved. Reload the page before saving again.", { exact: true })).toBeVisible();
+  await expect(
+    page.getByText(
+      "General settings changed elsewhere. Your draft is preserved. Reload the page before saving again.",
+      { exact: true },
+    ),
+  ).toBeVisible();
   await expect(page.locator(".application-error p")).toHaveCount(1);
   await expect(timeout).toHaveValue("7500");
   expect(state.previews).toEqual([]);
@@ -753,7 +857,9 @@ test("a stale settings revision preserves the General draft and never starts an 
 });
 
 for (const failure of ["validation", "server"] as const) {
-  test(`${failure} rejection retains the form and permits an explicit corrected save`, async ({ page }) => {
+  test(`${failure} rejection retains the form and permits an explicit corrected save`, async ({
+    page,
+  }) => {
     const { state } = await backend(page);
     state.putFailure = failure;
     await page.goto("/");
@@ -761,7 +867,16 @@ for (const failure of ["validation", "server"] as const) {
     await timeout.fill("7500");
     await confirmSave(page);
     if (failure === "server") await openFeedback(page);
-    await expect(page.getByText(failure === "validation" ? "Timeout rejected by server" : "Settings application is unavailable", { exact: false }).first()).toBeVisible();
+    await expect(
+      page
+        .getByText(
+          failure === "validation"
+            ? "Timeout rejected by server"
+            : "Settings application is unavailable",
+          { exact: false },
+        )
+        .first(),
+    ).toBeVisible();
     await expect(timeout).toHaveValue("7500");
     expect(state.settings.dnsProxy.timeoutMs).toBe(5000);
     expect(state.operation).toBeNull();
@@ -777,7 +892,9 @@ for (const failure of ["validation", "server"] as const) {
 }
 
 for (const failure of ["lost-ack", "malformed"] as const) {
-  test(`${failure} acknowledgement keeps the draft and checking does not repeat PUT`, async ({ page }) => {
+  test(`${failure} acknowledgement keeps the draft and checking does not repeat PUT`, async ({
+    page,
+  }) => {
     await page.clock.install();
     const { state, complete } = await backend(page);
     state.putFailure = failure;
@@ -804,7 +921,9 @@ for (const failure of ["lost-ack", "malformed"] as const) {
 }
 
 for (const failure of ["failed", "rollback_failed"] as const) {
-  test(`${failure} application outcome is visible and preserves the requested values`, async ({ page }) => {
+  test(`${failure} application outcome is visible and preserves the requested values`, async ({
+    page,
+  }) => {
     const { state } = await backend(page);
     state.applyFailure = failure;
     await page.goto("/");
@@ -812,7 +931,9 @@ for (const failure of ["failed", "rollback_failed"] as const) {
     await timeout.fill("7500");
     await confirmSave(page);
     await openFeedback(page);
-    await expect(page.getByText("Could not start the requested DNS listener", { exact: false }).first()).toBeVisible();
+    await expect(
+      page.getByText("Could not start the requested DNS listener", { exact: false }).first(),
+    ).toBeVisible();
     await closeFeedback(page);
     await expect(timeout).toHaveValue("7500");
     await expect(page.locator("#general")).toHaveAttribute("data-application-state", failure);
@@ -828,7 +949,9 @@ for (const failure of ["failed", "rollback_failed"] as const) {
   });
 }
 
-test("General drafts survive tab changes and saving retains unrelated group and subscription drafts", async ({ page }) => {
+test("General drafts survive tab changes and saving retains unrelated group and subscription drafts", async ({
+  page,
+}) => {
   const { state } = await backend(page);
   await page.goto("/");
   const timeout = await openGeneral(page);
@@ -853,7 +976,9 @@ test("General drafts survive tab changes and saving retains unrelated group and 
   expect(await hasUnloadWarning(page)).toBe(true);
 });
 
-test("edits made in another section during General application survive completion", async ({ page }) => {
+test("edits made in another section during General application survive completion", async ({
+  page,
+}) => {
   const { state, complete } = await backend(page);
   state.holdApplying = true;
   await page.goto("/");
@@ -900,8 +1025,12 @@ for (const shortcut of ["Control+s", "Meta+s"]) {
   });
 }
 
-test("a changed web port offers a clean destination without sending credentials to it", async ({ page }) => {
-  await page.addInitScript(() => localStorage.setItem("auth", JSON.stringify({ value: "initial-token" })));
+test("a changed web port offers a clean destination without sending credentials to it", async ({
+  page,
+}) => {
+  await page.addInitScript(() =>
+    localStorage.setItem("auth", JSON.stringify({ value: "initial-token" })),
+  );
   const { state } = await backend(page);
   state.settings.httpWeb.auth.enabled = true;
   await page.goto("/");
@@ -922,7 +1051,9 @@ test("a changed web port offers a clean destination without sending credentials 
   expect(state.previews).toEqual([]);
 });
 
-test("disabling the web interface explains only the expected loss of web access", async ({ page }) => {
+test("disabling the web interface explains only the expected loss of web access", async ({
+  page,
+}) => {
   const { state } = await backend(page);
   await page.goto("/");
   await openGeneral(page);
@@ -936,14 +1067,21 @@ test("disabling the web interface explains only the expected loss of web access"
   expect(state.writes).toHaveLength(0);
   await warning.getByRole("button", { name: "Apply", exact: true }).click();
   await openFeedback(page);
-  await expect(page.getByText("If web access is disabled, this page cannot confirm the result. Your draft is preserved.", { exact: true })).toBeVisible();
+  await expect(
+    page.getByText(
+      "If web access is disabled, this page cannot confirm the result. Your draft is preserved.",
+      { exact: true },
+    ),
+  ).toBeVisible();
   expect(state.writes).toHaveLength(1);
   expect(state.writes[0].settings.httpWeb.enabled).toBe(false);
   expect(state.writes[0].allow_dns_restart).toBe(false);
   await expect(page.getByRole("link", { name: /^Open new web address/ })).toHaveCount(0);
 });
 
-test("enabling sign-in preserves the accepted General save through authentication and verification", async ({ page }) => {
+test("enabling sign-in preserves the accepted General save through authentication and verification", async ({
+  page,
+}) => {
   const { state, complete } = await backend(page);
   state.holdApplying = true;
   await page.goto("/");
@@ -955,7 +1093,10 @@ test("enabling sign-in preserves the accepted General save through authenticatio
   expect(state.writes).toHaveLength(1);
   expect(state.writes[0].settings.httpWeb.auth.enabled).toBe(true);
   const operationId = state.operation?.id;
-  const unauthorized = page.waitForResponse((response) => new URL(response.url()).pathname.endsWith("/system/settings") && response.status() === 401);
+  const unauthorized = page.waitForResponse(
+    (response) =>
+      new URL(response.url()).pathname.endsWith("/system/settings") && response.status() === 401,
+  );
   complete();
   await unauthorized;
   const login = page.getByRole("dialog", { name: "Sign In", exact: true });
@@ -969,7 +1110,9 @@ test("enabling sign-in preserves the accepted General save through authenticatio
   await login.getByRole("button", { name: "Sign In", exact: true }).click();
   await expect(login).toHaveCount(0);
   await expect(timeout).toHaveValue("7500");
-  await expect(page.getByRole("switch", { name: "Enable authentication", exact: true })).toBeChecked();
+  await expect(
+    page.getByRole("switch", { name: "Enable authentication", exact: true }),
+  ).toBeChecked();
   await expect(page.locator("#general")).not.toHaveAttribute("data-application-state", "succeeded");
   await openFeedback(page);
   const check = page.getByRole("button", { name: "Check application", exact: true });
@@ -979,13 +1122,25 @@ test("enabling sign-in preserves the accepted General save through authenticatio
   expect(state.logins).toBe(1);
   expect(state.operation?.id).toBe(operationId);
   expect(state.writes).toHaveLength(1);
-  expect(state.requests.filter(({ path, method }) => path === "/system/settings" && method === "PUT")[0].authorization).toBeUndefined();
-  expect(state.requests.some(({ path, method, authorization }) => path === "/system/settings" && method === "GET" && authorization === "Bearer initial-token")).toBe(true);
+  expect(
+    state.requests.filter(({ path, method }) => path === "/system/settings" && method === "PUT")[0]
+      .authorization,
+  ).toBeUndefined();
+  expect(
+    state.requests.some(
+      ({ path, method, authorization }) =>
+        path === "/system/settings" && method === "GET" && authorization === "Bearer initial-token",
+    ),
+  ).toBe(true);
   expect(await hasUnloadWarning(page)).toBe(false);
 });
 
-test("expired authentication preserves General, group and subscription drafts through login", async ({ page }) => {
-  await page.addInitScript(() => localStorage.setItem("auth", JSON.stringify({ value: "initial-token" })));
+test("expired authentication preserves General, group and subscription drafts through login", async ({
+  page,
+}) => {
+  await page.addInitScript(() =>
+    localStorage.setItem("auth", JSON.stringify({ value: "initial-token" })),
+  );
   const { state } = await backend(page);
   state.settings.httpWeb.auth.enabled = true;
   await page.goto("/");
@@ -1013,7 +1168,9 @@ test("expired authentication preserves General, group and subscription drafts th
   await expect(page.locator(".group-name").first()).toHaveValue("Group survives login");
   await expect(page.locator("#save-changes")).toBeEnabled();
   await showPage(page, "Subscriptions");
-  await expect(page.locator(".subscription-name").first()).toHaveValue("Subscription survives login");
+  await expect(page.locator(".subscription-name").first()).toHaveValue(
+    "Subscription survives login",
+  );
   await expect(page.locator("#save-subscriptions")).toBeEnabled();
   expect(state.structuredWrites).toEqual([]);
   expect(await hasUnloadWarning(page)).toBe(true);
@@ -1041,7 +1198,9 @@ test("invalid numeric and interface fields block Save until corrected", async ({
   expect(state.writes).toEqual([]);
 });
 
-test("a failed application check preserves the pending save and retry only reads its result", async ({ page }) => {
+test("a failed application check preserves the pending save and retry only reads its result", async ({
+  page,
+}) => {
   await page.clock.install();
   const { state, complete } = await backend(page);
   state.holdApplying = true;
@@ -1055,7 +1214,12 @@ test("a failed application check preserves the pending save and retry only reads
   await openFeedback(page);
   const check = page.getByRole("button", { name: "Check application", exact: true });
   await expect(check).toBeEnabled();
-  await expect(page.getByText("Could not confirm whether the settings were applied. Your draft is preserved.", { exact: true })).toBeVisible();
+  await expect(
+    page.getByText(
+      "Could not confirm whether the settings were applied. Your draft is preserved.",
+      { exact: true },
+    ),
+  ).toBeVisible();
   await expect(timeout).toHaveValue("7500");
   expect(state.writes).toHaveLength(1);
   expect(await hasUnloadWarning(page)).toBe(true);
@@ -1076,7 +1240,11 @@ test("web access changes cannot discard unrelated drafts through navigation", as
   await openGeneral(page);
   await expect(page.locator("#save-settings")).toBeDisabled();
   await openFeedback(page);
-  await expect(page.getByText("Save changes in Groups and Subscriptions before changing web access.", { exact: true })).toBeVisible();
+  await expect(
+    page.getByText("Save changes in Groups and Subscriptions before changing web access.", {
+      exact: true,
+    }),
+  ).toBeVisible();
   await expect(page.getByRole("spinbutton", { name: "Web port", exact: true })).toHaveValue("8081");
   expect(state.writes).toEqual([]);
   expect(state.structuredWrites).toEqual([]);
@@ -1084,10 +1252,14 @@ test("web access changes cannot discard unrelated drafts through navigation", as
 });
 
 for (const russian of [false, true]) {
-  test(`General controls and confirmation remain accessible on a narrow ${russian ? "Russian" : "English"} page`, async ({ page }) => {
+  test(`General controls and confirmation remain accessible on a narrow ${russian ? "Russian" : "English"} page`, async ({
+    page,
+  }) => {
     await page.setViewportSize({ width: 390, height: 844 });
     if (russian)
-      await page.addInitScript(() => localStorage.setItem("locale", JSON.stringify({ value: "ru" })));
+      await page.addInitScript(() =>
+        localStorage.setItem("locale", JSON.stringify({ value: "ru" })),
+      );
     const { state } = await backend(page);
     await page.goto("/");
     await page.getByRole("button", { name: "Open menu", exact: true }).click();
@@ -1095,15 +1267,37 @@ for (const russian of [false, true]) {
     const tab = page.getByRole("tab", { name: russian ? "Общие" : "General", exact: true });
     await tab.click();
     const web = page.locator(".settings-group").filter({
-      has: page.getByRole("heading", { name: russian ? "Веб-интерфейс" : "Web interface", exact: true }),
+      has: page.getByRole("heading", {
+        name: russian ? "Веб-интерфейс" : "Web interface",
+        exact: true,
+      }),
     });
-    await expect(web.locator("label")).toHaveText(russian ? ["Включить", "Включить авторизацию", "Адрес", "Порт"] : ["Enable", "Enable authentication", "Address", "Port"]);
-    await page.getByText(russian ? "Таймаут и лимиты" : "Timeout and limits", { exact: true }).click();
-    const timeout = page.getByRole("spinbutton", { name: russian ? "Таймаут ответа (мс)" : "Response timeout (ms)", exact: true });
+    await expect(web.locator("label")).toHaveText(
+      russian
+        ? ["Включить", "Включить авторизацию", "Адрес", "Порт"]
+        : ["Enable", "Enable authentication", "Address", "Port"],
+    );
+    await page
+      .getByText(russian ? "Таймаут и лимиты" : "Timeout and limits", { exact: true })
+      .click();
+    const timeout = page.getByRole("spinbutton", {
+      name: russian ? "Таймаут ответа (мс)" : "Response timeout (ms)",
+      exact: true,
+    });
     await timeout.fill("7500");
-    await expect(page.getByRole("button", { name: russian ? "Загрузить настройки заново" : "Reload settings", exact: true })).toHaveCount(0);
-    await expect(page.getByText(russian ? "Несохранённые изменения" : "Unsaved changes", { exact: true })).toHaveCount(0);
-    const save = page.getByRole("button", { name: russian ? "Сохранить изменения" : "Save Changes", exact: true });
+    await expect(
+      page.getByRole("button", {
+        name: russian ? "Загрузить настройки заново" : "Reload settings",
+        exact: true,
+      }),
+    ).toHaveCount(0);
+    await expect(
+      page.getByText(russian ? "Несохранённые изменения" : "Unsaved changes", { exact: true }),
+    ).toHaveCount(0);
+    const save = page.getByRole("button", {
+      name: russian ? "Сохранить изменения" : "Save Changes",
+      exact: true,
+    });
     for (const control of [tab, save]) {
       await expect(control).toBeInViewport();
       const box = await control.boundingBox();
@@ -1111,13 +1305,20 @@ for (const russian of [false, true]) {
       expect(box!.x).toBeGreaterThanOrEqual(0);
       expect(box!.x + box!.width).toBeLessThanOrEqual(390);
     }
-    expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(390);
+    expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(
+      390,
+    );
     await save.click();
-    const dialog = page.getByRole("dialog", { name: russian ? "Применить общие настройки?" : "Apply general settings?", exact: true });
+    const dialog = page.getByRole("dialog", {
+      name: russian ? "Применить общие настройки?" : "Apply general settings?",
+      exact: true,
+    });
     await expect(dialog).toBeVisible();
     const cancel = dialog.getByRole("button", { name: russian ? "Отмена" : "Cancel", exact: true });
     await expect(cancel).toBeInViewport();
-    await expect(dialog.getByRole("button", { name: russian ? "Применить" : "Apply", exact: true })).toBeInViewport();
+    await expect(
+      dialog.getByRole("button", { name: russian ? "Применить" : "Apply", exact: true }),
+    ).toBeInViewport();
     await cancel.click();
     await expect(timeout).toHaveValue("7500");
     expect(state.writes).toEqual([]);
@@ -1126,10 +1327,13 @@ for (const russian of [false, true]) {
 }
 
 for (const width of [1280, 390, 320]) {
-  test(`General uses the shared interface picker and keeps custom names at ${width}px`, async ({ page }) => {
+  test(`General uses the shared interface picker and keeps custom names at ${width}px`, async ({
+    page,
+  }) => {
     await page.setViewportSize({ width, height: 900 });
     const { state } = await backend(page);
-    state.interfaces.find((item) => item.id === "tun1")!.name = "A long interface description ".repeat(8);
+    state.interfaces.find((item) => item.id === "tun1")!.name =
+      "A long interface description ".repeat(8);
     await page.goto("/");
     await openGeneral(page);
     const links = page.getByRole("textbox", { name: "DNS interception interfaces", exact: true });
@@ -1156,7 +1360,9 @@ for (const width of [1280, 390, 320]) {
     await picker.click();
     await page.getByRole("option", { name: /^tun1/ }).click();
     await expect(links).toHaveValue("br0, custom0, tun1");
-    expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(width);
+    expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(
+      width,
+    );
     await confirmSave(page);
     await applied(page);
     expect(state.settings.link).toEqual(["br0", "custom0", "tun1"]);
@@ -1175,13 +1381,17 @@ for (const failure of ["network", "malformed"] as const) {
     await expect(page.getByText("Failed to load general settings", { exact: true })).toBeVisible();
     state.readFailure = null;
     await page.getByRole("button", { name: "Retry", exact: true }).click();
-    await expect(page.getByRole("textbox", { name: "Upstream DNS server", exact: true })).toHaveValue("127.0.0.1");
+    await expect(
+      page.getByRole("textbox", { name: "Upstream DNS server", exact: true }),
+    ).toHaveValue("127.0.0.1");
     await expect(page.getByRole("alert")).toHaveCount(0);
     expect(state.writes).toHaveLength(0);
   });
 }
 
-test("General shows a server field error once and clears it after correcting that field", async ({ page }) => {
+test("General shows a server field error once and clears it after correcting that field", async ({
+  page,
+}) => {
   const { state } = await backend(page);
   state.putFailure = "validation";
   await page.goto("/");
@@ -1201,7 +1411,9 @@ test("General shows a server field error once and clears it after correcting tha
   expect(state.settings.dnsProxy.timeoutMs).toBe(8000);
 });
 
-test("General disables shared controls during application and restores them afterwards", async ({ page }) => {
+test("General disables shared controls during application and restores them afterwards", async ({
+  page,
+}) => {
   const { state, complete } = await backend(page);
   state.holdApplying = true;
   await page.goto("/");
@@ -1222,7 +1434,9 @@ test("General disables shared controls during application and restores them afte
   for (const control of controls) await expect(control).toBeEnabled();
 });
 
-test("General fields and sections support keyboard focus without native suggestion popups", async ({ page }) => {
+test("General fields and sections support keyboard focus without native suggestion popups", async ({
+  page,
+}) => {
   await backend(page);
   await page.goto("/");
   const timeout = await openGeneral(page);
@@ -1241,21 +1455,31 @@ test("General fields and sections support keyboard focus without native suggesti
   await page.keyboard.press("Escape");
   await expect(logLevel).toBeFocused();
   await page.getByRole("switch", { name: "Enable web interface", exact: true }).click();
-  await expect(page.getByRole("switch", { name: "Enable authentication", exact: true })).toBeDisabled();
+  await expect(
+    page.getByRole("switch", { name: "Enable authentication", exact: true }),
+  ).toBeDisabled();
   await expect(page.getByRole("spinbutton", { name: "Web port", exact: true })).toBeDisabled();
 });
 
-test("a delayed unauthorized response cannot discard a renewed login or the General draft", async ({ page }) => {
-  await page.addInitScript(() => localStorage.setItem("auth", JSON.stringify({ value: "initial-token" })));
+test("a delayed unauthorized response cannot discard a renewed login or the General draft", async ({
+  page,
+}) => {
+  await page.addInitScript(() =>
+    localStorage.setItem("auth", JSON.stringify({ value: "initial-token" })),
+  );
   const { state } = await backend(page);
   state.settings.httpWeb.auth.enabled = true;
   await page.goto("/");
   const timeout = await openGeneral(page);
   await timeout.fill("7500");
   let release: () => void = () => {};
-  const delayed = new Promise<void>((resolve) => { release = resolve; });
+  const delayed = new Promise<void>((resolve) => {
+    release = resolve;
+  });
   let entered: () => void = () => {};
-  const captured = new Promise<void>((resolve) => { entered = resolve; });
+  const captured = new Promise<void>((resolve) => {
+    entered = resolve;
+  });
   let held = false;
   await page.route("**/api/v1/profiles", async (route) => {
     if (!held && route.request().method() === "GET") {
@@ -1277,11 +1501,15 @@ test("a delayed unauthorized response cannot discard a renewed login or the Gene
   await login.locator("#password").fill("correct-password");
   await login.getByRole("button", { name: "Sign In", exact: true }).click();
   await expect(login).toHaveCount(0);
-  const response = page.waitForResponse((response) => response.url().endsWith("/profiles") && response.status() === 401);
+  const response = page.waitForResponse(
+    (response) => response.url().endsWith("/profiles") && response.status() === 401,
+  );
   release();
   await response;
   await page.evaluate(() => new Promise<void>((resolve) => requestAnimationFrame(() => resolve())));
-  expect(await page.evaluate(() => JSON.parse(localStorage.getItem("auth") ?? "{}").value)).toBe("renewed-token");
+  expect(await page.evaluate(() => JSON.parse(localStorage.getItem("auth") ?? "{}").value)).toBe(
+    "renewed-token",
+  );
   await expect(login).toHaveCount(0);
   await expect(timeout).toHaveValue("7500");
   await confirmSave(page);
@@ -1290,7 +1518,6 @@ test("a delayed unauthorized response cannot discard a renewed login or the Gene
   expect(state.settings.dnsProxy.timeoutMs).toBe(7500);
   expect(state.previews).toEqual([]);
 });
-
 
 for (const russian of [false, true]) {
   test(`settings failures do not create under-tab banners (${russian ? "ru" : "en"})`, async ({
@@ -1301,7 +1528,10 @@ for (const russian of [false, true]) {
       await page.addInitScript(() =>
         localStorage.setItem("locale", JSON.stringify({ value: "ru" })),
       );
-    const { state } = await backend(page);
+    const { state, revision } = await backend(page);
+    // An external operation exposes the explicit refresh action. Tab changes
+    // intentionally reuse the accepted snapshot and must not induce a read.
+    state.operation = { id: "external", state: "applying", target_revision: revision() };
     await page.goto("/");
     await page.getByRole("button", { name: "Open menu", exact: true }).click();
     await page.getByRole("tab", { name: russian ? "Настройки" : "Settings", exact: true }).click();
@@ -1309,7 +1539,7 @@ for (const russian of [false, true]) {
     await expect(page.locator("#general-additionalTTLSeconds")).toHaveValue("3600");
     const header = page.locator(".settings-toolbar");
     const before = (await header.boundingBox())!;
-    // A read failure after a successful snapshot retains the usable form.
+    expect(state.checkReads).toBe(1);
     state.readFailure = "network";
     await page.getByRole("tab", { name: russian ? "Профили" : "Profiles", exact: true }).click();
     await page.getByRole("tab", { name: russian ? "Общие" : "General", exact: true }).click();
@@ -1318,16 +1548,34 @@ for (const russian of [false, true]) {
       exact: true,
     });
     await expect(attention).toBeVisible();
+    expect(state.checkReads).toBe(1);
+    const details = page.getByRole("dialog", {
+      name: russian ? "Настройки требуют внимания" : "Settings need attention",
+      exact: true,
+    });
+    const check = details.getByRole("button", {
+      name: russian ? "Проверить применение" : "Check application",
+      exact: true,
+    });
+    await attention.click();
+    await expect(details.getByRole("alert")).toHaveCount(0);
+    await check.click();
+    await expect.poll(() => state.checkReads).toBe(2);
+    await expect(page.locator("#general")).toHaveAttribute("aria-busy", "false");
+    // Starting a request closes the feedback popover; reopen the resulting error.
+    await expect(details).toHaveCount(0);
+    await expect(attention).toBeVisible();
+    await attention.click();
+    await expect(details.getByRole("alert")).toBeVisible();
+    await expect(page.locator("#general-additionalTTLSeconds")).toHaveValue("3600");
+    await page.keyboard.press("Escape");
+    await expect(details).toHaveCount(0);
     await expect(header.locator(".application-error, .connection-notice, .notice")).toHaveCount(0);
     expect(Math.abs((await header.boundingBox())!.height - before.height)).toBeLessThanOrEqual(1);
     await page.getByRole("tab", { name: russian ? "Профили" : "Profiles", exact: true }).click();
     await expect(page.getByRole("alert")).toHaveCount(0);
     await attention.focus();
     await page.keyboard.press("Enter");
-    const details = page.getByRole("dialog", {
-      name: russian ? "Настройки требуют внимания" : "Settings need attention",
-      exact: true,
-    });
     await expect(details.getByRole("alert")).toBeVisible();
     await page.keyboard.press("Escape");
     await expect(details).toHaveCount(0);
@@ -1336,5 +1584,21 @@ for (const russian of [false, true]) {
     expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(
       390,
     );
+    // A successful explicit retry clears the error without saving or losing
+    // the accepted form. Returning to General still does not refetch it.
+    state.readFailure = null;
+    state.operation = { ...state.operation, state: "succeeded" };
+    await attention.click();
+    await check.click();
+    await expect.poll(() => state.checkReads).toBe(3);
+    await expect(details.getByRole("alert")).toHaveCount(0);
+    await page.keyboard.press("Escape");
+    await expect(details).toHaveCount(0);
+    await page.getByRole("tab", { name: russian ? "Общие" : "General", exact: true }).click();
+    await expect(page.locator("#general-additionalTTLSeconds")).toHaveValue("3600");
+    await expect(page.locator("#general-additionalTTLSeconds")).toBeEnabled();
+    await expect(attention).toBeHidden();
+    expect(state.checkReads).toBe(3);
+    expect(state.writes).toEqual([]);
   });
 }
