@@ -1,0 +1,81 @@
+diff --git a/src/frontend/tests/e2e/general-settings.spec.ts b/src/frontend/tests/e2e/general-settings.spec.ts
+index 815af0a..6b7e792 100644
+--- a/src/frontend/tests/e2e/general-settings.spec.ts
++++ b/src/frontend/tests/e2e/general-settings.spec.ts
+@@ -1301,7 +1301,10 @@ for (const russian of [false, true]) {
+       await page.addInitScript(() =>
+         localStorage.setItem("locale", JSON.stringify({ value: "ru" })),
+       );
+-    const { state } = await backend(page);
++    const { state, revision } = await backend(page);
++    // An external operation exposes the explicit refresh action. Tab changes
++    // intentionally reuse the accepted snapshot and must not induce a read.
++    state.operation = { id: "external", state: "applying", target_revision: revision() };
+     await page.goto("/");
+     await page.getByRole("button", { name: "Open menu", exact: true }).click();
+     await page.getByRole("tab", { name: russian ? "Настройки" : "Settings", exact: true }).click();
+@@ -1309,7 +1312,7 @@ for (const russian of [false, true]) {
+     await expect(page.locator("#general-additionalTTLSeconds")).toHaveValue("3600");
+     const header = page.locator(".settings-toolbar");
+     const before = (await header.boundingBox())!;
+-    // A read failure after a successful snapshot retains the usable form.
++    expect(state.checkReads).toBe(1);
+     state.readFailure = "network";
+     await page.getByRole("tab", { name: russian ? "Профили" : "Profiles", exact: true }).click();
+     await page.getByRole("tab", { name: russian ? "Общие" : "General", exact: true }).click();
+@@ -1318,16 +1321,29 @@ for (const russian of [false, true]) {
+       exact: true,
+     });
+     await expect(attention).toBeVisible();
++    expect(state.checkReads).toBe(1);
++    const details = page.getByRole("dialog", {
++      name: russian ? "Настройки требуют внимания" : "Settings need attention",
++      exact: true,
++    });
++    const check = details.getByRole("button", {
++      name: russian ? "Проверить применение" : "Check application",
++      exact: true,
++    });
++    await attention.click();
++    await expect(details.getByRole("alert")).toHaveCount(0);
++    await check.click();
++    await expect.poll(() => state.checkReads).toBe(2);
++    await expect(details.getByRole("alert")).toBeVisible();
++    await expect(page.locator("#general-additionalTTLSeconds")).toHaveValue("3600");
++    await page.keyboard.press("Escape");
++    await expect(details).toHaveCount(0);
+     await expect(header.locator(".application-error, .connection-notice, .notice")).toHaveCount(0);
+     expect(Math.abs((await header.boundingBox())!.height - before.height)).toBeLessThanOrEqual(1);
+     await page.getByRole("tab", { name: russian ? "Профили" : "Profiles", exact: true }).click();
+     await expect(page.getByRole("alert")).toHaveCount(0);
+     await attention.focus();
+     await page.keyboard.press("Enter");
+-    const details = page.getByRole("dialog", {
+-      name: russian ? "Настройки требуют внимания" : "Settings need attention",
+-      exact: true,
+-    });
+     await expect(details.getByRole("alert")).toBeVisible();
+     await page.keyboard.press("Escape");
+     await expect(details).toHaveCount(0);
+@@ -1336,5 +1352,21 @@ for (const russian of [false, true]) {
+     expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(
+       390,
+     );
++    // A successful explicit retry clears the error without saving or losing
++    // the accepted form. Returning to General still does not refetch it.
++    state.readFailure = null;
++    state.operation = { ...state.operation, state: "succeeded" };
++    await attention.click();
++    await check.click();
++    await expect.poll(() => state.checkReads).toBe(3);
++    await expect(details.getByRole("alert")).toHaveCount(0);
++    await page.keyboard.press("Escape");
++    await expect(details).toHaveCount(0);
++    await page.getByRole("tab", { name: russian ? "Общие" : "General", exact: true }).click();
++    await expect(page.locator("#general-additionalTTLSeconds")).toHaveValue("3600");
++    await expect(page.locator("#general-additionalTTLSeconds")).toBeEnabled();
++    await expect(attention).toBeHidden();
++    expect(state.checkReads).toBe(3);
++    expect(state.writes).toEqual([]);
+   });
+ }
