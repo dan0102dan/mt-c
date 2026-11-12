@@ -174,7 +174,12 @@ class WorkflowContract(unittest.TestCase):
     def test_auth_regressions_run_in_regular_package_ci(self):
         contracts = (ROOT / '.github/workflows/check-packaging.yml').read_text()
         self.assertIn('run: python3 tools/ci/tests/test_ghcr_login.py', contracts)
-        self.assertIn("- 'tools/ci/**'", contracts)
+        self.assertIn('  workflow_call:', contracts)
+        # Event triggers now live in the CI orchestrator; the test is reusable.
+        pipeline = (ROOT / '.github/workflows/ci.yml').read_text()
+        self.assertIn('  pull_request:', pipeline)
+        self.assertIn('  push:', pipeline)
+        self.assertIn('uses: ./.github/workflows/check-packaging.yml', pipeline)
 
 
 if __name__ == '__main__':
