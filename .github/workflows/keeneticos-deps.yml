@@ -1,0 +1,38 @@
+name: KeeneticOS offline package dependencies
+on:
+  push:
+    branches: [test/keeneticos-emulator-20261112]
+    paths: [.github/workflows/keeneticos-deps.yml]
+permissions:
+  contents: read
+jobs:
+  dependencies:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Download exact Entware dependencies and verify SHA256
+        run: |
+          mkdir -p deps
+          python3 - <<'PY'
+          import urllib.request, pathlib, hashlib
+          packages = {
+            'cJSON_1.7.19-1_aarch64-3.10.ipk':'8ffaa7e9c27a030722d790052a9eeaa30f945bbd49d73a3d0c0f984309d824b4',
+            'iptables_1.4.21-5_aarch64-3.10.ipk':'e947b1741267bf7f982ad785d6cbfaf2e6b062485fb350d74f95554af7118f59',
+            'libatomic_8.4.0-12_aarch64-3.10.ipk':'5b7fbd7e1ecd21222adf680fae05670be71244dbd04b843b8ec4f4895c97207d',
+            'libmnl_1.0.5-2_aarch64-3.10.ipk':'c603f5b7bfb28f18c37734909bbf2a7b2d946c5570ef23da06545a347f67d79f',
+            'libyaml_0.2.5-2_aarch64-3.10.ipk':'3d30ceb5444ad7e0d648764fe2485c88ee87a196b63f60fab2afef93f6755702',
+            'socat_1.8.1.1-1_aarch64-3.10.ipk':'bfb52596a49f164bbc392d854cc5d0ba8a6150b2771460703161b42df2b8dbc4',
+          }
+          for name, expected in packages.items():
+              with urllib.request.urlopen('https://bin.entware.net/aarch64-k3.10/'+name, timeout=90) as r:
+                  data=r.read()
+              actual=hashlib.sha256(data).hexdigest()
+              if actual != expected: raise SystemExit('Checksum mismatch: '+name)
+              pathlib.Path('deps',name).write_bytes(data)
+              print(actual, name)
+          PY
+      - uses: actions/upload-artifact@v6
+        with:
+          name: keeneticos-mtc-dependencies
+          path: deps/
+          retention-days: 7
