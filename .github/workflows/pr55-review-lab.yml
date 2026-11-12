@@ -1,0 +1,88 @@
+name: PR55 isolated refactor validation
+on:
+  push:
+    branches: [test/pr55-resolution-validation-20261112]
+permissions:
+  contents: write
+concurrency:
+  group: pr55-resolution-validation
+  cancel-in-progress: true
+jobs:
+  validate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          path: lab
+          persist-credentials: false
+      - uses: actions/checkout@v5
+        with:
+          ref: d57336f9d638cb51eee537277d37c65462bc19b8
+          fetch-depth: 0
+          path: source
+          persist-credentials: false
+      - name: Apply reviewed source transformation
+        run: python3 lab/tools/ci/pr55-refactor-lab.py source
+      - name: Install native test dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends build-essential libyaml-dev libcjson-dev libpcre2-dev libmnl-dev libcurl4-openssl-dev iptables iproute2 ipset
+      - name: Build and test complete Keenetic backend
+        working-directory: source/src/backend-c
+        run: |
+          make -j2 BUILD=review-kn ENTWARE_KN=1 CFLAGS_EXTRA=-Werror all
+          make -j2 BUILD=review-kn ENTWARE_KN=1 CFLAGS_EXTRA=-Werror test
+      - name: Test real netfilter in isolated namespaces
+        working-directory: source/src/backend-c
+        run: |
+          set -euo pipefail
+          for frontend in legacy nft; do
+            sudo update-alternatives --set iptables "/usr/sbin/iptables-$frontend"
+            sudo update-alternatives --set ip6tables "/usr/sbin/ip6tables-$frontend"
+            sudo unshare -n env MT_TEST_REAL_IPTABLES=1 build/review-kn/tests/test_nfrebuild_recovery -v
+          done
+      - name: Sanitize policy and recovery regressions
+        working-directory: source/src/backend-c
+        env:
+          ASAN_OPTIONS: detect_leaks=1:halt_on_error=1
+          UBSAN_OPTIONS: halt_on_error=1
+        run: |
+          set -euo pipefail
+          cases='test_keenetic_policy test_keenetic_policy_api test_keenetic_policy_addresses test_rule_priority test_nfrebuild test_nfrebuild_recovery test_nfcommit test_profiles_reload'
+          targets=''
+          for name in $cases; do targets="$targets build/review-san/tests/$name"; done
+          make -j2 BUILD=review-san ENTWARE_KN=1 OPT=-O1 CFLAGS_EXTRA='-Werror -g -fsanitize=address,undefined -fno-omit-frame-pointer -fno-pie' LDFLAGS_EXTRA='-fsanitize=address,undefined -no-pie' $targets
+          for name in $cases; do timeout 120s "build/review-san/tests/$name" -v; done
+      - name: Build and test complete generic backend
+        working-directory: source/src/backend-c
+        run: |
+          make -j2 BUILD=review-generic CFLAGS_EXTRA=-Werror all
+          make -j2 BUILD=review-generic CFLAGS_EXTRA=-Werror test
+      - name: Publish validated candidate without touching PR branch
+        working-directory: source
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          git diff --check
+          test "$(git rev-parse HEAD)" = d57336f9d638cb51eee537277d37c65462bc19b8
+          git config user.name dan0102dan
+          git config user.email me@dan0102dan.ru
+          git add -u
+          git commit -m 'fix(keenetic): derive policy scope from one resolution and preserve routing guards'
+          branch="test/pr55-resolution-candidate-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          git -c credential.helper='!f() { echo username=x-access-token; echo "password=$GH_TOKEN"; }; f' push origin "HEAD:refs/heads/$branch"
+          mkdir -p "$GITHUB_WORKSPACE/candidate"
+          git rev-parse HEAD | tee "$GITHUB_WORKSPACE/candidate/commit.sha"
+          printf '%s\n' "$branch" > "$GITHUB_WORKSPACE/candidate/branch.txt"
+          git diff HEAD^ HEAD > "$GITHUB_WORKSPACE/candidate/fix.patch"
+          git archive --format=tar.gz HEAD src/backend-c docs/keenetic-policy.md > "$GITHUB_WORKSPACE/candidate/source.tar.gz"
+          git show --stat --oneline HEAD >> "$GITHUB_STEP_SUMMARY"
+      - name: Export validated source candidate
+        uses: actions/upload-artifact@v6
+        with:
+          name: pr55-reviewed-source-candidate
+          path: candidate/
+          retention-days: 3
+          if-no-files-found: error
