@@ -3,6 +3,7 @@ import { ChangeTracker } from "../../utils/change-tracker.svelte";
 
 import { type Subscription, type SubscriptionRule } from "../../types";
 import { appliedSubscriptions } from "../../utils/applied-save";
+import { randomId } from "../../utils/defaults";
 import { overlay, toast } from "../../utils/events";
 import { fetcher } from "../../utils/fetcher";
 import {
@@ -17,6 +18,14 @@ export const SUBSCRIPTIONS_STORE_CONTEXT = Symbol("subscriptions-store");
 const SEARCH_DEBOUNCE_MS = 150 as const;
 
 const clamp = (value: number, min: number, max: number) => Math.max(min, Math.min(max, value));
+
+function editorSubscription(subscription: Subscription): Subscription {
+  const normalized = withPriorityDefault(subscription, DEFAULT_SUBSCRIPTION_PRIORITY);
+  // Keep empty exceptions explicit: absence in older snapshots can mean retain
+  // saved overrides, whereas [] also represents the user's deliberate reset.
+  normalized.overrides ??= [];
+  return normalized;
+}
 
 export function normalizeSubscriptionUrl(value: string) {
   return value.trim();
@@ -69,9 +78,14 @@ export class SubscriptionsStore {
   private isActive: () => boolean;
 
   tracker = $state(new ChangeTracker<Subscription[]>([]));
+  #loadGeneration = 0;
+  importPending = $state(false);
+  delegateSave?: () => Promise<void>;
   saving = $state(false);
   persistencePending = $state(false);
-  hasUnsavedChanges = $derived(this.tracker.isDirty || this.persistencePending);
+  hasUnsavedChanges = $derived(
+    this.tracker.isDirty || this.persistencePending || this.importPending,
+  );
   data = $derived.by(() => this.tracker.data);
   dataRevision = $state(0);
   valid_rules = $state(true);
@@ -260,6 +274,7 @@ export class SubscriptionsStore {
   }
 
   destroy() {
+    this.#loadGeneration++;
     if (typeof window !== "undefined") {
       window.removeEventListener("keydown", this.handleSaveShortcut);
     }
@@ -271,6 +286,10 @@ export class SubscriptionsStore {
   }
 
   mount = async (options: { preserveDrafts?: boolean } = {}) => {
+    const generation = ++this.#loadGeneration;
+    if (typeof window !== "undefined") {
+      window.addEventListener("keydown", this.handleSaveShortcut);
+    }
     // Existing keyed panels stay mounted during an import refresh and will
     // not report their initial render a second time.
     if (!options.preserveDrafts) this.finishedSubscriptionsCount = 0;
@@ -279,7 +298,8 @@ export class SubscriptionsStore {
       const fetched = (
         (await fetcher.get<{ subscriptions: Subscription[] }>("/subscriptions"))?.subscriptions ??
         []
-      ).map((subscription) => withPriorityDefault(subscription, DEFAULT_SUBSCRIPTION_PRIORITY));
+      ).map(editorSubscription);
+      if (generation !== this.#loadGeneration) return;
       if (options.preserveDrafts) this.tracker.rebase(fetched);
       else this.tracker = new ChangeTracker(fetched);
       this.#savedRules = new Map(fetched.map((sub) => [sub.id, snapshotRules(sub.rules)]));
@@ -288,16 +308,36 @@ export class SubscriptionsStore {
         setTimeout(() => this.checkRulesValidityState(), 10);
       }
     } catch (error) {
-      this.fetchError = true;
-      console.error("Failed to load subscriptions:", error);
+      if (generation === this.#loadGeneration) {
+        this.fetchError = true;
+        console.error("Failed to load subscriptions:", error);
+      }
     } finally {
-      this.dataLoaded = true;
-    }
-
-    if (typeof window !== "undefined") {
-      window.addEventListener("keydown", this.handleSaveShortcut);
+      if (generation === this.#loadGeneration) this.dataLoaded = true;
     }
   };
+
+  /** Download caches in the draft are editor data, not an accepted save baseline. */
+  stageImport(baseline: readonly Subscription[], draft: readonly Subscription[]) {
+    const saved = structuredClone([...baseline]).map(editorSubscription);
+    const next = structuredClone([...draft]).map(editorSubscription);
+    this.#loadGeneration++;
+    this.#savedRules = new Map(saved.map((sub) => [sub.id, snapshotRules(sub.rules)]));
+    this.tracker.reset(saved);
+    this.tracker.replaceDraft(next);
+    this.fetchError = false;
+    this.dataLoaded = true;
+    this.markDataRevision();
+  }
+
+  acceptImport(
+    baseline: readonly Subscription[],
+    retainedDraft: readonly Subscription[] = baseline,
+    { persisted = true }: { persisted?: boolean } = {},
+  ) {
+    this.stageImport(baseline, retainedDraft);
+    if (persisted) this.persistencePending = false;
+  }
 
   handleSaveShortcut = (event: KeyboardEvent) => {
     if (
@@ -310,7 +350,7 @@ export class SubscriptionsStore {
       return;
     if (document.querySelector('[data-dialog-content][data-state="open"]')) return;
     if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "s") {
-      if (this.canSave) {
+      if (this.importPending || this.canSave) {
         event.preventDefault();
         this.saveChanges();
       }
@@ -420,7 +460,12 @@ export class SubscriptionsStore {
   }
 
   async saveChanges() {
+    if (this.importPending) {
+      await this.delegateSave?.();
+      return;
+    }
     if (!this.canSave) return;
+    this.#loadGeneration++;
     this.saving = true;
     overlay.show(t("saving changes..."));
     const rawData = $state.snapshot(this.data).map((subscription) => ({
@@ -496,6 +541,10 @@ export class SubscriptionsStore {
   async syncSubscription(index: number) {
     const subscription = this.data[index];
     if (!subscription) return;
+    if (this.importPending) {
+      toast.info(t("Save the imported configuration before syncing subscriptions."));
+      return;
+    }
 
     this.normalizeSubscriptionUrl(index);
     const normalizedUrl = normalizeSubscriptionUrl(subscription.url);
@@ -535,6 +584,13 @@ export class SubscriptionsStore {
 
     const removed = this.data[index];
     if (!removed) return;
+    if (this.importPending) {
+      this.data.splice(index, 1);
+      delete this.open_state[removed.id];
+      this.removeForcedGroup(removed.id);
+      this.markDataRevision();
+      return;
+    }
 
     overlay.show(t("deleting subscription..."));
     try {
@@ -555,6 +611,25 @@ export class SubscriptionsStore {
   }
 
   async addSubscription(payload: AddSubscriptionPayload) {
+    if (this.importPending) {
+      let id: string;
+      do {
+        id = randomId();
+      } while (this.data.some((subscription) => subscription.id === id));
+      this.data.unshift({
+        ...payload,
+        id,
+        url: normalizeSubscriptionUrl(payload.url),
+        enable: true,
+        priority: DEFAULT_SUBSCRIPTION_PRIORITY,
+        rules: [],
+        lastUpdate: 0,
+      });
+      this.open_state[id] = true;
+      if (this.searchActive) this.forceVisibleGroup(id);
+      this.markDataRevision();
+      return;
+    }
     overlay.show(t("Adding..."));
     try {
       // Fetch/parse on the server; never echo the preview's thousands of

@@ -8,6 +8,7 @@ import {
   exportSnapshot,
   fingerprint,
   planImport,
+  sections,
   type ImportOptions,
   type Snapshot,
 } from "../../src/modules/config-transfer/model";
@@ -130,6 +131,48 @@ Deno.test("an unselected empty section never deletes anything", () => {
   const result = planImport(state, { groups: [] }, options);
   assert.deepEqual(result.next, state);
 });
+Deno.test("every section selection preserves unrelated data in append and replace modes", () => {
+  const state = snapshot();
+  delete state.groups[0].profile;
+  delete state.subscriptions[0].profile;
+  const imported = {
+    groups: [{ ...copy(state.groups[0]), id: "deadbeef", name: "Imported group", rules: [] }],
+    subscriptions: [{ ...copy(state.subscriptions[0]), id: "deadc0de", name: "Imported list" }],
+    profiles: [
+      { id: "other", name: "Imported profile", interfaces: ["eth1"], on_unavailable: "blackhole" },
+    ],
+    settings: { keeneticPolicy: { enabled: false, policyId: "OtherPolicy", mode: "exclude" } },
+  };
+  const originalState = copy(state);
+  const originalImport = copy(imported);
+  for (const mode of ["merge", "replace"] as const) {
+    for (let mask = 0; mask < 16; mask++) {
+      const selected = new Set(sections.filter((_, index) => mask & (1 << index)));
+      const options = opts({ mode, selected });
+      const result = planImport(state, imported, options);
+      assertPlanCurrent(result, state);
+      for (const section of ["groups", "subscriptions", "profiles"] as const) {
+        assert.deepEqual(
+          result.next[section],
+          !selected.has(section)
+            ? state[section]
+            : mode === "replace"
+              ? imported[section]
+              : [...state[section], ...imported[section]],
+        );
+      }
+      assert.deepEqual(
+        result.next.settings,
+        selected.has("settings") ? { ...state.settings, ...imported.settings } : state.settings,
+      );
+      const repeat = planImport(result.next, imported, options);
+      assert.deepEqual(repeat.next, result.next);
+      assert(repeat.changes.every((change) => change.kind === "unchanged"));
+    }
+  }
+  assert.deepEqual(state, originalState);
+  assert.deepEqual(imported, originalImport);
+});
 Deno.test("import permits subscription/settings-only snapshots", () => {
   const state = snapshot();
   const added = { ...state.subscriptions[0], id: "deadbeef" };
@@ -148,6 +191,73 @@ Deno.test("repeat merge is idempotent and retains routing IDs", () => {
   assert.deepEqual(again.next, state);
   assert(again.changes.every((c) => c.kind === "unchanged"));
 });
+Deno.test(
+  "portable default spellings do not create conflicts or false changes on repeated import",
+  () => {
+    const state = snapshot();
+    state.subscriptions[0].overrides = [];
+    state.profiles[0].on_unavailable = undefined;
+    Object.assign(state.groups[0].rules[0], { name: undefined });
+    const incoming = copy(state);
+    incoming.subscriptions[0].overrides = undefined;
+    incoming.profiles[0].on_unavailable = "blackhole";
+    incoming.groups[0].rules[0].name = "";
+    for (const mode of ["merge", "replace"] as const) {
+      const plan = planImport(state, incoming, opts({ mode }));
+      assertPlanCurrent(plan, state);
+      assert.deepEqual(plan.conflicts, []);
+      assert(plan.changes.every((change) => change.kind === "unchanged"));
+    }
+  },
+);
+Deno.test("backend color and empty profile spellings compare without rewriting raw drafts", () => {
+  for (const [savedColor, importedColor] of [
+    ["#aabbcc", "#AABBCC"],
+    ["#ffffff", undefined],
+    ["#ffffff", ""],
+    ["#ffffff", "banana"],
+    ["#ffffff", "#fff"],
+    ["#ffffff", "#1234567"],
+    ["#ffffff", "#abcdef\n"],
+  ]) {
+    const state = snapshot();
+    state.groups[0].color = savedColor;
+    delete state.groups[0].profile;
+    delete state.subscriptions[0].profile;
+    const incoming = copy(state);
+    incoming.groups[0].color = importedColor;
+    incoming.groups[0].profile = "";
+    incoming.subscriptions[0].profile = "";
+    const raw = fingerprint(incoming);
+    for (const mode of ["merge", "replace"] as const) {
+      const plan = planImport(state, incoming, opts({ mode }));
+      assertPlanCurrent(plan, state);
+      assert.deepEqual(plan.conflicts, []);
+      assert(plan.changes.every((change) => change.kind === "unchanged"));
+    }
+    const exported = exportSnapshot(incoming, { application: "mt-c" });
+    assert.equal(exported.groups![0].color, importedColor);
+    assert.equal(exported.groups![0].profile, "");
+    assert.equal(exported.subscriptions![0].profile, "");
+    assert.equal(fingerprint(incoming), raw);
+  }
+});
+Deno.test("canonical comparisons retain meaningful color and profile changes", () => {
+  const state = snapshot();
+  const changed = copy(state);
+  changed.groups[0].color = "#123456";
+  changed.groups[0].profile = "";
+  changed.subscriptions[0].profile = "";
+  const changes = diffSnapshots(state, changed);
+  assert.deepEqual(
+    changes.find((change) => change.section === "groups")!.fields.map((f) => f.field),
+    ["color", "profile"],
+  );
+  assert.deepEqual(
+    changes.find((change) => change.section === "subscriptions")!.fields.map((f) => f.field),
+    ["profile"],
+  );
+});
 Deno.test("a shared URL or name is not subscription identity", () => {
   const state = snapshot();
   const input = { subscriptions: [{ ...state.subscriptions[0], id: "deadbeef" }] };
@@ -164,6 +274,35 @@ Deno.test("conflicts keep current values unless replacement is selected", () => 
   const replaced = planImport(state, input, options);
   assert.equal(replaced.next.groups[0].name, "Different");
   assert.equal(replaced.changes[0].fields[0].field, "name");
+});
+Deno.test("subscription conflicts preserve source and exceptions for each explicit choice", () => {
+  const state = snapshot();
+  const imported = {
+    ...copy(state.subscriptions[0]),
+    name: "Imported source",
+    url: "https://other.example/list",
+    interval: 0,
+    enable: false,
+    priority: 999,
+    overrides: [{ rule: "only-in-new-source.example", type: "domain", enable: false }],
+  };
+  for (const choice of ["keep", "replace", "copy"] as const) {
+    const result = planImport(
+      state,
+      { subscriptions: [imported] },
+      opts({ choices: new Map([["subscriptions:55667788", choice]]) }),
+    );
+    assertPlanCurrent(result, state);
+    assert.deepEqual(result.next.groups, state.groups);
+    assert.deepEqual(
+      result.next.subscriptions,
+      choice === "keep"
+        ? state.subscriptions
+        : choice === "replace"
+          ? [imported]
+          : [...state.subscriptions, { ...imported, id: "abcdef01" }],
+    );
+  }
 });
 Deno.test("copying a group gives its rules distinct stable editor identities", () => {
   const state = snapshot();
@@ -296,6 +435,62 @@ Deno.test("selected groups bring their profile definitions as dependencies", () 
   assert.equal(result.next.profiles.length, 3);
   assert.deepEqual(result.problems, []);
 });
+Deno.test(
+  "selected routes resolve dependencies from current definitions absent from the file",
+  () => {
+    const state = snapshot();
+    for (const section of ["groups", "subscriptions"] as const) {
+      const result = planImport(
+        state,
+        { [section]: [{ ...copy(state[section][0]), id: "deadbeef" }] },
+        opts({ selected: new Set([section]) }),
+      );
+      assertPlanCurrent(result, state);
+      assert.deepEqual(result.includedDependencies, ["vpn"]);
+    }
+  },
+);
+Deno.test("resolved current dependencies follow the selected conflict choice", () => {
+  const state = snapshot();
+  state.profiles.push({ id: "unfinished", name: "Unfinished", interfaces: [] });
+  for (const section of ["groups", "subscriptions"] as const) {
+    const input = { [section]: [{ ...copy(state[section][0]), profile: "unfinished" }] };
+    for (const choice of ["keep", "replace", "copy"] as const) {
+      const result = planImport(
+        state,
+        input,
+        opts({
+          selected: new Set([section]),
+          choices: new Map([[`${section}:${state[section][0].id}`, choice]]),
+        }),
+      );
+      if (choice === "keep") {
+        assertPlanCurrent(result, state);
+        assert.deepEqual(result.includedDependencies, ["vpn"]);
+      } else {
+        assert.deepEqual(result.includedDependencies, ["unfinished"]);
+        assert.throws(
+          () => assertPlanCurrent(result, state),
+          /Invalid routing profile: unfinished/,
+        );
+      }
+    }
+  }
+});
+Deno.test("selected unchanged routes cannot retain a missing dependency", () => {
+  const state = snapshot();
+  state.profiles = [];
+  for (const section of ["groups", "subscriptions"] as const) {
+    for (const mode of ["merge", "replace"] as const) {
+      const result = planImport(
+        state,
+        { [section]: copy(state[section]) },
+        opts({ mode, selected: new Set([section]) }),
+      );
+      assert.throws(() => assertPlanCurrent(result, state), /Missing routing profile: vpn/);
+    }
+  }
+});
 Deno.test("an unselected unfinished profile does not block importing valid groups", () => {
   const state = snapshot();
   const added = { ...state.groups[0], id: "deadbeef", profile: undefined };
@@ -379,6 +574,62 @@ Deno.test("removing a referenced profile prevents application", () => {
   const plan = planImport(state, { profiles: [] }, options);
   assert(plan.problems.some((p) => p.includes("Missing routing profile")));
   assert.throws(() => assertPlanCurrent(plan, state), /Missing routing profile/);
+});
+Deno.test(
+  "replace may remove a profile only when all of its consumers are replaced together",
+  () => {
+    const state = snapshot();
+    const incoming = {
+      groups: [{ ...copy(state.groups[0]), interface: "tun0", profile: undefined }],
+      subscriptions: [{ ...copy(state.subscriptions[0]), interface: "tun0", profile: undefined }],
+      profiles: [],
+    };
+    const groupOnly = planImport(
+      state,
+      incoming,
+      opts({ mode: "replace", selected: new Set(["groups", "profiles"]) }),
+    );
+    assert.throws(() => assertPlanCurrent(groupOnly, state), /Missing routing profile: vpn/);
+    const subscriptionsOnly = planImport(
+      state,
+      incoming,
+      opts({ mode: "replace", selected: new Set(["subscriptions", "profiles"]) }),
+    );
+    assert.throws(
+      () => assertPlanCurrent(subscriptionsOnly, state),
+      /Missing routing profile: vpn/,
+    );
+    const all = planImport(state, incoming, opts({ mode: "replace" }));
+    assertPlanCurrent(all, state);
+    assert.deepEqual(all.next.profiles, []);
+    assert.equal(all.next.groups[0].profile, undefined);
+    assert.equal(all.next.subscriptions[0].profile, undefined);
+    assert.equal(all.next.groups[0].interface, "tun0");
+  },
+);
+Deno.test("direct foreign interfaces survive import while missing profile definitions fail", () => {
+  const state = snapshot();
+  for (const section of ["groups", "subscriptions"] as const) {
+    const incoming = {
+      [section]: [
+        { ...copy(state[section][0]), id: "deadbeef", profile: undefined, interface: "foreign0" },
+      ],
+    };
+    const direct = planImport(
+      state,
+      incoming,
+      opts({ mode: "replace", selected: new Set([section]) }),
+    );
+    assertPlanCurrent(direct, state);
+    assert.equal(direct.next[section][0].interface, "foreign0");
+    incoming[section][0].profile = "missing";
+    const missing = planImport(
+      state,
+      incoming,
+      opts({ mode: "replace", selected: new Set([section]) }),
+    );
+    assert.throws(() => assertPlanCurrent(missing, state), /Missing routing profile: missing/);
+  }
 });
 Deno.test(
   "unselected existing missing profiles do not invalidate a no-op or unrelated import",
@@ -550,6 +801,97 @@ Deno.test("diff reports deletions and ordered interface changes", () => {
   const profileChanges = changes.filter((c) => c.section === "profiles");
   assert(profileChanges.some((c) => c.fields.some((f) => f.field === "interfaces")));
 });
+Deno.test(
+  "replace detects collection order changes even when every definition is unchanged",
+  () => {
+    for (const section of ["groups", "subscriptions", "profiles"] as const) {
+      const state = snapshot();
+      if (section === "groups") {
+        state.groups.push({ ...copy(state.groups[0]), id: "deadbeef", rules: [] });
+      } else if (section === "subscriptions") {
+        state.subscriptions.push({ ...copy(state.subscriptions[0]), id: "deadbeef" });
+      }
+      const incoming = { [section]: copy(state[section]).reverse() };
+      const result = planImport(
+        state,
+        incoming,
+        opts({ mode: "replace", selected: new Set([section]) }),
+      );
+      assertPlanCurrent(result, state);
+      assert.deepEqual(
+        result.next[section].map((item) => item.id),
+        state[section].map((item) => item.id).reverse(),
+      );
+      assert(
+        result.changes.some((change) => change.section === section && change.kind === "update"),
+      );
+      const repeated = planImport(
+        result.next,
+        incoming,
+        opts({ mode: "replace", selected: new Set([section]) }),
+      );
+      assert.deepEqual(repeated.next, result.next);
+      assert(repeated.changes.every((change) => change.kind === "unchanged"));
+    }
+  },
+);
+Deno.test("replace can reuse rule IDs from removed groups without changing them on repeat", () => {
+  const state = snapshot();
+  const imported = { ...copy(state.groups[0]), id: "deadbeef", name: "Replacement" };
+  const input = { groups: [imported] };
+  const options = opts({ mode: "replace", selected: new Set(["groups"]) });
+  const first = planImport(state, input, options);
+  assertPlanCurrent(first, state);
+  assert.deepEqual(first.next.groups, input.groups);
+  const repeated = planImport(first.next, input, options);
+  assert.deepEqual(repeated.next, first.next);
+  assert(repeated.changes.every((change) => change.kind === "unchanged"));
+  assert.deepEqual(state.groups[0].id, "11223344");
+});
+Deno.test(
+  "replace can move a rule between replaced groups while retaining other identities",
+  () => {
+    const state = snapshot();
+    state.groups.push({ ...copy(state.groups[0]), id: "deadbeef", rules: [] });
+    const input = { groups: copy(state.groups) };
+    input.groups[1].rules = input.groups[0].rules;
+    input.groups[0].rules = [];
+    const result = planImport(state, input, opts({ mode: "replace" }));
+    assertPlanCurrent(result, state);
+    assert.deepEqual(result.next.groups, input.groups);
+    assert.equal(state.groups[0].rules.length, 1);
+  },
+);
+Deno.test(
+  "repeat replace restores edited content and rule order without changing identities",
+  () => {
+    const state = snapshot();
+    const incoming = { groups: copy(state.groups) };
+    incoming.groups[0].rules.push({
+      ...incoming.groups[0].rules[0],
+      id: "facefeed",
+      rule: "second.example",
+    });
+    const options = opts({ mode: "replace", selected: new Set(["groups"]) });
+    const first = planImport(state, incoming, options);
+    const edited = copy(first.next);
+    edited.groups[0].name = "Edited after import";
+    edited.groups[0].interface = "changed0";
+    edited.groups[0].profile = undefined;
+    edited.groups[0].rules.reverse();
+    edited.groups[0].rules[0].enable = false;
+    edited.groups[0].rules[1].rule = "edited.example";
+    edited.groups[0].rules.push({ ...edited.groups[0].rules[0], id: "12345678" });
+    const repeated = planImport(edited, incoming, options);
+    assertPlanCurrent(repeated, edited);
+    assert.deepEqual(repeated.next, first.next);
+    assert(
+      repeated.changes.some((change) => change.section === "groups" && change.kind === "update"),
+    );
+    const unchanged = planImport(repeated.next, incoming, options);
+    assert(unchanged.changes.every((change) => change.kind === "unchanged"));
+  },
+);
 Deno.test("export works with frozen editor data without mutations", () => {
   const state = snapshot();
   Object.freeze(state.groups[0].rules[0]);

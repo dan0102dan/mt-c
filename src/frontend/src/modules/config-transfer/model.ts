@@ -146,6 +146,7 @@ export type ImportOptions = {
 };
 export type ImportPlan = {
   baseline: string;
+  selected: readonly Section[];
   next: Snapshot;
   changes: Change[];
   conflicts: Conflict[];
@@ -165,10 +166,16 @@ function avoidImportedRuleIdCollisions(
   // The group editor indexes both groups and rules in one ID map. Preserve
   // existing objects; only accepted incoming rules may need a new identity.
   const currentRoots = new Set(current.map((group) => group.id));
-  const roots = new Set([...currentRoots, ...next.map((group) => group.id)]);
+  const roots = new Set(next.map((group) => group.id));
   const owners = new Map<string, string | null>([...roots].map((id) => [id, null]));
+  const retainedRules = new Map(
+    next.map((group) => [group.id, new Set(group.rules.map((rule) => rule.id))]),
+  );
   for (const group of current) {
     for (const rule of group.rules) {
+      // A replaced/deleted object no longer owns its old IDs. Reserving those
+      // IDs would rewrite a valid replacement and change it again on reimport.
+      if (!retainedRules.get(group.id)?.has(rule.id)) continue;
       if (!owners.has(rule.id)) owners.set(rule.id, group.id);
       else if (owners.get(rule.id) !== group.id) owners.set(rule.id, null);
     }
@@ -211,6 +218,34 @@ function changedFields(before: object, after: object): FieldChange[] {
     .map((field) => ({ field, before: a[field], after: b[field] }));
 }
 
+/** These spellings describe the same backend values. Keep raw editor/export
+ * data untouched while avoiding conflicts with older portable files. */
+export function comparableItem(section: keyof Collections, item: object): object {
+  if (section === "groups") {
+    const group = item as Group;
+    return {
+      ...group,
+      // Match mt_group_normalize_color; missing or invalid colors become white.
+      color:
+        group.color?.length === 7 && /^#[0-9a-f]{6}$/i.test(group.color)
+          ? group.color.toLowerCase()
+          : "#ffffff",
+      profile: group.profile || undefined,
+      rules: group.rules.map((rule) => ({ ...rule, name: rule.name ?? "" })),
+    };
+  }
+  if (section === "subscriptions") {
+    const subscription = item as SubscriptionDefinition;
+    return {
+      ...subscription,
+      profile: subscription.profile || undefined,
+      overrides: [...(subscription.overrides ?? [])].sort((a, b) => a.rule.localeCompare(b.rule)),
+    };
+  }
+  const profile = item as ProfileDefinition;
+  return { ...profile, on_unavailable: profile.on_unavailable ?? "blackhole" };
+}
+
 function changedSettings(before: Settings, after: Settings, prefix = ""): FieldChange[] {
   return changedFields(before, after).flatMap((change) => {
     const field = prefix + change.field;
@@ -233,10 +268,15 @@ function changedSettings(before: Settings, after: Settings, prefix = ""): FieldC
 export function diffSnapshots(before: Snapshot, after: Snapshot): Change[] {
   const changes: Change[] = [];
   for (const section of ["groups", "subscriptions", "profiles"] as const) {
-    const previous = new Map(before[section].map((item) => [item.id, item]));
-    for (const item of after[section]) {
-      const old = previous.get(item.id);
-      const fields = old ? changedFields(old, item) : [];
+    const previous = new Map(before[section].map((item, index) => [item.id, { item, index }]));
+    for (const [index, item] of after[section].entries()) {
+      const old = previous.get(item.id)?.item;
+      const fields = old
+        ? changedFields(comparableItem(section, old), comparableItem(section, item))
+        : [];
+      if (old && previous.get(item.id)!.index !== index) {
+        fields.push({ field: "position", before: previous.get(item.id)!.index, after: index });
+      }
       changes.push({
         section,
         id: item.id,
@@ -246,7 +286,7 @@ export function diffSnapshots(before: Snapshot, after: Snapshot): Change[] {
       });
       previous.delete(item.id);
     }
-    for (const item of previous.values()) {
+    for (const { item } of previous.values()) {
       changes.push({ section, id: item.id, name: item.name, kind: "remove", fields: [] });
     }
   }
@@ -275,9 +315,10 @@ export function planImport(
   const next = copy(current);
   const problems: string[] = [];
   const conflicts: Conflict[] = [];
-  const includedDependencies: string[] = [];
+  const includedDependencies = new Set<string>();
   const profileIds = new Map<string, string>();
   const acceptedGroupIds = new Set<string>();
+  const selectedRouteIds = { groups: new Set<string>(), subscriptions: new Set<string>() };
   const definitionIds = new Set<string>();
   const remap = (name: string) => options.interfaceMap?.get(name) ?? name;
   const selected = <K extends Section>(section: K) =>
@@ -311,7 +352,10 @@ export function planImport(
       if (index < 0) {
         result.push(item);
         if (section === "groups") acceptedGroupIds.add(item.id);
-      } else if (fingerprint(result[index]) !== fingerprint(item)) {
+      } else if (
+        fingerprint(comparableItem(section, result[index])) !==
+        fingerprint(comparableItem(section, item))
+      ) {
         conflicts.push({ section, id: item.id, name: item.name });
         const choice = options.choices?.get(conflictKey(section, item.id)) ?? "keep";
         if (choice === "replace") {
@@ -331,6 +375,7 @@ export function planImport(
           if (section === "groups") acceptedGroupIds.add(item.id);
         }
       }
+      if (section !== "profiles") selectedRouteIds[section].add(item.id);
     }
     return result;
   }
@@ -341,7 +386,6 @@ export function planImport(
   for (const p of chosenProfiles) {
     if (definitionIds.has(p.id)) problems.push(`Duplicate profiles ID: ${p.id}`);
     definitionIds.add(p.id);
-    if (!selected("profiles")) includedDependencies.push(p.id);
     p.interfaces = p.interfaces.map(remap);
     if (new Set(p.interfaces).size !== p.interfaces.length) {
       problems.push(`Profile contains duplicate interfaces after mapping: ${p.name}`);
@@ -353,12 +397,11 @@ export function planImport(
     chosenProfiles,
     selected("profiles") && options.mode === "replace",
   );
-  const oldProfilesById = new Map(current.profiles.map((p) => [p.id, p]));
-  for (const profile of next.profiles) {
-    if (fingerprint(oldProfilesById.get(profile.id)) === fingerprint(profile)) continue;
-    const error = profileError([profile]);
-    if (error) problems.push(`Invalid routing profile: ${profile.id}: ${error}`);
+  if (!selected("profiles")) {
+    for (const profile of chosenProfiles)
+      includedDependencies.add(profileIds.get(profile.id) ?? profile.id);
   }
+  const oldProfilesById = new Map(current.profiles.map((p) => [p.id, p]));
   const profilesById = new Map(next.profiles.map((p) => [p.id, p]));
   for (const section of ["groups", "subscriptions"] as const) {
     if (!selected(section)) continue;
@@ -388,6 +431,27 @@ export function planImport(
         options.mode === "replace",
       );
     }
+  }
+  // A partial file may reference a definition supplied only by the editor.
+  // Follow the resolved keep/replace/copy result, so a discarded incoming
+  // reference never authorizes saving an unrelated local profile draft.
+  const requiredProfiles = new Set<string>();
+  for (const section of ["groups", "subscriptions"] as const) {
+    for (const route of next[section]) {
+      if (!selectedRouteIds[section].has(route.id) || !route.profile) continue;
+      requiredProfiles.add(route.profile);
+      if (!selected("profiles") && profilesById.has(route.profile))
+        includedDependencies.add(route.profile);
+    }
+  }
+  for (const profile of next.profiles) {
+    if (
+      !requiredProfiles.has(profile.id) &&
+      fingerprint(oldProfilesById.get(profile.id)) === fingerprint(profile)
+    )
+      continue;
+    const error = profileError([profile]);
+    if (error) problems.push(`Invalid routing profile: ${profile.id}: ${error}`);
   }
   avoidImportedRuleIdCollisions(
     current.groups,
@@ -437,6 +501,7 @@ export function planImport(
     // Changed routes and deletion of a previously available profile still fail.
     if (!profile) {
       if (
+        requiredProfiles.has(route.profile) ||
         oldProfilesById.has(route.profile) ||
         fingerprint(previousRoutes.get(route.id)) !== fingerprint(route)
       )
@@ -455,11 +520,12 @@ export function planImport(
   }
   return {
     baseline: fingerprint(current),
+    selected: sections.filter(selected),
     next,
     changes: diffSnapshots(current, next),
     conflicts,
     problems: [...new Set(problems)],
-    includedDependencies,
+    includedDependencies: [...includedDependencies],
   };
 }
 

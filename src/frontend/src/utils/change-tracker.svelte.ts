@@ -139,7 +139,7 @@ export class ChangeTracker<T extends object> {
     const currentVal = target[prop];
 
     let props = this.dirtyObjectProps.get(id);
-    if (currentVal !== originalVal) {
+    if (!sameValue(currentVal, originalVal)) {
       if (!props) {
         props = new Set();
         this.dirtyObjectProps.set(id, props);
@@ -317,27 +317,55 @@ export class ChangeTracker<T extends object> {
       const desired = draft[key];
       if (sameValue(current, desired)) continue;
       if (Array.isArray(current) && Array.isArray(desired)) {
-        let next: unknown[];
         if (current.every(isIdObject) && desired.every(isIdObject)) {
           const byId = new Map(current.map((item) => [item.id, item]));
-          next = desired.map((item) => {
+          const next = desired.map((item) => {
             const existing = byId.get(item.id);
-            if (!existing) return structuredClone(item);
-            this.replayDraft(existing, item);
-            return existing;
+            return existing ?? structuredClone(this.originalObjects.get(item.id) ?? item);
           });
+          for (let index = 0; index < next.length; index++) current[index] = next[index];
+          current.length = next.length;
+          for (let index = 0; index < desired.length; index++) {
+            const item = desired[index];
+            const restored = this.originalObjects.get(item.id);
+            if (!byId.has(item.id) && restored) this.indexAndLink(current[index], restored);
+            this.replayDraft(current[index], item);
+          }
         } else {
-          next = structuredClone(desired);
+          const next = structuredClone(desired);
+          for (let index = 0; index < next.length; index++) current[index] = next[index];
+          current.length = next.length;
         }
-        for (let index = 0; index < next.length; index++) current[index] = next[index];
-        current.length = next.length;
         this.checkArrayStructure(current);
+        if (this.dirtyObjectProps.get(target.id)?.has(key)) this.checkObjectField(target, key);
       } else {
         if (Object.hasOwn(draft, key)) target[key] = structuredClone(desired);
         else delete target[key];
         this.checkObjectField(target, key);
       }
     }
+  }
+
+  /** Replace the editable collection without accepting it as saved. Reusing
+   * indexed objects preserves field-level changes even when IDs stay the same. */
+  replaceDraft(newData: T) {
+    const incoming = this.idObjects(structuredClone(newData));
+    const target = this.idObjects(this.state);
+    const current = new Map(target.map((item) => [item.id, item]));
+    const next = incoming.map(
+      (item) => current.get(item.id) ?? structuredClone(this.originalObjects.get(item.id) ?? item),
+    );
+    for (let index = 0; index < next.length; index++) target[index] = next[index];
+    target.length = next.length;
+    for (let index = 0; index < incoming.length; index++) {
+      const item = incoming[index];
+      const restored = this.originalObjects.get(item.id);
+      if (!current.has(item.id) && restored) this.indexAndLink(target[index], restored);
+      this.replayDraft(target[index], item);
+    }
+    this.checkArrayStructure(target);
+    this.pruneDirtyState();
+    this.notify();
   }
 
   /** Accept an imported server baseline without saving unrelated local drafts.

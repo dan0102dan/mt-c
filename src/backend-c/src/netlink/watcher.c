@@ -16,6 +16,12 @@
 #define MT_NL_WATCHER_RECVBUF 8192
 #define MT_NL_RECOVERY_MAX_MS 30000u
 
+/* IFLA_CARRIER is attribute 33 in the Linux rtnetlink wire ABI. Some
+ * older Entware SDK headers omit its enum name even though the running
+ * kernel may report it. Keep this trace-only attribute header-independent;
+ * routing and link-state callbacks continue to use ifi_flags. */
+enum { MT_NL_IFLA_CARRIER = 33 };
+
 struct mt_nl_watcher {
     struct mnl_socket *nl;
     mt_loop_t *loop;
@@ -59,7 +65,7 @@ static int link_attributes_cb(const struct nlattr *attr, void *ud)
             a->operstate = mnl_attr_get_u8(attr); a->have_operstate = true;
         }
         break;
-    case IFLA_CARRIER:
+    case MT_NL_IFLA_CARRIER:
         if (mnl_attr_validate(attr, MNL_TYPE_U8) == 0) {
             a->carrier = mnl_attr_get_u8(attr); a->have_carrier = true;
         }

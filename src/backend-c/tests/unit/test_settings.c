@@ -366,7 +366,8 @@ static harness_t *harness_start_ports(uint16_t upstream, bool enabled_group, boo
     atomic_store(&fail_rename, 0); atomic_store(&fail_rtnl, 0); atomic_store(&fail_iptables, 0); atomic_store(&fail_snapshot, 0);
     atomic_store(&hold_resolver, false); atomic_store(&hold_send, false); current_ipset = NULL;
     harness_t *h = calloc(1, sizeof(*h));
-    if (!h || mt_config_init_defaults(&h->config) != MT_OK) { return NULL; }
+    if (!h) { return NULL; }
+    if (mt_config_init_defaults(&h->config) != MT_OK) { free(h); return NULL; }
     mt_app_config_t *app = &h->config.app;
     mt_strset(&app->http_web.host.address, "127.0.0.1"); app->http_web.host.port = ephemeral ? 0 : unused_port();
     mt_strset(&app->dns_proxy.host.address, "127.0.0.1"); app->dns_proxy.host.port = ephemeral ? 0 : unused_port();
@@ -380,21 +381,33 @@ static harness_t *harness_start_ports(uint16_t upstream, bool enabled_group, boo
     mt_strset(&app->log_level, "error");
     if (enabled_group) {
         const char *group = "configVersion: 0.9\ngroups: [{id: aabbccdd, name: Keep, enable: true, interface: blackhole, rules: [{id: 11223344, type: domain, rule: example.test, enable: true}]}]\n";
-        if (mt_config_load_buffer(&h->config, group, strlen(group)) != MT_OK) { return NULL; }
+        if (mt_config_load_buffer(&h->config, group, strlen(group)) != MT_OK) { goto fail; }
     }
     snprintf(h->path, sizeof(h->path), "/tmp/mt-settings-test-XXXXXX");
-    int fd = mkstemp(h->path); if (fd < 0) { return NULL; } close(fd);
-    if (mt_config_save_file(&h->config, MT_VERSION, h->path) != MT_OK) { return NULL; }
+    int fd = mkstemp(h->path); if (fd < 0) { goto fail; } close(fd);
+    if (mt_config_save_file(&h->config, MT_VERSION, h->path) != MT_OK) { goto fail; }
     h->settings = mt_settings_create(&h->config); h->cache = mt_cache_create(0);
-    if (!h->settings || !h->cache) { return NULL; }
+    if (!h->settings || !h->cache) { goto fail; }
     mt_err_t start = daemon_start(&h->daemon, &h->config, h->path, h->settings, h->cache, NULL, NULL);
     if (start != MT_OK) {
         fprintf(stderr, "settings harness startup: %s: %s\n", h->daemon.failure_stage, mt_err_str(start));
-        return NULL;
+        goto fail;
     }
     register_diagnostic(h);
-    if (pthread_create(&h->thread, NULL, runtime_loop, h)) { return NULL; }
+    if (pthread_create(&h->thread, NULL, runtime_loop, h)) { goto fail; }
     return h;
+
+fail:
+    /* A partially started daemon owns sockets, timers and netfilter mocks.
+     * Failure must release them before the fixture can be retried. */
+    if (h->daemon.settings) { (void)daemon_teardown(&h->daemon); }
+    if (h->settings) { mt_settings_destroy(h->settings); }
+    if (h->cache) { mt_cache_destroy(h->cache); }
+    mt_config_clear(&h->config);
+    if (h->path[0]) { unlink(h->path); }
+    free(h);
+    current_ipset = NULL;
+    return NULL;
 }
 static harness_t *harness_start(uint16_t upstream, bool enabled_group) { return harness_start_ports(upstream, enabled_group, false); }
 static void harness_stop(harness_t *h)
@@ -1104,7 +1117,10 @@ TEST family_and_dns_interception_components_are_recreated(void)
 
 TEST legacy_ephemeral_ports_are_usable_and_rollback_restores_both_transports(void)
 {
-    dns_stub_t stub; ASSERT(stub_start(&stub, 12)); harness_t *h = harness_start_ports(stub.port, false, true); ASSERT(h);
+    dns_stub_t stub; ASSERT(stub_start(&stub, 12));
+    harness_t *h = harness_start_ports(stub.port, false, true);
+    if (!h) { stub_stop(&stub); }
+    ASSERT(h);
     uint16_t web = h->daemon.ports.http, dns = h->daemon.ports.dns;
     ASSERT(web > 0); ASSERT(dns > 0);
     cJSON *diag = NULL;

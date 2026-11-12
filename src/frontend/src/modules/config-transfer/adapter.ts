@@ -7,8 +7,10 @@ import {
   type Profile,
   type Subscription,
 } from "../../types";
+import { randomId } from "../../utils/defaults";
 import { cleanProfiles } from "../settings/profiles-data";
 import {
+  comparableItem,
   copy,
   exportSnapshot,
   fingerprint,
@@ -44,6 +46,28 @@ export type ServerConfig = {
 };
 export type ServerSnapshot = { revision: string; config: ServerConfig };
 export type TransferPolicy = { enabled: boolean; policy_id: string; mode: "include" | "exclude" };
+
+/** Import snapshots contain definitions without runtime usage. Restore the
+ * counts from their actual consumers before exposing them to the profile UI. */
+export function profilesWithUsage(
+  definitions: readonly Profile[],
+  snapshot: Pick<Snapshot, "groups" | "subscriptions">,
+): Profile[] {
+  const counts = new Map<string, NonNullable<Profile["usage"]>>();
+  for (const { id } of definitions) counts.set(id, { groups: 0, subscriptions: 0 });
+  for (const { profile } of snapshot.groups) {
+    const usage = counts.get(profile ?? "");
+    if (usage) usage.groups++;
+  }
+  for (const { profile } of snapshot.subscriptions) {
+    const usage = counts.get(profile ?? "");
+    if (usage) usage.subscriptions++;
+  }
+  return definitions.map((definition) => ({
+    ...copy(definition),
+    usage: { ...counts.get(definition.id)! },
+  }));
+}
 
 function object(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
@@ -108,7 +132,7 @@ function subscription(value: unknown): SubscriptionDefinition {
     });
   }
   return {
-    id: id as string,
+    id: id.toLowerCase(),
     name: value.name as string,
     url: value.url as string,
     interface: value.interface as string,
@@ -163,10 +187,53 @@ export function decodePortable(text: string): PortableConfig {
   }
   if (!["groups", "subscriptions", "profiles", "settings"].some((key) => key in value))
     throw new Error("Configuration has no sections");
+  // Schema fallbacks are for editor defaults, not portable object identity:
+  // their default ID is shared by every parse of that schema. Legacy files
+  // may omit IDs; generate a distinct one without colliding with later items.
+  const reservedIds = new Set<string>();
+  function reserve(item: unknown) {
+    if (object(item) && typeof item.id === "string") reservedIds.add(item.id.toLowerCase());
+  }
+  for (const section of ["groups", "subscriptions", "profiles"]) {
+    const items = value[section];
+    if (!Array.isArray(items)) continue;
+    for (const item of items) {
+      reserve(item);
+      if (section === "groups" && object(item) && Array.isArray(item.rules)) {
+        for (const rule of item.rules) reserve(rule);
+      }
+    }
+  }
+  const legacy = value.format === undefined && value.schemaVersion === undefined;
+  function identity(item: Record<string, unknown>, kind: "group" | "rule"): string {
+    if (legacy && !Object.hasOwn(item, "id")) {
+      let id: string;
+      do {
+        id = randomId();
+      } while (reservedIds.has(id));
+      reservedIds.add(id);
+      return id;
+    }
+    if (typeof item.id !== "string" || !/^[a-f\d]{8}$/i.test(item.id))
+      throw new Error(`Invalid ${kind} ID`);
+    // The backend stores four bytes and returns lower-case hex. Match that
+    // identity before duplicate/conflict detection in the import planner.
+    return item.id.toLowerCase();
+  }
   const result: PortableConfig = {};
   if (value.groups !== undefined) {
     if (!Array.isArray(value.groups)) throw new Error("Invalid groups list");
-    result.groups = value.groups.map((g) => parse(GroupSchema, g));
+    result.groups = value.groups.map((group) => {
+      if (!object(group) || !Array.isArray(group.rules)) throw new Error("Invalid group");
+      return parse(GroupSchema, {
+        ...group,
+        id: identity(group, "group"),
+        rules: group.rules.map((rule) => {
+          if (!object(rule)) throw new Error("Invalid rule");
+          return { ...rule, id: identity(rule, "rule") };
+        }),
+      });
+    });
   }
   if (value.subscriptions !== undefined) {
     if (!Array.isArray(value.subscriptions)) throw new Error("Invalid subscriptions list");
@@ -217,8 +284,61 @@ export function fromEditor(s: Subscription): SubscriptionDefinition {
     enable: s.enable,
     priority: s.priority ?? 100,
     interval: s.interval ?? 86400,
-    ...(data.overrides?.length ? { overrides: copy(data.overrides) } : {}),
+    ...(data.overrides !== undefined ? { overrides: copy(data.overrides) } : {}),
   };
+}
+
+/** Stage portable subscription definitions using only cache data from the same
+ * source. The backend restores source defaults (enabled=true) before applying
+ * authoritative overrides. Without source type provenance, removing a type
+ * override invalidates the browser cache until Save confirms fresh rules; the
+ * backend cache is still retained by configForApply. */
+export function subscriptionEditorsForImport(
+  definitions: readonly SubscriptionDefinition[],
+  saved: readonly Subscription[],
+  current: readonly Subscription[] = [],
+): Subscription[] {
+  const savedById = new Map(saved.map((item) => [item.id, item]));
+  const currentById = new Map(current.map((item) => [item.id, item]));
+  return definitions.map((definition) => {
+    const accepted = savedById.get(definition.id);
+    const edited = currentById.get(definition.id);
+    const retained =
+      accepted?.url === definition.url
+        ? accepted
+        : edited?.url === definition.url
+          ? edited
+          : undefined;
+    const overrides = copy(definition.overrides ?? []);
+    const previous = new Map(
+      (retained?.overrides ?? []).map((override) => [override.rule, override]),
+    );
+    const incoming = new Map(overrides.map((override) => [override.rule, override]));
+    const sourceTypeMissing = retained?.rules.some(
+      (rule) =>
+        previous.get(rule.rule)?.type !== undefined && incoming.get(rule.rule)?.type === undefined,
+    );
+    const unknownChangedSource =
+      retained?.overrides === undefined &&
+      retained !== undefined &&
+      fingerprint({ ...fromEditor(retained), overrides: [] }) !==
+        fingerprint({ ...definition, overrides });
+    const rules =
+      sourceTypeMissing || unknownChangedSource
+        ? []
+        : (retained?.rules ?? []).map((rule) => ({
+            ...copy(rule),
+            enable: incoming.get(rule.rule)?.enable ?? true,
+            type: incoming.get(rule.rule)?.type ?? rule.type,
+          }));
+    return {
+      ...copy(definition),
+      interval: definition.interval ?? 86400,
+      overrides,
+      lastUpdate: retained?.lastUpdate ?? 0,
+      rules,
+    };
+  });
 }
 
 export function snapshotFromServer(
@@ -226,6 +346,7 @@ export function snapshotFromServer(
   drafts: {
     groups?: readonly Group[];
     subscriptions?: readonly Subscription[];
+    subscriptionRuleBaseline?: readonly Subscription[];
     profiles?: readonly Profile[];
     policy?: TransferPolicy;
   } = {},
@@ -247,7 +368,12 @@ export function snapshotFromServer(
           const merged = new Map(
             (definition.overrides ?? existing?.overrides ?? []).map((o) => [o.rule, { ...o }]),
           );
-          const oldRules = new Map((existing?.rules ?? []).map((rule) => [rule.rule, rule]));
+          const staged = drafts.subscriptionRuleBaseline?.find(
+            (item) => item.id === sub.id && item.url === sub.url,
+          );
+          const oldRules = new Map(
+            (staged?.rules ?? existing?.rules ?? []).map((rule) => [rule.rule, rule]),
+          );
           for (const rule of sub.rules) {
             const old = oldRules.get(rule.rule);
             if (!old || (old.type === rule.type && old.enable === rule.enable)) continue;
@@ -315,14 +441,10 @@ export function assertImportApplied(expected: Snapshot, actual: ServerConfig): v
     return {
       ...portable,
       profiles: cleanProfiles(snapshot.profiles),
-      groups: portable.groups?.map((group) => ({
-        ...group,
-        rules: group.rules.map((rule) => ({ ...rule, name: rule.name ?? "" })),
-      })),
-      subscriptions: portable.subscriptions?.map((subscription) => ({
-        ...subscription,
-        overrides: [...(subscription.overrides ?? [])].sort((a, b) => a.rule.localeCompare(b.rule)),
-      })),
+      groups: portable.groups?.map((group) => comparableItem("groups", group)),
+      subscriptions: portable.subscriptions?.map((subscription) =>
+        comparableItem("subscriptions", subscription),
+      ),
     };
   }
   if (fingerprint(comparable(expected)) !== fingerprint(comparable(snapshotFromServer(actual))))

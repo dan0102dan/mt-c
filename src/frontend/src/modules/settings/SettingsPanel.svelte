@@ -70,7 +70,9 @@
     if (!active || !feedbackSections.length) feedbackOpen = false;
   });
 
-  const canSave = $derived(dirty && !saving && !invalid);
+  const canSave = $derived(
+    !saving && !invalid && (transfer.pending() ? transfer.canSave("settings") : dirty),
+  );
 
   async function saveAll() {
     if (!canSave) return;
@@ -89,7 +91,16 @@
         const prepare = section.controls().prepareSave;
         if (prepare && !(await prepare())) return;
       }
+      const savingImport = transfer.pending();
+      if (savingImport) {
+        await transfer.save("settings");
+        if (transfer.pending()) return;
+        succeeded++;
+      }
       for (const section of pending) {
+        // The import transaction includes definitions and their consumers.
+        // Do not follow it with an independent write of the old section draft.
+        if (savingImport && ["profiles", "keenetic"].includes(section.element.id)) continue;
         if (section.controls().saveLast && failed) continue;
         try {
           await section.controls().onSave();
@@ -139,7 +150,7 @@
   <div class="settings-toolbar">
     <PageControls
       {canSave}
-      saveBusy={saving}
+      saveBusy={saving || (transfer.pending() && transfer.busy())}
       controlsClass="settings-controls"
       {active}
       onSave={() => void saveAll()}

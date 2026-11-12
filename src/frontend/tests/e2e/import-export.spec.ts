@@ -3,6 +3,7 @@ import path from "path";
 import { expect, test, type Locator, type Page } from "@playwright/test";
 
 import type { buildSubscriptionUpdate } from "../../src/modules/subscriptions/subscription-payload";
+import type { Group } from "../../src/types";
 import { GroupsPage } from "./pages/GroupsPage";
 
 const makeGroup = (id: string, name: string) => ({
@@ -47,10 +48,25 @@ async function expectInputValues(inputs: Locator, values: string[]) {
 
 async function showPage(page: Page, name: string) {
   const menu = page.locator(".mobile-dropdown-btn");
+  await expect(menu).toBeAttached();
   if ((await menu.isVisible()) && (await menu.getAttribute("aria-expanded")) !== "true")
     await menu.click();
   await page.getByRole("tab", { name, exact: true }).click();
 }
+
+async function saveImported(page: Page) {
+  const save = page.locator(
+    "#save-changes:visible, #save-subscriptions:visible, #save-settings:visible",
+  );
+  await expect(save).toBeEnabled();
+  await save.click();
+  await expect(save).toHaveAttribute("aria-busy", "false");
+  await expect(save).toBeDisabled();
+}
+
+test.afterEach(async ({ page }) => {
+  expect((await page.pageErrors({ filter: "all" })).map((error) => error.message)).toEqual([]);
+});
 
 test.describe("Import/Export", () => {
   let groupsPage: GroupsPage;
@@ -144,9 +160,15 @@ test.describe("Import/Export", () => {
           config: {
             configVersion: "0.8.5",
             app,
-            groups: serverGroups,
-            profiles: serverProfiles,
-            subscriptions: serverSubs,
+            groups: serverGroups.map((group) => ({ ...group, priority: group.priority ?? 300 })),
+            profiles: serverProfiles.map((profile) => ({
+              on_unavailable: "blackhole",
+              ...profile,
+            })),
+            subscriptions: serverSubs.map(({ lastUpdate, ...subscription }) => ({
+              ...subscription,
+              last_update: subscription.last_update ?? lastUpdate ?? 0,
+            })),
           },
         },
       }),
@@ -162,8 +184,14 @@ test.describe("Import/Export", () => {
       serverSubs = body.config.subscriptions.map((s: any) => ({
         ...s,
         lastUpdate: s.last_update ?? 0,
-        rules:
-          s.rules ?? serverSubs.find((old) => old.id === s.id && old.url === s.url)?.rules ?? [],
+        rules: (
+          s.rules ??
+          serverSubs.find((old) => old.id === s.id && old.url === s.url)?.rules ??
+          []
+        ).map((rule: { rule: string }) => ({
+          ...rule,
+          ...(s.overrides ?? []).find((override: { rule: string }) => override.rule === rule.rule),
+        })),
       }));
       Object.assign(app, body.config.app);
       applied++;
@@ -184,14 +212,14 @@ test.describe("Import/Export", () => {
       const apply = dialog.getByRole("button", { name: "Import", exact: true });
       await expect(apply).toBeEnabled();
       await apply.click();
-      await expect(dialog).toBeVisible();
+      await expect(dialog).toHaveCount(0);
       await expect(page.getByText("No changes to import", { exact: true })).toBeVisible();
       await expect(page.getByText("Configuration imported", { exact: true })).toHaveCount(0);
       expect(applied).toBe(0);
       expect(serverGroups[0].name).toBe("Existing");
     });
 
-    test(`a rejected import leaves a visible error above the dialog at ${width}px`, async ({
+    test(`a rejected save retains the imported draft and reports the error at ${width}px`, async ({
       page,
     }) => {
       await page.setViewportSize({ width, height: width === 390 ? 844 : 900 });
@@ -200,12 +228,16 @@ test.describe("Import/Export", () => {
       );
       const dialog = await openTransfer(page, { groups: [makeGroup("11223344", "Imported")] });
       await dialog.getByRole("button", { name: "Import", exact: true }).click();
-      const error = page.getByText("Failed to import configuration", { exact: true });
+      await expect(dialog).toHaveCount(0);
+      expect(applied).toBe(0);
+      await groupsPage.save();
+      const error = page.getByText(
+        "Configuration changed on the server. Reload before saving; your draft is unchanged.",
+        { exact: true },
+      );
       await expect(error).toBeVisible();
-      await expect(dialog).toBeVisible();
-      expect(
-        await error.evaluate((element) => +getComputedStyle(element.closest(".stack")!).zIndex),
-      ).toBeGreaterThan(await dialog.evaluate((element) => +getComputedStyle(element).zIndex));
+      await expect(page.locator("input.group-name")).toHaveValue("Imported");
+      await expect(groupsPage.saveButton).toBeEnabled();
       expect(applied).toBe(0);
     });
 
@@ -296,6 +328,11 @@ test.describe("Import/Export", () => {
         await expect(apply).toBeEnabled();
         await apply.click();
         await expect(dialog).toHaveCount(0);
+        expect(applied).toBe(0);
+        expect(serverGroups).toHaveLength(1);
+        expect(serverSubs).toHaveLength(1);
+        expect(serverProfiles).toHaveLength(1);
+        await saveImported(page);
         expect(applied).toBe(1);
         expect(serverGroups).toHaveLength(section === "groups" ? 0 : 1);
         expect(serverSubs).toHaveLength(section === "subscriptions" ? 0 : 1);
@@ -379,6 +416,8 @@ test.describe("Import/Export", () => {
             exact: true,
           }),
         ).toBeVisible();
+        expect(applied).toBe(0);
+        await saveImported(page);
         expect(serverGroups[0].name).toBe("Imported");
       });
     }
@@ -433,36 +472,31 @@ test.describe("Import/Export", () => {
     expect(serverGroups[0].rules[0].name).toBe("Saved rule");
     await expect(groupsPage.saveButton).toBeEnabled();
 
-    let saved: any;
-    await page.route("**/groups?save=true", async (route) => {
-      saved = route.request().postDataJSON();
-      serverGroups = [
-        {
-          ...serverGroups[0],
-          name: "Unsaved name",
-          rules: [{ ...serverGroups[0].rules[0], name: "Unsaved rule" }],
-        },
-        serverGroups[1],
-      ];
-      await route.fulfill({ json: { groups: serverGroups } });
-    });
-    await groupsPage.save();
-    await expect(groupsPage.saveButton).toBeDisabled();
-    expect(saved.groups.map((group: any) => group.name)).toEqual(["Unsaved name", "Imported"]);
-    expect(saved.groups[0].ruleChanges).toEqual([
-      expect.objectContaining({
-        id: "22334455",
-        name: "Unsaved rule",
-        previous: expect.objectContaining({ name: "Saved rule" }),
-      }),
+    const saved = page.waitForRequest(
+      (request) => request.method() === "POST" && request.url().endsWith("/system/config/apply"),
+    );
+    await saveImported(page);
+    const payload = (await saved).postDataJSON();
+    expect(payload.config.groups.map((group: { name: string }) => group.name)).toEqual([
+      "Unsaved name",
+      "Imported",
     ]);
-    expect(saved.groups[1].ruleChanges).toEqual([]);
-    expect(saved.groups[0]).not.toHaveProperty("rules");
+    expect(payload.config.groups[0].rules[0]).toMatchObject({
+      id: "22334455",
+      name: "Unsaved rule",
+      rule: "example.org",
+      type: "namespace",
+      enable: true,
+    });
+    expect(payload.config.groups[1].rules).toEqual([]);
+    expect(applied).toBe(1);
     await page.reload();
     await expectInputValues(page.locator("input.group-name"), ["Unsaved name", "Imported"]);
   });
 
-  test("overlapping import leaves the dirty group and server untouched", async ({ page }) => {
+  test("explicit Replace overwrites an overlapping local draft without writing until Save", async ({
+    page,
+  }) => {
     serverGroups = [makeGroup("11223344", "Existing")];
     await page.reload();
     await groupsPage.setGroupName(0, "Unsaved name");
@@ -471,17 +505,15 @@ test.describe("Import/Export", () => {
     });
     await dialog.getByRole("switch", { name: "Replace", exact: true }).click();
     await dialog.getByRole("button", { name: "Import", exact: true }).click();
-    await expect(
-      page.getByText("Save or discard local changes before importing: Imported replacement", {
-        exact: true,
-      }),
-    ).toBeVisible();
+    await expect(dialog).toHaveCount(0);
     expect(applied).toBe(0);
     expect(serverGroups[0].name).toBe("Existing");
-    await expect(dialog).toBeVisible();
-    await dialog.getByRole("button", { name: "Cancel", exact: true }).click();
-    await expect(page.locator("input.group-name")).toHaveValue("Unsaved name");
+    await expect(page.locator("input.group-name")).toHaveValue("Imported replacement");
     await expect(groupsPage.saveButton).toBeEnabled();
+    await saveImported(page);
+    expect(serverGroups[0].name).toBe("Imported replacement");
+    await page.reload();
+    await expect(page.locator("input.group-name")).toHaveValue("Imported replacement");
   });
 
   test("copied groups keep independent rule drafts and dirty indicators", async ({ page }) => {
@@ -510,8 +542,13 @@ test.describe("Import/Export", () => {
     await dialog.getByRole("button", { name: "Import", exact: true }).click();
     await expect(dialog).toHaveCount(0);
     await expect(page.locator(".group-list")).toBeVisible();
-    expect(serverGroups).toHaveLength(2);
-    expect(serverGroups[0].rules[0].id).not.toBe(serverGroups[1].rules[0].id);
+    expect(serverGroups).toHaveLength(1);
+    expect(applied).toBe(0);
+    const pendingExport = page.waitForEvent("download");
+    await page.getByRole("button", { name: "Export Config", exact: true }).click();
+    const exported = JSON.parse(fs.readFileSync(await (await pendingExport).path(), "utf8"));
+    expect(exported.groups).toHaveLength(2);
+    expect(exported.groups[0].rules[0].id).not.toBe(exported.groups[1].rules[0].id);
     await page.locator(".group-header [data-collapsible-trigger]").nth(0).click();
     await page.locator(".group-header [data-collapsible-trigger]").nth(1).click();
     await groupsPage.setRuleName(0, 0, "Original draft");
@@ -523,7 +560,7 @@ test.describe("Import/Export", () => {
     );
   });
 
-  test("an imported copy cannot alias an unsaved new rule in another group", async ({ page }) => {
+  test("an imported copy remaps IDs that belong to an unsaved local rule", async ({ page }) => {
     serverGroups = [makeGroup("11223344", "Existing")];
     await page.reload();
     await groupsPage.addRuleToGroup(0);
@@ -533,21 +570,30 @@ test.describe("Import/Export", () => {
     await page.locator(".group-controls-actions button[aria-label='Export Config']").click();
     const download = await downloadPromise;
     const exported = JSON.parse(fs.readFileSync(await download.path(), "utf8"));
+    exported.groups[0].name = "Copy of Existing";
     const dialog = await openTransfer(page, exported);
     await dialog
-      .locator('[data-select-trigger][aria-label="Resolve conflict for Existing"]')
+      .locator('[data-select-trigger][aria-label="Resolve conflict for Copy of Existing"]')
       .click();
     await page.getByRole("option", { name: "Create a copy", exact: true }).click();
     await dialog.getByRole("button", { name: "Import", exact: true }).click();
-    await expect(
-      page.getByText("Save or discard local changes before importing: Existing", { exact: true }),
-    ).toBeVisible();
+    await expect(dialog).toHaveCount(0);
     expect(applied).toBe(0);
     expect(serverGroups).toHaveLength(1);
     expect(serverGroups[0].rules).toEqual([]);
-    await dialog.getByRole("button", { name: "Cancel", exact: true }).click();
+    const copyExport = page.waitForEvent("download");
+    await page.getByRole("button", { name: "Export Config", exact: true }).click();
+    const copied = JSON.parse(fs.readFileSync(await (await copyExport).path(), "utf8"));
+    expect(copied.groups).toHaveLength(2);
+    const ruleIds = copied.groups.flatMap((entry: { rules: { id: string }[] }) =>
+      entry.rules.map((rule) => rule.id),
+    );
+    expect(new Set(ruleIds).size).toBe(ruleIds.length);
     await expect((await groupsPage.getRule(0, 0)).locator(".name input")).toHaveValue("Local rule");
     await expect(groupsPage.saveButton).toBeEnabled();
+    await saveImported(page);
+    expect(serverGroups).toHaveLength(2);
+    expect(serverGroups.every((entry) => entry.rules[0].name === "Local rule")).toBe(true);
   });
 
   test("append preserves subscription rule drafts without saving them in the import request", async ({
@@ -578,26 +624,19 @@ test.describe("Import/Export", () => {
     expect(serverSubs[0].name).toBe("Existing subscription");
     expect(serverSubs[0].rules[0].enable).toBe(true);
     const saved = page.waitForRequest(
-      (request) => request.method() === "PUT" && request.url().endsWith("/subscriptions"),
+      (request) => request.method() === "POST" && request.url().endsWith("/system/config/apply"),
     );
-    await page.locator("#save-subscriptions").click();
+    await saveImported(page);
     const payload = (await saved).postDataJSON();
-    expect(payload.subscriptions.map((sub: any) => sub.name)).toEqual([
+    expect(payload.config.subscriptions.map((sub: { name: string }) => sub.name)).toEqual([
       "Unsaved subscription",
       "Imported subscription",
     ]);
-    expect(payload.subscriptions[0].ruleChanges).toEqual([
-      {
-        id: "22334455",
-        rule: "example.org",
-        previousType: "namespace",
-        previousEnable: true,
-        type: "namespace",
-        enable: false,
-      },
+    expect(payload.config.subscriptions[0].overrides).toEqual([
+      { rule: "example.org", enable: false },
     ]);
-    expect(payload.subscriptions[0]).not.toHaveProperty("rules");
-    expect(payload.subscriptions[1].ruleChanges).toEqual([]);
+    expect(payload.config.subscriptions[0]).not.toHaveProperty("rules");
+    expect(payload.config.subscriptions[1].rules).toEqual([]);
     await expect(page.locator("#save-subscriptions")).toBeDisabled();
     const downloadPromise = page.waitForEvent("download");
     await page.locator(".subscription-controls-actions button[aria-label='Export Config']").click();
@@ -634,10 +673,8 @@ test.describe("Import/Export", () => {
       "Unsaved profile",
       "Imported profile",
     ]);
-    expect(serverProfiles.map((profile) => profile.name)).toEqual([
-      "Existing profile",
-      "Imported profile",
-    ]);
+    expect(serverProfiles.map((profile) => profile.name)).toEqual(["Existing profile"]);
+    expect(applied).toBe(0);
     await expect(page.locator("#save-settings")).toBeEnabled();
     await page.locator("#save-settings").click();
     await expect(page.locator("#save-settings")).toBeDisabled();
@@ -676,6 +713,9 @@ test.describe("Import/Export", () => {
     await unfinished.uncheck();
     await dialog.getByRole("button", { name: "Import", exact: true }).click();
     await expect(dialog).toHaveCount(0);
+    expect(serverGroups).toEqual([]);
+    expect(applied).toBe(0);
+    await saveImported(page);
     expect(serverGroups[0].name).toBe("Portable group");
     expect(serverProfiles).toEqual([]);
   });
@@ -731,6 +771,8 @@ test.describe("Import/Export", () => {
     await expect(dialog).toHaveCount(0);
     await expect(page.locator(".group-wrapper")).toHaveCount(1);
     await expect(page.locator("input.group-name")).toHaveValue("Imported Group");
+    expect(applied).toBe(0);
+    await saveImported(page);
     expect(applied).toBe(1);
   });
 
@@ -829,6 +871,9 @@ test.describe("Import/Export", () => {
       await expect(dialog.getByRole("button", { name: "Import", exact: true })).toBeEnabled();
       const request = page.waitForRequest((req) => req.url().endsWith("/system/config/apply"));
       await dialog.getByRole("button", { name: "Import", exact: true }).click();
+      await expect(dialog).toHaveCount(0);
+      expect(applied).toBe(0);
+      await saveImported(page);
       const payload = (await request).postDataJSON();
       expect(payload.config.groups.map((group: { name: string }) => group.name)).toEqual([
         "Existing",
@@ -955,6 +1000,9 @@ test.describe("Import/Export", () => {
       // The selected group still brings its required profile, even when unchecked separately.
       const request = page.waitForRequest((req) => req.url().endsWith("/system/config/apply"));
       await dialog.getByRole("button", { name: "Import", exact: true }).click();
+      await expect(dialog).toHaveCount(0);
+      expect(applied).toBe(0);
+      await saveImported(page);
       const payload = (await request).postDataJSON();
       expect(payload.config.groups.map((item: { name: string }) => item.name)).toEqual(
         width === 390 ? ["Video"] : ["Existing", "Video"],
@@ -1026,6 +1074,9 @@ test.describe("Import/Export", () => {
       await expect(dialog.getByRole("button", { name: "Import", exact: true })).toBeEnabled();
       const request = page.waitForRequest((req) => req.url().endsWith("/system/config/apply"));
       await dialog.getByRole("button", { name: "Import", exact: true }).click();
+      await expect(dialog).toHaveCount(0);
+      expect(applied).toBe(0);
+      await saveImported(page);
       const payload = (await request).postDataJSON();
       expect(payload.config.groups[0].interface).toBe("mitun0");
       expect(payload.config.subscriptions[0].interface).toBe("offline0");
@@ -1091,6 +1142,9 @@ test.describe("Import/Export", () => {
       await expect(dialog.getByText("0 / 1", { exact: true })).toBeVisible();
       const request = page.waitForRequest((req) => req.url().endsWith("/system/config/apply"));
       await dialog.getByRole("button", { name: "Import", exact: true }).click();
+      await expect(dialog).toHaveCount(0);
+      expect(applied).toBe(0);
+      await saveImported(page);
       const payload = (await request).postDataJSON();
       expect(payload.config.app).toEqual(originalSettings);
       expect(payload.config.groups[0].name).toBe("Imported Group");
@@ -1202,4 +1256,239 @@ test.describe("Import/Export", () => {
       ).toBeLessThanOrEqual(1);
     });
   }
+
+  for (const change of ["clear enable", "clear and edit enable", "clear type"] as const) {
+    test(`subscription import ${change} preserves the source cache and accepts server normalization`, async ({
+      page,
+    }) => {
+      const sourceRule = { id: "22334455", rule: "example.org", type: "namespace", enable: true };
+      const oldOverride =
+        change === "clear type"
+          ? { rule: sourceRule.rule, type: "domain" }
+          : { rule: sourceRule.rule, enable: false };
+      serverSubs = [
+        {
+          ...makeSubscription("11223344", "Source cache"),
+          rules: [{ ...sourceRule, ...oldOverride }],
+          overrides: [oldOverride],
+        },
+      ];
+      await page.reload();
+      await showPage(page, "Subscriptions");
+      await page.locator(".subscription-panel [data-collapsible-trigger]").click();
+      const before = structuredClone(serverSubs);
+      const dialog = await openTransfer(page, {
+        subscriptions: [{ ...makeSubscription("11223344", "Source cache"), overrides: [] }],
+      });
+      await dialog.getByRole("switch", { name: "Replace", exact: true }).click();
+      await dialog.getByRole("button", { name: "Import", exact: true }).click();
+      await expect(dialog).toHaveCount(0);
+      const rows = page.locator(".subscription-rule");
+      if (change === "clear type") {
+        // The effective cache cannot reveal its original source type. Keep it
+        // out of the draft until Save confirms the server's retained source.
+        await expect(rows).toHaveCount(0);
+      } else {
+        await expect(rows.getByRole("switch")).toBeChecked();
+        if (change === "clear and edit enable") await rows.getByRole("switch").click();
+      }
+      expect(applied).toBe(0);
+      expect(serverSubs).toEqual(before);
+      let saved:
+        | { subscriptions: { overrides: unknown[]; rules?: unknown[]; last_update: number }[] }
+        | undefined;
+      await page.route("**/system/config/apply", async (route) => {
+        const body = route.request().postDataJSON();
+        expect(body.revision).toBe(String(applied));
+        saved = body.config;
+        // Model the C backend's separate source cache explicitly. Applying
+        // overrides to an already overridden cache would hide this regression.
+        serverSubs = body.config.subscriptions.map(
+          (subscription: {
+            overrides: { rule: string; type?: string; enable?: boolean }[];
+            last_update: number;
+          }) => ({
+            ...subscription,
+            lastUpdate: subscription.last_update,
+            rules: [
+              {
+                ...sourceRule,
+                ...subscription.overrides.find((override) => override.rule === sourceRule.rule),
+              },
+            ],
+          }),
+        );
+        applied++;
+        await route.fulfill({ json: { ok: true } });
+      });
+      await saveImported(page);
+      expect(saved?.subscriptions[0]).not.toHaveProperty("rules");
+      expect(saved?.subscriptions[0].last_update).toBe(1);
+      expect(saved?.subscriptions[0].overrides).toEqual(
+        change === "clear and edit enable" ? [{ rule: sourceRule.rule, enable: false }] : [],
+      );
+      await expect(rows).toHaveCount(1);
+      await expect(rows.locator(".subscription-rule-type [data-select-trigger]")).toHaveText(
+        "Namespace",
+      );
+      if (change === "clear and edit enable")
+        await expect(rows.getByRole("switch")).not.toBeChecked();
+      else await expect(rows.getByRole("switch")).toBeChecked();
+      await expect(page.locator("#save-subscriptions")).toBeDisabled();
+      expect(applied).toBe(1);
+      await page.reload();
+      await expect(page.locator("#save-subscriptions")).toBeDisabled();
+      expect(serverSubs[0].rules[0].id).toBe(sourceRule.id);
+    });
+  }
+
+  test("a partial import saves only its required local profile drafts and their edited primary", async ({
+    page,
+  }) => {
+    serverProfiles = [
+      {
+        id: "existing",
+        name: "Saved profile",
+        interfaces: ["wg0"],
+        on_unavailable: "blackhole",
+      },
+    ];
+    await page.route("**/system/interfaces", (route) =>
+      route.fulfill({ json: { interfaces: [{ id: "wg0" }, { id: "wg1" }, { id: "blackhole" }] } }),
+    );
+    const writes: string[] = [];
+    page.on("request", (request) => {
+      if (
+        request.url().includes("/api/v1/") &&
+        !["GET", "HEAD", "OPTIONS"].includes(request.method())
+      )
+        writes.push(new URL(request.url()).pathname);
+    });
+    await page.reload();
+    await showPage(page, "Settings");
+    const existing = page.locator('.profile[data-profile-id="existing"]');
+    await existing.getByLabel("Profile name", { exact: true }).fill("Edited required profile");
+    await existing.locator('[data-select-trigger][aria-label="Add interface"]').click();
+    await existing.getByRole("option", { name: "wg1", exact: true }).click();
+    await existing
+      .getByRole("button", { name: "Drag interface: wg1", exact: true })
+      .press("Alt+ArrowUp");
+    await expect(existing.locator("[data-interface]").first()).toHaveAttribute(
+      "data-interface",
+      "wg1",
+    );
+
+    const localIds: string[] = [];
+    for (const [name, iface] of [
+      ["Required local profile", "wg1"],
+      ["Unrelated local profile", "wg0"],
+    ]) {
+      await page.getByRole("button", { name: "Add profile", exact: true }).click();
+      const card = page.locator(".profile").first();
+      await card.getByLabel("Profile name", { exact: true }).fill(name);
+      await card.locator('[data-select-trigger][aria-label="Add interface"]').click();
+      await card.getByRole("option", { name: iface, exact: true }).click();
+      localIds.push((await card.getAttribute("data-profile-id"))!);
+    }
+    const [requiredId, unrelatedId] = localIds;
+    await showPage(page, "Groups");
+    const dialog = await openTransfer(page, {
+      groups: [{ ...makeGroup("11223344", "Local profile group"), profile: requiredId }],
+      subscriptions: [
+        { ...makeSubscription("22334455", "Edited profile subscription"), profile: "existing" },
+      ],
+    });
+    await dialog.getByRole("tab", { name: "Subscriptions", exact: true }).click();
+    await dialog
+      .getByRole("checkbox", { name: "Edited profile subscription", exact: true })
+      .check();
+    await dialog.getByRole("button", { name: "Import", exact: true }).click();
+    await expect(dialog).toHaveCount(0);
+    expect(writes).toEqual([]);
+    expect(serverProfiles.map((profile) => profile.name)).toEqual(["Saved profile"]);
+    expect(serverGroups).toEqual([]);
+    expect(serverSubs).toEqual([]);
+
+    await saveImported(page);
+    expect(writes).toEqual(["/api/v1/system/config/apply"]);
+    expect(applied).toBe(1);
+    expect(serverProfiles).toHaveLength(2);
+    expect(serverProfiles).toEqual(
+      expect.arrayContaining([
+        {
+          id: requiredId,
+          name: "Required local profile",
+          interfaces: ["wg1"],
+          on_unavailable: "blackhole",
+        },
+        {
+          id: "existing",
+          name: "Edited required profile",
+          interfaces: ["wg1", "wg0"],
+          on_unavailable: "blackhole",
+        },
+      ]),
+    );
+    expect(serverProfiles.some((profile) => profile.id === unrelatedId)).toBe(false);
+    expect(serverGroups[0]).toMatchObject({ profile: requiredId, interface: "wg1" });
+    expect(serverSubs[0]).toMatchObject({ profile: "existing", interface: "wg1" });
+    await showPage(page, "Settings");
+    await expect(page.getByLabel("Profile name", { exact: true })).toHaveCount(3);
+    await expect(page.locator(`.profile[data-profile-id="${unrelatedId}"] input`)).toHaveValue(
+      "Unrelated local profile",
+    );
+    await expect(page.locator("#save-settings")).toBeEnabled();
+    await page.reload();
+    await showPage(page, "Settings");
+    await expect(page.getByLabel("Profile name", { exact: true })).toHaveCount(2);
+    await expect(page.locator(`.profile[data-profile-id="${unrelatedId}"]`)).toHaveCount(0);
+    await expect(page.locator("#save-settings")).toBeDisabled();
+    expect(writes).toEqual(["/api/v1/system/config/apply"]);
+  });
+
+  test("server color and empty profile normalization confirms Save and makes repeat import a no-op", async ({
+    page,
+  }) => {
+    const file = {
+      groups: [
+        { ...makeGroup("11223344", "Uppercase color"), color: "#AABBCC", profile: "" },
+        { ...makeGroup("22334455", "Default color"), color: "", profile: "" },
+      ],
+    };
+    await page.route("**/system/config/apply", async (route) => {
+      const body = route.request().postDataJSON();
+      expect(body.revision).toBe(String(applied));
+      // Match the production C response: colors are canonical hex values and
+      // an empty optional profile is serialized as an absent field.
+      serverGroups = body.config.groups.map(({ profile, ...group }: Group) => ({
+        ...group,
+        color: group.color ? group.color.toLowerCase() : "#ffffff",
+        ...(profile ? { profile } : {}),
+      }));
+      applied++;
+      await route.fulfill({ json: { ok: true } });
+    });
+    let dialog = await openTransfer(page, file);
+    await dialog.getByRole("switch", { name: "Replace", exact: true }).click();
+    await dialog.getByRole("button", { name: "Import", exact: true }).click();
+    await expect(dialog).toHaveCount(0);
+    expect(applied).toBe(0);
+    expect(serverGroups).toEqual([]);
+    await saveImported(page);
+    expect(applied).toBe(1);
+    expect(serverGroups.map((group) => group.color)).toEqual(["#aabbcc", "#ffffff"]);
+    for (const group of serverGroups) expect(group).not.toHaveProperty("profile");
+    await expectInputValues(page.locator("input.group-name"), ["Uppercase color", "Default color"]);
+    dialog = await openTransfer(page, file);
+    await dialog.getByRole("switch", { name: "Replace", exact: true }).click();
+    await dialog.getByRole("button", { name: "Import", exact: true }).click();
+    await expect(dialog).toHaveCount(0);
+    await expect(page.getByText("No changes to import", { exact: true })).toBeVisible();
+    await expect(groupsPage.saveButton).toBeDisabled();
+    expect(applied).toBe(1);
+    await page.reload();
+    await expectInputValues(page.locator("input.group-name"), ["Uppercase color", "Default color"]);
+    await expect(groupsPage.saveButton).toBeDisabled();
+    expect(applied).toBe(1);
+  });
 });

@@ -98,6 +98,21 @@ function accept(list: Profile[], resetDraft: boolean) {
 }
 let pendingFetch: Promise<void> | undefined;
 let generation = 0;
+/** Stage imported definitions without exposing them as accepted server profiles. */
+export function stageProfileImport(baseline: readonly Profile[], draft: readonly Profile[]) {
+  generation++;
+  accept(baseline.map(copyProfile), false);
+  profiles.baseline = JSON.stringify(cleanProfiles(baseline));
+  profiles.draft = draft.map(copyProfile);
+}
+export function acceptProfileImport(
+  baseline: readonly Profile[],
+  retainedDraft: readonly Profile[] = baseline,
+  { persisted = true }: { persisted?: boolean } = {},
+) {
+  stageProfileImport(baseline, retainedDraft);
+  if (persisted) profiles.persistencePending = false;
+}
 export function fetchProfiles(
   options: { fresh?: boolean; rebaseDrafts?: boolean } = {},
 ): Promise<void> {

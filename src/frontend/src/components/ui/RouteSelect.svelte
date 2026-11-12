@@ -1,9 +1,15 @@
 <script lang="ts">
+  import { getContext } from "svelte";
+
   import { interfaces } from "../../data/interfaces.svelte";
   import { t } from "../../data/locale.svelte";
   import { profiles } from "../../data/profiles.svelte";
   import Select from "./Select.svelte";
 
+  import {
+    CONFIG_TRANSFER_CONTEXT,
+    type ConfigTransferControls,
+  } from "../../modules/config-transfer/context";
   import {
     routeFromValue,
     routeValue,
@@ -28,9 +34,11 @@
     placeholder = "",
     ...rest
   }: Props = $props();
+  const transfer = getContext<ConfigTransferControls | undefined>(CONFIG_TRANSFER_CONTEXT);
+  const availableProfiles = $derived(transfer?.routeProfiles() ?? profiles.list);
   const selected = $derived(routeValue({ interface: iface, profile }));
   const options = $derived([
-    ...profiles.list.map((item) => ({
+    ...availableProfiles.map((item) => ({
       value: `profile/${item.id}`,
       label: item.name,
       group: t("Profiles"),
@@ -39,12 +47,12 @@
       value: `interface/${item.id}`,
       label: item.id,
       description: item.name,
-      group: profiles.list.length ? t("Interfaces") : undefined,
+      group: availableProfiles.length ? t("Interfaces") : undefined,
     })),
   ]);
 
   function change(value: string) {
-    const choice = routeFromValue(value, profiles.list);
+    const choice = routeFromValue(value, availableProfiles);
     if (!choice) return;
     iface = choice.interface;
     profile = choice.profile;

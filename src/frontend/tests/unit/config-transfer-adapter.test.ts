@@ -3,15 +3,22 @@ import { strict as assert } from "node:assert";
 import type { ServerConfig } from "../../src/modules/config-transfer/adapter";
 import {
   applyRuleOverrides,
+  assertPlanCurrent,
   exportSnapshot,
+  planImport,
   type RuleOverride,
 } from "../../src/modules/config-transfer/model";
 import type { Subscription } from "../../src/types";
 import { installSvelteRunesMocks } from "../mocks/setup-svelte-runes";
 
 installSvelteRunesMocks();
-const { assertImportApplied, configForApply, decodePortable, snapshotFromServer } =
-  await import("../../src/modules/config-transfer/adapter");
+const {
+  assertImportApplied,
+  configForApply,
+  decodePortable,
+  snapshotFromServer,
+  subscriptionEditorsForImport,
+} = await import("../../src/modules/config-transfer/adapter");
 
 Deno.test("applied import verification rejects missing or different profiles", () => {
   const original = server();
@@ -36,6 +43,43 @@ Deno.test("applied import verification ignores caches and equivalent profile def
   actual.subscriptions[0].rules = [];
   assert.doesNotThrow(() => assertImportApplied(expected, actual));
 });
+
+Deno.test(
+  "applied import verification accepts backend color and empty profile canonicalization",
+  () => {
+    for (const [color, canonical] of [
+      ["#AABBCC", "#aabbcc"],
+      ["", "#ffffff"],
+      ["banana", "#ffffff"],
+      ["#fff", "#ffffff"],
+      ["#abcdef\n", "#ffffff"],
+    ]) {
+      const original = server();
+      original.groups = decodePortable(
+        JSON.stringify({
+          groups: [
+            { id: "12345678", name: "Legacy", interface: "wg0", profile: "", color, rules: [] },
+          ],
+        }),
+      ).groups!;
+      const expected = snapshotFromServer(original);
+      expected.subscriptions[0].profile = "";
+      const before = structuredClone(expected);
+      const actual = configForApply(original, expected);
+      actual.groups[0].color = canonical;
+      delete actual.groups[0].profile;
+      delete actual.subscriptions[0].profile;
+      assert.doesNotThrow(() => assertImportApplied(expected, actual));
+      assert.deepEqual(expected, before);
+
+      actual.groups[0].color = "#123456";
+      assert.throws(() => assertImportApplied(expected, actual), /not confirmed/);
+      actual.groups[0].color = canonical;
+      actual.groups[0].profile = "vpn";
+      assert.throws(() => assertImportApplied(expected, actual), /not confirmed/);
+    }
+  },
+);
 
 const server = (): ServerConfig => ({
   configVersion: "0.8.5",
@@ -77,6 +121,110 @@ Deno.test("legacy group-only config remains a partial import", () => {
   assert.equal(input.groups?.length, 1);
   assert.equal(input.subscriptions, undefined);
   assert.equal(input.settings, undefined);
+});
+
+Deno.test("legacy missing group and rule IDs receive distinct editor identities", () => {
+  const group = {
+    name: "Legacy",
+    interface: "wg0",
+    rules: [{ rule: "one.example" }, { rule: "two.example" }],
+  };
+  const input = decodePortable(JSON.stringify({ groups: [group, group] }));
+  const ids = input.groups!.flatMap((item) => [item.id, ...item.rules.map((rule) => rule.id)]);
+  assert.equal(ids.length, 6);
+  assert.equal(new Set(ids).size, ids.length);
+  assert(ids.every((id) => /^[a-f\d]{8}$/.test(id)));
+});
+
+Deno.test("explicitly malformed import IDs are rejected instead of silently replaced", () => {
+  const valid = {
+    id: "12345678",
+    interface: "wg0",
+    rules: [{ id: "aabbccdd", rule: "example.org" }],
+  };
+  for (const id of [null, false, 12345678, "", "1234567", "123456789", "abcdefgh"]) {
+    assert.throws(
+      () => decodePortable(JSON.stringify({ groups: [{ ...valid, id }] })),
+      /Invalid group ID/,
+    );
+    assert.throws(
+      () =>
+        decodePortable(
+          JSON.stringify({ groups: [{ ...valid, rules: [{ ...valid.rules[0], id }] }] }),
+        ),
+      /Invalid rule ID/,
+    );
+  }
+});
+
+Deno.test("versioned portable groups require explicit group and rule IDs", () => {
+  const version = { format: "mt-c-config", schemaVersion: 1 };
+  assert.throws(
+    () => decodePortable(JSON.stringify({ ...version, groups: [{ interface: "wg0", rules: [] }] })),
+    /Invalid group ID/,
+  );
+  assert.throws(
+    () =>
+      decodePortable(
+        JSON.stringify({
+          ...version,
+          groups: [{ id: "12345678", interface: "wg0", rules: [{ rule: "example.org" }] }],
+        }),
+      ),
+    /Invalid rule ID/,
+  );
+});
+
+Deno.test("hex IDs retain their backend identity instead of triggering schema fallback", () => {
+  const original = server();
+  const input = {
+    groups: [
+      { id: "AABBCCDD", interface: "wg0", rules: [{ id: "FACEFEED", rule: "example.org" }] },
+    ],
+    subscriptions: [{ ...original.subscriptions[0], id: "DEADBEEF" }],
+  };
+  const decoded = decodePortable(JSON.stringify(input));
+  assert.equal(decoded.groups![0].id, "aabbccdd");
+  assert.equal(decoded.groups![0].rules[0].id, "facefeed");
+  assert.equal(decoded.subscriptions![0].id, "deadbeef");
+  assert.deepEqual(decodePortable(JSON.stringify(input)), decoded);
+});
+
+Deno.test("legacy generated IDs avoid identities declared later in the file", () => {
+  const originalRandom = Math.random;
+  let calls = 0;
+  Math.random = () => (calls++ < 8 ? 0 : 0.5);
+  try {
+    const input = decodePortable(
+      JSON.stringify({
+        groups: [
+          { interface: "wg0", rules: [] },
+          { id: "00000000", interface: "wg0", rules: [] },
+        ],
+      }),
+    );
+    assert.equal(input.groups![0].id, "88888888");
+    assert.equal(input.groups![1].id, "00000000");
+  } finally {
+    Math.random = originalRandom;
+  }
+});
+
+Deno.test("case variants cannot disguise a duplicate route identity", () => {
+  const original = server();
+  const incoming = decodePortable(
+    JSON.stringify({
+      groups: [{ id: "AABBCCDD", interface: "wg0", rules: [] }],
+      subscriptions: [{ ...original.subscriptions[0], id: "aabbccdd" }],
+    }),
+  );
+  const state = snapshotFromServer(original);
+  const plan = planImport(state, incoming, {
+    mode: "replace",
+    selected: new Set(["groups", "subscriptions"]),
+    newId: () => "deadbeef",
+  });
+  assert.throws(() => assertPlanCurrent(plan, state), /Group\/subscription ID collision: aabbccdd/);
 });
 
 Deno.test("versioned empty sections are accepted", () => {
@@ -263,6 +411,141 @@ Deno.test("preserves cached rules for untouched subscriptions only", () => {
   assert.deepEqual(changed.subscriptions[0].rules, []);
   assert.equal(changed.subscriptions[0].last_update, 0);
 });
+
+function editorSubscriptions(original: ServerConfig): Subscription[] {
+  return original.subscriptions.map(({ last_update, ...subscription }) => ({
+    ...structuredClone(subscription),
+    lastUpdate: last_update,
+    rules: structuredClone(subscription.rules ?? []),
+  }));
+}
+
+Deno.test(
+  "explicit empty imported overrides restore enabled state and stay empty in the next snapshot",
+  () => {
+    const original = server();
+    original.subscriptions[0].rules![0].enable = false;
+    original.subscriptions[0].overrides = [{ rule: "example.org", enable: false }];
+    const definitions = snapshotFromServer(original).subscriptions;
+    definitions[0].overrides = [];
+    const staged = subscriptionEditorsForImport(definitions, editorSubscriptions(original));
+    assert.equal(staged[0].rules[0].enable, true);
+    assert.deepEqual(staged[0].overrides, []);
+    const snapshot = snapshotFromServer(original, {
+      subscriptions: staged,
+      subscriptionRuleBaseline: structuredClone(staged),
+    });
+    assert.deepEqual(snapshot.subscriptions[0].overrides, []);
+    assert.deepEqual(configForApply(original, snapshot).subscriptions[0].overrides, []);
+    assert.equal(original.subscriptions[0].rules![0].enable, false);
+  },
+);
+
+Deno.test(
+  "rule edits after staging compare to imported values even when they equal the old server state",
+  () => {
+    const original = server();
+    original.subscriptions[0].rules![0].enable = false;
+    original.subscriptions[0].rules![0].type = "domain";
+    original.subscriptions[0].overrides = [{ rule: "example.org", enable: false, type: "domain" }];
+    const definitions = snapshotFromServer(original).subscriptions;
+    definitions[0].overrides = [{ rule: "example.org", type: "namespace" }];
+    const baseline = subscriptionEditorsForImport(definitions, editorSubscriptions(original));
+    const edited = structuredClone(baseline);
+    edited[0].rules[0].enable = false;
+    edited[0].rules[0].type = "domain";
+    const snapshot = snapshotFromServer(original, {
+      subscriptions: edited,
+      subscriptionRuleBaseline: baseline,
+    });
+    assert.deepEqual(snapshot.subscriptions[0].overrides, [
+      { rule: "example.org", type: "domain", enable: false },
+    ]);
+    assert.equal(baseline[0].rules[0].enable, true);
+    assert.equal(baseline[0].rules[0].type, "namespace");
+  },
+);
+
+Deno.test(
+  "removed source type overrides invalidate only the staged cache while keeping server cache ownership",
+  () => {
+    const original = server();
+    original.subscriptions[0].rules![0].type = "domain";
+    original.subscriptions[0].overrides = [{ rule: "example.org", type: "domain" }];
+    const snapshot = snapshotFromServer(original);
+    snapshot.subscriptions[0].overrides = [];
+    const staged = subscriptionEditorsForImport(
+      snapshot.subscriptions,
+      editorSubscriptions(original),
+    );
+    assert.deepEqual(staged[0].rules, []);
+    assert.equal(staged[0].lastUpdate, 145);
+    const target = snapshotFromServer(original, {
+      subscriptions: staged,
+      subscriptionRuleBaseline: staged,
+    });
+    const payload = configForApply(original, target);
+    assert.equal(payload.subscriptions[0].rules, undefined);
+    assert.deepEqual(payload.subscriptions[0].overrides, []);
+    assert.equal(original.subscriptions[0].rules![0].type, "domain");
+  },
+);
+
+Deno.test("confirmed subscription caches take precedence over stale draft cache values", () => {
+  const original = server();
+  const stale = editorSubscriptions(original);
+  stale[0].rules[0].type = "domain";
+  stale[0].rules[0].enable = false;
+  stale[0].overrides = [{ rule: "example.org", type: "domain", enable: false }];
+  const confirmed = editorSubscriptions(original);
+  const result = subscriptionEditorsForImport(
+    snapshotFromServer(original).subscriptions,
+    confirmed,
+    stale,
+  );
+  assert.deepEqual(result[0].rules, original.subscriptions[0].rules);
+  assert.deepEqual(result[0].overrides, []);
+});
+
+Deno.test("source cache stays local to both subscription identity and URL", () => {
+  const original = server();
+  const definitions = snapshotFromServer(original).subscriptions;
+  for (const changed of [{ id: "deadbeef" }, { url: "https://other.example.org/list" }]) {
+    const result = subscriptionEditorsForImport(
+      [{ ...definitions[0], ...changed }],
+      editorSubscriptions(original),
+    );
+    assert.deepEqual(result[0].rules, []);
+    assert.equal(result[0].lastUpdate, 0);
+  }
+});
+
+Deno.test("removing an unmatched type override does not hide unrelated cached rules", () => {
+  const original = server();
+  original.subscriptions[0].overrides = [{ rule: "not-in-cache.example", type: "domain" }];
+  const definitions = snapshotFromServer(original).subscriptions;
+  definitions[0].overrides = [];
+  const staged = subscriptionEditorsForImport(definitions, editorSubscriptions(original));
+  assert.deepEqual(staged[0].rules, original.subscriptions[0].rules);
+  assert.deepEqual(staged[0].overrides, []);
+});
+
+Deno.test(
+  "a changed source URL cannot use staged rule values as an edit baseline for another source",
+  () => {
+    const original = server();
+    const draft = editorSubscriptions(original);
+    draft[0].rules[0].enable = false;
+    const unrelated = editorSubscriptions(original);
+    unrelated[0].url = "https://different.example/list";
+    unrelated[0].rules[0].enable = false;
+    const result = snapshotFromServer(original, {
+      subscriptions: draft,
+      subscriptionRuleBaseline: unrelated,
+    });
+    assert.deepEqual(result.subscriptions[0].overrides, [{ rule: "example.org", enable: false }]);
+  },
+);
 
 Deno.test("portable override changes retained cache but not source", () => {
   const original = server();
