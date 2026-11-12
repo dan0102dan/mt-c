@@ -1,0 +1,86 @@
+name: KeeneticOS offline UBIFS volume
+on:
+  push:
+    branches: [test/keeneticos-emulator-20261112]
+    paths: [.github/workflows/keeneticos-storage.yml]
+permissions:
+  contents: read
+  actions: read
+jobs:
+  storage:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Build guest-only UBIFS from verified inputs
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends mtd-utils
+          gh api repos/dan0102dan/mt-c/actions/artifacts/13902978294/zip > assets.zip
+          gh api repos/dan0102dan/mt-c/actions/artifacts/13903886486/zip > deps.zip
+          mkdir -p inputs root/lab/packages out
+          unzip -q assets.zip -d inputs
+          unzip -q deps.zip -d root/lab/packages
+          python3 - <<'PY'
+          import tarfile,pathlib,os,shutil
+          root=pathlib.Path('root').resolve()
+          with tarfile.open('inputs/Arch_Offline.tar.gz') as t:
+              members=t.getmembers()
+              for m in members:
+                  p=pathlib.PurePosixPath(m.name)
+                  if p.is_absolute() or '..' in p.parts: raise SystemExit('Unsafe archive path')
+                  target=root.joinpath(*p.parts)
+                  if m.isdir(): target.mkdir(parents=True,exist_ok=True)
+                  elif m.isfile():
+                      target.parent.mkdir(parents=True,exist_ok=True)
+                      with t.extractfile(m) as src, target.open('wb') as dst: shutil.copyfileobj(src,dst)
+                      target.chmod(m.mode & 0o777)
+                  elif not m.issym() and not m.islnk(): raise SystemExit('Unexpected special file')
+              for m in members:
+                  target=root.joinpath(*pathlib.PurePosixPath(m.name).parts)
+                  if m.issym():
+                      target.parent.mkdir(parents=True,exist_ok=True)
+                      target.symlink_to(m.linkname)
+                  elif m.islnk():
+                      link=pathlib.PurePosixPath(m.linkname)
+                      if link.is_absolute() or '..' in link.parts:raise SystemExit('Unsafe hardlink')
+                      os.link(root.joinpath(*link.parts),target)
+          shutil.copy(next(pathlib.Path('inputs').glob('mt-c_*.ipk')),root/'lab/mt-c.ipk')
+          PY
+          cat > root/lab/start.sh <<'SH'
+          #!/opt/bin/sh
+          PATH=/opt/bin:/opt/sbin:/usr/bin:/usr/sbin:/bin:/sbin
+          export PATH
+          exec > /dev/ttyS0 2>&1
+          echo '__MTC_LAB_BEGIN__'
+          uname -a
+          /opt/bin/opkg install /opt/lab/packages/*.ipk
+          /opt/bin/opkg install /opt/lab/mt-c.ipk
+          echo '__MTC_PACKAGE_STATUS__'
+          /opt/bin/opkg status mt-c
+          /opt/bin/magitrickled --version
+          sleep 5
+          echo '__MTC_PROCESS__'
+          /opt/bin/pidof magitrickled
+          echo '__MTC_API__'
+          /opt/bin/curl --max-time 5 -sS -i http://127.0.0.1:8080/api/v1/groups
+          echo '__MTC_RULES__'
+          iptables-save -t nat | grep MT_
+          iptables-save -t mangle | grep MT_
+          echo '__MTC_INTERFACES__'
+          ip addr
+          echo '__MTC_LAB_END__'
+          SH
+          chmod 755 root/lab/start.sh
+          sudo mkfs.ubifs -r root -m 2048 -e 126976 -c 664 -o out/storage.ubifs
+          printf '[storage]\nmode=ubi\nimage=out/storage.ubifs\nvol_id=0\nvol_type=dynamic\nvol_name=storage\nvol_flags=autoresize\n' > out/ubinize.cfg
+          ubinize -m 2048 -p 131072 -s 2048 -o out/storage.ubi out/ubinize.cfg
+          sha256sum out/* | tee out/sha256.txt
+          cp root/lab/start.sh out/lab-start.sh
+      - uses: actions/upload-artifact@v6
+        with:
+          name: keeneticos-ubifs-storage
+          path: out/
+          retention-days: 7
