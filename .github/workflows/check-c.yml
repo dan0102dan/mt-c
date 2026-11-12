@@ -8,12 +8,19 @@ on:
       - 'tools/ci/openwrt-host-libs.sh'
       - '.github/workflows/check-c.yml'
   push:
+    # Test direct pushes to maintained branches; feature branches are tested as PRs.
+    branches:
+      - develop
+      - claude/magitrickle-c-rewrite-phase-0-t7iwas
     paths:
       - 'src/backend-c/**'
       - 'tools/tests/keenetic_policy_isolation.py'
       - 'tools/ci/openwrt-host-libs.sh'
       - '.github/workflows/check-c.yml'
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 # Keep native tests and the MIPS cross toolchain on the validated LTS.
 # Upgrade the distro explicitly rather than inheriting ubuntu-latest migrations.
 jobs:

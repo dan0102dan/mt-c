@@ -7,6 +7,9 @@ on:
       - '.github/**'
       - '!.github/workflows/check.yml'
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 # Keep the locked Playwright version on its supported CI distro.
 # Upgrade the OS explicitly; ubuntu-latest migrations must not change the test environment.
 jobs:

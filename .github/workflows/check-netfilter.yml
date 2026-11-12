@@ -2,6 +2,10 @@ name: Netfilter recovery regression
 
 on:
   push:
+    # Test direct pushes to maintained branches; feature branches are tested as PRs.
+    branches:
+      - develop
+      - claude/magitrickle-c-rewrite-phase-0-t7iwas
     paths:
       - 'src/backend-c/**'
       - '.github/workflows/check-netfilter.yml'
@@ -13,49 +17,62 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 defaults:
   run:
     shell: bash
 
 jobs:
   recovery:
-    name: Recovery (${{ matrix.frontend }})
+    name: Recovery (legacy + nft)
     runs-on: ubuntu-24.04
     timeout-minutes: 10
-    strategy:
-      fail-fast: false
-      matrix:
-        frontend: [legacy, nft]
     steps:
       - uses: actions/checkout@v5
       - name: Install build and network-test dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y libyaml-dev libpcre2-dev libmnl-dev libcjson-dev libcurl4-openssl-dev iptables ipset iproute2
-          sudo update-alternatives --set iptables /usr/sbin/iptables-${{ matrix.frontend }}
-          sudo update-alternatives --set ip6tables /usr/sbin/ip6tables-${{ matrix.frontend }}
       - name: Build recovery tests with Keenetic code enabled
-        id: build
         working-directory: src/backend-c
         run: make ENTWARE_KN=1 CFLAGS_EXTRA=-Werror build/host/tests/test_nfrebuild_recovery build/host/tests/test_nfcommit
-      - name: Checked fake and deterministic fault injection
-        if: steps.build.outcome == 'success'
+      - name: Deterministic fake and fault-injection tests
         working-directory: src/backend-c
         run: |
           set -euo pipefail
           timeout 90s build/host/tests/test_nfrebuild_recovery -v 2>&1 | tee recovery-fake.log
           timeout 30s build/host/tests/test_nfcommit -v 2>&1 | tee recovery-worker.log
-      - name: Real kernel recovery in a disposable network namespace
-        if: always() && steps.build.outcome == 'success'
+      - name: Real kernel recovery (iptables-legacy and iptables-nft)
         working-directory: src/backend-c
         run: |
           set -euo pipefail
-          sudo env MT_TEST_REAL_IPTABLES=1 unshare --net \
-            timeout 90s build/host/tests/test_nfrebuild_recovery -v 2>&1 | tee recovery-kernel.log
+          failed=0
+          for frontend in legacy nft; do
+            echo "::group::iptables-$frontend"
+            if sudo update-alternatives --set iptables "/usr/sbin/iptables-$frontend" && \
+               sudo update-alternatives --set ip6tables "/usr/sbin/ip6tables-$frontend"; then
+              if sudo env MT_TEST_REAL_IPTABLES=1 unshare --net \
+                  timeout 90s build/host/tests/test_nfrebuild_recovery -v 2>&1 | \
+                  tee "recovery-kernel-$frontend.log"; then
+                echo "Kernel recovery passed on iptables-$frontend"
+              else
+                failed=1
+                echo "Kernel recovery FAILED on iptables-$frontend" >&2
+              fi
+            else
+              failed=1
+              echo "Unable to select iptables-$frontend" | tee "recovery-kernel-$frontend.log" >&2
+            fi
+            echo '::endgroup::'
+          done
+          exit "$failed"
       - name: Preserve test results
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: netfilter-recovery-${{ matrix.frontend }}
+          name: netfilter-recovery-legacy-nft
           path: src/backend-c/recovery-*.log
           retention-days: 7

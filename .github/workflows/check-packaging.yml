@@ -10,6 +10,10 @@ on:
       - 'tools/tests/frontend_variants.py'
       - '.github/workflows/check-packaging.yml'
   push:
+    # Test direct pushes to maintained branches; feature branches are tested as PRs.
+    branches:
+      - develop
+      - claude/magitrickle-c-rewrite-phase-0-t7iwas
     paths:
       - 'Makefile'
       - 'files/**'
@@ -20,11 +24,20 @@ on:
       - '.github/workflows/check-packaging.yml'
 permissions:
   contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 jobs:
   metadata:
-    runs-on: ubuntu-latest
+    name: Package and benchmark contracts
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v5
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: tools/bench/go.mod
+          cache-dependency-path: tools/bench/go.sum
       - run: python3 tools/tests/package_identity.py
       - name: Test Entware packaged install hooks
         run: python3 tools/ci/tests/test_entware_ipk.py
@@ -50,14 +63,6 @@ jobs:
         run: python3 tools/ci/tests/test_router_emulator_compare.py
       - name: Test rules comparison result gates
         run: python3 tools/bench/tests/test_rules_reconcile_compare.py
-  benchmark_tools:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-go@v5
-        with:
-          go-version-file: tools/bench/go.mod
-          cache-dependency-path: tools/bench/go.sum
-      - name: Test DNS load and response fixtures
+      - name: Test DNS benchmark helpers
         working-directory: tools/bench
         run: go test ./dnsload ./dnsstub ./dnsquery
