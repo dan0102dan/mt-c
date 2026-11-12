@@ -186,6 +186,9 @@ jobs:
     name: Build packages (${{ matrix.label }})
     needs: prepare
     runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+      packages: read
     strategy:
       fail-fast: false
       # Feed repositories rate-limit/fail when every OpenWrt architecture
@@ -448,6 +451,13 @@ jobs:
           echo "feed_dir=$feed_dir" >> "$GITHUB_OUTPUT"
           echo "artifacts_dir=$artifacts_dir" >> "$GITHUB_OUTPUT"
 
+      - name: Authenticate Entware builder registry
+        if: steps.toolchain.outputs.entware_config != ''
+        env:
+          GHCR_TOKEN: ${{ github.token }}
+          DOCKER_CONFIG: ${{ runner.temp }}/mt-c-docker-auth
+        run: bash tools/ci/login-ghcr.sh
+
       - name: Build with prebuilt Entware SDK
         id: entware_sdk
         if: steps.toolchain.outputs.entware_config != ''
@@ -455,12 +465,19 @@ jobs:
         # v1, pinned to its verified commit rather than a mutable tag.
         uses: ownik/gh-action-entware-sdk@003ddc33bb3b12a2f96e0c4689c56351614cf01a
         env:
+          DOCKER_CONFIG: ${{ runner.temp }}/mt-c-docker-auth
           ARCH: ${{ steps.toolchain.outputs.entware_config }}
           ARTIFACTS_DIR: ${{ steps.entware_feed.outputs.artifacts_dir }}
           BUILD_LOG: 1
           FEED_DIR: ${{ steps.entware_feed.outputs.feed_dir }}
           PACKAGES: mt-c
           V: s
+
+      - name: Remove Entware registry credentials
+        if: always() && steps.toolchain.outputs.entware_config != ''
+        env:
+          DOCKER_CONFIG: ${{ runner.temp }}/mt-c-docker-auth
+        run: rm -f -- "${DOCKER_CONFIG:?}/config.json"
 
       - name: Report Entware SDK build failure
         if: steps.entware_sdk.outcome == 'failure'

@@ -157,16 +157,49 @@ static void completed(mt_loop_t *loop, int fd, uint32_t events, void *ud)
     /* Reconcile the CURRENT setting, not the one that initiated the fetch.
      * Disabling during a fetch cannot be undone by its late completion. */
     mt_kn_policy_config_t current;
-    mt_app_policy_get(s->app, &current, NULL, NULL, NULL);
+    bool was_ready;
+    mt_app_policy_get(s->app, &current, &was_ready, NULL, NULL);
     if (current.enabled) {
-        const mt_kn_policy_entry_t *entry = err == MT_OK ? find_policy(entries, count, current.policy_id) : NULL;
-        bool ready = entry && entry->available;
-        mt_err_t next_error = err != MT_OK ? err : !entry ? MT_ERR_NOENT : !ready ? MT_ERR_AGAIN : MT_OK;
-        if (s->last_error != next_error && next_error != MT_OK) {
-            MT_WARN("Keenetic policy unavailable; MT scope is closed to new traffic: %s", mt_err_str(next_error));
+        if (err != MT_OK) {
+            /* A failed/invalid inventory says nothing about membership or
+             * the selected mark. Keep the CURRENT desired scope exactly as
+             * it is, including an unresolved scope on startup/config change.
+             * Do not publish ready=false: that installs unconditional RETURN
+             * in both the routing and DNS gates and bypasses MT for everybody.
+             * No separate cache is kept, so a removed/changed/disabled policy
+             * can never resurrect an older successful mark on a later error. */
+            MT_WARN("Keenetic policy refresh failed: policy=%s mode=%s error=%s; "
+                    "%s; retry in %u ms",
+                    current.policy_id,
+                    current.mode == MT_KN_POLICY_EXCLUDE ? "exclude" : "include",
+                    mt_err_str(err),
+                    was_ready ? "keeping last known policy mark and traffic scope" :
+                                "policy remains unresolved; MT processing stays closed",
+                    REFRESH_MS);
+            s->last_error = err;
+        } else {
+            /* Only a complete, validated inventory may change the scope.
+             * Missing policy / missing mark is authoritative, unlike a timeout.
+             * Zero remains a valid mark; entry->available is the discriminator. */
+            const mt_kn_policy_entry_t *entry = find_policy(entries, count, current.policy_id);
+            bool ready = entry && entry->available;
+            mt_err_t next_error = !entry ? MT_ERR_NOENT : !ready ? MT_ERR_AGAIN : MT_OK;
+            if (s->last_error != next_error && next_error != MT_OK) {
+                MT_WARN("Keenetic policy unresolved: policy=%s mode=%s reason=%s; "
+                        "new traffic will bypass MT processing",
+                        current.policy_id,
+                        current.mode == MT_KN_POLICY_EXCLUDE ? "exclude" : "include",
+                        !entry ? "policy absent from validated RCI inventory" :
+                                 "policy has no usable mark");
+            } else if (s->last_error != MT_OK && ready) {
+                MT_INFO("Keenetic policy refresh recovered: policy=%s mode=%s mark=0x%x",
+                        current.policy_id,
+                        current.mode == MT_KN_POLICY_EXCLUDE ? "exclude" : "include",
+                        entry->mark);
+            }
+            s->last_error = next_error;
+            (void)mt_app_policy_set(s->app, &current, ready, ready ? entry->mark : 0);
         }
-        s->last_error = next_error;
-        (void)mt_app_policy_set(s->app, &current, ready, ready ? entry->mark : 0);
     }
     for (size_t i = 0; i < s->n_waiters; i++) {
         waiter_t *w = &s->waiters[i];

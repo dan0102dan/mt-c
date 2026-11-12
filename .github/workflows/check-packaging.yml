@@ -26,6 +26,8 @@ jobs:
     steps:
       - uses: actions/checkout@v5
       - run: python3 tools/tests/package_identity.py
+      - name: Test Entware registry authentication
+        run: python3 tools/ci/tests/test_ghcr_login.py
       - name: Test Entware packaged install hooks
         run: python3 tools/ci/tests/test_entware_ipk.py
       - name: Test Keenetic service restart failures
