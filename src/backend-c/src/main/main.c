@@ -280,7 +280,9 @@ static void on_match(const mt_match_action_t *action, void *ud)
         return;
     }
 
-    const mt_group_t *group = mt_ruleset_group(rs);
+    /* Diagnostic metadata is optional; tests and recovery paths may have no
+     * configuration. Never dereference a synthetic ruleset for logging. */
+    const mt_group_t *group = d->cfg ? mt_ruleset_group(rs) : NULL;
     char address[INET6_ADDRSTRLEN] = "unavailable";
     (void)inet_ntop(action->addr_len == 4 ? AF_INET : AF_INET6,
                     action->addr, address, sizeof(address));
