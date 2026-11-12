@@ -1,4 +1,4 @@
-name: Validate non-destructive netfilter fix
+name: Validate settings refresh regression
 on:
   push:
     branches: [test/netfilter-fix-bootstrap-20261112]
@@ -11,7 +11,7 @@ concurrency:
 jobs:
   validate:
     runs-on: ubuntu-24.04
-    timeout-minutes: 25
+    timeout-minutes: 15
     defaults:
       run:
         shell: bash
@@ -19,120 +19,64 @@ jobs:
       - uses: actions/checkout@v5
         with:
           fetch-depth: 0
-      - name: Apply exact locally tested candidate to pinned base
+      - name: Apply test repair to the exact PR head
         run: |
           set -euo pipefail
-          mkdir -p /tmp/netfilter-fix-results
-          cp .github/netfilter-code.patch .github/netfilter-tests.patch /tmp/
-          printf '%s\n' \
-            '1b186bfb0ffbb2b5929979a1c142427b114597b4fe624f5ff771f9e0b1cad6b1  /tmp/netfilter-code.patch' \
-            'adb37b13ff10882a634049b72828ac68d2191944c98e8293dd21cbb524b41d55  /tmp/netfilter-tests.patch' | sha256sum -c -
-          git checkout --detach e5be3e4fd788b411dc182a6b5f6504b58c571e39
-          git apply --check /tmp/netfilter-code.patch /tmp/netfilter-tests.patch
-          git apply /tmp/netfilter-code.patch /tmp/netfilter-tests.patch
+          mkdir -p /tmp/settings-refresh-results
+          cp .github/settings-banner-regression.patch /tmp/settings-refresh-results/fix.patch
+          git checkout --detach 34efffac36982795b86e8681b7cbea9af2782e83
+          test "$(git hash-object src/frontend/tests/e2e/general-settings.spec.ts)" = 815af0a435060db463a3ec3b139a31434b7230aa
+          git apply --check /tmp/settings-refresh-results/fix.patch
+          git apply /tmp/settings-refresh-results/fix.patch
           git diff --check
-          git diff --stat | tee /tmp/netfilter-fix-results/changes.txt
-          git diff --binary > /tmp/netfilter-fix-results/fix.patch
-      - name: Install native test dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends build-essential \
-            libyaml-dev libcjson-dev libpcre2-dev libmnl-dev libcurl4-openssl-dev \
-            iptables ipset iproute2
-      - name: Targeted regressions and worker burst tests
+          git diff --stat
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+      - uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.x
+      - name: Install locked frontend dependencies and browser
+        working-directory: src/frontend
         run: |
           set -euo pipefail
-          make -C src/backend-c -j2 BUILD=fix-kn ENTWARE_KN=1 CFLAGS_EXTRA=-Werror \
-            build/fix-kn/tests/test_nfrebuild_recovery build/fix-kn/tests/test_nfcommit \
-            build/fix-kn/tests/test_iptables
-          for test in test_nfrebuild_recovery test_nfcommit test_iptables; do
-            timeout 90s src/backend-c/build/fix-kn/tests/$test -v \
-              2>&1 | tee /tmp/netfilter-fix-results/$test.log
+          npm ci
+          npx playwright install --with-deps chromium
+      - name: Frontend type checks
+        working-directory: src/frontend
+        run: npm run check
+      - name: Repeat affected scenarios in both platform bundles without retries
+        working-directory: src/frontend
+        run: |
+          set -euo pipefail
+          for platform in 0 1; do
+            VITE_ENTWARE_KN=$platform npx playwright test \
+              general-settings.spec.ts general-settings-loading.spec.ts \
+              --grep 'settings failures do not create under-tab banners|General loads once|Check application explicitly refreshes' \
+              --retries=0 --repeat-each=3 \
+              2>&1 | tee "/tmp/settings-refresh-results/platform-$platform.log"
           done
-      - name: Real legacy and nft kernel regressions
+      - name: Publish tested commit to a staging branch only
         run: |
           set -euo pipefail
-          for backend in legacy nft; do
-            sudo update-alternatives --set iptables /usr/sbin/iptables-$backend
-            sudo update-alternatives --set ip6tables /usr/sbin/ip6tables-$backend
-            sudo unshare --net env MT_TEST_REAL_IPTABLES=1 \
-              timeout 90s src/backend-c/build/fix-kn/tests/test_nfrebuild_recovery -v \
-              2>&1 | tee /tmp/netfilter-fix-results/kernel-$backend.log
-          done
-      - name: Negative control against unmodified production code
-        run: |
-          set -euo pipefail
-          git worktree add --detach /tmp/mtc-netfilter-before e5be3e4fd788b411dc182a6b5f6504b58c571e39
-          cp src/backend-c/tests/unit/test_nfrebuild_recovery.c /tmp/mtc-netfilter-before/src/backend-c/tests/unit/
-          make -C /tmp/mtc-netfilter-before/src/backend-c -j2 ENTWARE_KN=1 CFLAGS_EXTRA=-Werror \
-            build/host/tests/test_nfrebuild_recovery
-          set +e
-          sudo unshare --net env MT_TEST_REAL_IPTABLES=1 timeout 90s \
-            /tmp/mtc-netfilter-before/src/backend-c/build/host/tests/test_nfrebuild_recovery \
-            -v -t cancellation_preserves_active_chains \
-            > /tmp/netfilter-fix-results/negative-control.log 2>&1
-          result=$?
-          set -e
-          cat /tmp/netfilter-fix-results/negative-control.log
-          test "$result" = 1
-          grep -q 'fail: 2' /tmp/netfilter-fix-results/negative-control.log
-          echo 'PASS: both cancellation-preservation regressions reject the unchanged baseline'
-      - name: Full generic and Keenetic unit suites
-        run: |
-          set -euo pipefail
-          for variant in generic keenetic; do
-            kn=0; test "$variant" != keenetic || kn=1
-            timeout 600s make -C src/backend-c -j2 BUILD=full-$variant ENTWARE_KN=$kn \
-              CFLAGS_EXTRA=-Werror all test \
-              > /tmp/netfilter-fix-results/full-$variant.log 2>&1 || {
-                tail -n 100 /tmp/netfilter-fix-results/full-$variant.log; exit 1;
-              }
-            tail -n 30 /tmp/netfilter-fix-results/full-$variant.log
-          done
-      - name: Full ASan and UBSan suites
-        env:
-          ASAN_OPTIONS: detect_leaks=1:halt_on_error=1
-          UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
-        run: |
-          set -euo pipefail
-          for variant in generic keenetic; do
-            kn=0; test "$variant" != keenetic || kn=1
-            timeout 600s make -C src/backend-c -j2 BUILD=san-$variant ENTWARE_KN=$kn \
-              CFLAGS_EXTRA=-Werror \
-              OPT='-O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer -fno-pie' \
-              LDFLAGS='-fsanitize=address,undefined -no-pie' test \
-              > /tmp/netfilter-fix-results/sanitize-$variant.log 2>&1 || {
-                tail -n 100 /tmp/netfilter-fix-results/sanitize-$variant.log; exit 1;
-              }
-            tail -n 30 /tmp/netfilter-fix-results/sanitize-$variant.log
-          done
-      - name: Publish validated fix branch without changing production branches
-        run: |
-          set -euo pipefail
-          branch=fix/non-destructive-netfilter-rebuild-20261112
-          test "$(git rev-parse HEAD)" = e5be3e4fd788b411dc182a6b5f6504b58c571e39
+          branch=test/settings-refresh-validated-20261112
+          test "$(git rev-parse HEAD)" = 34efffac36982795b86e8681b7cbea9af2782e83
+          test "$(git diff --name-only)" = src/frontend/tests/e2e/general-settings.spec.ts
           git diff --check
           if git ls-remote --exit-code --heads origin "refs/heads/$branch"; then
             echo 'Refusing to replace an existing branch' >&2; exit 1
           fi
           git config user.name dan0102dan
           git config user.email me@dan0102dan.ru
-          git add src/backend-c/src/api/app.c src/backend-c/src/iptables/engine.c \
-            src/backend-c/src/netfilter/committer.c \
-            src/backend-c/include/magitrickle/iptables.h src/backend-c/include/magitrickle/nfcommit.h \
-            src/backend-c/tests/unit/test_iptables.c src/backend-c/tests/unit/test_nfcommit.c \
-            src/backend-c/tests/unit/test_nfrebuild_recovery.c \
-            docs/c-rewrite/decisions.md docs/c-rewrite/compatibility-contract.md \
-            .github/workflows/check-netfilter.yml
-          git commit -m 'fix: preserve live netfilter rules across rebuild cancellation'
-          git rev-parse HEAD | tee /tmp/netfilter-fix-results/fix-commit.txt
-          git bundle create /tmp/netfilter-fix-results/fix.bundle HEAD ^e5be3e4fd788b411dc182a6b5f6504b58c571e39
+          git add src/frontend/tests/e2e/general-settings.spec.ts
+          git commit -m 'test: exercise explicit settings refresh failures and recovery'
+          git rev-parse HEAD | tee /tmp/settings-refresh-results/commit.txt
           git push origin "HEAD:refs/heads/$branch"
-      - name: Preserve results and exact patch
+      - name: Preserve evidence
         if: always()
         uses: actions/upload-artifact@v6
         with:
-          name: netfilter-fix-validation-${{ github.run_attempt }}
-          path: /tmp/netfilter-fix-results/
+          name: settings-refresh-validation-${{ github.run_attempt }}
+          path: /tmp/settings-refresh-results/
           if-no-files-found: error
           retention-days: 7
