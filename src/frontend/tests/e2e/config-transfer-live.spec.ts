@@ -23,10 +23,16 @@ const test = base.extend<{
   };
 }>({
   backend: async ({ playwright, page }, use) => {
-    const child = spawn("deno", ["run", "-A", "--unstable-sloppy-imports", "dev/backend-mock.ts"], {
-      env: { ...process.env, MOCK_PORT: "0" },
-      stdio: ["ignore", "pipe", "pipe"],
-    });
+    // npm ci already installed the locked dependencies. Starting each mock must
+    // not resolve or download a fresh dependency graph from the registry.
+    const child = spawn(
+      "deno",
+      ["run", "--cached-only", "-A", "--unstable-sloppy-imports", "dev/backend-mock.ts"],
+      {
+        env: { ...process.env, MOCK_PORT: "0" },
+        stdio: ["ignore", "pipe", "pipe"],
+      },
+    );
     try {
       const port = await new Promise<number>((resolve, reject) => {
         let output = "";
@@ -340,7 +346,6 @@ for (const failure of ["ignored", "malformed", "rejected", "network", "stale"]) 
   });
 }
 
-
 test("staging a used profile keeps both consumer counts and disables Delete", async ({
   page,
   backend,
@@ -410,9 +415,9 @@ test("no-op import never acknowledges a previous applied-but-unpersisted group s
   await page.locator("input.group-name").fill("Applied in memory");
   await page.locator("#save-changes").click();
   await expect(page.locator("#save-changes")).toBeEnabled();
-  await expect.poll(async () => (await backend.snapshot()).config.groups[0].name).toBe(
-    "Applied in memory",
-  );
+  await expect
+    .poll(async () => (await backend.snapshot()).config.groups[0].name)
+    .toBe("Applied in memory");
   await page.unroute("**/api/v1/groups?save=true");
 
   // Establish an import session, undo its staged profile edit, then import
@@ -431,16 +436,16 @@ test("no-op import never acknowledges a previous applied-but-unpersisted group s
 
   await showPage(page, "Groups");
   await expect(page.locator("#save-changes")).toBeEnabled();
-  await expect.poll(() =>
-    page.evaluate(() => {
-      const event = new Event("beforeunload", { cancelable: true });
-      window.dispatchEvent(event);
-      return event.defaultPrevented;
-    }),
-  ).toBe(true);
-  expect(backend.writes.filter((write) => write.path.endsWith("/system/config/apply"))).toEqual(
-    [],
-  );
+  await expect
+    .poll(() =>
+      page.evaluate(() => {
+        const event = new Event("beforeunload", { cancelable: true });
+        window.dispatchEvent(event);
+        return event.defaultPrevented;
+      }),
+    )
+    .toBe(true);
+  expect(backend.writes.filter((write) => write.path.endsWith("/system/config/apply"))).toEqual([]);
 });
 
 test("profile dependencies import with groups and Replace cannot remove a used profile", async ({
