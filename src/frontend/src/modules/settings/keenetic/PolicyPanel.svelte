@@ -151,12 +151,12 @@
                   ? `${policy.draft.policy_id} · ${t("Policy unavailable")}`
                   : "mt"}
               />
-              {#if !policy.listing && (policy.listFailed || !selected?.available)}
+              {#if processingAll || (!policy.listing && (policy.listFailed || !selected?.available))}
                 <p class="validation" role="status">
-                  {policy.listFailed
-                    ? t("Could not load policies. Reload the page to retry.")
-                    : processingAll
-                      ? t("The selected policy does not exist. MT is processing all devices until it appears.")
+                  {processingAll
+                    ? t("The selected policy does not exist. MT is processing all devices until it appears.")
+                    : policy.listFailed
+                      ? t("Could not load policies. Reload the page to retry.")
                       : t("The filter will become active when the policy is available.")}
                 </p>
               {/if}
