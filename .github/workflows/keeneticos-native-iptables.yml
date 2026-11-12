@@ -1,0 +1,40 @@
+name: Keenetic native iptables lab dependency
+on:
+  push:
+    branches: [test/keeneticos-emulator-20261112]
+    paths: [.github/workflows/keeneticos-native-iptables.yml]
+permissions:
+  contents: read
+jobs:
+  fetch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - run: |
+          mkdir -p dependency
+          python3 - <<'PY'
+          import urllib.request,gzip,hashlib,pathlib,json
+          base='https://bin.entware.net/aarch64-k3.10/keenetic/'
+          with urllib.request.urlopen(base+'Packages.gz',timeout=60) as r: raw=r.read()
+          pathlib.Path('dependency/Packages.gz').write_bytes(raw)
+          found=[]
+          for paragraph in gzip.decompress(raw).decode().split('\n\n'):
+              fields={}
+              for line in paragraph.splitlines():
+                  if ': ' in line and not line.startswith(' '):
+                      k,v=line.split(': ',1);fields[k]=v
+              if fields.get('Package')=='iptables':found.append(fields)
+          if len(found)!=1:raise SystemExit('Expected exactly one native iptables package')
+          p=found[0]
+          if p['Version']!='1.4.21-6':raise SystemExit('Unexpected native iptables version')
+          with urllib.request.urlopen(base+p['Filename'],timeout=60) as r: data=r.read()
+          if hashlib.sha256(data).hexdigest()!=p['SHA256sum']:raise SystemExit('SHA256 mismatch')
+          pathlib.Path('dependency',pathlib.Path(p['Filename']).name).write_bytes(data)
+          pathlib.Path('dependency/package.json').write_text(json.dumps(p,indent=2))
+          print(p['Filename'],len(data),p['SHA256sum'])
+          PY
+      - uses: actions/upload-artifact@v6
+        with:
+          name: keenetic-native-iptables
+          path: dependency/
+          retention-days: 7
