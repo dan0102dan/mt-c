@@ -1,0 +1,64 @@
+name: CI - Tests then packages
+
+on:
+  pull_request:
+    paths-ignore:
+      - '**.md'
+  push:
+    branches:
+      - develop
+      - claude/magitrickle-c-rewrite-phase-0-t7iwas
+    paths-ignore:
+      - '**.md'
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Existing release tag to rebuild and populate
+        required: true
+        type: string
+
+# All test suites must succeed before the expensive SDK matrix starts.
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  frontend:
+    name: Frontend
+    uses: ./.github/workflows/check.yml
+    permissions:
+      contents: read
+
+  backend:
+    name: C backend
+    uses: ./.github/workflows/check-c.yml
+    permissions:
+      contents: read
+
+  netfilter:
+    name: Netfilter
+    uses: ./.github/workflows/check-netfilter.yml
+    permissions:
+      contents: read
+
+  package_contracts:
+    name: Package contracts
+    uses: ./.github/workflows/check-packaging.yml
+    permissions:
+      contents: read
+
+  packages:
+    name: Packages + OpenWrt emulator (after tests)
+    needs: [frontend, backend, netfilter, package_contracts]
+    if: ${{ needs.frontend.result == 'success' && needs.backend.result == 'success' && needs.netfilter.result == 'success' && needs.package_contracts.result == 'success' }}
+    uses: ./.github/workflows/build.yml
+    with:
+      release_tag: ${{ inputs.release_tag || '' }}
+    permissions:
+      contents: write
+      packages: read

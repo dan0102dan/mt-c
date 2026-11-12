@@ -1,11 +1,7 @@
 name: Checking
 
 on:
-  pull_request:
-    paths-ignore:
-      - '**.md'
-      - '.github/**'
-      - '!.github/workflows/check.yml'
+  workflow_call:
 
 # Keep the locked Playwright version on its supported CI distro.
 # Upgrade the OS explicitly; ubuntu-latest migrations must not change the test environment.

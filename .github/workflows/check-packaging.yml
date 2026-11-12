@@ -1,33 +1,26 @@
 name: Checking package contracts
+
 on:
-  pull_request:
-    paths:
-      - 'Makefile'
-      - 'files/**'
-      - 'tools/ci/**'
-      - 'tools/bench/**'
-      - 'tools/tests/package_identity.py'
-      - 'tools/tests/frontend_variants.py'
-      - '.github/workflows/check-packaging.yml'
-  push:
-    paths:
-      - 'Makefile'
-      - 'files/**'
-      - 'tools/ci/**'
-      - 'tools/bench/**'
-      - 'tools/tests/package_identity.py'
-      - 'tools/tests/frontend_variants.py'
-      - '.github/workflows/check-packaging.yml'
+  workflow_call:
+
 permissions:
   contents: read
+
 jobs:
   metadata:
-    runs-on: ubuntu-latest
+    name: Package and benchmark contracts
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v5
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: tools/bench/go.mod
+          cache-dependency-path: tools/bench/go.sum
       - run: python3 tools/tests/package_identity.py
       - name: Test Entware registry authentication
         run: python3 tools/ci/tests/test_ghcr_login.py
+      - name: Test CI orchestration and emulator gating
+        run: python3 tools/ci/tests/test_ci_orchestration.py
       - name: Test Entware packaged install hooks
         run: python3 tools/ci/tests/test_entware_ipk.py
       - name: Test Keenetic service restart failures
@@ -52,14 +45,6 @@ jobs:
         run: python3 tools/ci/tests/test_router_emulator_compare.py
       - name: Test rules comparison result gates
         run: python3 tools/bench/tests/test_rules_reconcile_compare.py
-  benchmark_tools:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-go@v5
-        with:
-          go-version-file: tools/bench/go.mod
-          cache-dependency-path: tools/bench/go.sum
-      - name: Test DNS load and response fixtures
+      - name: Test DNS benchmark helpers
         working-directory: tools/bench
         run: go test ./dnsload ./dnsstub ./dnsquery

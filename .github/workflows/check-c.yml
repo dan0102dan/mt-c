@@ -1,18 +1,7 @@
 name: Checking C backend
 
 on:
-  pull_request:
-    paths:
-      - 'src/backend-c/**'
-      - 'tools/tests/keenetic_policy_isolation.py'
-      - 'tools/ci/openwrt-host-libs.sh'
-      - '.github/workflows/check-c.yml'
-  push:
-    paths:
-      - 'src/backend-c/**'
-      - 'tools/tests/keenetic_policy_isolation.py'
-      - 'tools/ci/openwrt-host-libs.sh'
-      - '.github/workflows/check-c.yml'
+  workflow_call:
 
 # Keep native tests and the MIPS cross toolchain on the validated LTS.
 # Upgrade the distro explicitly rather than inheriting ubuntu-latest migrations.
