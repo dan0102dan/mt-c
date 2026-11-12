@@ -1,28 +1,15 @@
 name: Build OpenWrt and Entware packages
 
 on:
-  push:
-    branches-ignore:
-      - 'refs/tags/*'
-    paths-ignore:
-      - '**.md'
-      - '.github/**'
-      - '!.github/workflows/build.yml'
-  release:
-    types: [published]
-  workflow_dispatch:
+  workflow_call:
     inputs:
       release_tag:
-        description: Existing release tag to rebuild and populate
-        required: true
+        description: Existing release tag for manual uploads (empty on PR/push)
+        required: false
         type: string
 
 permissions:
   contents: write
-
-concurrency:
-  group: packages-${{ github.ref }}
-  cancel-in-progress: true
 
 jobs:
   # Which OpenWrt target/subtarget builds a given package architecture is
@@ -951,12 +938,12 @@ jobs:
 
       # Boot OpenWrt 24.10.4/opkg and 25.12.5/apk using the exact
       # cross-built SDK artifacts above, not host-repacked copies.
-      # Push-only smoke gate, fetching the latest stable Router Emulator;
-      # release/workflow_dispatch triggers stay unchanged.
+      # PR and maintained-branch push smoke gate, fetching the latest stable
+      # Router Emulator; release/manual upload behavior remains unchanged.
       # Resolve latest once per package smoke job. Both archives and their
       # SHA256 digests must come from the SAME stable GitHub release.
       - name: Prepare lower-version package for upgrade test
-        if: github.event_name == 'push' && matrix.name == 'aarch64_cortex-a53' && (matrix.openwrt_version == '24.10.4' || matrix.openwrt_version == '25.12.5') && steps.package_outputs.outputs.package_1_path != ''
+        if: (github.event_name == 'push' || github.event_name == 'pull_request') && matrix.name == 'aarch64_cortex-a53' && (matrix.openwrt_version == '24.10.4' || matrix.openwrt_version == '25.12.5') && steps.package_outputs.outputs.package_1_path != ''
         env:
           PACKAGE: ${{ steps.package_outputs.outputs.package_1_path }}
           SDK_DIR: ${{ steps.openwrt_sdk.outputs.sdk_dir }}
@@ -979,7 +966,7 @@ jobs:
 
       - name: Resolve and download latest stable Router Emulator
         id: emulator_release
-        if: github.event_name == 'push' && matrix.name == 'aarch64_cortex-a53' && (matrix.openwrt_version == '24.10.4' || matrix.openwrt_version == '25.12.5') && steps.package_outputs.outputs.package_1_path != ''
+        if: (github.event_name == 'push' || github.event_name == 'pull_request') && matrix.name == 'aarch64_cortex-a53' && (matrix.openwrt_version == '24.10.4' || matrix.openwrt_version == '25.12.5') && steps.package_outputs.outputs.package_1_path != ''
         env:
           GITHUB_TOKEN: ${{ github.token }}
         run: |
@@ -988,7 +975,7 @@ jobs:
           python3 tools/ci/router_emulator_release.py \
             --destination "$test_root" --github-output "$GITHUB_OUTPUT"
       - name: Install and test IPK/APK in router emulator
-        if: github.event_name == 'push' && matrix.name == 'aarch64_cortex-a53' && (matrix.openwrt_version == '24.10.4' || matrix.openwrt_version == '25.12.5') && steps.package_outputs.outputs.package_1_path != ''
+        if: (github.event_name == 'push' || github.event_name == 'pull_request') && matrix.name == 'aarch64_cortex-a53' && (matrix.openwrt_version == '24.10.4' || matrix.openwrt_version == '25.12.5') && steps.package_outputs.outputs.package_1_path != ''
         env:
           PACKAGE: ${{ steps.package_outputs.outputs.package_1_path }}
           OPENWRT_VERSION: ${{ matrix.openwrt_version }}
@@ -1028,7 +1015,7 @@ jobs:
             --openwrt-version "$OPENWRT_VERSION"
 
       - name: Upload router-emulator smoke logs
-        if: always() && github.event_name == 'push' && matrix.name == 'aarch64_cortex-a53' && (matrix.openwrt_version == '24.10.4' || matrix.openwrt_version == '25.12.5')
+        if: always() && (github.event_name == 'push' || github.event_name == 'pull_request') && matrix.name == 'aarch64_cortex-a53' && (matrix.openwrt_version == '24.10.4' || matrix.openwrt_version == '25.12.5')
         uses: actions/upload-artifact@v6
         with:
           name: router-emulator-smoke-${{ matrix.openwrt_version }}-aarch64_cortex-a53

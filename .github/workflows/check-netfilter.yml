@@ -1,25 +1,11 @@
 name: Netfilter recovery regression
 
 on:
-  push:
-    # Test direct pushes to maintained branches; feature branches are tested as PRs.
-    branches:
-      - develop
-      - claude/magitrickle-c-rewrite-phase-0-t7iwas
-    paths:
-      - 'src/backend-c/**'
-      - '.github/workflows/check-netfilter.yml'
-  pull_request:
-    paths:
-      - 'src/backend-c/**'
-      - '.github/workflows/check-netfilter.yml'
+  workflow_call:
 
 permissions:
   contents: read
 
-concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
 
 defaults:
   run:
