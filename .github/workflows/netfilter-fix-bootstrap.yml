@@ -1,58 +1,43 @@
-name: Publish focused settings test repair
+name: Collect original CI diagnostics
 on:
   push:
     branches: [test/netfilter-fix-bootstrap-20261112]
     paths: [.github/workflows/netfilter-fix-bootstrap.yml]
 permissions:
-  contents: write
+  contents: read
+  actions: read
 jobs:
-  publish:
+  diagnostics:
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
-      - uses: actions/checkout@v5
-        with:
-          ref: 34efffac36982795b86e8681b7cbea9af2782e83
-          fetch-depth: 0
-      - name: Keep only the already-tested final scenario
+      - name: Collect failed static-analysis diagnostics
+        env:
+          GH_TOKEN: ${{ github.token }}
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p /tmp/settings-refresh-minimal
-          git fetch origin f070d06ea67a882cbeb948c3118f1c3bf821f213
+          mkdir -p /tmp/original-ci-diagnostics
+          for job in 131180071998 131180072308; do
+            gh api "repos/dan0102dan/mt-c/actions/jobs/$job/logs" > "/tmp/job-$job.log"
+          done
           python3 - <<'PY'
+          import re
           from pathlib import Path
-          import subprocess
-          path = 'src/frontend/tests/e2e/general-settings.spec.ts'
-          base = subprocess.check_output(['git', 'show', 'HEAD:' + path]).decode()
-          tested = subprocess.check_output(['git', 'show', 'f070d06ea67a882cbeb948c3118f1c3bf821f213:' + path]).decode()
-          marker = 'for (const russian of [false, true]) {'
-          a, b = base.rindex(marker), tested.rindex(marker)
-          assert 'settings failures do not create under-tab banners' in base[a:]
-          assert 'settings failures do not create under-tab banners' in tested[b:]
-          assert 'await expect(attention).toBeHidden();' in tested[b:]
-          assert Path(path).read_text() == base
-          result = base[:a] + tested[b:]
-          assert result[:a] == base[:a] and result[a:] == tested[b:]
-          Path(path).write_text(result)
+          pattern = re.compile(r'warning:|error:|warning treated|Error [0-9]|error generated|clang-tidy|clang-analyzer', re.I)
+          for job in [131180071998, 131180072308]:
+              raw = Path(f'/tmp/job-{job}.log').read_text(encoding='utf-8-sig')
+              lines = raw.splitlines()
+              hits = [i for i,s in enumerate(lines) if pattern.search(s)]
+              selected = set()
+              for i in hits:
+                  selected.update(range(max(0,i-8),min(len(lines),i+30)))
+              result = '\n'.join(f'{i+1}: {lines[i]}' for i in sorted(selected))
+              Path(f'/tmp/original-ci-diagnostics/job-{job}.txt').write_text(result+'\n')
+              print(f'{job}: {len(lines)} log lines; {len(selected)} diagnostic context lines')
           PY
-          git diff --check
-          test "$(git diff --name-only)" = src/frontend/tests/e2e/general-settings.spec.ts
-          git diff --stat
-          git diff > /tmp/settings-refresh-minimal/fix.patch
-          branch=test/settings-refresh-minimal-20261112
-          if git ls-remote --exit-code --heads origin "refs/heads/$branch"; then
-            echo 'Refusing to replace an existing branch' >&2; exit 1
-          fi
-          git config user.name dan0102dan
-          git config user.email me@dan0102dan.ru
-          git add src/frontend/tests/e2e/general-settings.spec.ts
-          git commit -m 'test: exercise explicit settings refresh failures and recovery'
-          git rev-parse HEAD | tee /tmp/settings-refresh-minimal/commit.txt
-          git push origin "HEAD:refs/heads/$branch"
       - uses: actions/upload-artifact@v6
-        if: always()
         with:
-          name: settings-refresh-minimal
-          path: /tmp/settings-refresh-minimal/
+          name: original-ci-diagnostics
+          path: /tmp/original-ci-diagnostics/
           retention-days: 7
