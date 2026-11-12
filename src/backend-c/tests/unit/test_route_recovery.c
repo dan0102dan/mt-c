@@ -10,7 +10,11 @@ int mt_test_daemon_main(int argc, char **argv);
 #undef main
 
 #include <libmnl/libmnl.h>
+#include <linux/if.h>
 #include <linux/rtnetlink.h>
+/* The trace decoder uses the stable wire attribute ID because old Entware
+ * SDKs lack the enum name; verify it still matches Linux's current UAPI. */
+_Static_assert(IFLA_CARRIER == 33, "unexpected IFLA_CARRIER ABI attribute number");
 #include <sys/epoll.h>
 
 mt_err_t __wrap_mt_loop_add_timer(mt_loop_t *loop, uint64_t initial_ms,
@@ -128,6 +132,12 @@ ssize_t __wrap_mnl_socket_recvfrom(const struct mnl_socket *nl, void *data, size
     if (!fx.malformed && (fx.event == RTM_NEWROUTE || fx.event == RTM_DELROUTE)) {
         struct rtmsg *rt = mnl_nlmsg_put_extra_header(h, sizeof(*rt));
         rt->rtm_family = AF_INET;
+    } else if (!fx.malformed && fx.event == RTM_NEWLINK) {
+        struct ifinfomsg *ifi = mnl_nlmsg_put_extra_header(h, sizeof(*ifi));
+        ifi->ifi_index = 7;
+        ifi->ifi_flags = IFF_UP;
+        mnl_attr_put_strz(h, IFLA_IFNAME, "tun0");
+        mnl_attr_put_u8(h, IFLA_CARRIER, 1); /* optional on legacy kernels */
     }
     fx.event = 0; fx.malformed = false;
     return (ssize_t)h->nlmsg_len;
@@ -173,6 +183,22 @@ static bool setup(void)
     return mt_nl_watcher_create_with_routes(d.loop, on_link_up, &d, on_addr_change, &d,
                                             on_route_change, &d, on_netlink_resync, &d,
                                             &d.watcher) == MT_OK;
+}
+
+TEST optional_carrier_attribute_does_not_change_route_notifications(void)
+{
+    ASSERT(setup());
+    /* Production parser must accept a modern IFLA_CARRIER notification
+     * even when compiled against a kernel UAPI predating its enum name. */
+    notify(RTM_NEWLINK, 0, EPOLLIN);
+    ASSERT_EQ(1u, timer_count());
+    ASSERT_EQ(20u, next_delay());
+    ASSERT(fire_next());
+    ASSERT_EQ(1u, fx.reconciles);
+    ASSERT_EQ(0u, timer_count());
+    daemon_teardown(&d);
+    ASSERT_EQ(fx.registrations, fx.removals);
+    PASS();
 }
 
 TEST lost_and_malformed_events_coalesce_without_periodic_polling(void)
@@ -346,6 +372,7 @@ int main(int argc, char **argv)
     RUN_TEST(ndm_busy_retry_retains_names_and_kernel_events_share_the_same_timer);
     RUN_TEST(ndm_pending_overflow_falls_back_to_all_profiles_not_all_direct_routes);
 #endif
+    RUN_TEST(optional_carrier_attribute_does_not_change_route_notifications);
     RUN_TEST(lost_and_malformed_events_coalesce_without_periodic_polling);
     RUN_TEST(contention_and_apply_error_retry_then_stop_on_success);
     RUN_TEST(reconnect_backoff_is_bounded_and_success_resynchronizes);

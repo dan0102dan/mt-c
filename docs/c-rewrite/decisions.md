@@ -4511,3 +4511,26 @@ custom prefixes, and bursts during an active pass. `check-netfilter.yml` runs
 the same recovery tests with real legacy/nft backends in disposable network
 namespaces on every relevant push/PR. This validates the failure mechanism,
 not the exact event source or browser session on a physical Keenetic router.
+
+## D-94 — Derive Keenetic traffic scope from one policy resolution (2026-11-12)
+
+**Status: accepted.** An absent excluded policy has no members to exclude.
+A validated RCI inventory resolves the selected policy to ABSENT, UNMARKED,
+or RESOLVED; before the first valid response it is UNKNOWN. These facts are
+independent of include/exclude. RCI errors retain the exact last resolution
+and mark, never invent an empty inventory or reuse a former policy's mark.
+
+One pure function derives NONE, ALL, INCLUDE or EXCLUDE traffic scope. ABSENT
+opens exclude only. UNKNOWN and UNMARKED close both modes. RESOLVED preserves
+mark-based membership. A resolved mark of zero remains valid. Membership
+scope never disables router-local/reply protection or the route connmark
+checks used by downstream filter/NAT. No extra flag or wording is required
+in the WebUI; YAML and the pre-PR HTTP representation stay unchanged.
+
+Every rebuild invalidates its applied-generation acknowledgement before
+writing. Success acknowledges the current generation; errors/cancellation
+cannot claim that an earlier same-generation application is still valid.
+Tests cover IPv4/IPv6 client and router-local packets, connmarks, DNS guards,
+RCI transitions/errors, and identical-generation failure and retry. Real
+kernel legacy/nft recovery tests remain part of CI; none of these substitute
+for validation of hardware-specific Keenetic behavior.

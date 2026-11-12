@@ -551,10 +551,10 @@ TEST scoped_dns_rebuild_on_a_kernel_without_addrtype(void) {
             "ip -6 addr replace 2001:db8::1/128 dev lo nodad"));
     }
     mt_kn_policy_config_t config = {.enabled = true, .policy_id = "Policy0"};
-    ASSERT_EQ(MT_OK, mt_app_policy_set(fx.app, &config, false, 0));
+    ASSERT_EQ(MT_OK, mt_app_policy_set(fx.app, &config, MT_KN_POLICY_UNKNOWN, 0));
     for (unsigned mode = 0; mode < 2; mode++) {
         config.mode = mode ? MT_KN_POLICY_EXCLUDE : MT_KN_POLICY_INCLUDE;
-        ASSERT_EQ(MT_OK, mt_app_policy_set(fx.app, &config, true, 0xffffd00));
+        ASSERT_EQ(MT_OK, mt_app_policy_set(fx.app, &config, MT_KN_POLICY_RESOLVED, 0xffffd00));
         for (unsigned family = 0; family < 2; family++) {
             mt_ipt_rules_snapshot_t *snap = NULL;
             ASSERT_EQ(MT_OK, mt_ipt_get_current_rules(fx.ipt[family], &snap));
@@ -576,7 +576,7 @@ TEST scoped_dns_rebuild_on_a_kernel_without_addrtype(void) {
         }
     }
     config.enabled = false;
-    ASSERT_EQ(MT_OK, mt_app_policy_set(fx.app, &config, false, 0));
+    ASSERT_EQ(MT_OK, mt_app_policy_set(fx.app, &config, MT_KN_POLICY_UNKNOWN, 0));
     return assert_recovered(); /* Former DNS behavior and foreign rules survive. */
 }
 #endif
@@ -588,7 +588,7 @@ static void setup_continuity(void) {
     setup(3, "MT_");
 #ifdef MT_ENTWARE_KN
     mt_kn_policy_config_t config = {.enabled = true, .policy_id = "Policy0"};
-    assert(mt_app_policy_set(fx.app, &config, true, 0xffffd00) == MT_OK);
+    assert(mt_app_policy_set(fx.app, &config, MT_KN_POLICY_RESOLVED, 0xffffd00) == MT_OK);
     fx.g[0]->watch_policy = fx.g[1]->watch_policy = true;
 #endif
     for (unsigned i = 0; i < 2; i++) {
@@ -724,6 +724,36 @@ TEST precanceled_rebuild_does_not_write(void) {
     PASS();
 }
 
+#ifdef MT_ENTWARE_KN
+TEST same_generation_repair_failure_invalidates_applied_status(void) {
+    setup(3u, "MT_");
+    mt_kn_policy_config_t config = {.enabled = true, .policy_id = "mt", .mode = MT_KN_POLICY_EXCLUDE};
+    ASSERT_EQ(MT_OK, mt_app_policy_set(fx.app, &config, MT_KN_POLICY_ABSENT, 0));
+    bool applied;
+    mt_err_t error;
+    mt_kn_policy_resolution_t resolution;
+    mt_app_policy_get(fx.app, NULL, &resolution, &applied, &error);
+    ASSERT(applied); ASSERT_EQ(MT_OK, error); ASSERT_EQ(MT_KN_POLICY_ABSENT, resolution);
+    fx.g[0]->fail_save = fx.g[0]->saves + 1;
+    fx.g[0]->failure = MT_ERR_IO;
+    ASSERT_EQ(MT_ERR_IO, mt_app_rebuild_netfilter(fx.app, NULL));
+    mt_app_policy_get(fx.app, NULL, &resolution, &applied, &error);
+    ASSERT_FALSE(applied); ASSERT_EQ(MT_ERR_IO, error); ASSERT_EQ(MT_KN_POLICY_ABSENT, resolution);
+    ASSERT_EQ(MT_OK, mt_app_policy_set(fx.app, &config, MT_KN_POLICY_ABSENT, 0));
+    mt_app_policy_get(fx.app, NULL, NULL, &applied, &error);
+    ASSERT(applied); ASSERT_EQ(MT_OK, error);
+    mt_cancel_t *cancel = mt_cancel_new(); ASSERT(cancel); mt_cancel_raise(cancel);
+    ASSERT_EQ(MT_ERR_CANCELED, mt_app_rebuild_netfilter(fx.app, cancel));
+    mt_app_policy_get(fx.app, NULL, NULL, &applied, &error);
+    ASSERT_FALSE(applied); ASSERT_EQ(MT_ERR_CANCELED, error);
+    mt_cancel_free(cancel);
+    ASSERT_EQ(MT_OK, mt_app_rebuild_netfilter(fx.app, NULL));
+    mt_app_policy_get(fx.app, NULL, NULL, &applied, &error);
+    ASSERT(applied); ASSERT_EQ(MT_OK, error);
+    PASS();
+}
+#endif
+
 GREATEST_MAIN_DEFS();
 
 int main(int argc, char **argv) {
@@ -739,6 +769,9 @@ int main(int argc, char **argv) {
     }
     GREATEST_MAIN_BEGIN();
     SET_TEARDOWN(teardown, NULL);
+#ifdef MT_ENTWARE_KN
+    RUN_TEST(same_generation_repair_failure_invalidates_applied_status);
+#endif
     RUN_TESTp(missing_jump, 0);
     RUN_TESTp(missing_jump, 1);
     RUN_TESTp(failed_cleanup_then_firmware_wipe, 0);

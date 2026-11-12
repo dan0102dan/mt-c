@@ -146,7 +146,7 @@ TEST startup_and_both_modes_need_no_addrtype(void)
     for (unsigned mode = 0; mode < 2; mode++) {
         mt_kn_policy_config_t policy = cfg.app.keenetic_policy;
         policy.mode = mode ? MT_KN_POLICY_EXCLUDE : MT_KN_POLICY_INCLUDE;
-        ASSERT_EQ(MT_OK, mt_app_policy_set(app, &policy, true, 0xffffd00));
+        ASSERT_EQ(MT_OK, mt_app_policy_set(app, &policy, MT_KN_POLICY_RESOLVED, 0xffffd00));
         for (unsigned family = 0; family < 2; family++) {
             size_t n = 0;
             ASSERT(has_destination(fake[family], family ? "fd00::1/128" : "192.0.2.1/32", &n));
@@ -161,10 +161,10 @@ TEST startup_and_both_modes_need_no_addrtype(void)
     /* RCI loss closes scope again, even if enumeration now fails. */
     unsigned reads = addresses.reads; addresses.error = ENOMEM;
     mt_kn_policy_config_t policy = cfg.app.keenetic_policy;
-    ASSERT_EQ(MT_OK, mt_app_policy_set(app, &policy, false, 0));
+    ASSERT_EQ(MT_OK, mt_app_policy_set(app, &policy, MT_KN_POLICY_UNKNOWN, 0));
     ASSERT_EQ(reads, addresses.reads);
     policy.enabled = false;
-    ASSERT_EQ(MT_OK, mt_app_policy_set(app, &policy, false, 0));
+    ASSERT_EQ(MT_OK, mt_app_policy_set(app, &policy, MT_KN_POLICY_UNKNOWN, 0));
     ASSERT_EQ(reads, addresses.reads);
     ASSERT_EQ(MT_OK, mt_port_remap_disable(remap));
     mt_app_set_port_remap(app, NULL);
@@ -179,7 +179,7 @@ TEST exact_addresses_are_deduplicated_and_refreshed(void)
     mt_kn_policy_config_t config = {.enabled = true, .policy_id = "Policy0"};
     mt_kn_policy_scope_t scope;
     ASSERT_EQ(MT_OK, mt_kn_policy_scope_init(&scope, &config, "MT_"));
-    scope.ready = true; scope.mark = 0xffffd00;
+    scope.resolution = MT_KN_POLICY_RESOLVED; scope.mark = 0xffffd00;
     for (unsigned family = 0; family < 2; family++) {
         mt_fake_ipt_t *fake;
         mt_ipt_t *ipt = legacy_new(family, &fake);

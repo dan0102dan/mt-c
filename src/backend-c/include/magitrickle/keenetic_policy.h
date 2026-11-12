@@ -9,20 +9,37 @@
 #define MT_KN_POLICY_ID_SIZE 128
 #define MT_KN_POLICY_MASK UINT32_C(0x0fffffff)
 typedef enum { MT_KN_POLICY_INCLUDE, MT_KN_POLICY_EXCLUDE } mt_kn_policy_mode_t;
+/* Facts from the last validated RCI inventory, independent of processing mode.
+ * Zero-initialized/startup state never implies that a policy is absent. */
+typedef enum {
+    MT_KN_POLICY_UNKNOWN,
+    MT_KN_POLICY_ABSENT,
+    MT_KN_POLICY_UNMARKED,
+    MT_KN_POLICY_RESOLVED,
+} mt_kn_policy_resolution_t;
+typedef enum {
+    MT_KN_TRAFFIC_NONE,
+    MT_KN_TRAFFIC_ALL,
+    MT_KN_TRAFFIC_INCLUDE,
+    MT_KN_TRAFFIC_EXCLUDE,
+} mt_kn_policy_traffic_t;
 typedef struct {
     bool enabled;
     mt_kn_policy_mode_t mode;
     char policy_id[MT_KN_POLICY_ID_SIZE];
 } mt_kn_policy_config_t;
 /* Borrowed by rulesets and DNS remap; mutations are serialized by app's nf_mu.
- * 'ready' is separate from mark: zero is not an absence sentinel. */
+ * A resolved mark may be zero; resolution, not mark, determines availability. */
 typedef struct {
     mt_kn_policy_config_t config;
-    bool ready;
+    mt_kn_policy_resolution_t resolution;
     uint32_t mark;
     char gate[64], dispatch[64];
 } mt_kn_policy_scope_t;
 
+/* Pure policy decision shared by routing, DNS and downstream guards.
+ * Transport failures are handled before publication, never as ABSENT here. */
+mt_kn_policy_traffic_t mt_kn_policy_traffic_scope(const mt_kn_policy_scope_t *scope);
 bool mt_kn_policy_config_valid(const mt_kn_policy_config_t *config);
 bool mt_kn_policy_config_equal(const mt_kn_policy_config_t *a,
                                const mt_kn_policy_config_t *b);

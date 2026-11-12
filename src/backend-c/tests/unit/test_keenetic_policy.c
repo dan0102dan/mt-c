@@ -90,15 +90,38 @@ TEST invalid_saved_configuration_is_rejected(void)
     }
     PASS();
 }
+TEST traffic_scope_is_derived_from_policy_facts_and_mode(void)
+{
+    const struct {
+        mt_kn_policy_resolution_t resolution;
+        mt_kn_policy_traffic_t include, exclude;
+    } cases[] = {
+        {MT_KN_POLICY_UNKNOWN, MT_KN_TRAFFIC_NONE, MT_KN_TRAFFIC_NONE},
+        {MT_KN_POLICY_ABSENT, MT_KN_TRAFFIC_NONE, MT_KN_TRAFFIC_ALL},
+        {MT_KN_POLICY_UNMARKED, MT_KN_TRAFFIC_NONE, MT_KN_TRAFFIC_NONE},
+        {MT_KN_POLICY_RESOLVED, MT_KN_TRAFFIC_INCLUDE, MT_KN_TRAFFIC_EXCLUDE},
+    };
+    for (size_t i = 0; i < sizeof(cases)/sizeof(*cases); i++) {
+        mt_kn_policy_scope_t scope = {.config = {.enabled = true}, .resolution = cases[i].resolution};
+        ASSERT_EQ(cases[i].include, mt_kn_policy_traffic_scope(&scope));
+        scope.config.mode = MT_KN_POLICY_EXCLUDE;
+        ASSERT_EQ(cases[i].exclude, mt_kn_policy_traffic_scope(&scope));
+        scope.config.enabled = false;
+        ASSERT_EQ(MT_KN_TRAFFIC_ALL, mt_kn_policy_traffic_scope(&scope));
+    }
+    PASS();
+}
 TEST dns_guards_and_ordered_dispatch_compile_for_both_families(void)
 {
     mt_kn_policy_config_t config = {.enabled = true, .policy_id = "Policy0"};
     for (unsigned family = 0; family < 2; family++) {
-        for (unsigned mode = 0; mode < 3; mode++) {
-            config.mode = mode == 1 ? MT_KN_POLICY_EXCLUDE : MT_KN_POLICY_INCLUDE;
+        for (unsigned mode = 0; mode < 4; mode++) {
+            config.mode = mode == 1 || mode == 3 ? MT_KN_POLICY_EXCLUDE : MT_KN_POLICY_INCLUDE;
             mt_kn_policy_scope_t scope;
             ASSERT_EQ(MT_OK, mt_kn_policy_scope_init(&scope, &config, "MT_"));
-            scope.ready = mode != 2; scope.mark = 0xffffd00;
+            scope.resolution = mode < 2 ? MT_KN_POLICY_RESOLVED :
+                mode == 2 ? MT_KN_POLICY_UNKNOWN : MT_KN_POLICY_ABSENT;
+            scope.mark = 0xffffd00;
             mt_fake_ipt_t *f = mt_fake_ipt_new(family ? MT_IPT_PROTO_IPV6 : MT_IPT_PROTO_IPV4); ASSERT(f);
             mt_ipt_t *ipt = mt_ipt_new(mt_fake_ipt_as_executable(f)); ASSERT(ipt);
             ASSERT_EQ(MT_OK, mt_netfilter_register_base_chains(family ? NULL : ipt, family ? ipt : NULL));
@@ -117,10 +140,27 @@ TEST dns_guards_and_ordered_dispatch_compile_for_both_families(void)
             ASSERT(mt_fake_ipt_get_rules(f, "mangle", scope.dispatch, &rules, &count));
             ASSERT_EQ(3u, count); ASSERT_STR_EQ("MT_subscription", rules[0]->parts[1]); ASSERT_STR_EQ("MT_group", rules[1]->parts[1]);
             ASSERT(mt_fake_ipt_get_rules(f, "nat", "MT_DNSOR", &rules, &count));
-            ASSERT_EQ(3u, count);
-            ASSERT_STR_EQ("RETURN", rules[0]->parts[rules[0]->n_parts - 1]);
-            ASSERT_EQ(mode == 2 ? 2u : mode == 1 ? 6u : 7u, rules[0]->n_parts);
-            if (mode != 2) { ASSERT_STR_EQ("0xffffd00/0x0fffffff", rules[0]->parts[mode == 1 ? 3 : 4]); }
+            ASSERT_EQ(mode == 3 ? 2u : 3u, count);
+            if (mode == 3) {
+                ASSERT_STR_EQ("-p", rules[0]->parts[0]); /* DNAT, no membership guard. */
+            } else {
+                ASSERT_STR_EQ("RETURN", rules[0]->parts[rules[0]->n_parts - 1]);
+                ASSERT_EQ(mode == 2 ? 2u : mode == 1 ? 6u : 7u, rules[0]->n_parts);
+                if (mode != 2) { ASSERT_STR_EQ("0xffffd00/0x0fffffff", rules[0]->parts[mode == 1 ? 3 : 4]); }
+            }
+            /* Downstream rules always require the route's connmark, even
+             * with an empty exclusion set; destination ipset alone is insufficient. */
+            ASSERT_EQ(MT_OK, mt_ipt_register_chain_override(ipt, "filter", "MT_TEST_ROUTE"));
+            ASSERT_EQ(MT_OK, mt_kn_policy_route_guard(&scope, ipt, "filter", "MT_TEST_ROUTE", 101));
+            ASSERT_EQ(MT_OK, mt_ipt_commit(ipt));
+            ASSERT(mt_fake_ipt_get_rules(f, "filter", "MT_TEST_ROUTE", &rules, &count));
+            ASSERT_EQ(1u, count);
+            if (mode == 2) { ASSERT_EQ(2u, rules[0]->n_parts); }
+            else {
+                ASSERT_EQ(7u, rules[0]->n_parts);
+                ASSERT_STR_EQ("connmark", rules[0]->parts[1]);
+                ASSERT_STR_EQ("0x65/0x0fffffff", rules[0]->parts[4]);
+            }
             ASSERT_EQ(MT_OK, mt_port_remap_disable(remap)); mt_port_remap_free(remap); mt_ipt_free(ipt);
         }
     }
@@ -135,6 +175,7 @@ int main(int argc, char **argv) {
     RUN_TEST(policy_json_handles_ids_names_and_hex_marks);
     RUN_TEST(malformed_or_ambiguous_inventory_never_becomes_an_empty_success);
     RUN_TEST(invalid_saved_configuration_is_rejected);
+    RUN_TEST(traffic_scope_is_derived_from_policy_facts_and_mode);
     RUN_TEST(dns_guards_and_ordered_dispatch_compile_for_both_families);
 #endif
     GREATEST_MAIN_END();
