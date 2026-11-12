@@ -3,7 +3,7 @@
 
 Only its PATH is redirected. The pidof/killall/daemon fixtures model process
 state and record service actions; they never inspect or signal host services.
-The sleep fixture makes the production stop/start polling loops run quickly.
+The sleep and uptime fixtures make the production polling loops run quickly.
 """
 
 import os
@@ -24,6 +24,7 @@ class EntwareInitTest(unittest.TestCase):
         temporary = tempfile.TemporaryDirectory(prefix="mt-c-kn-init-")
         self.addCleanup(temporary.cleanup)
         self.directory = Path(temporary.name)
+        self.addCleanup((self.directory / "finished").touch)
         self.bin = self.directory / "bin"
         self.bin.mkdir()
         scripts = {
@@ -40,12 +41,35 @@ rm -f "$ENTWARE_INIT_TEST_ROOT/running"
 ''',
             "magitrickled": '''#!/bin/sh
 printf 'start\\n' >> "$ENTWARE_INIT_TEST_ROOT/actions"
+[ "${ENTWARE_INIT_DAEMON_FAIL:-0}" = 1 ] && exit 1
 touch "$ENTWARE_INIT_TEST_ROOT/running"
+while [ -d "$ENTWARE_INIT_TEST_ROOT" ] && [ ! -f "$ENTWARE_INIT_TEST_ROOT/finished" ]; do
+    /bin/sleep 0.05
+done
 ''',
-            "cut": "#!/bin/sh\nprintf '301\\n'\n",
+            "cut": '''#!/bin/sh
+clock="$ENTWARE_INIT_TEST_ROOT/clock"
+uptime=$(cat "$clock")
+printf '%s\\n' "$uptime"
+''',
+            "socat": '''#!/bin/sh
+IFS= read -r request
+case "$request" in 'GET /api/v1/system/dns/capture HTTP/1.1'*) ;; *) exit 2 ;; esac
+[ -f "$ENTWARE_INIT_TEST_ROOT/running" ] || exit 1
+printf 'probe\\n' >> "$ENTWARE_INIT_TEST_ROOT/actions"
+uptime=$(cat "$ENTWARE_INIT_TEST_ROOT/clock")
+if [ "$uptime" -lt "${ENTWARE_INIT_SOCKET_AT:-0}" ]; then
+    exit 1
+elif [ "$uptime" -lt "${ENTWARE_INIT_READY_AT:-301}" ]; then
+    printf 'HTTP/1.1 404 Not Found\\r\\n'
+else
+    printf 'HTTP/1.1 200 OK\\r\\n'
+fi
+''',
             "logger": "#!/bin/sh\nexit 0\n",
             "sleep": '''#!/bin/sh
-[ "${ENTWARE_INIT_STOP_FAIL:-0}" = 1 ] && exit 0
+clock="$ENTWARE_INIT_TEST_ROOT/clock"
+printf '%s\\n' "$(( $(cat "$clock") + ${ENTWARE_INIT_CLOCK_STEP:-1} ))" > "$clock"
 exec /bin/sleep 0.02
 ''',
         }
@@ -60,8 +84,13 @@ exec /bin/sleep 0.02
         self.assertEqual(1, count, "test must isolate the init script's process commands")
         self.script = self.directory / "S99magitrickle"
         self.script.write_text(script)
+        (self.directory / "clock").write_text("301\n")
         self.env = dict(os.environ, ENTWARE_INIT_TEST_ROOT=str(self.directory))
         self.env.pop("ENTWARE_INIT_STOP_FAIL", None)
+        self.env.pop("ENTWARE_INIT_READY_AT", None)
+        self.env.pop("ENTWARE_INIT_CLOCK_STEP", None)
+        self.env.pop("ENTWARE_INIT_DAEMON_FAIL", None)
+        self.env.pop("ENTWARE_INIT_SOCKET_AT", None)
 
     def restart(self, *, running, stop_fails=False):
         if running:
@@ -69,7 +98,7 @@ exec /bin/sleep 0.02
         self.env["ENTWARE_INIT_STOP_FAIL"] = "1" if stop_fails else "0"
         result = subprocess.run(["/bin/sh", str(self.script), "restart"],
                                 env=self.env, text=True, stdout=subprocess.PIPE,
-                                stderr=subprocess.STDOUT, timeout=5)
+                                stderr=subprocess.STDOUT, timeout=20)
         actions = (self.directory / "actions").read_text().splitlines()
         return result, actions
 
@@ -84,14 +113,56 @@ exec /bin/sleep 0.02
     def test_successful_restart_stops_before_starting(self):
         result, actions = self.restart(running=True)
         self.assertEqual(0, result.returncode, result.stdout)
-        self.assertEqual(["stop", "start"], actions)
+        self.assertEqual(["stop", "start", "probe"], actions)
         self.assertTrue((self.directory / "running").exists())
 
     def test_restart_of_stopped_service_starts_without_stop(self):
         result, actions = self.restart(running=False)
         self.assertEqual(0, result.returncode, result.stdout)
-        self.assertEqual(["start"], actions)
+        self.assertEqual(["start", "probe"], actions)
         self.assertTrue((self.directory / "running").exists())
+
+    def test_restart_waits_for_routing_after_process_appears(self):
+        self.env["ENTWARE_INIT_READY_AT"] = "304"
+        result, actions = self.restart(running=True)
+        self.assertEqual(0, result.returncode, result.stdout)
+        self.assertEqual(["stop", "start"], actions[:2])
+        self.assertIn("probe", actions[2:])
+        self.assertGreaterEqual(int((self.directory / "clock").read_text()), 304)
+
+    def test_explicit_restart_waits_during_early_boot(self):
+        (self.directory / "clock").write_text("20\n")
+        self.env["ENTWARE_INIT_READY_AT"] = "23"
+        result, actions = self.restart(running=False)
+        self.assertEqual(0, result.returncode, result.stdout)
+        self.assertEqual("start", actions[0])
+        self.assertIn("probe", actions)
+        self.assertGreaterEqual(int((self.directory / "clock").read_text()), 23)
+
+    def test_restart_reports_timeout_when_process_never_serves_routing_api(self):
+        self.env["ENTWARE_INIT_READY_AT"] = "1000"
+        self.env["ENTWARE_INIT_CLOCK_STEP"] = "15"
+        result, actions = self.restart(running=False)
+        self.assertNotEqual(0, result.returncode, result.stdout)
+        self.assertEqual("start", actions[0])
+        self.assertIn("probe", actions)
+        self.assertIn("failed", result.stdout)
+        self.assertTrue((self.directory / "running").exists())
+        self.assertGreaterEqual(int((self.directory / "clock").read_text()), 361)
+
+    def test_restart_retries_when_socket_cannot_be_reached(self):
+        self.env["ENTWARE_INIT_SOCKET_AT"] = "304"
+        result, actions = self.restart(running=False)
+        self.assertEqual(0, result.returncode, result.stdout)
+        self.assertEqual("start", actions[0])
+        self.assertGreaterEqual(int((self.directory / "clock").read_text()), 304)
+
+    def test_failed_daemon_exits_before_readiness_deadline(self):
+        self.env["ENTWARE_INIT_DAEMON_FAIL"] = "1"
+        result, actions = self.restart(running=False)
+        self.assertNotEqual(0, result.returncode, result.stdout)
+        self.assertEqual(["start"], actions)
+        self.assertLess(int((self.directory / "clock").read_text()), 361)
 
 
 if __name__ == "__main__":
