@@ -272,8 +272,13 @@ static void handle_cname_record(mt_dns_pipeline_t *p, const mt_dns_rr_t *rr,
 void mt_dns_pipeline_handle_message(mt_dns_pipeline_t *p,
                                     const mt_dns_msg_t *msg, int64_t now)
 {
-    if ((msg->flags & 0x000f) != 0) {
-        MT_WARN("unprocessable response (rcode=%u)", msg->flags & 0x000fu);
+    unsigned rcode = msg->flags & 0x000fu;
+    if (rcode != 0) {
+        /* NXDOMAIN is an expected negative DNS answer, not a routing
+         * malfunction. The transport has already logged its context. */
+        if (rcode != MT_DNS_RCODE_NXDOMAIN) {
+            MT_WARN("DNS answer not eligible for routing: rcode=%u", rcode);
+        }
         return;
     }
     action_batch_t batch;

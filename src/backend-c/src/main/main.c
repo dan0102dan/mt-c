@@ -16,6 +16,7 @@
  * #36). The Go backend remains authoritative until the migration
  * completes (docs/c-rewrite/).
  */
+#include <arpa/inet.h>
 #include <errno.h>
 #include <ifaddrs.h>
 #include <net/if.h>
@@ -279,10 +280,18 @@ static void on_match(const mt_match_action_t *action, void *ud)
         return;
     }
 
+    const mt_group_t *group = mt_ruleset_group(rs);
+    char address[INET6_ADDRSTRLEN] = "unavailable";
+    (void)inet_ntop(action->addr_len == 4 ? AF_INET : AF_INET6,
+                    action->addr, address, sizeof(address));
+    const char *iface = group && group->iface ? group->iface : "";
+    const char *profile = group && group->profile ? group->profile : "";
     uint32_t ttl = action->ttl_seconds;
     mt_err_t err = MT_OK;
     unsigned attempts = action->attempts == 0 ? 1u : action->attempts;
+    unsigned performed = 0;
     for (unsigned i = 0; i < attempts; i++) {
+        performed++;
         if (action->addr_len == 4) {
             mt_ipv4_subnet_t subnet = {.cidr = 0};
             memcpy(subnet.addr, action->addr, 4);
@@ -299,26 +308,27 @@ static void on_match(const mt_match_action_t *action, void *ud)
 
     if (err != MT_OK) {
         MT_ERROR(
-            "failed to add to routing: kind=%s domain=%s matched=%s "
-            "group=%s err=%s",
-            action->record_kind, action->record_domain, action->matched_name,
-            action->group_name, mt_err_str(err));
+            "routing address update failed: kind=%s address=%s domain=%s matched=%s "
+            "group=%s interface=%s profile=%s ttl=%u attempts=%u error=%s",
+            action->record_kind, address, action->record_domain, action->matched_name,
+            action->group_name, iface, profile, ttl, performed, mt_err_str(err));
         return;
     }
     MT_INFO(
-        "added to routing: kind=%s domain=%s matched=%s group=%s "
-        "ttl=%u",
-        action->record_kind, action->record_domain, action->matched_name,
-        action->group_name, action->ttl_seconds);
+        "routing address applied: kind=%s address=%s domain=%s matched=%s "
+        "group=%s interface=%s profile=%s ttl=%u attempts=%u",
+        action->record_kind, address, action->record_domain, action->matched_name,
+        action->group_name, iface, profile, ttl, performed);
 }
 
 static void on_response(const mt_dns_msg_t *msg, const char *client_addr,
                         const char *network, void *ud)
 {
+    /* Response diagnostics live in the DNS transport, where the client,
+     * upstream and elapsed time are known. No duplicated summary here. */
     (void)client_addr;
+    (void)network;
     struct daemon *d = ud;
-    MT_DEBUG("upstream response: id=%u answers=%zu network=%s", msg->id,
-             msg->n_answers, network);
     mt_dns_pipeline_handle_message(d->pipeline, msg, now_unix());
 }
 
@@ -414,7 +424,10 @@ static void refresh_policy_addresses(struct daemon *d)
 static void on_link_up(const char *iface_name, bool up, void *ud)
 {
     struct daemon *d = ud;
-    MT_DEBUG("interface changed: %s up=%d", iface_name, (int)up);
+    /* The watcher logs notification attributes at TRACE. up is not a
+     * transition; do not misreport repeat notifications as changes. */
+    (void)iface_name;
+    (void)up;
 #ifdef MT_ENTWARE_KN
     refresh_policy_addresses(d);
 #endif
@@ -424,7 +437,8 @@ static void on_link_up(const char *iface_name, bool up, void *ud)
 static void on_addr_change(const char *iface_name, void *ud)
 {
     struct daemon *d = ud;
-    MT_DEBUG("interface address changed: %s", iface_name);
+    /* Detail is logged by the watcher before the unchanged reconciliation. */
+    (void)iface_name;
 #ifdef MT_ENTWARE_KN
     refresh_policy_addresses(d);
 #endif

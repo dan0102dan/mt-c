@@ -1,6 +1,7 @@
 #include "magitrickle/netlink_watcher.h"
 #include "magitrickle/log.h"
 
+#include <arpa/inet.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <libmnl/libmnl.h>
@@ -35,15 +36,61 @@ static void notify_resync(mt_nl_watcher_t *w)
     if (w->resync_cb) { w->resync_cb(w->resync_ud); }
 }
 
-static int link_name_cb(const struct nlattr *attr, void *ud)
+/* These are attributes of *this* notification, not a persisted state
+ * transition. None of them is used for routing or callback selection. */
+typedef struct link_log_attributes {
+    char name[IFNAMSIZ];
+    uint8_t operstate, carrier;
+    uint32_t mtu;
+    bool have_operstate, have_carrier, have_mtu, wireless_attr;
+} link_log_attributes_t;
+
+static int link_attributes_cb(const struct nlattr *attr, void *ud)
 {
-    char *name = ud;
-    if (mnl_attr_get_type(attr) == IFLA_IFNAME) {
+    link_log_attributes_t *a = ud;
+    switch (mnl_attr_get_type(attr)) {
+    case IFLA_IFNAME:
         if (mnl_attr_validate(attr, MNL_TYPE_NUL_STRING) != 0 ||
             mnl_attr_get_payload_len(attr) > IFNAMSIZ) { return MNL_CB_ERROR; }
-        snprintf(name, IFNAMSIZ, "%s", mnl_attr_get_str(attr));
+        snprintf(a->name, sizeof(a->name), "%s", mnl_attr_get_str(attr));
+        break;
+    case IFLA_OPERSTATE:
+        if (mnl_attr_validate(attr, MNL_TYPE_U8) == 0) {
+            a->operstate = mnl_attr_get_u8(attr); a->have_operstate = true;
+        }
+        break;
+    case IFLA_CARRIER:
+        if (mnl_attr_validate(attr, MNL_TYPE_U8) == 0) {
+            a->carrier = mnl_attr_get_u8(attr); a->have_carrier = true;
+        }
+        break;
+    case IFLA_MTU:
+        if (mnl_attr_validate(attr, MNL_TYPE_U32) == 0) {
+            a->mtu = mnl_attr_get_u32(attr); a->have_mtu = true;
+        }
+        break;
+    case IFLA_WIRELESS:
+        a->wireless_attr = true;
+        break;
+    default:
+        break;
     }
     return MNL_CB_OK;
+}
+
+static const char *operstate_name(uint8_t state)
+{
+    /* Linux IF_OPER_* values. Unknown values remain distinguishable. */
+    switch (state) {
+    case 0: return "unknown";
+    case 1: return "not-present";
+    case 2: return "down";
+    case 3: return "lower-layer-down";
+    case 4: return "testing";
+    case 5: return "dormant";
+    case 6: return "up";
+    default: return "unrecognized";
+    }
 }
 
 static bool handle_link_msg(mt_nl_watcher_t *w, const struct nlmsghdr *h)
@@ -51,10 +98,24 @@ static bool handle_link_msg(mt_nl_watcher_t *w, const struct nlmsghdr *h)
     if (mnl_nlmsg_get_payload_len(h) < sizeof(struct ifinfomsg)) { return false; }
     const struct ifinfomsg *ifi = mnl_nlmsg_get_payload(h);
     bool up = h->nlmsg_type != RTM_DELLINK && (ifi->ifi_flags & IFF_UP) != 0;
-    char name[IFNAMSIZ] = {0};
-    if (mnl_attr_parse(h, sizeof(*ifi), link_name_cb, name) < 0) { return false; }
-    if (!name[0]) { return false; }
-    if (w->link_cb) { w->link_cb(name, up, w->link_ud); }
+    link_log_attributes_t a = {0};
+    if (mnl_attr_parse(h, sizeof(*ifi), link_attributes_cb, &a) < 0) { return false; }
+    if (!a.name[0]) { return false; }
+    if (mt_log_level() <= MT_LOG_TRACE) {
+        char mtu[20] = "unreported";
+        if (a.have_mtu) { snprintf(mtu, sizeof(mtu), "%u", a.mtu); }
+        MT_TRACE("netlink link notification: action=%s interface=%s index=%d "
+                 "admin=%s oper=%s carrier=%s mtu=%s wireless_attr=%s "
+                 "flags=0x%x change_mask=0x%x",
+                 h->nlmsg_type == RTM_DELLINK ? "removed" : "updated",
+                 a.name, ifi->ifi_index, up ? "up" : "down",
+                 a.have_operstate ? operstate_name(a.operstate) : "unreported",
+                 a.have_carrier ? (a.carrier ? "up" : "down") : "unreported",
+                 mtu, a.wireless_attr ? "present" : "absent",
+                 (unsigned)ifi->ifi_flags, (unsigned)ifi->ifi_change);
+    }
+    /* Callbacks run for every notification, including identical flags. */
+    if (w->link_cb) { w->link_cb(a.name, up, w->link_ud); }
     return true;
 }
 
@@ -66,6 +127,13 @@ static bool handle_addr_msg(mt_nl_watcher_t *w, const struct nlmsghdr *h)
     if (!if_indextoname(ifa->ifa_index, name)) {
         /* A DELADDR can race with DELLINK. Name lookup is not authoritative. */
         return false;
+    }
+    if (mt_log_level() <= MT_LOG_TRACE) {
+        MT_TRACE("netlink address notification: action=%s interface=%s index=%u "
+                 "family=%u prefix=%u scope=%u flags=0x%x",
+                 h->nlmsg_type == RTM_DELADDR ? "removed" : "updated",
+                 name, ifa->ifa_index, ifa->ifa_family, ifa->ifa_prefixlen,
+                 ifa->ifa_scope, (unsigned)ifa->ifa_flags);
     }
     if (w->addr_cb) { w->addr_cb(name, w->addr_ud); }
     return true;
