@@ -93,8 +93,9 @@ definitions:
     properties:
       action:
         description: >-
-          notify requests a netfilter rebuild and immediately acknowledges it
-          with 200. status only checks whether local routing is applied and
+          notify retains the legacy re-commit and 200 acknowledgement; Keenetic
+          queues the rebuild, while other platforms commit synchronously.
+          status only checks whether local routing is applied and
           returns 204 when ready or 503 while pending. Omission keeps the
           legacy notification behavior. Unknown or non-string actions are
           rejected without queuing a rebuild.
@@ -905,8 +906,9 @@ paths:
       description: >-
         Receives netfilter.d notifications and exposes a read-only status
         action on the same hook. The legacy type/table payload, or an explicit
-        action=notify, requests a rebuild and immediately returns 200 without
-        waiting for it to finish. action=status never queues a rebuild or
+        action=notify, retains the legacy re-commit and 200 acknowledgement.
+        Keenetic queues the rebuild and returns without waiting; other
+        platforms keep the synchronous commit path. action=status never queues a rebuild or
         performs RCI I/O; it returns an empty, uncached 204 only when the
         application is running and no netfilter application is queued or in
         flight. On Keenetic the current policy generation must be applied
