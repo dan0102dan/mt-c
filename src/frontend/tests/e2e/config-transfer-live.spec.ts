@@ -478,6 +478,9 @@ test("double clicking Import only stages once and double clicking Save only appl
   await expect(dialog).toHaveCount(0);
   expect(writes).toBe(0);
   expect((await backend.snapshot()).config.profiles).toEqual([]);
+  // Svelte updates the Save state after dialog teardown. Click only after
+  // it becomes enabled, so this actually tests duplicate Save requests.
+  await expect(activeSave(page)).toBeEnabled();
   await activeSave(page).evaluate((element: HTMLButtonElement) => {
     element.click();
     element.click();

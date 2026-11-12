@@ -1075,73 +1075,79 @@ mt_err_t mt_dnsproxy_start(mt_dnsproxy_t *p)
         return MT_ERR_INVAL;
     }
 
-    /* UDP */
-    int ufd = socket(fam, SOCK_DGRAM | SOCK_NONBLOCK | SOCK_CLOEXEC, 0);
-    if (ufd < 0) {
-        return mt_err_from_errno(errno);
-    }
+    /* Port 0 must bind UDP and TCP to the same ephemeral number. A port
+     * selected by UDP can already be in use by TCP; retry only that case.
+     * An explicitly configured port must continue to fail on a conflict. */
+    const bool ephemeral = p->cfg.listen_port == 0;
+    const unsigned attempts = ephemeral ? 32 : 1;
     int one = 1;
-    setsockopt(ufd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one));
-    if (fam == AF_INET6) {
-        int zero = 0;
-        setsockopt(ufd, IPPROTO_IPV6, IPV6_V6ONLY, &zero, sizeof(zero));
-        setsockopt(ufd, IPPROTO_IPV6, IPV6_RECVPKTINFO, &one, sizeof(one));
-        setsockopt(ufd, IPPROTO_IP, IP_PKTINFO, &one, sizeof(one));
-    } else {
-        setsockopt(ufd, IPPROTO_IP, IP_PKTINFO, &one, sizeof(one));
-    }
-    if (bind(ufd, (struct sockaddr *)&listen_sa, listen_len) != 0) {
-        mt_err_t e = mt_err_from_errno(errno);
-        close(ufd);
-        return e;
-    }
-    p->udp_fd = ufd;
+    for (unsigned attempt = 0; attempt < attempts; attempt++) {
+        struct sockaddr_storage bound_sa = listen_sa;
+        socklen_t bound_len = listen_len;
 
-    /* A legacy port 0 selects one port shared by UDP and TCP. Publish the
-     * actual port so an interactive settings snapshot is usable. */
-    if (p->cfg.listen_port == 0) {
-        socklen_t bound_len = sizeof(listen_sa);
-        if (getsockname(ufd, (struct sockaddr *)&listen_sa, &bound_len) != 0) { return mt_err_from_errno(errno); }
-        listen_len = bound_len;
-        p->cfg.listen_port = fam == AF_INET ? ntohs(((struct sockaddr_in *)&listen_sa)->sin_port) :
-                                                     ntohs(((struct sockaddr_in6 *)&listen_sa)->sin6_port);
-    }
+        int ufd = socket(fam, SOCK_DGRAM | SOCK_NONBLOCK | SOCK_CLOEXEC, 0);
+        if (ufd < 0) { return mt_err_from_errno(errno); }
+        setsockopt(ufd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one));
+        if (fam == AF_INET6) {
+            int zero = 0;
+            setsockopt(ufd, IPPROTO_IPV6, IPV6_V6ONLY, &zero, sizeof(zero));
+            setsockopt(ufd, IPPROTO_IPV6, IPV6_RECVPKTINFO, &one, sizeof(one));
+            setsockopt(ufd, IPPROTO_IP, IP_PKTINFO, &one, sizeof(one));
+        } else {
+            setsockopt(ufd, IPPROTO_IP, IP_PKTINFO, &one, sizeof(one));
+        }
+        if (bind(ufd, (struct sockaddr *)&listen_sa, listen_len) != 0) {
+            mt_err_t e = mt_err_from_errno(errno);
+            close(ufd);
+            return e;
+        }
 
-    /* TCP */
-    int tfd = socket(fam, SOCK_STREAM | SOCK_NONBLOCK | SOCK_CLOEXEC, 0);
-    if (tfd < 0) {
-        mt_err_t e = mt_err_from_errno(errno);
-        close(ufd);
-        p->udp_fd = -1;
-        return e;
-    }
-    setsockopt(tfd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one));
-    if (fam == AF_INET6) {
-        int zero = 0;
-        setsockopt(tfd, IPPROTO_IPV6, IPV6_V6ONLY, &zero, sizeof(zero));
-    }
-    if (bind(tfd, (struct sockaddr *)&listen_sa, listen_len) != 0 ||
-        listen(tfd, 128) != 0) {
-        mt_err_t e = mt_err_from_errno(errno);
-        close(tfd);
-        close(ufd);
-        p->udp_fd = -1;
-        return e;
-    }
-    p->tcp_fd = tfd;
+        if (ephemeral) {
+            bound_len = sizeof(bound_sa);
+            if (getsockname(ufd, (struct sockaddr *)&bound_sa, &bound_len) != 0) {
+                mt_err_t e = mt_err_from_errno(errno);
+                close(ufd);
+                return e;
+            }
+        }
 
-    mt_err_t err = mt_loop_add_fd(p->loop, ufd, EPOLLIN, on_udp_readable, p);
-    if (err != MT_OK) {
-        return err;
+        int tfd = socket(fam, SOCK_STREAM | SOCK_NONBLOCK | SOCK_CLOEXEC, 0);
+        if (tfd < 0) {
+            mt_err_t e = mt_err_from_errno(errno);
+            close(ufd);
+            return e;
+        }
+        setsockopt(tfd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one));
+        if (fam == AF_INET6) {
+            int zero = 0;
+            setsockopt(tfd, IPPROTO_IPV6, IPV6_V6ONLY, &zero, sizeof(zero));
+        }
+        if (bind(tfd, (struct sockaddr *)&bound_sa, bound_len) != 0 ||
+            listen(tfd, 128) != 0) {
+            int saved_errno = errno;
+            close(tfd);
+            close(ufd);
+            if (ephemeral && saved_errno == EADDRINUSE) { continue; }
+            return mt_err_from_errno(saved_errno);
+        }
+
+        p->udp_fd = ufd;
+        p->tcp_fd = tfd;
+        if (ephemeral) {
+            p->cfg.listen_port = fam == AF_INET ?
+                ntohs(((struct sockaddr_in *)&bound_sa)->sin_port) :
+                ntohs(((struct sockaddr_in6 *)&bound_sa)->sin6_port);
+        }
+        mt_err_t err = mt_loop_add_fd(p->loop, ufd, EPOLLIN, on_udp_readable, p);
+        if (err != MT_OK) { return err; }
+        err = mt_loop_add_fd(p->loop, tfd, EPOLLIN, on_tcp_accept, p);
+        if (err != MT_OK) { return err; }
+        MT_INFO("DNS proxy listening on %s:%u (udp+tcp), upstream %s:%u",
+                p->cfg.listen_addr, p->cfg.listen_port, p->cfg.upstream_addr,
+                p->cfg.upstream_port);
+        return MT_OK;
     }
-    err = mt_loop_add_fd(p->loop, tfd, EPOLLIN, on_tcp_accept, p);
-    if (err != MT_OK) {
-        return err;
-    }
-    MT_INFO("DNS proxy listening on %s:%u (udp+tcp), upstream %s:%u",
-            p->cfg.listen_addr, p->cfg.listen_port, p->cfg.upstream_addr,
-            p->cfg.upstream_port);
-    return MT_OK;
+    return mt_err_from_errno(EADDRINUSE);
 }
 
 uint16_t mt_dnsproxy_listen_port(const mt_dnsproxy_t *p) { return p ? p->cfg.listen_port : 0; }
