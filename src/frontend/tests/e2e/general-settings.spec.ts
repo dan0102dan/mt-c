@@ -1136,7 +1136,7 @@ for (const width of [1280, 390, 320]) {
     await expect(links).not.toHaveAttribute("list");
     await expect(page.locator("#general datalist")).toHaveCount(0);
     await links.fill("br0, custom0");
-    const picker = page.getByRole("combobox", { name: "Add interface", exact: true });
+    const picker = page.getByRole("button", { name: "Add interface", exact: true });
     await picker.click();
     await expect(page.getByRole("option", { name: "blackhole", exact: true })).toHaveCount(0);
     await expect(page.getByRole("option", { name: "br0", exact: true })).toHaveCount(0);
@@ -1211,8 +1211,8 @@ test("General disables shared controls during application and restores them afte
   await expect.poll(() => state.pending).not.toBeNull();
   const controls = [
     timeout,
-    page.getByRole("combobox", { name: "Add interface", exact: true }),
-    page.getByRole("combobox", { name: "Log detail level", exact: true }),
+    page.getByRole("button", { name: "Add interface", exact: true }),
+    page.getByRole("button", { name: "Log detail level", exact: true }),
     page.getByRole("switch", { name: "Intercept queries on port 53", exact: true }),
     page.getByRole("button", { name: "Timeout and limits", exact: true }),
   ];
@@ -1233,7 +1233,7 @@ test("General fields and sections support keyboard focus without native suggesti
   await expect(timeout).not.toBeVisible();
   await page.keyboard.press("Space");
   await expect(timeout).toBeVisible();
-  const logLevel = page.getByRole("combobox", { name: "Log detail level", exact: true });
+  const logLevel = page.getByRole("button", { name: "Log detail level", exact: true });
   await logLevel.focus();
   await expect(logLevel).toBeFocused();
   await page.keyboard.press("Enter");
