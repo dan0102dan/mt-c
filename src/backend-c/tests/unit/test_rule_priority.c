@@ -562,9 +562,10 @@ TEST policy_membership_is_checked_before_any_group_overwrites_the_mark(void) {
     mt_kn_policy_scope_t scope;
     ASSERT_EQ(MT_OK, mt_kn_policy_scope_init(&scope, &config, "TST_"));
     scope.mark = 0xffffd00;
-    for (unsigned mode = 0; mode < 3; mode++) {
-        scope.config.mode = mode == 1 ? MT_KN_POLICY_EXCLUDE : MT_KN_POLICY_INCLUDE;
-        scope.ready = mode != 2;
+    for (unsigned mode = 0; mode < 4; mode++) {
+        scope.config.mode = mode == 1 || mode == 3 ? MT_KN_POLICY_EXCLUDE : MT_KN_POLICY_INCLUDE;
+        scope.resolution = mode < 2 ? MT_KN_POLICY_RESOLVED :
+            mode == 2 ? MT_KN_POLICY_UNKNOWN : MT_KN_POLICY_ABSENT;
         for (unsigned family = 0; family < 2; family++) {
             mt_fake_ipt_reset(fixture.fake[family]); mt_ipt_reset_staged(fixture.ipt[family]);
         }
@@ -583,7 +584,7 @@ TEST policy_membership_is_checked_before_any_group_overwrites_the_mark(void) {
                 packet.connmark = packet.mark;
                 uint32_t initial = packet.mark;
                 ASSERT(evaluate_chain("PREROUTING", &packet, 0));
-                bool applies = mode != 2 && (mode == 1 ? !member : member);
+                bool applies = mode == 3 || (mode != 2 && (mode == 1 ? !member : member));
                 ASSERT_EQ(applies ? 101u : initial, packet.mark);
                 ASSERT_EQ(applies ? 101u : initial, packet.connmark);
                 /* A router-local DNS packet must keep its original policy

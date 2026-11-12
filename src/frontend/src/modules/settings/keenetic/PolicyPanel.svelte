@@ -29,10 +29,6 @@
   const dirty = $derived(policyDirty());
   const selectedId = $derived(selectedPolicyId());
   const selected = $derived(policy.policies.find((p) => p.id === selectedId));
-  const processingAll = $derived(
-    policy.draft.enabled && policy.draft.mode === "exclude" && !dirty &&
-      policy.runtime.processing_all === true,
-  );
   const valid = $derived(
     !policy.draft.enabled || Boolean(selectedId && policy.listLoaded && !policy.listFailed),
   );
@@ -151,13 +147,11 @@
                   ? `${policy.draft.policy_id} · ${t("Policy unavailable")}`
                   : "mt"}
               />
-              {#if processingAll || (!policy.listing && (policy.listFailed || !selected?.available))}
+              {#if !policy.listing && (policy.listFailed || !selected?.available)}
                 <p class="validation" role="status">
-                  {processingAll
-                    ? t("The selected policy does not exist. MT is processing all devices until it appears.")
-                    : policy.listFailed
-                      ? t("Could not load policies. Reload the page to retry.")
-                      : t("The filter will become active when the policy is available.")}
+                  {policy.listFailed
+                    ? t("Could not load policies. Reload the page to retry.")
+                    : t("The filter will become active when the policy is available.")}
                 </p>
               {/if}
             </div>

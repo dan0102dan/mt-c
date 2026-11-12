@@ -5,7 +5,7 @@ export type PolicySettings = { enabled: boolean; policy_id: string; mode: "inclu
 export type Policy = { id: string; name: string; available: boolean };
 export type Status = {
   settings: PolicySettings;
-  runtime: { state: "disabled" | "ready" | "applying" | "unavailable" | "error"; reason?: string; processing_all?: boolean };
+  runtime: { state: "disabled" | "ready" | "applying" | "unavailable" | "error"; reason?: string };
 };
 const defaults: PolicySettings = { enabled: false, policy_id: "", mode: "include" };
 export const policy = $state({
@@ -38,8 +38,7 @@ function decodeStatus(value: unknown): Status {
     typeof v.settings.policy_id !== "string" ||
     !["include", "exclude"].includes(v.settings.mode) ||
     !v.runtime ||
-    !["disabled", "ready", "applying", "unavailable", "error"].includes(v.runtime.state) ||
-    (v.runtime.processing_all !== undefined && typeof v.runtime.processing_all !== "boolean")
+    !["disabled", "ready", "applying", "unavailable", "error"].includes(v.runtime.state)
   ) {
     throw new Error("Invalid policy settings response");
   }
@@ -49,11 +48,7 @@ function decodeStatus(value: unknown): Status {
       policy_id: v.settings.policy_id,
       mode: v.settings.mode,
     },
-    runtime: {
-      state: v.runtime.state,
-      reason: v.runtime.reason,
-      ...(typeof v.runtime.processing_all === "boolean" ? { processing_all: v.runtime.processing_all } : {}),
-    },
+    runtime: { state: v.runtime.state, reason: v.runtime.reason },
   };
 }
 function accept(value: Status, resetDraft: boolean) {

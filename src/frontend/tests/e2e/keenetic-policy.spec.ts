@@ -49,9 +49,6 @@ async function backend(page: Page, enabled = false) {
             : selected?.available
               ? "ready"
               : "unavailable",
-          ...(state.settings.enabled && state.settings.mode === "exclude" && !selected
-            ? { processing_all: true }
-            : {}),
         },
       };
       await route.fulfill({
@@ -179,64 +176,6 @@ test.describe("Keenetic policy settings", { tag: "@entware_kn" }, () => {
       );
     });
   }
-
-  test("missing mt in exclude mode explains that routing remains active", async ({ page }) => {
-    const state = await backend(page);
-    state.policies = [];
-    await openSettings(page);
-    await page.getByRole("tab", { name: "Keenetic", exact: true }).click();
-    await panel(page).getByRole("switch", { name: "Use policy based filter" }).click();
-    await panel(page).getByRole("switch", { name: "Processing mode" }).click();
-    await save(page).click();
-    await expect.poll(() => state.settings.mode).toBe("exclude");
-    await expect(
-      panel(page).getByText(
-        "The selected policy does not exist. MT is processing all devices until it appears.",
-      ),
-    ).toBeVisible();
-
-    await page.locator(".locale button").click();
-    await expect(
-      panel(page).getByText(
-        "Политика не создана. MT обрабатывает все устройства, пока политика не появится.",
-      ),
-    ).toBeVisible();
-  });
-
-
-  test("live processing-all status overrides a stale available policy list", async ({ page }) => {
-    const state = await backend(page, true);
-    state.settings.mode = "exclude";
-    await openSettings(page);
-    await page.getByRole("tab", { name: "Keenetic", exact: true }).click();
-
-    const picker = panel(page).locator('[data-select-trigger][aria-label="Router policy"]');
-    const warning = panel(page).getByText(
-      "The selected policy does not exist. MT is processing all devices until it appears.",
-      { exact: true },
-    );
-    await expect(picker).toContainText("VPN");
-    await expect(warning).toHaveCount(0);
-    await expect(save(page)).toBeDisabled();
-
-    // Firmware deletes Policy0. Only the 3s status poll refreshes; the
-    // dropdown still uses the inventory loaded at mount time.
-    const readsBefore = state.settingsReads;
-    state.policies = state.policies.filter((p) => p.id !== "Policy0");
-    await expect.poll(() => state.settingsReads, { timeout: 10000 }).toBeGreaterThan(readsBefore);
-    await expect(picker).toContainText("VPN");
-    await expect(warning).toBeVisible();
-    await expect(save(page)).toBeDisabled();
-
-    // Recreating the policy removes the warning on the next status poll,
-    // without reloading the page or updating the cached dropdown options.
-    const readsAfterRemoval = state.settingsReads;
-    state.policies.push({ id: "Policy0", name: "VPN", available: true });
-    await expect
-      .poll(() => state.settingsReads, { timeout: 10000 })
-      .toBeGreaterThan(readsAfterRemoval);
-    await expect(warning).toHaveCount(0);
-  });
   test("off by default, explicit save, include/exclude and reload", async ({ page }) => {
     const state = await backend(page);
     await openSettings(page);

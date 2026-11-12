@@ -6,6 +6,19 @@
 #include <limits.h>
 #include <string.h>
 
+mt_kn_policy_traffic_t mt_kn_policy_traffic_scope(const mt_kn_policy_scope_t *p)
+{
+    if (!p || !p->config.enabled) { return MT_KN_TRAFFIC_ALL; }
+    switch (p->resolution) {
+    case MT_KN_POLICY_RESOLVED:
+        return p->config.mode == MT_KN_POLICY_EXCLUDE ? MT_KN_TRAFFIC_EXCLUDE : MT_KN_TRAFFIC_INCLUDE;
+    case MT_KN_POLICY_ABSENT:
+        return p->config.mode == MT_KN_POLICY_EXCLUDE ? MT_KN_TRAFFIC_ALL : MT_KN_TRAFFIC_NONE;
+    default:
+        return MT_KN_TRAFFIC_NONE;
+    }
+}
+
 bool mt_kn_policy_config_valid(const mt_kn_policy_config_t *c)
 {
     if (!c || (c->mode != MT_KN_POLICY_INCLUDE && c->mode != MT_KN_POLICY_EXCLUDE)) { return false; }
@@ -35,16 +48,15 @@ mt_err_t mt_kn_policy_guard(const mt_kn_policy_scope_t *p, mt_ipt_t *ipt,
                             const char *table, const char *chain)
 {
     if (!ipt || !p || !p->config.enabled) { return MT_OK; }
-    if (!p->ready) {
-        /* Excluding a confirmed absent policy excludes nobody. RCI errors
-         * and policies without marks must still fail closed. */
-        if (p->confirmed_absent && p->config.mode == MT_KN_POLICY_EXCLUDE) { return MT_OK; }
+    mt_kn_policy_traffic_t traffic = mt_kn_policy_traffic_scope(p);
+    if (traffic == MT_KN_TRAFFIC_ALL) { return MT_OK; }
+    if (traffic == MT_KN_TRAFFIC_NONE) {
         const char *args[] = {"-j", "RETURN"};
         return mt_ipt_append(ipt, table, chain, args, 2);
     }
     char mark[32];
     snprintf(mark, sizeof(mark), "0x%x/0x0fffffff", p->mark);
-    if (p->config.mode == MT_KN_POLICY_INCLUDE) {
+    if (traffic == MT_KN_TRAFFIC_INCLUDE) {
         const char *args[] = {"-m", "mark", "!", "--mark", mark, "-j", "RETURN"};
         return mt_ipt_append(ipt, table, chain, args, 7);
     }
@@ -55,7 +67,11 @@ mt_err_t mt_kn_policy_route_guard(const mt_kn_policy_scope_t *p, mt_ipt_t *ipt,
                                   const char *table, const char *chain, uint32_t route_mark)
 {
     if (!ipt || !p || !p->config.enabled) { return MT_OK; }
-    if (!p->ready) { return mt_kn_policy_guard(p, ipt, table, chain); }
+    if (mt_kn_policy_traffic_scope(p) == MT_KN_TRAFFIC_NONE) {
+        return mt_kn_policy_guard(p, ipt, table, chain);
+    }
+    /* Even an unrestricted device scope must not NAT/accept a connection
+     * that this group did not route (local/router-originated/other-policy). */
     char mark[32];
     snprintf(mark, sizeof(mark), "0x%x/0x0fffffff", route_mark & MT_KN_POLICY_MASK);
     const char *args[] = {"-m", "connmark", "!", "--mark", mark, "-j", "RETURN"};
@@ -117,7 +133,7 @@ mt_err_t mt_kn_policy_prepare(const mt_kn_policy_scope_t *p, mt_ipt_t *ipt)
     if (err != MT_OK) { return err; }
     err = mt_ipt_register_chain_override(ipt, "mangle", p->gate);
     if (err != MT_OK) { return err; }
-    if (p->ready) {
+    if (mt_kn_policy_traffic_scope(p) != MT_KN_TRAFFIC_NONE) {
         const char *reply[] = {"-m", "conntrack", "--ctdir", "REPLY", "-j", "RETURN"};
         err = mt_ipt_append(ipt, "mangle", p->gate, reply, 6);
         if (err != MT_OK) { return err; }
@@ -126,8 +142,8 @@ mt_err_t mt_kn_policy_prepare(const mt_kn_policy_scope_t *p, mt_ipt_t *ipt)
         err = guard_local_addresses(ipt, p->gate);
         if (err != MT_OK) { return err; }
     }
-    /* Before RCI confirms a policy, RETURN closes the scope. Confirmed
-     * absence in exclude mode leaves the gate open to regular routing. */
+    /* Membership is independent of local/reply protection above. Unknown
+     * scope stays closed and does not require address enumeration at startup. */
     err = mt_kn_policy_guard(p, ipt, "mangle", p->gate);
     if (err != MT_OK) { return err; }
     const char *dispatch[] = {"-j", p->dispatch};

@@ -44,9 +44,10 @@ struct mt_kn_policy_service {
 static cJSON *status_json(mt_kn_policy_service_t *s)
 {
     mt_kn_policy_config_t c;
-    bool ready, applied;
+    mt_kn_policy_resolution_t resolution;
+    bool applied;
     mt_err_t apply_error;
-    mt_app_policy_get(s->app, &c, &ready, &applied, &apply_error);
+    mt_app_policy_get(s->app, &c, &resolution, &applied, &apply_error);
     cJSON *out = cJSON_CreateObject();
     cJSON *settings = out ? cJSON_AddObjectToObject(out, "settings") : NULL;
     cJSON *runtime = out ? cJSON_AddObjectToObject(out, "runtime") : NULL;
@@ -56,15 +57,13 @@ static cJSON *status_json(mt_kn_policy_service_t *s)
         cJSON_Delete(out); return NULL;
     }
     const char *state = apply_error != MT_OK && apply_error != MT_ERR_CANCELED ? "error" :
-                        !applied ? "applying" : !c.enabled ? "disabled" : ready ? "ready" : "unavailable";
+                        !applied ? "applying" : !c.enabled ? "disabled" : resolution == MT_KN_POLICY_RESOLVED ? "ready" : "unavailable";
     if (!cJSON_AddStringToObject(runtime, "state", state)) { cJSON_Delete(out); return NULL; }
     if (strcmp(state, "unavailable") == 0) {
-        cJSON_AddStringToObject(runtime, "reason", s->last_error == MT_ERR_NOENT ? "POLICY_NOT_FOUND" :
-            s->last_error == MT_ERR_AGAIN ? "POLICY_UNAVAILABLE" : "RCI_UNAVAILABLE");
+        cJSON_AddStringToObject(runtime, "reason", resolution == MT_KN_POLICY_ABSENT ? "POLICY_NOT_FOUND" :
+            resolution == MT_KN_POLICY_UNMARKED ? "POLICY_UNAVAILABLE" : "RCI_UNAVAILABLE");
     }
     if (strcmp(state, "error") == 0) { cJSON_AddStringToObject(runtime, "reason", "NETFILTER_APPLY_FAILED"); }
-    if (applied && mt_app_policy_excludes_none(s->app) &&
-        !cJSON_AddBoolToObject(runtime, "processing_all", true)) { cJSON_Delete(out); return NULL; }
     return out;
 }
 static cJSON *error_json(const char *code, const char *message)
@@ -83,6 +82,12 @@ static const mt_kn_policy_entry_t *find_policy(const mt_kn_policy_entry_t *entri
         }
     }
     return NULL;
+}
+/* Called only for a successfully fetched and validated inventory. */
+static mt_kn_policy_resolution_t policy_resolution(const mt_kn_policy_entry_t *entry)
+{
+    return !entry ? MT_KN_POLICY_ABSENT :
+        entry->available ? MT_KN_POLICY_RESOLVED : MT_KN_POLICY_UNMARKED;
 }
 static void request_fetch(mt_kn_policy_service_t *s)
 {
@@ -116,8 +121,7 @@ static void *worker(void *ud)
 static cJSON *apply_settings(mt_kn_policy_service_t *s, const mt_kn_policy_config_t *c,
                              const mt_kn_policy_entry_t *entry, int *status)
 {
-    mt_err_t err = mt_app_policy_set_resolved(s->app, c, entry && entry->available,
-                                              entry ? entry->mark : 0, entry == NULL);
+    mt_err_t err = mt_app_policy_set(s->app, c, policy_resolution(entry), entry ? entry->mark : 0);
     if (err == MT_ERR_INVAL) {
         *status = 400;
         return error_json("INVALID_POLICY_SETTINGS", "Policy settings or configured chain prefix are invalid");
@@ -160,26 +164,18 @@ static void completed(mt_loop_t *loop, int fd, uint32_t events, void *ud)
     /* Reconcile the CURRENT setting, not the one that initiated the fetch.
      * Disabling during a fetch cannot be undone by its late completion. */
     mt_kn_policy_config_t current;
-    bool was_ready;
-    mt_app_policy_get(s->app, &current, &was_ready, NULL, NULL);
+    mt_app_policy_get(s->app, &current, NULL, NULL, NULL);
     if (current.enabled) {
         if (err != MT_OK) {
-            /* A failed/invalid inventory says nothing about membership or
-             * the selected mark. Keep the CURRENT desired scope exactly as
-             * it is, including an unresolved scope on startup/config change.
-             * Do not publish ready=false: that installs unconditional RETURN
-             * in both the routing and DNS gates and bypasses MT for everybody.
-             * No separate cache is kept, so a removed/changed/disabled policy
-             * can never resurrect an older successful mark on a later error. */
+            /* Transport failure is not a policy fact. Retain the exact current
+             * resolution and mark (including UNKNOWN on startup), without
+             * reapplying rules or resurrecting a previous policy selection. */
             MT_WARN("Keenetic policy refresh failed: policy=%s mode=%s error=%s; "
                     "%s; retry in %u ms",
                     current.policy_id,
                     current.mode == MT_KN_POLICY_EXCLUDE ? "exclude" : "include",
                     mt_err_str(err),
-                    was_ready ? "keeping last known policy mark and traffic scope" :
-                    mt_app_policy_excludes_none(s->app) ?
-                        "keeping confirmed absence; MT processes all devices" :
-                        "policy remains unresolved; MT processing stays closed",
+                    "keeping current policy resolution and traffic scope",
                     REFRESH_MS);
             s->last_error = err;
         } else {
@@ -187,27 +183,24 @@ static void completed(mt_loop_t *loop, int fd, uint32_t events, void *ud)
              * Missing policy / missing mark is authoritative, unlike a timeout.
              * Zero remains a valid mark; entry->available is the discriminator. */
             const mt_kn_policy_entry_t *entry = find_policy(entries, count, current.policy_id);
-            bool ready = entry && entry->available;
-            mt_err_t next_error = !entry ? MT_ERR_NOENT : !ready ? MT_ERR_AGAIN : MT_OK;
+            mt_kn_policy_resolution_t resolution = policy_resolution(entry);
+            mt_err_t next_error = resolution == MT_KN_POLICY_ABSENT ? MT_ERR_NOENT :
+                resolution == MT_KN_POLICY_UNMARKED ? MT_ERR_AGAIN : MT_OK;
             if (s->last_error != next_error && next_error != MT_OK) {
                 MT_WARN("Keenetic policy unresolved: policy=%s mode=%s reason=%s; "
-                        "%s",
+                        "retaining the configured processing mode",
                         current.policy_id,
                         current.mode == MT_KN_POLICY_EXCLUDE ? "exclude" : "include",
                         !entry ? "policy absent from validated RCI inventory" :
-                                 "policy has no usable mark",
-                        !entry && current.mode == MT_KN_POLICY_EXCLUDE ?
-                            "no devices excluded; MT processes all devices" :
-                            "new traffic will bypass MT processing");
-            } else if (s->last_error != MT_OK && ready) {
+                                 "policy has no usable mark");
+            } else if (s->last_error != MT_OK && resolution == MT_KN_POLICY_RESOLVED) {
                 MT_INFO("Keenetic policy refresh recovered: policy=%s mode=%s mark=0x%x",
                         current.policy_id,
                         current.mode == MT_KN_POLICY_EXCLUDE ? "exclude" : "include",
                         entry->mark);
             }
             s->last_error = next_error;
-            (void)mt_app_policy_set_resolved(s->app, &current, ready,
-                                             ready ? entry->mark : 0, !entry);
+            (void)mt_app_policy_set(s->app, &current, resolution, entry ? entry->mark : 0);
         }
     }
     for (size_t i = 0; i < s->n_waiters; i++) {

@@ -262,7 +262,7 @@ TEST policy_lifecycle_empty_dispatch_late_group_and_disable(void) {
     const char *jump[] = {"-j", "MT_POLICY"};
     const char *terminal[] = {"-j", "RETURN"};
     const char *include[] = {"-m", "mark", "!", "--mark", "0xffffd00/0x0fffffff", "-j", "RETURN"};
-    ASSERT_EQ(MT_OK, mt_app_policy_set(fx.app, &policy, true, 0xffffd00));
+    ASSERT_EQ(MT_OK, mt_app_policy_set(fx.app, &policy, MT_KN_POLICY_RESOLVED, 0xffffd00));
     ASSERT(mt_fake_ipt_chain_exists(fx.fake, "mangle", "MT_POLICY_RULES"));
     ASSERT(chain_has_rule(fx.fake, "mangle", "MT_POLICY_RULES", terminal, 2));
     ASSERT(chain_has_rule(fx.fake, "nat", "MT_DNSOR", include, 7));
@@ -280,10 +280,10 @@ TEST policy_lifecycle_empty_dispatch_late_group_and_disable(void) {
     ASSERT_EQ(MT_OK, mt_app_rebuild_netfilter(fx.app, NULL));
     ASSERT_EQ(1u, count_rule(fx.fake, "mangle", "PREROUTING", jump, 2));
     policy.mode = MT_KN_POLICY_EXCLUDE;
-    ASSERT_EQ(MT_OK, mt_app_policy_set(fx.app, &policy, false, 0));
+    ASSERT_EQ(MT_OK, mt_app_policy_set(fx.app, &policy, MT_KN_POLICY_UNKNOWN, 0));
     ASSERT(chain_has_rule(fx.fake, "nat", "MT_DNSOR", terminal, 2));
     policy.enabled = false;
-    ASSERT_EQ(MT_OK, mt_app_policy_set(fx.app, &policy, false, 0));
+    ASSERT_EQ(MT_OK, mt_app_policy_set(fx.app, &policy, MT_KN_POLICY_UNKNOWN, 0));
     ASSERT_FALSE(mt_fake_ipt_chain_exists(fx.fake, "mangle", "MT_POLICY_RULES"));
     ASSERT_FALSE(mt_fake_ipt_chain_exists(fx.fake, "mangle", "MT_POLICY"));
     ASSERT_EQ(0u, count_rule(fx.fake, "mangle", "PREROUTING", jump, 2));

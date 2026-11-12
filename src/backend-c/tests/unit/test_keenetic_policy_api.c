@@ -356,11 +356,12 @@ static int assert_open_gates(void) {
         const cJSON *value = cJSON_GetObjectItemCaseSensitive(out, family ? "ipv6" : "ipv4");
         ASSERT(cJSON_IsString(value));
         ASSERT(strstr(value->valuestring, "-A MT_POLICY -j MT_POLICY_RULES"));
+        ASSERT(strstr(value->valuestring, "-A MT_POLICY -m conntrack --ctdir REPLY -j RETURN"));
+        ASSERT(strstr(value->valuestring, family ? "-d ::1/128 -j RETURN" : "-d 127.0.0.1/32 -j RETURN"));
         ASSERT(strstr(value->valuestring, "-A MT_DNSOR -p tcp"));
         ASSERT(strstr(value->valuestring, "-A MT_DNSOR -p udp"));
         ASSERT_FALSE(strstr(value->valuestring, "-A MT_POLICY -j RETURN"));
         ASSERT_FALSE(strstr(value->valuestring, "-A MT_DNSOR -j RETURN"));
-        ASSERT_FALSE(strstr(value->valuestring, "-A MT_POLICY -m mark"));
     }
     cJSON_Delete(out); PASS();
 }
@@ -550,53 +551,43 @@ TEST failed_refresh_preserves_both_families_dns_and_exact_mark_without_writes(vo
     }
     PASS();
 }
-TEST missing_mt_exclude_routes_all_after_validated_absence_but_not_before(void) {
-    /* No successfully validated RCI inventory exists yet: fail closed. */
+TEST absent_exclude_preserves_facts_across_errors_and_policy_transitions(void) {
     harness_t *h = harness_start_seeded(false,
         "configVersion: 0.8\napp: {keeneticPolicy: {enabled: true, policyId: mt, mode: exclude}}\n", 1);
     ASSERT(h);
     ASSERT_EQ(502, do_request("GET", "/api/v1/keenetic/policies", NULL, NULL));
     CHECK_CALL(assert_closed_gates());
-
-    /* RCI explicitly returned {}: absent policy has no clients to exclude. */
     atomic_store(&fetch_mode, 2);
     ASSERT_EQ(200, do_request("GET", "/api/v1/keenetic/policies", NULL, NULL));
-    cJSON *out = NULL;
-    ASSERT_EQ(200, do_request("GET", "/api/v1/keenetic/policy", NULL, &out));
-    ASSERT_STR_EQ("unavailable", state(out));
-    const cJSON *runtime = cJSON_GetObjectItemCaseSensitive(out, "runtime");
-    ASSERT_STR_EQ("POLICY_NOT_FOUND",
-        cJSON_GetObjectItemCaseSensitive(runtime, "reason")->valuestring);
-    ASSERT(cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(runtime, "processing_all")));
-    cJSON_Delete(out);
     CHECK_CALL(assert_open_gates());
-
     char *before = snapshot_text(); ASSERT(before);
-    ASSERT_EQ(200, do_request("GET", "/api/v1/keenetic/policies", NULL, NULL));
-    CHECK_CALL(assert_snapshot_unchanged(before));
-    atomic_store(&fetch_mode, 1);
-    ASSERT_EQ(502, do_request("GET", "/api/v1/keenetic/policies", NULL, NULL));
-    CHECK_CALL(assert_snapshot_unchanged(before));
+    const int inventories[] = {2, 1, 5, 6, 7, 2};
+    for (size_t i = 0; i < sizeof(inventories)/sizeof(*inventories); i++) {
+        atomic_store(&fetch_mode, inventories[i]);
+        ASSERT_EQ(inventories[i] == 2 ? 200 : 502,
+            do_request("GET", "/api/v1/keenetic/policies", NULL, NULL));
+        cJSON *out = NULL;
+        ASSERT_EQ(200, do_request("GET", "/api/v1/keenetic/policy", NULL, &out));
+        ASSERT_STR_EQ("unavailable", state(out));
+        const cJSON *runtime = cJSON_GetObjectItemCaseSensitive(out, "runtime");
+        ASSERT_STR_EQ("POLICY_NOT_FOUND", cJSON_GetObjectItemCaseSensitive(runtime, "reason")->valuestring);
+        ASSERT_FALSE(cJSON_GetObjectItemCaseSensitive(runtime, "processing_all"));
+        cJSON_Delete(out);
+        CHECK_CALL(assert_snapshot_unchanged(before));
+    }
     free(before);
-    CHECK_CALL(assert_open_gates()); /* transient RCI error preserves the last scope */
-
-    /* The policy becomes available under a firmware-generated ID. */
     atomic_store(&fetch_mode, 3);
     ASSERT_EQ(200, do_request("GET", "/api/v1/keenetic/policies", NULL, NULL));
     CHECK_CALL(assert_active_mark("0xffffd00/0x0fffffff", true));
-    ASSERT_EQ(200, do_request("GET", "/api/v1/keenetic/policy", NULL, &out));
-    ASSERT_STR_EQ("ready", state(out));
-    ASSERT_FALSE(cJSON_GetObjectItemCaseSensitive(
-        cJSON_GetObjectItemCaseSensitive(out, "runtime"), "processing_all"));
-    cJSON_Delete(out);
-
-    /* Removing the policy reopens exclude; include stays closed. */
     atomic_store(&fetch_mode, 2);
     ASSERT_EQ(200, do_request("GET", "/api/v1/keenetic/policies", NULL, NULL));
     CHECK_CALL(assert_open_gates());
     ASSERT_EQ(200, do_request("PUT", "/api/v1/keenetic/policy",
-        "{\"enabled\":true,\"policy_id\":\"mt\",\"mode\":\"include\"}", &out));
-    ASSERT_STR_EQ("unavailable", state(out)); cJSON_Delete(out);
+        "{\"enabled\":true,\"policy_id\":\"mt\",\"mode\":\"include\"}", NULL));
+    CHECK_CALL(assert_closed_gates());
+    atomic_store(&fetch_mode, 0);
+    ASSERT_EQ(200, do_request("PUT", "/api/v1/keenetic/policy",
+        "{\"enabled\":true,\"policy_id\":\"Waiting\",\"mode\":\"exclude\"}", NULL));
     CHECK_CALL(assert_closed_gates());
     harness_stop(h); PASS();
 }
@@ -703,7 +694,7 @@ int main(int argc, char **argv) {
     RUN_TEST(disable_supersedes_late_activation_without_blocking_the_loop);
     RUN_TEST(persistence_error_acknowledges_memory_state_and_supports_retry);
     RUN_TEST(failed_refresh_preserves_both_families_dns_and_exact_mark_without_writes);
-    RUN_TEST(missing_mt_exclude_routes_all_after_validated_absence_but_not_before);
+    RUN_TEST(absent_exclude_preserves_facts_across_errors_and_policy_transitions);
     RUN_TEST(validated_absence_or_mark_loss_invalidates_scope_and_errors_cannot_resurrect_it);
     RUN_TEST(startup_and_changed_selection_never_borrow_a_previous_policy_mark);
     RUN_TEST(disabling_active_filter_wins_over_late_success_and_failed_refresh);

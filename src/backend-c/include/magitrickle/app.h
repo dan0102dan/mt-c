@@ -335,9 +335,9 @@ mt_err_t mt_app_force_commit_iptables(mt_app_t *app);
  * NULL (remap53 disabled) is fine. */
 void mt_app_set_port_remap(mt_app_t *app, mt_port_remap_t *remap);
 
-/* Writes the netfilter tables whole: drops every chain and jump of ours
- * from the kernel first, then stages the port remap and every enabled
- * group and writes the result in one commit per family. Returns
+/* Prepares the complete replacement in memory, then reconciles owned
+ * chains without a separate destructive cleanup. Applied status is invalid
+ * during a pass and after any failure, even at the same generation. Returns
  * MT_ERR_CANCELED as soon as `cancel` is raised. Public for tests; the
  * committer thread calls it through mt_nfcommit_t. */
 mt_err_t mt_app_rebuild_netfilter(mt_app_t *app, mt_cancel_t *cancel);
@@ -355,14 +355,10 @@ void mt_app_stop_netfilter_committer(mt_app_t *app);
 
 #ifdef MT_ENTWARE_KN
 void mt_app_policy_get(const mt_app_t *app, mt_kn_policy_config_t *config,
-                        bool *ready, bool *applied, mt_err_t *apply_error);
+                        mt_kn_policy_resolution_t *resolution, bool *applied, mt_err_t *apply_error);
 /* Validation and model publication on the loop; netfilter I/O stays on the
  * existing committer. Config is saved separately, with existing retry semantics. */
 mt_err_t mt_app_policy_set(mt_app_t *app, const mt_kn_policy_config_t *config,
-                            bool ready, uint32_t mark);
-/* Only a validated RCI inventory may assert confirmed_absent. */
-mt_err_t mt_app_policy_set_resolved(mt_app_t *app, const mt_kn_policy_config_t *config,
-                                    bool ready, uint32_t mark, bool confirmed_absent);
-bool mt_app_policy_excludes_none(const mt_app_t *app);
+                            mt_kn_policy_resolution_t resolution, uint32_t mark);
 #endif
 #endif /* MAGITRICKLE_APP_H */

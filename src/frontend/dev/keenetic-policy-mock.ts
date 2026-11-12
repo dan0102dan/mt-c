@@ -34,11 +34,7 @@ export function registerMockPolicyRoutes(
         ? { state: "disabled" }
         : selected?.available
           ? { state: "ready" }
-          : {
-              state: "unavailable",
-              reason: selected ? "POLICY_UNAVAILABLE" : "POLICY_NOT_FOUND",
-              ...(current.mode === "exclude" && !selected ? { processing_all: true } : {}),
-            },
+          : { state: "unavailable", reason: selected ? "POLICY_UNAVAILABLE" : "POLICY_NOT_FOUND" },
     };
   }
 

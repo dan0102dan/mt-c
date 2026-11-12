@@ -81,7 +81,6 @@ Deno.test("missing and unready policies can be saved before Keenetic provides th
         runtime: {
           state: "unavailable",
           reason: policy_id === "Policy3" ? "POLICY_UNAVAILABLE" : "POLICY_NOT_FOUND",
-          ...(mode === "exclude" && policy_id !== "Policy3" ? { processing_all: true } : {}),
         },
       };
       assert.deepEqual(await response.json(), expected);
