@@ -1,0 +1,98 @@
+name: KeeneticOS firmware emulator lab
+on:
+  push:
+    branches: [test/keeneticos-emulator-20261112]
+    paths: ['.github/workflows/keeneticos-emulator-lab.yml', '.github/labs/**']
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: keeneticos-lab-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  firmware:
+    name: Inspect Osvault AX3000T inputs without running installer
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Fetch public firmware and inspect its boot payloads
+        run: |
+          set -euo pipefail
+          mkdir -p lab/input lab/report
+          curl -fL --retry 2 --max-time 180 'https://osvault.project-athens.com/files/firmware/Xiaomi_AX3000T_macOS.zip' -o lab/input/installer.zip
+          echo '6a0422b831c27542586038d540e93a40  lab/input/installer.zip' | md5sum -c -
+          curl -fL --retry 2 --max-time 180 'https://osvault.project-athens.com/osvault/Xiaomi%20AX3000T/Xiaomi_AX3000T_5.1.4.bin' -o lab/input/firmware.bin
+          echo 'b438505a84d5d4bd318d722294b43c34  lab/input/firmware.bin' | md5sum -c -
+          sha256sum lab/input/* | tee lab/report/sha256.txt
+          python3 - <<'PY' | tee lab/report/inventory.txt
+          from pathlib import Path, PurePosixPath
+          import zipfile, re
+          with zipfile.ZipFile('lab/input/installer.zip') as z:
+              for item in z.infolist():
+                  print(item.file_size, item.filename)
+                  if item.is_dir() or item.file_size > 80*1024*1024:
+                      continue
+                  if item.filename.endswith(('.bin', '.fip', '.itb', '.img', '.sh', '.ini', '.txt', '.json')):
+                      payload = z.read(item)
+                      print('HEADER', payload[:96].hex())
+                      for m in list(re.finditer(rb'(?:mtdparts=|bootcmd=|bootargs=|spi-nand0:)[^\x00\r\n]{0,400}', payload))[:15]:
+                          print('BOOT', m.group().decode('utf-8', 'replace'))
+                      if item.filename.endswith(('.sh', '.ini', '.txt', '.json')) and len(payload)<100000:
+                          print(payload.decode('utf-8','replace'))
+          p=Path('lab/input/firmware.bin').read_bytes()
+          print('FIRMWARE_HEADER',p[:128].hex())
+          for sig in (b'\x27\x05\x19\x56',b'hsqs',b'UBI#',b'\xd0\x0d\xfe\xed'):
+              pos=0; found=[]
+              while len(found)<12:
+                  pos=p.find(sig,pos)
+                  if pos<0: break
+                  found.append(hex(pos)); pos+=4
+              print('MAGIC',sig.hex(),found)
+          PY
+      - uses: actions/upload-artifact@v6
+        if: always()
+        with:
+          name: osvault-ax3000t-inputs
+          path: lab/
+          retention-days: 7
+  runtime:
+    name: Prepare reusable patched QEMU runtime
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - name: Resolve and build same latest stable emulator
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p .build/keenetic
+          python3 tools/ci/router_emulator_release.py --destination .build/keenetic
+          (cd .build/keenetic && tar -xzf emulator.tar.gz && unzip -q presets.zip)
+          python3 - <<'PY'
+          import pathlib, sys, shutil
+          sys.path.insert(0, 'tools/ci')
+          from router_emulator_runtime import ensure_runtime
+          root=pathlib.Path('.build/keenetic/Router-Emulator').resolve()
+          binary=ensure_runtime(root, install_build_deps=True, jobs=4)
+          shutil.copy2(binary, root/'native-qemu-system-aarch64')
+          link=root/'src/qemu'
+          if link.is_symlink(): link.unlink()
+          dest=root/'src/qemu/build'
+          dest.mkdir(parents=True, exist_ok=True)
+          shutil.move(root/'native-qemu-system-aarch64', dest/'qemu-system-aarch64')
+          for source in (root/'work').glob('runtime-source-*'):
+              shutil.rmtree(source)
+          PY
+          tar -C .build/keenetic -czf .build/keenetic-runtime.tar.gz Router-Emulator
+      - uses: actions/upload-artifact@v6
+        if: always()
+        with:
+          name: keenetic-emulator-runtime
+          path: |
+            .build/keenetic-runtime.tar.gz
+            .build/keenetic/router-emulator-release.json
+            .build/keenetic/Router-Emulator/work/*.log
+          retention-days: 7
