@@ -89,7 +89,7 @@ static void test_sessions_and_no_quota(void) {
     assert(state().count == 11000);
     char row[128]; mt_log_history_piece_t p;
     assert(mt_log_history_read(old, 1, 0, row, sizeof(row), &p));
-    assert(memcmp(row + 25, "record=0\n", 9) == 0);
+    assert(memcmp(row + 29, "record=0\n", 9) == 0);
     assert(mt_log_history_enable(true)); /* Never clear on an idempotent Start. */
     assert(state().count == 11000 && strcmp(old, state().session) == 0);
     assert(mt_log_history_enable(false));
