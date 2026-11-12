@@ -66,6 +66,10 @@ class TestCIOrchestration(unittest.TestCase):
             self.assertIn(f"matrix.openwrt_version == '{version}'", build)
         self.assertIn("Upload router-emulator smoke logs", build)
 
+    def test_entware_registry_contract_is_still_checked(self):
+        self.assertIn("test_ghcr_login.py", workflow("check-packaging.yml"))
+        self.assertIn("Authenticate Entware builder registry", workflow("build.yml"))
+
     def test_release_uploads_still_available(self):
         ci = workflow("ci.yml")
         build = workflow("build.yml")

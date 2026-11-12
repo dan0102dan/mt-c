@@ -17,6 +17,8 @@ jobs:
           go-version-file: tools/bench/go.mod
           cache-dependency-path: tools/bench/go.sum
       - run: python3 tools/tests/package_identity.py
+      - name: Test Entware registry authentication
+        run: python3 tools/ci/tests/test_ghcr_login.py
       - name: Test CI orchestration and emulator gating
         run: python3 tools/ci/tests/test_ci_orchestration.py
       - name: Test Entware packaged install hooks
