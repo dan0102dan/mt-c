@@ -28,6 +28,24 @@ jobs:
           test "$(git hash-object src/frontend/tests/e2e/general-settings.spec.ts)" = 815af0a435060db463a3ec3b139a31434b7230aa
           git apply --check /tmp/settings-refresh-results/fix.patch
           git apply /tmp/settings-refresh-results/fix.patch
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path('src/frontend/tests/e2e/general-settings.spec.ts')
+          s = p.read_text()
+          old = '''    await check.click();
+              await expect.poll(() => state.checkReads).toBe(2);
+              await expect(details.getByRole("alert")).toBeVisible();'''
+          new = '''    await check.click();
+              await expect.poll(() => state.checkReads).toBe(2);
+              await expect(page.locator("#general")).toHaveAttribute("aria-busy", "false");
+              // Starting a request closes the feedback popover; reopen the resulting error.
+              await expect(details).toHaveCount(0);
+              await expect(attention).toBeVisible();
+              await attention.click();
+              await expect(details.getByRole("alert")).toBeVisible();'''
+          assert s.count(old) == 1
+          p.write_text(s.replace(old, new))
+          PY
           git diff --check
           git diff --stat
       - uses: actions/setup-node@v5
@@ -42,6 +60,14 @@ jobs:
           set -euo pipefail
           npm ci
           npx playwright install --with-deps chromium
+      - name: Format only the modified test block
+        working-directory: src/frontend
+        run: |
+          set -euo pipefail
+          offset=$(node --input-type=module -e 'import fs from "node:fs"; const s=fs.readFileSync("tests/e2e/general-settings.spec.ts","utf8"); const i=s.indexOf("for (const russian of [false, true]) {"); if(i<0)process.exit(1); console.log(i)')
+          npx prettier tests/e2e/general-settings.spec.ts --range-start "$offset" --write
+          git diff --check
+          git diff -- tests/e2e/general-settings.spec.ts > /tmp/settings-refresh-results/fix.patch
       - name: Frontend type checks
         working-directory: src/frontend
         run: npm run check
