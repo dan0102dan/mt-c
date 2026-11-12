@@ -357,6 +357,23 @@ static void handle_netfilterd_hook(mt_http_req_t *req, mt_http_res_t *res, void 
         mt_http_res_write_error(res, 400, "failed to parse request");
         return;
     }
+    const cJSON *action = cJSON_GetObjectItemCaseSensitive(json, "action");
+    bool status = cJSON_IsString(action) && strcmp(action->valuestring, "status") == 0;
+    if (action && !status &&
+        (!cJSON_IsString(action) || strcmp(action->valuestring, "notify") != 0)) {
+        cJSON_Delete(json);
+        mt_http_res_write_error(res, 400, "action must be notify or status");
+        return;
+    }
+    if (status) {
+        cJSON_Delete(json);
+        /* Observe the same worker without logging an event or queuing another
+         * pass. 204 distinguishes this status from a legacy daemon's 200 event
+         * acknowledgement, which does not prove its routing was applied. */
+        mt_http_res_set_header(res, "Cache-Control", "no-store");
+        mt_http_res_write(res, mt_app_routing_ready(ctx->app) ? 204 : 503, NULL, NULL, 0);
+        return;
+    }
     cJSON *type_j = cJSON_GetObjectItemCaseSensitive(json, "type");
     cJSON *table_j = cJSON_GetObjectItemCaseSensitive(json, "table");
     MT_DEBUG("received netfilter.d event: type=%s table=%s",

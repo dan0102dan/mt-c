@@ -4538,14 +4538,53 @@ for validation of hardware-specific Keenetic behavior.
 ## D-95 — Wait for Keenetic routing initialization on service restart
 
 The Keenetic init script reports success for a foreground start or restart
-only after the normal DNS API answers over the local Unix socket. The daemon
-starts serving this API after configuring DNS redirection and enabling and
-synchronizing its routing groups. A PID or a socket file alone can appear
-earlier. The API is absent in the settings-only recovery server.
+only after `POST /api/v1/system/hooks/netfilterd` with
+`{"action":"status"}` answers HTTP 204 over the local Unix socket. The existing
+hook gains an optional `action`: `notify` (the default) keeps its immediate
+HTTP 200 acknowledgement and requests a rebuild; `status` only checks current
+runtime state and returns an empty 204 or 503 with `Cache-Control: no-store`.
+Unknown or non-string actions return 400 without queuing work. The firmware's
+existing `{"type","table"}` notifications keep their original behavior.
+The status action does not queue or interrupt a rebuild, wait inside the HTTP
+handler, or allocate a separate waiter. The init script can poll it without
+keeping the committer's queue busy. No separate readiness route is added.
+
+The hook is registered with the normal system API, after synchronous DNS and
+routing initialization, and is absent in the settings-only recovery server.
+Existing WebUI authentication applies when it is accessed over TCP. Status
+success deliberately uses 204 rather than the notification's 200: older
+daemons ignore the new action and would otherwise falsely acknowledge readiness.
+The init script rejects such a 200 immediately and reports that a restart is
+required, rather than repeatedly sending notifications to an older process.
+
+Readiness requires a running app and an idle netfilter committer. On Keenetic,
+the current policy generation must have been applied successfully; an enabled
+policy must also have received a validated initial RCI resolution. UNKNOWN
+remains HTTP 503 while that first inventory is pending or failing. Disabled
+filtering does not require RCI. Validated ABSENT and UNMARKED resolutions retain
+their D-94 traffic scopes and can become ready after those scopes are applied.
+Queued, in-flight, canceled or failed netfilter application cannot report ready.
+The status action reads local runtime state without fetching RCI or changing rules.
+
+The DNS capture endpoint is deliberately not used: it can answer 200 before
+asynchronous policy initialization completes, or 503 when optional DNS history
+is unavailable while DNS forwarding continues. The netfilter status action does not
+depend on diagnostic storage, device-name discovery or Internet reachability.
 
 The wait is bounded and returns a failure if routing initialization has not
 completed or if the newly launched process exits. The early-boot background
 retry remains available for `start`.
 An explicit `restart` waits even during early boot. This defines when callers
 can start new traffic after a restart. Packets sent during a full stop and
-start can still see the kernel state that exists at that instant.
+start can still see the kernel state that exists at that instant. Later
+interface/topology notifications can still change the selected route; readiness
+does not promise that the network or firmware will stop changing.
+
+Tests cover the shell's start/restart wait and failure propagation, HTTP
+readiness during delayed RCI and netfilter application, disabled and validated
+unavailable policies, missing DNS history, and settings-only recovery. They also
+check that status polling and invalid actions do not trigger rebuilds, ordinary
+notifications still acknowledge immediately, and an older daemon's notification
+response cannot be mistaken for readiness. Backend
+tests use real HTTP/event-loop code with modeled RCI and kernel transports;
+they do not replace physical-router validation.

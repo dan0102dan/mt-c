@@ -30,21 +30,35 @@ get_uptime() {
 
 wait_for_routing() {
   routing_pid=$1
+  routing_request='{"action":"status"}'
+  routing_failure="routing readiness timed out after ${READY_TIMEOUT}s"
   deadline=$(( $(get_uptime) + READY_TIMEOUT ))
   while [ "$(get_uptime)" -lt "$deadline" ]; do
     if [ -n "$routing_pid" ]; then
-      kill -0 "$routing_pid" 2>/dev/null || return 1
+      if ! kill -0 "$routing_pid" 2>/dev/null; then
+        routing_failure="daemon exited before routing was ready"
+        return 1
+      fi
     else
-      pidof "$PROC" >/dev/null 2>&1 || return 1
+      if ! pidof "$PROC" >/dev/null 2>&1; then
+        routing_failure="daemon exited before routing was ready"
+        return 1
+      fi
     fi
-    # The normal DNS API answers only once the loop is serving, after all
-    # configured groups and the DNS remap have been initialized.
+    # Query the existing hook without asking it to rebuild the rules.
+    # Readiness includes policy resolution and the applied netfilter generation.
     response=$(
-      printf 'GET /api/v1/system/dns/capture HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n' |
+      printf 'POST /api/v1/system/hooks/netfilterd HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nContent-Length: %s\r\nConnection: close\r\n\r\n%s' "${#routing_request}" "$routing_request" |
         socat -T 1 - UNIX-CONNECT:"$SOCKET_PATH",connect-timeout=1 2>/dev/null
     )
     case "$response" in
-      'HTTP/1.1 200 '*|'HTTP/1.0 200 '*) return 0 ;;
+      'HTTP/1.1 204 '*|'HTTP/1.0 204 '*) return 0 ;;
+      'HTTP/1.1 200 '*|'HTTP/1.0 200 '*)
+        # Older daemons treat any hook body as a refresh notification.
+        # Do not repeatedly rebuild their rules or mistake their 200 for ready.
+        routing_failure="daemon does not support netfilter status checks; update and restart required"
+        return 1
+        ;;
     esac
     sleep 1
   done
@@ -100,8 +114,8 @@ start() {
   fi
 
   if ! wait_for_routing "$started_pid"; then
-    echo -e "            $ansi_red failed. $ansi_std"
-    logger "Routing did not become ready for $DESC from $CALLER."
+    echo -e "            $ansi_red failed: $routing_failure. $ansi_std"
+    logger "Failed to start $DESC from $CALLER: $routing_failure."
     return 255
   fi
 

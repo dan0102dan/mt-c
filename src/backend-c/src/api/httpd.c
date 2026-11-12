@@ -441,6 +441,7 @@ static const char *reason_phrase(int status) {
     switch (status) {
     case 200: return "OK";
     case 202: return "Accepted";
+    case 204: return "No Content";
     case 400: return "Bad Request";
     case 401: return "Unauthorized";
     case 404: return "Not Found";
@@ -462,24 +463,29 @@ static void build_response_bytes(mt_http_conn_t *c, const mt_http_res_t *res) {
     int off = snprintf(head, sizeof(head), "HTTP/1.1 %d %s\r\n", res->status,
                        reason_phrase(res->status));
     for (size_t i = 0; i < res->n_headers && off < (int)sizeof(head); i++) {
+        if (res->status == 204 &&
+            (strcasecmp(res->headers[i].name, "Content-Length") == 0 ||
+             strcasecmp(res->headers[i].name, "Transfer-Encoding") == 0)) { continue; }
         off += snprintf(head + off, sizeof(head) - (size_t)off, "%s: %s\r\n",
                         res->headers[i].name, res->headers[i].value);
     }
-    off += snprintf(head + off, sizeof(head) - (size_t)off, "Content-Length: %zu\r\n",
-                    res->body_len);
+    size_t body_len = res->status == 204 ? 0 : res->body_len;
+    if (res->status != 204) {
+        off += snprintf(head + off, sizeof(head) - (size_t)off, "Content-Length: %zu\r\n", body_len);
+    }
     off += snprintf(head + off, sizeof(head) - (size_t)off, "Connection: %s\r\n",
                     c->close_after_write ? "close" : "keep-alive");
     off += snprintf(head + off, sizeof(head) - (size_t)off, "\r\n");
 
     size_t head_len = (size_t)off;
-    c->wbuf = malloc(head_len + res->body_len);
+    c->wbuf = malloc(head_len + body_len);
     if (!c->wbuf) {
         c->wbuf_len = 0;
         return;
     }
     memcpy(c->wbuf, head, head_len);
-    if (res->body_len > 0) { memcpy(c->wbuf + head_len, res->body, res->body_len); }
-    c->wbuf_len = head_len + res->body_len;
+    if (body_len > 0) { memcpy(c->wbuf + head_len, res->body, body_len); }
+    c->wbuf_len = head_len + body_len;
     c->wbuf_sent = 0;
 }
 

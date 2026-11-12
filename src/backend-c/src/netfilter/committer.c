@@ -95,6 +95,15 @@ uint64_t mt_nfcommit_passes(const mt_nfcommit_t *c) {
     return n;
 }
 
+bool mt_nfcommit_idle(const mt_nfcommit_t *c) {
+    if (!c) { return true; }
+    mt_nfcommit_t *m = (mt_nfcommit_t *)c;
+    pthread_mutex_lock(&m->mu);
+    bool idle = !m->pending && !m->running && !m->stopping;
+    pthread_mutex_unlock(&m->mu);
+    return idle;
+}
+
 void mt_nfcommit_request(mt_nfcommit_t *c) {
     if (!c) { return; }
 
@@ -173,6 +182,9 @@ static void *committer_main(void *arg) {
         pthread_mutex_lock(&c->mu);
         c->running = false;
         stopping = c->stopping;
+        /* Publish a failed pass and its owed retry together. Readiness must
+         * not observe an idle interval between failure and retry scheduling. */
+        if (err != MT_OK && !stopping) { c->pending = true; }
         pthread_mutex_unlock(&c->mu);
         if (stopping) { break; }
 
@@ -195,9 +207,6 @@ static void *committer_main(void *arg) {
             delay_ms = delay_ms * 2 < c->max_delay_ms ? delay_ms * 2 : c->max_delay_ms;
         }
 
-        pthread_mutex_lock(&c->mu);
-        c->pending = true;
-        pthread_mutex_unlock(&c->mu);
     }
 
     return NULL;

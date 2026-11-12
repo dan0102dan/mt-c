@@ -107,6 +107,12 @@ mt_err_t mt_app_suspend(mt_app_t *app);
  * groups are brought up by main.c, not through this path. */
 void mt_app_set_running(mt_app_t *app, bool running);
 
+/* Event-loop-only, read-only readiness check after synchronous startup.
+ * Keenetic also requires a known policy resolution (when enabled), its
+ * successfully applied generation, and no pending/in-flight table rebuild.
+ * Does not probe RCI, inspect kernel tables, or depend on diagnostics. */
+bool mt_app_routing_ready(const mt_app_t *app);
+
 size_t mt_app_user_group_count(const mt_app_t *app);
 mt_ruleset_t *mt_app_user_group_at(const mt_app_t *app, size_t idx);
 /* Linear search (group counts are small; matches the O(n) scans Go's

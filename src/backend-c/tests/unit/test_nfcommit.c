@@ -126,6 +126,7 @@ TEST request_does_not_wait_for_the_write(void) {
 
     mt_nfcommit_request(c);
     AWAIT(&p, p.started >= 1);
+    ASSERT_FALSE(mt_nfcommit_idle(c));
 
     /* A second request lands while the first rebuild is parked. If it
      * blocked, this test would hang rather than fail. */
@@ -240,6 +241,7 @@ TEST request_before_start_is_served(void) {
 
     mt_nfcommit_request(c);
     ASSERT_EQ(0u, mt_nfcommit_passes(c));
+    ASSERT_FALSE(mt_nfcommit_idle(c));
 
     ASSERT_EQ(MT_OK, mt_nfcommit_start(c));
     AWAIT(&p, p.finished >= 1);
@@ -261,6 +263,7 @@ TEST stop_aborts_a_running_rebuild(void) {
 
     mt_nfcommit_stop(c); /* hangs here if the abort does not reach it */
     ASSERT(p.interrupted >= 1);
+    ASSERT_FALSE(mt_nfcommit_idle(c));
 
     mt_nfcommit_free(c);
     probe_destroy(&p);
@@ -313,6 +316,7 @@ TEST idle_committer_does_nothing(void) {
 
     sleep_ms(50);
     ASSERT_EQ(0u, mt_nfcommit_passes(c));
+    ASSERT(mt_nfcommit_idle(c));
 
     mt_nfcommit_free(c);
     probe_destroy(&p);
@@ -324,6 +328,7 @@ TEST null_and_double_stop_are_safe(void) {
     mt_nfcommit_stop(NULL);
     mt_nfcommit_free(NULL);
     ASSERT_EQ(0u, mt_nfcommit_passes(NULL));
+    ASSERT(mt_nfcommit_idle(NULL));
     ASSERT(mt_nfcommit_cancel(NULL) == NULL);
     ASSERT(mt_nfcommit_new(NULL, NULL) == NULL);
 
