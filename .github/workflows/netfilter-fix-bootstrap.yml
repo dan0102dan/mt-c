@@ -1,0 +1,28 @@
+name: Netfilter fix source fixture
+on:
+  push:
+    branches: [test/netfilter-fix-bootstrap-20261112]
+    paths: [.github/workflows/netfilter-fix-bootstrap.yml]
+permissions:
+  contents: read
+jobs:
+  fixture:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: e5be3e4fd788b411dc182a6b5f6504b58c571e39
+      - run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libyaml-dev libcjson-dev libmnl-dev
+          mkdir -p /tmp/mtc-fix-fixture/include
+          git archive --format=tar.gz HEAD > /tmp/mtc-fix-fixture/source.tar.gz
+          git rev-parse HEAD > /tmp/mtc-fix-fixture/source.sha
+          cp /usr/include/yaml.h /tmp/mtc-fix-fixture/include/
+          cp -r /usr/include/cjson /usr/include/libmnl /tmp/mtc-fix-fixture/include/
+      - uses: actions/upload-artifact@v6
+        with:
+          name: mtc-fix-source
+          path: /tmp/mtc-fix-fixture/
+          retention-days: 1
