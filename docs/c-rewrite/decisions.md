@@ -4534,3 +4534,18 @@ Tests cover IPv4/IPv6 client and router-local packets, connmarks, DNS guards,
 RCI transitions/errors, and identical-generation failure and retry. Real
 kernel legacy/nft recovery tests remain part of CI; none of these substitute
 for validation of hardware-specific Keenetic behavior.
+
+## D-95 — Wait for Keenetic routing initialization on service restart
+
+The Keenetic init script reports success for a foreground start or restart
+only after the normal DNS API answers over the local Unix socket. The daemon
+starts serving this API after configuring DNS redirection and enabling and
+synchronizing its routing groups. A PID or a socket file alone can appear
+earlier. The API is absent in the settings-only recovery server.
+
+The wait is bounded and returns a failure if routing initialization has not
+completed or if the newly launched process exits. The early-boot background
+retry remains available for `start`.
+An explicit `restart` waits even during early boot. This defines when callers
+can start new traffic after a restart. Packets sent during a full stop and
+start can still see the kernel state that exists at that instant.

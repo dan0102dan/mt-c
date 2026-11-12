@@ -7,6 +7,8 @@ PREARGS=""
 DESC="MagiTrickle Daemon"
 PATH=/opt/sbin:/opt/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 UPTIME_MAX_BORDER=300
+READY_TIMEOUT=60
+SOCKET_PATH=/opt/var/run/magitrickle.sock
 
 ACTION=$1
 CALLER=$2
@@ -24,6 +26,29 @@ ansi_ul="\033[4m";
 
 get_uptime() {
     cut -d. -f1 /proc/uptime
+}
+
+wait_for_routing() {
+  routing_pid=$1
+  deadline=$(( $(get_uptime) + READY_TIMEOUT ))
+  while [ "$(get_uptime)" -lt "$deadline" ]; do
+    if [ -n "$routing_pid" ]; then
+      kill -0 "$routing_pid" 2>/dev/null || return 1
+    else
+      pidof "$PROC" >/dev/null 2>&1 || return 1
+    fi
+    # The normal DNS API answers only once the loop is serving, after all
+    # configured groups and the DNS remap have been initialized.
+    response=$(
+      printf 'GET /api/v1/system/dns/capture HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n' |
+        socat -T 1 - UNIX-CONNECT:"$SOCKET_PATH",connect-timeout=1 2>/dev/null
+    )
+    case "$response" in
+      'HTTP/1.1 200 '*|'HTTP/1.0 200 '*) return 0 ;;
+    esac
+    sleep 1
+  done
+  return 1
 }
 
 startup_loop() {
@@ -62,36 +87,32 @@ start() {
   [ "$ENABLED" != "yes" ] && return 8
   echo -e -n "$ansi_white Starting $DESC... $ansi_std"
 
-  if [ -n "`pidof $PROC`" ]; then
-    echo -e "            $ansi_yellow already running. $ansi_std"
-    return 0
+  started_pid=
+  if ! pidof "$PROC" >/dev/null 2>&1; then
+    if [ "$ACTION" != restart ] && [ "$(get_uptime)" -le "$UPTIME_MAX_BORDER" ]; then
+      echo -e "            $ansi_yellow in loop (until uptime $UPTIME_MAX_BORDER)... $ansi_std"
+      startup_loop &
+      return 0
+    fi
+    $PRECMD > /dev/null 2>&1
+    $PREARGS $PROC $ARGS > /dev/null 2>&1 &
+    started_pid=$!
   fi
 
-  if [ "`get_uptime`" -le "$UPTIME_MAX_BORDER" ]; then
-    echo -e "            $ansi_yellow in loop (until uptime $UPTIME_MAX_BORDER)... $ansi_std"
-    startup_loop &
-    return 0
-  fi
-
-  $PRECMD > /dev/null 2>&1
-  $PREARGS $PROC $ARGS > /dev/null 2>&1 &
-  COUNTER=0
-  LIMIT=10
-  while [ -z "`pidof $PROC`" -a "$COUNTER" -le "$LIMIT" ]; do
-    sleep 1;
-    COUNTER=`expr $COUNTER + 1`
-  done
-  $POSTCMD > /dev/null 2>&1
-
-  if [ -z "`pidof $PROC`" ]; then
+  if ! wait_for_routing "$started_pid"; then
     echo -e "            $ansi_red failed. $ansi_std"
-    logger "Failed to start $DESC from $CALLER."
+    logger "Routing did not become ready for $DESC from $CALLER."
     return 255
-  else
+  fi
+
+  if [ -n "$started_pid" ]; then
+    $POSTCMD > /dev/null 2>&1
     echo -e "            $ansi_green done. $ansi_std"
     logger "Started $DESC from $CALLER."
-    return 0
+  else
+    echo -e "            $ansi_yellow already running. $ansi_std"
   fi
+  return 0
 }
 
 stop() {
