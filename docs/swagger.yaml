@@ -91,10 +91,22 @@ definitions:
     type: object
   types.NetfilterDHookReq:
     properties:
+      action:
+        description: >-
+          notify requests a netfilter rebuild and immediately acknowledges it
+          with 200. status only checks whether local routing is applied and
+          returns 204 when ready or 503 while pending. Omission keeps the
+          legacy notification behavior. Unknown or non-string actions are
+          rejected without queuing a rebuild.
+        type: string
+        enum: [notify, status]
+        default: notify
       table:
+        description: Firmware event metadata; ignored by the status action.
         example: nat
         type: string
       type:
+        description: Firmware event metadata; ignored by the status action.
         example: iptables
         type: string
     type: object
@@ -762,37 +774,6 @@ paths:
       summary: Обновить правило
       tags:
       - rules
-  /api/v1/system/ready:
-    get:
-      summary: Check whether local DNS routing initialization has completed
-      description: >-
-        Read-only and not cached. Available in the normal runtime over the
-        administrative Unix socket and the authenticated WebUI API. Readiness
-        requires a running application and no queued or in-flight netfilter
-        application. On Keenetic, the current policy generation must be applied
-        successfully and an enabled policy must have an initial validated RCI
-        resolution. Disabled filtering needs no RCI response. Validated absent
-        or unmarked policies preserve their configured traffic scope. This
-        check does not depend on optional DNS history, perform RCI requests or
-        guarantee Internet connectivity. Both 200 and 503 have empty bodies.
-      responses:
-        "200":
-          description: Local initialization and current routing application are complete
-          headers:
-            Cache-Control:
-              type: string
-              description: Always no-store
-        "401":
-          description: WebUI authentication required when enabled
-        "404":
-          description: The normal runtime API is unavailable in settings-only recovery
-        "503":
-          description: Runtime initialization or routing application is pending or failed
-          headers:
-            Cache-Control:
-              type: string
-              description: Always no-store
-      tags: [system]
   /api/v1/system/settings:
     get:
       summary: Read editable application settings and the last apply result
@@ -921,7 +902,21 @@ paths:
     post:
       consumes:
       - application/json
-      description: Эмитирует хук эвента netfilter.d
+      description: >-
+        Receives netfilter.d notifications and exposes a read-only status
+        action on the same hook. The legacy type/table payload, or an explicit
+        action=notify, requests a rebuild and immediately returns 200 without
+        waiting for it to finish. action=status never queues a rebuild or
+        performs RCI I/O; it returns an empty, uncached 204 only when the
+        application is running and no netfilter application is queued or in
+        flight. On Keenetic the current policy generation must be applied
+        successfully and an enabled policy must have an initial validated RCI
+        resolution. Disabled filtering needs no RCI response; validated absent
+        or unmarked policies preserve their configured traffic scope. Status
+        is independent of optional DNS history and does not guarantee Internet
+        connectivity. The hook is absent in settings-only recovery. Using 204
+        for status distinguishes readiness from older daemons that ignore the
+        action field and return the notification acknowledgement, 200.
       parameters:
       - description: Тело запроса
         in: body
@@ -933,16 +928,28 @@ paths:
       - application/json
       responses:
         "200":
-          description: OK
+          description: Notification acknowledged; netfilter application may still be pending
+        "204":
+          description: Status action only; local runtime and current routing application are ready
+          headers:
+            Cache-Control:
+              type: string
+              description: Always no-store
         "400":
-          description: Bad Request
+          description: Invalid JSON or unknown/non-string action; no rebuild requested
           schema:
             $ref: '#/definitions/types.ErrorRes'
-        "500":
-          description: Internal Server Error
-          schema:
-            $ref: '#/definitions/types.ErrorRes'
-      summary: Хук эвента netfilter.d
+        "401":
+          description: WebUI authentication required when enabled
+        "404":
+          description: The normal runtime API is unavailable in settings-only recovery
+        "503":
+          description: Status action only; runtime initialization or routing application is pending or failed
+          headers:
+            Cache-Control:
+              type: string
+              description: Always no-store
+      summary: Notify netfilter.d changes or check current routing application
       tags:
       - hooks
   /api/v1/system/update:

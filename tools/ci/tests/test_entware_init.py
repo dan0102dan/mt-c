@@ -6,6 +6,7 @@ state and record service actions; they never inspect or signal host services.
 The sleep and uptime fixtures make the production polling loops run quickly.
 """
 
+import json
 import os
 from pathlib import Path
 import re
@@ -53,8 +54,8 @@ uptime=$(cat "$clock")
 printf '%s\\n' "$uptime"
 ''',
             "socat": '''#!/bin/sh
-IFS= read -r request
-case "$request" in 'GET /api/v1/system/ready HTTP/1.1'*) ;; *) exit 2 ;; esac
+request=$(mktemp "$ENTWARE_INIT_TEST_ROOT/request.XXXXXX") || exit 2
+cat > "$request"
 [ -f "$ENTWARE_INIT_TEST_ROOT/running" ] || exit 1
 printf 'probe\\n' >> "$ENTWARE_INIT_TEST_ROOT/actions"
 uptime=$(cat "$ENTWARE_INIT_TEST_ROOT/clock")
@@ -63,7 +64,7 @@ if [ "$uptime" -lt "${ENTWARE_INIT_SOCKET_AT:-0}" ]; then
 elif [ "$uptime" -lt "${ENTWARE_INIT_READY_AT:-301}" ]; then
     printf 'HTTP/1.1 503 Service Unavailable\\r\\n'
 else
-    printf 'HTTP/1.1 %s\\r\\n' "${ENTWARE_INIT_HTTP_STATUS:-200 OK}"
+    printf 'HTTP/1.1 %s\\r\\n' "${ENTWARE_INIT_HTTP_STATUS:-204 No Content}"
 fi
 ''',
             "logger": "#!/bin/sh\nexit 0\n",
@@ -100,8 +101,33 @@ exec /bin/sleep 0.02
         result = subprocess.run(["/bin/sh", str(self.script), action],
                                 env=self.env, text=True, stdout=subprocess.PIPE,
                                 stderr=subprocess.STDOUT, timeout=20)
+        for request in self.directory.glob("request.*"):
+            self.assert_netfilter_status_request(request.read_bytes())
         actions = (self.directory / "actions").read_text().splitlines()
         return result, actions
+
+    def assert_netfilter_status_request(self, request):
+        head, separator, body = request.partition(b"\r\n\r\n")
+        self.assertEqual(b"\r\n\r\n", separator, "HTTP headers must end with CRLF CRLF")
+        lines = head.split(b"\r\n")
+        self.assertEqual(b"POST /api/v1/system/hooks/netfilterd HTTP/1.1", lines[0])
+        headers = {}
+        for line in lines[1:]:
+            self.assertNotIn(b"\r", line, "HTTP headers must use CRLF line endings")
+            self.assertNotIn(b"\n", line, "HTTP headers must use CRLF line endings")
+            name, colon, value = line.partition(b":")
+            self.assertEqual(b":", colon, "HTTP header is missing its colon")
+            name = name.lower()
+            self.assertNotIn(name, headers, "duplicate HTTP header")
+            headers[name] = value.strip()
+        self.assertEqual(b"localhost", headers.get(b"host"))
+        self.assertEqual(b"application/json", headers.get(b"content-type"))
+        self.assertEqual(b"close", headers.get(b"connection"))
+        self.assertNotIn(b"transfer-encoding", headers)
+        length = headers.get(b"content-length", b"")
+        self.assertTrue(length.isdigit(), "Content-Length must be a byte count")
+        self.assertEqual(len(body), int(length), "Content-Length must match the JSON bytes")
+        self.assertEqual({"action": "status"}, json.loads(body))
 
     def restart(self, **kwargs):
         return self.service_action("restart", **kwargs)
@@ -188,7 +214,17 @@ exec /bin/sleep 0.02
         self.assert_readiness_response_is_rejected("500 Internal Server Error")
 
     def test_malformed_success_status_cannot_report_success(self):
-        self.assert_readiness_response_is_rejected("2000 Invalid Status")
+        self.assert_readiness_response_is_rejected("2040 Invalid Status")
+
+    def test_legacy_daemon_200_is_rejected_after_one_probe(self):
+        self.env["ENTWARE_INIT_HTTP_STATUS"] = "200 OK"
+        result, actions = self.service_action("start", running=True)
+        self.assertEqual(255, result.returncode, result.stdout)
+        self.assertEqual(["probe"], actions)
+        self.assertEqual(301, int((self.directory / "clock").read_text()))
+        self.assertIn("does not support netfilter status checks", result.stdout)
+        self.assertIn("update and restart required", result.stdout)
+        self.assertNotIn("already running", result.stdout)
 
     def test_existing_process_without_readiness_cannot_report_start_success(self):
         self.env["ENTWARE_INIT_READY_AT"] = "1000"

@@ -129,6 +129,7 @@ static ssize_t recv_response(int fd, char *buf, size_t cap) {
             char *marker = strstr(buf, "\r\n\r\n");
             if (marker) {
                 body_start = marker + 4;
+                if (strncmp(buf, "HTTP/1.1 204 ", 13) == 0) { break; }
                 char *cl = strstr(buf, "Content-Length:");
                 if (cl && cl < marker) { content_length = strtol(cl + 15, NULL, 10); }
             }
@@ -175,6 +176,10 @@ static int do_request(const char *method, const char *path, const char *body, cJ
         *out_json = b[0] ? cJSON_Parse(b) : NULL;
     }
     return status;
+}
+
+static int routing_status(void) {
+    return do_request("POST", "/api/v1/system/hooks/netfilterd", "{\"action\":\"status\"}", NULL);
 }
 
 /* ---- tests -------------------------------------------------------------------- */
@@ -294,19 +299,41 @@ static void stop_runtime(mt_loop_t *loop, void *ud) {
 TEST readiness_requires_running_runtime_but_not_optional_history(void) {
     harness_t *h = harness_start(false); ASSERT(h);
     ASSERT_FALSE(mt_app_routing_ready(NULL));
-    ASSERT_EQ(503, do_request("GET", "/api/v1/system/ready", NULL, NULL));
+    ASSERT_EQ(503, routing_status());
     ASSERT_EQ(MT_OK, mt_loop_post(h->loop, start_without_journal, h));
-    int status = do_request("GET", "/api/v1/system/ready", NULL, NULL);
-    if (status == 503) { status = do_request("GET", "/api/v1/system/ready", NULL, NULL); }
-    ASSERT_EQ(200, status);
+    int status = routing_status();
+    if (status == 503) { status = routing_status(); }
+    ASSERT_EQ(204, status);
     cJSON *out = NULL;
     ASSERT_EQ(503, do_request("GET", "/api/v1/system/dns/capture", NULL, &out));
     ASSERT_STR_EQ("DNS_LOG_UNAVAILABLE", cJSON_GetObjectItemCaseSensitive(out, "code")->valuestring);
     cJSON_Delete(out);
     ASSERT_EQ(MT_OK, mt_loop_post(h->loop, stop_runtime, h));
-    status = do_request("GET", "/api/v1/system/ready", NULL, NULL);
-    if (status == 200) { status = do_request("GET", "/api/v1/system/ready", NULL, NULL); }
+    status = routing_status();
+    if (status == 204) { status = routing_status(); }
     ASSERT_EQ(503, status);
+    harness_stop(h); PASS();
+}
+TEST netfilter_status_204_keeps_connection_usable(void) {
+    harness_t *h = harness_start(false); ASSERT(h);
+    ASSERT_EQ(MT_OK, mt_loop_post(h->loop, start_without_journal, h));
+    int status = routing_status();
+    if (status == 503) { status = routing_status(); }
+    ASSERT_EQ(204, status);
+    int fd = connect_tcp(TEST_PORT); ASSERT(fd >= 0);
+    const char *check = "POST /api/v1/system/hooks/netfilterd HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nContent-Length: 19\r\n\r\n{\"action\":\"status\"}";
+    ASSERT_EQ((ssize_t)strlen(check), send(fd, check, strlen(check), 0));
+    char response[2048];
+    ASSERT(recv_response(fd, response, sizeof(response)) > 0);
+    ASSERT(strstr(response, "HTTP/1.1 204 No Content\r\n") == response);
+    ASSERT(strstr(response, "Cache-Control: no-store\r\n"));
+    ASSERT_FALSE(strstr(response, "Content-Length:"));
+    ASSERT_STR_EQ("", body_of(response));
+    const char *notify = "POST /api/v1/system/hooks/netfilterd HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nContent-Length: 19\r\nConnection: close\r\n\r\n{\"action\":\"notify\"}";
+    ASSERT_EQ((ssize_t)strlen(notify), send(fd, notify, strlen(notify), 0));
+    ASSERT(recv_response(fd, response, sizeof(response)) > 0);
+    ASSERT_EQ(200, status_code_of(response));
+    close(fd);
     harness_stop(h); PASS();
 }
 TEST journal_get_is_bounded_and_uses_stable_id_cursors(void) {
@@ -589,6 +616,12 @@ TEST netfilterd_hook_ok_and_bad_json(void) {
     ASSERT(h != NULL);
     ASSERT_EQ(200, do_request("POST", "/api/v1/system/hooks/netfilterd",
                              "{\"type\":\"iptables\",\"table\":\"nat\"}", NULL));
+    ASSERT_EQ(503, routing_status());
+    ASSERT_EQ(200, do_request("POST", "/api/v1/system/hooks/netfilterd",
+                             "{\"action\":\"notify\",\"type\":\"iptables\",\"table\":\"nat\"}", NULL));
+    ASSERT_EQ(503, routing_status());
+    ASSERT_EQ(400, do_request("POST", "/api/v1/system/hooks/netfilterd", "{\"action\":\"reload\"}", NULL));
+    ASSERT_EQ(400, do_request("POST", "/api/v1/system/hooks/netfilterd", "{\"action\":null}", NULL));
     ASSERT_EQ(400, do_request("POST", "/api/v1/system/hooks/netfilterd", "not json", NULL));
     harness_stop(h);
     PASS();
@@ -626,6 +659,7 @@ int main(int argc, char **argv) {
 #endif
     RUN_TEST(dns_journal_lists_and_clears_queries);
     RUN_TEST(readiness_requires_running_runtime_but_not_optional_history);
+    RUN_TEST(netfilter_status_204_keeps_connection_usable);
     RUN_TEST(journal_get_is_bounded_and_uses_stable_id_cursors);
     RUN_TEST(unavailable_history_does_not_break_other_api_routes);
     RUN_TEST(capture_requires_explicit_valid_put_and_releases_storage);

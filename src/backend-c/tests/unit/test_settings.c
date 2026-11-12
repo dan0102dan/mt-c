@@ -1051,7 +1051,7 @@ TEST rollback_failure_keeps_admin_status_and_same_settings_retry_recovers(void)
     dns_stub_t stub; ASSERT(stub_start(&stub, 12)); harness_t *h = harness_start(stub.port, false); ASSERT(h);
     uint16_t web = h->config.app.http_web.host.port;
     cJSON *ready = NULL;
-    ASSERT_EQ(200, request((uint16_t)atomic_load(&admin_port), "GET", "/api/v1/system/ready", NULL, &ready));
+    ASSERT_EQ(204, request((uint16_t)atomic_load(&admin_port), "POST", "/api/v1/system/hooks/netfilterd", "{\"action\":\"status\"}", &ready));
     cJSON_Delete(ready);
     cJSON *snapshot = NULL, *ack = NULL;
     ASSERT_EQ(200, request(web, "GET", "/api/v1/system/settings", NULL, &snapshot));
@@ -1059,7 +1059,7 @@ TEST rollback_failure_keeps_admin_status_and_same_settings_retry_recovers(void)
     atomic_store(&fail_rtnl, 2);
     ASSERT_EQ(202, submit(web, snapshot, &ack));
     cJSON *failed = await_operation(0, text_value(item(ack, "operation"), "id"), "rollback_failed"); ASSERT(failed);
-    ASSERT_EQ(404, request((uint16_t)atomic_load(&admin_port), "GET", "/api/v1/system/ready", NULL, &ready));
+    ASSERT_EQ(404, request((uint16_t)atomic_load(&admin_port), "POST", "/api/v1/system/hooks/netfilterd", "{\"action\":\"status\"}", &ready));
     cJSON_Delete(ready);
     ASSERT_STR_EQ(text_value(snapshot, "revision"), text_value(failed, "revision"));
     cJSON_Delete(ack);
@@ -1081,7 +1081,7 @@ TEST rollback_failure_keeps_admin_status_and_same_settings_retry_recovers(void)
     ASSERT_EQ(202, submit((uint16_t)atomic_load(&admin_port), failed, &ack));
     cJSON *confirmed = await_operation(web, text_value(item(ack, "operation"), "id"), "succeeded"); ASSERT(confirmed);
     ASSERT_EQ(1, dns_query(h->config.app.dns_proxy.host.port, false, false, NULL));
-    ASSERT_EQ(200, request((uint16_t)atomic_load(&admin_port), "GET", "/api/v1/system/ready", NULL, &ready));
+    ASSERT_EQ(204, request((uint16_t)atomic_load(&admin_port), "POST", "/api/v1/system/hooks/netfilterd", "{\"action\":\"status\"}", &ready));
     cJSON_Delete(ready);
     cJSON_Delete(snapshot); cJSON_Delete(ack); cJSON_Delete(failed); cJSON_Delete(confirmed);
     harness_stop(h); stub_stop(&stub); PASS();

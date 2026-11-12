@@ -30,6 +30,7 @@ get_uptime() {
 
 wait_for_routing() {
   routing_pid=$1
+  routing_request='{"action":"status"}'
   routing_failure="routing readiness timed out after ${READY_TIMEOUT}s"
   deadline=$(( $(get_uptime) + READY_TIMEOUT ))
   while [ "$(get_uptime)" -lt "$deadline" ]; do
@@ -44,14 +45,20 @@ wait_for_routing() {
         return 1
       fi
     fi
-    # Readiness includes the initial Keenetic policy resolution and its
-    # applied netfilter generation; optional DNS history is unrelated.
+    # Query the existing hook without asking it to rebuild the rules.
+    # Readiness includes policy resolution and the applied netfilter generation.
     response=$(
-      printf 'GET /api/v1/system/ready HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n' |
+      printf 'POST /api/v1/system/hooks/netfilterd HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nContent-Length: %s\r\nConnection: close\r\n\r\n%s' "${#routing_request}" "$routing_request" |
         socat -T 1 - UNIX-CONNECT:"$SOCKET_PATH",connect-timeout=1 2>/dev/null
     )
     case "$response" in
-      'HTTP/1.1 200 '*|'HTTP/1.0 200 '*) return 0 ;;
+      'HTTP/1.1 204 '*|'HTTP/1.0 204 '*) return 0 ;;
+      'HTTP/1.1 200 '*|'HTTP/1.0 200 '*)
+        # Older daemons treat any hook body as a refresh notification.
+        # Do not repeatedly rebuild their rules or mistake their 200 for ready.
+        routing_failure="daemon does not support netfilter status checks; update and restart required"
+        return 1
+        ;;
     esac
     sleep 1
   done

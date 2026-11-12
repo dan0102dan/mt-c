@@ -24,6 +24,16 @@
 #include "magitrickle/subscriptions_api.h"
 #include "magitrickle/yamlio.h"
 
+/* Observe submissions while retaining the real coalescing worker. Status
+ * polls must not create follow-up work hidden behind an in-flight pass. */
+static atomic_uint commit_requests;
+mt_err_t __real_mt_app_force_commit_iptables(mt_app_t *app);
+mt_err_t __wrap_mt_app_force_commit_iptables(mt_app_t *app);
+mt_err_t __wrap_mt_app_force_commit_iptables(mt_app_t *app) {
+    atomic_fetch_add(&commit_requests, 1);
+    return __real_mt_app_force_commit_iptables(app);
+}
+
 /* Local address enumeration is a kernel transport too. Use fixed loopbacks
  * so policy/readiness tests do not require host netlink permissions. */
 int __wrap_getifaddrs(struct ifaddrs **out);
@@ -180,6 +190,7 @@ static void *loop_thread(void *ud) {
 
 static harness_t *harness_start_mode(bool with_config_path, const char *yaml, int initial_fetch_mode,
                                      bool hold_initial_fetch, bool asynchronous_commits) {
+    atomic_store(&commit_requests, 0);
     harness_t *h = calloc(1, sizeof(*h));
     if (!h || mt_config_init_defaults(&h->cfg) != MT_OK) { return NULL; }
     if (yaml && mt_config_load_buffer(&h->cfg, yaml, strlen(yaml)) != MT_OK) { return NULL; }
@@ -302,6 +313,7 @@ static ssize_t recv_response(int fd, char *buf, size_t cap) {
             char *marker = strstr(buf, "\r\n\r\n");
             if (marker) {
                 body_start = marker + 4;
+                if (strncmp(buf, "HTTP/1.1 204 ", 13) == 0) { break; }
                 char *cl = strstr(buf, "Content-Length:");
                 if (cl && cl < marker) { content_length = strtol(cl + 15, NULL, 10); }
             }
@@ -421,15 +433,66 @@ static int assert_closed_gates(void) {
     }
     cJSON_Delete(out); PASS();
 }
+static int routing_status(void) {
+    return do_request("POST", "/api/v1/system/hooks/netfilterd", "{\"action\":\"status\"}", NULL);
+}
+
 static int await_readiness(void) {
     int status = 0;
     for (unsigned i = 0; i < 2000; i++) {
-        status = do_request("GET", "/api/v1/system/ready", NULL, NULL);
-        if (status == 200) { break; }
+        status = routing_status();
+        if (status == 204) { break; }
         struct timespec ts = {0, 1000000}; nanosleep(&ts, NULL);
     }
-    ASSERT_EQ(200, status);
+    ASSERT_EQ(204, status);
     PASS();
+}
+TEST netfilter_status_polls_and_invalid_actions_do_not_request_rebuilds(void) {
+    harness_t *h = harness_start_mode(false, NULL, 0, false, true); ASSERT(h);
+    const char *invalid[] = {"{\"action\":null}", "{\"action\":false}", "{\"action\":1}",
+        "{\"action\":{}}", "{\"action\":[]}", "{\"action\":\"\"}", "{\"action\":\"reload\"}"};
+    char *before = snapshot_text(); ASSERT(before);
+    unsigned snapshots = atomic_load(&snapshot_calls);
+    for (unsigned i = 0; i < 16; i++) { ASSERT_EQ(204, routing_status()); }
+    for (size_t i = 0; i < sizeof(invalid)/sizeof(*invalid); i++) {
+        ASSERT_EQ(400, do_request("POST", "/api/v1/system/hooks/netfilterd", invalid[i], NULL));
+    }
+    ASSERT_EQ(0u, atomic_load(&commit_requests));
+    ASSERT_EQ(snapshots, atomic_load(&snapshot_calls));
+    ASSERT_EQ(0, atomic_load(&fetch_calls));
+    CHECK_CALL(assert_snapshot_unchanged(before)); free(before);
+    ASSERT_EQ(404, do_request("GET", "/api/v1/system/ready", NULL, NULL));
+
+    atomic_store(&hold_snapshot, true);
+    ASSERT_EQ(200, do_request("POST", "/api/v1/system/hooks/netfilterd",
+        "{\"type\":\"iptables\",\"table\":\"nat\"}", NULL));
+    ASSERT_EQ(503, routing_status());
+    for (unsigned i = 0; i < 1000 && atomic_load(&snapshot_calls) == snapshots; i++) {
+        struct timespec ts = {0, 1000000}; nanosleep(&ts, NULL);
+    }
+    ASSERT(atomic_load(&snapshot_calls) > snapshots);
+    /* Firmware notification remains an immediate 200 while a pass is held;
+     * explicit notify legitimately owes one follow-up. Polls owe none. */
+    ASSERT_EQ(200, do_request("POST", "/api/v1/system/hooks/netfilterd",
+        "{\"action\":\"notify\",\"type\":\"iptables\",\"table\":\"mangle\"}", NULL));
+    snapshots = atomic_load(&snapshot_calls);
+    for (unsigned i = 0; i < 16; i++) { ASSERT_EQ(503, routing_status()); }
+    for (size_t i = 0; i < sizeof(invalid)/sizeof(*invalid); i++) {
+        ASSERT_EQ(400, do_request("POST", "/api/v1/system/hooks/netfilterd", invalid[i], NULL));
+    }
+    ASSERT_EQ(2u, atomic_load(&commit_requests));
+    ASSERT_EQ(snapshots, atomic_load(&snapshot_calls));
+    ASSERT_EQ(0, atomic_load(&fetch_calls));
+    atomic_store(&hold_snapshot, false);
+    CHECK_CALL(await_readiness());
+    before = snapshot_text(); ASSERT(before);
+    snapshots = atomic_load(&snapshot_calls);
+    for (unsigned i = 0; i < 16; i++) { ASSERT_EQ(204, routing_status()); }
+    ASSERT_EQ(2u, atomic_load(&commit_requests));
+    ASSERT_EQ(snapshots, atomic_load(&snapshot_calls));
+    ASSERT_EQ(0, atomic_load(&fetch_calls));
+    CHECK_CALL(assert_snapshot_unchanged(before)); free(before);
+    harness_stop(h); PASS();
 }
 TEST readiness_waits_for_initial_policy_and_async_application(void) {
     for (unsigned mode = 0; mode < 2; mode++) {
@@ -440,7 +503,7 @@ TEST readiness_waits_for_initial_policy_and_async_application(void) {
             struct timespec ts = {0, 1000000}; nanosleep(&ts, NULL);
         }
         ASSERT_EQ(1, atomic_load(&fetch_calls));
-        ASSERT_EQ(503, do_request("GET", "/api/v1/system/ready", NULL, NULL));
+        ASSERT_EQ(503, routing_status());
         CHECK_CALL(assert_closed_gates());
         unsigned snapshots = atomic_load(&snapshot_calls);
         atomic_store(&hold_snapshot, true);
@@ -448,12 +511,12 @@ TEST readiness_waits_for_initial_policy_and_async_application(void) {
         ASSERT_EQ(200, do_request("GET", "/api/v1/keenetic/policies", NULL, NULL));
         /* The RCI response is known, but its generation has not reached the
          * kernel yet. The check must also stay responsive during that write. */
-        ASSERT_EQ(503, do_request("GET", "/api/v1/system/ready", NULL, NULL));
+        ASSERT_EQ(503, routing_status());
         for (unsigned i = 0; i < 1000 && atomic_load(&snapshot_calls) == snapshots; i++) {
             struct timespec ts = {0, 1000000}; nanosleep(&ts, NULL);
         }
         ASSERT(atomic_load(&snapshot_calls) > snapshots);
-        ASSERT_EQ(503, do_request("GET", "/api/v1/system/ready", NULL, NULL));
+        ASSERT_EQ(503, routing_status());
         atomic_store(&hold_snapshot, false);
         CHECK_CALL(await_readiness());
         CHECK_CALL(assert_active_mark("0xffffd00/0x0fffffff", mode != 0));
@@ -469,7 +532,7 @@ TEST readiness_accepts_known_policy_outcomes_and_retains_them_on_rci_errors(void
             snprintf(yaml, sizeof(yaml), "configVersion: 0.8\napp: {keeneticPolicy: {enabled: true, policyId: Policy0, mode: %s}}\n", mode ? "exclude" : "include");
             harness_t *h = harness_start_mode(false, yaml, 1, false, true); ASSERT(h);
             ASSERT_EQ(502, do_request("GET", "/api/v1/keenetic/policies", NULL, NULL));
-            ASSERT_EQ(503, do_request("GET", "/api/v1/system/ready", NULL, NULL));
+            ASSERT_EQ(503, routing_status());
             atomic_store(&fetch_mode, inventories[i]);
             ASSERT_EQ(200, do_request("GET", "/api/v1/keenetic/policies", NULL, NULL));
             CHECK_CALL(await_readiness());
@@ -478,7 +541,7 @@ TEST readiness_accepts_known_policy_outcomes_and_retains_them_on_rci_errors(void
             else { CHECK_CALL(assert_closed_gates()); }
             atomic_store(&fetch_mode, 1);
             ASSERT_EQ(502, do_request("GET", "/api/v1/keenetic/policies", NULL, NULL));
-            ASSERT_EQ(200, do_request("GET", "/api/v1/system/ready", NULL, NULL));
+            ASSERT_EQ(204, routing_status());
             harness_stop(h);
         }
     }
@@ -486,7 +549,7 @@ TEST readiness_accepts_known_policy_outcomes_and_retains_them_on_rci_errors(void
 }
 TEST readiness_ignores_optional_history_but_waits_for_same_generation_repairs(void) {
     harness_t *h = harness_start_mode(false, NULL, 0, false, true); ASSERT(h);
-    ASSERT_EQ(200, do_request("GET", "/api/v1/system/ready", NULL, NULL));
+    ASSERT_EQ(204, routing_status());
     ASSERT_EQ(503, do_request("GET", "/api/v1/system/dns/capture", NULL, NULL));
     ASSERT_EQ(0, atomic_load(&fetch_calls)); /* Disabled policy never needs RCI. */
     unsigned snapshots = atomic_load(&snapshot_calls);
@@ -495,12 +558,12 @@ TEST readiness_ignores_optional_history_but_waits_for_same_generation_repairs(vo
         "{\"type\":\"iptables\",\"table\":\"nat\"}", NULL));
     /* Still the same successfully applied policy generation, but firmware
      * requested a repair; even the worker's initial settle window is unready. */
-    ASSERT_EQ(503, do_request("GET", "/api/v1/system/ready", NULL, NULL));
+    ASSERT_EQ(503, routing_status());
     for (unsigned i = 0; i < 1000 && atomic_load(&snapshot_calls) == snapshots; i++) {
         struct timespec ts = {0, 1000000}; nanosleep(&ts, NULL);
     }
     ASSERT(atomic_load(&snapshot_calls) > snapshots);
-    ASSERT_EQ(503, do_request("GET", "/api/v1/system/ready", NULL, NULL));
+    ASSERT_EQ(503, routing_status());
     atomic_store(&hold_snapshot, false);
     cJSON *out = NULL;
     bool failed = false;
@@ -512,7 +575,7 @@ TEST readiness_ignores_optional_history_but_waits_for_same_generation_repairs(vo
         struct timespec ts = {0, 1000000}; nanosleep(&ts, NULL);
     }
     ASSERT(failed);
-    ASSERT_EQ(503, do_request("GET", "/api/v1/system/ready", NULL, NULL));
+    ASSERT_EQ(503, routing_status());
     atomic_store(&fail_snapshot, false);
     CHECK_CALL(await_readiness());
     ASSERT_EQ(0, atomic_load(&fetch_calls));
@@ -829,6 +892,7 @@ int main(int argc, char **argv) {
     GREATEST_MAIN_BEGIN();
     RUN_TEST(generic_has_no_policy_routes);
 #ifdef MT_ENTWARE_KN
+    RUN_TEST(netfilter_status_polls_and_invalid_actions_do_not_request_rebuilds);
     RUN_TEST(readiness_waits_for_initial_policy_and_async_application);
     RUN_TEST(readiness_accepts_known_policy_outcomes_and_retains_them_on_rci_errors);
     RUN_TEST(readiness_ignores_optional_history_but_waits_for_same_generation_repairs);
