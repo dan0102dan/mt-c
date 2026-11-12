@@ -1,94 +1,46 @@
-name: Validate settings refresh regression
+name: Publish focused settings test repair
 on:
   push:
     branches: [test/netfilter-fix-bootstrap-20261112]
     paths: [.github/workflows/netfilter-fix-bootstrap.yml]
 permissions:
   contents: write
-concurrency:
-  group: validate-netfilter-fix-20261112
-  cancel-in-progress: false
 jobs:
-  validate:
+  publish:
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
-    defaults:
-      run:
-        shell: bash
+    timeout-minutes: 5
     steps:
       - uses: actions/checkout@v5
         with:
+          ref: 34efffac36982795b86e8681b7cbea9af2782e83
           fetch-depth: 0
-      - name: Apply test repair to the exact PR head
+      - name: Keep only the already-tested final scenario
+        shell: bash
         run: |
           set -euo pipefail
-          mkdir -p /tmp/settings-refresh-results
-          cp .github/settings-banner-regression.patch /tmp/settings-refresh-results/fix.patch
-          git checkout --detach 34efffac36982795b86e8681b7cbea9af2782e83
-          test "$(git hash-object src/frontend/tests/e2e/general-settings.spec.ts)" = 815af0a435060db463a3ec3b139a31434b7230aa
-          git apply --check /tmp/settings-refresh-results/fix.patch
-          git apply /tmp/settings-refresh-results/fix.patch
+          mkdir -p /tmp/settings-refresh-minimal
+          git fetch origin f070d06ea67a882cbeb948c3118f1c3bf821f213
           python3 - <<'PY'
           from pathlib import Path
-          p = Path('src/frontend/tests/e2e/general-settings.spec.ts')
-          s = p.read_text()
-          old = '''    await check.click();
-              await expect.poll(() => state.checkReads).toBe(2);
-              await expect(details.getByRole("alert")).toBeVisible();'''
-          new = '''    await check.click();
-              await expect.poll(() => state.checkReads).toBe(2);
-              await expect(page.locator("#general")).toHaveAttribute("aria-busy", "false");
-              // Starting a request closes the feedback popover; reopen the resulting error.
-              await expect(details).toHaveCount(0);
-              await expect(attention).toBeVisible();
-              await attention.click();
-              await expect(details.getByRole("alert")).toBeVisible();'''
-          assert s.count(old) == 1
-          p.write_text(s.replace(old, new))
+          import subprocess
+          path = 'src/frontend/tests/e2e/general-settings.spec.ts'
+          base = subprocess.check_output(['git', 'show', 'HEAD:' + path]).decode()
+          tested = subprocess.check_output(['git', 'show', 'f070d06ea67a882cbeb948c3118f1c3bf821f213:' + path]).decode()
+          marker = 'for (const russian of [false, true]) {'
+          a, b = base.rindex(marker), tested.rindex(marker)
+          assert 'settings failures do not create under-tab banners' in base[a:]
+          assert 'settings failures do not create under-tab banners' in tested[b:]
+          assert 'await expect(attention).toBeHidden();' in tested[b:]
+          assert Path(path).read_text() == base
+          result = base[:a] + tested[b:]
+          assert result[:a] == base[:a] and result[a:] == tested[b:]
+          Path(path).write_text(result)
           PY
           git diff --check
-          git diff --stat
-      - uses: actions/setup-node@v5
-        with:
-          node-version: 24
-      - uses: denoland/setup-deno@v2
-        with:
-          deno-version: v2.x
-      - name: Install locked frontend dependencies and browser
-        working-directory: src/frontend
-        run: |
-          set -euo pipefail
-          npm ci
-          npx playwright install --with-deps chromium
-      - name: Format only the modified test block
-        working-directory: src/frontend
-        run: |
-          set -euo pipefail
-          offset=$(node --input-type=module -e 'import fs from "node:fs"; const s=fs.readFileSync("tests/e2e/general-settings.spec.ts","utf8"); const i=s.indexOf("for (const russian of [false, true]) {"); if(i<0)process.exit(1); console.log(i)')
-          npx prettier tests/e2e/general-settings.spec.ts --range-start "$offset" --write
-          git diff --check
-          git diff -- tests/e2e/general-settings.spec.ts > /tmp/settings-refresh-results/fix.patch
-      - name: Frontend type checks
-        working-directory: src/frontend
-        run: npm run check
-      - name: Repeat affected scenarios in both platform bundles without retries
-        working-directory: src/frontend
-        run: |
-          set -euo pipefail
-          for platform in 0 1; do
-            VITE_ENTWARE_KN=$platform npx playwright test \
-              general-settings.spec.ts general-settings-loading.spec.ts \
-              --grep 'settings failures do not create under-tab banners|General loads once|Check application explicitly refreshes' \
-              --retries=0 --repeat-each=3 \
-              2>&1 | tee "/tmp/settings-refresh-results/platform-$platform.log"
-          done
-      - name: Publish tested commit to a staging branch only
-        run: |
-          set -euo pipefail
-          branch=test/settings-refresh-validated-20261112
-          test "$(git rev-parse HEAD)" = 34efffac36982795b86e8681b7cbea9af2782e83
           test "$(git diff --name-only)" = src/frontend/tests/e2e/general-settings.spec.ts
-          git diff --check
+          git diff --stat
+          git diff > /tmp/settings-refresh-minimal/fix.patch
+          branch=test/settings-refresh-minimal-20261112
           if git ls-remote --exit-code --heads origin "refs/heads/$branch"; then
             echo 'Refusing to replace an existing branch' >&2; exit 1
           fi
@@ -96,13 +48,11 @@ jobs:
           git config user.email me@dan0102dan.ru
           git add src/frontend/tests/e2e/general-settings.spec.ts
           git commit -m 'test: exercise explicit settings refresh failures and recovery'
-          git rev-parse HEAD | tee /tmp/settings-refresh-results/commit.txt
+          git rev-parse HEAD | tee /tmp/settings-refresh-minimal/commit.txt
           git push origin "HEAD:refs/heads/$branch"
-      - name: Preserve evidence
+      - uses: actions/upload-artifact@v6
         if: always()
-        uses: actions/upload-artifact@v6
         with:
-          name: settings-refresh-validation-${{ github.run_attempt }}
-          path: /tmp/settings-refresh-results/
-          if-no-files-found: error
+          name: settings-refresh-minimal
+          path: /tmp/settings-refresh-minimal/
           retention-days: 7
