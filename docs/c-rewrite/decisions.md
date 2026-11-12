@@ -3817,6 +3817,53 @@ includes real C HTTP requests and persisted YAML for both modes, missing-policy
 recovery, unready marks, and WebUI save/import/reload of an arbitrary foreign ID
 on desktop and mobile.
 
+### D-79 amendment — Preserve policy state during RCI outages (2026-11-12)
+
+Status: **accepted; intentional amendment to D-79's RCI-failure behavior**.
+
+**Context.** Previously, an unsuccessful RCI refresh invalidated even an
+already resolved policy and closed the routing/DNS scope until the next
+successful poll. In exclude mode this also bypassed MT for devices outside
+the excluded policy. Failure to read RCI is not evidence that the selected
+policy or its mark has disappeared.
+
+**Decision.** A transport error, timeout, invalid or oversized RCI response
+preserves the current desired policy state. If the selected policy's mark
+is already known, retain that mark (including zero), the include/exclude
+mode and the existing IPv4/IPv6 routing and DNS guards. The failed refresh
+itself neither publishes `ready=false` nor requests a netfilter rebuild,
+and never broadens processing to all clients. An already applied policy
+therefore remains `ready`; this describes application of its current rules,
+not freshness of the last RCI query. Netfilter application failures still
+surface as `error` and are not masked by this rule.
+
+Only a fully validated successful inventory can confirm a missing policy
+or missing usable mark and make it `unavailable`, or supply a changed mark
+for normal application. A later RCI failure must not revive a mark already
+invalidated by such an inventory. Preserve only the current application's
+state, not a separate historical or persistent mark cache: cold start without
+a resolved mark remains unavailable with the scope closed, and changing the
+policy ID, disabling the filter or restarting must not borrow a previous
+policy/process's mark. Late responses cannot undo disabling. Explicit list
+or enable/save requests still return 502 on RCI failure; a failed save does
+not replace the active settings, and disabling remains possible without RCI.
+
+**Stale-mark limitation.** There is no arbitrary expiry timer for a known
+mark. During a prolonged RCI outage, external policy deletion, mark changes
+or mark reuse cannot be detected; the preserved scope may consequently be
+stale until a valid successful response arrives. The usual detection delay
+(the 15-second polling interval plus request/application time) applies only
+while RCI is available, not during an outage. This is deliberately a
+continuity trade-off, not a firewall or kill-switch guarantee.
+
+The API shape, YAML fields, polling interval and conntrack behavior are
+unchanged. `test_keenetic_policy_api` covers preserved state and unchanged
+IPv4/IPv6 routing/DNS snapshots and restore counts across failed refreshes,
+as well as recovery, confirmed removal/mark changes and configuration
+transitions. See [the feature guide](../keenetic-policy.md) for the full
+lifecycle and limitations; these tests do not replace Keenetic hardware
+acceptance.
+
 ## D-80 — Correct the benchmark's disabled-group bias (2026-10-14)
 
 Status: **accepted; benchmark methodology correction, no backend change**.
