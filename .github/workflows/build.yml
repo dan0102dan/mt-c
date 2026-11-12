@@ -36,7 +36,7 @@ jobs:
   # still applied by hand, from data instead of from memory.
   discover:
     name: Discover OpenWrt arch mappings
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     continue-on-error: true
     steps:
       - name: Checkout repository
@@ -130,7 +130,7 @@ jobs:
 
   prepare:
     name: Prepare build matrix
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     outputs:
       configs: ${{ steps.collect.outputs.configs }}
     steps:
@@ -185,7 +185,7 @@ jobs:
   build:
     name: Build packages (${{ matrix.label }})
     needs: prepare
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
       # Feed repositories rate-limit/fail when every OpenWrt architecture

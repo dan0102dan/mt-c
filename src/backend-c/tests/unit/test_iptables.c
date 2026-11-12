@@ -9,6 +9,7 @@
 #include "magitrickle/iptables.h"
 
 #include <string.h>
+#include <limits.h>
 
 static bool rule_eq_strs(const mt_ipt_rule_t *r, const char *const *expected, size_t n_expected) {
     if (r->n_parts != n_expected) return false;
@@ -442,6 +443,59 @@ TEST patch_removes_duplicates(void) {
     PASS();
 }
 
+/* Runtime reconciliation must remove obsolete entries of an owned ordered
+ * dispatcher without discarding wanted jumps or interpreting comments as
+ * managed references. The shared engine's ordinary commit remains unchanged. */
+TEST reconcile_prunes_only_unwanted_managed_rules(void) {
+    mt_fake_ipt_t *fake = mt_fake_ipt_new(MT_IPT_PROTO_IPV4);
+    ASSERT(fake);
+    mt_ipt_executable_t *exe = mt_fake_ipt_as_executable(fake);
+    mt_ipt_t *ipt = mt_ipt_new(exe);
+    ASSERT(ipt);
+    const char *seed =
+        "*mangle\n:PREROUTING - [0:0]\n:USER_KEEP - [0:0]\n"
+        ":MT_ACTIVE - [0:0]\n:MT_STALE - [0:0]\n:MT_ORDER - [0:0]\n"
+        "-A PREROUTING -j USER_KEEP\n-A PREROUTING -j MT_STALE\n"
+        "-A PREROUTING -j MT_ORDER\n"
+        "-A USER_KEEP -m comment --comment \"keep -j MT_NOT_A_TARGET text\" -j RETURN\n"
+        "-A USER_KEEP -g MT_STALE\n-A MT_ACTIVE -j RETURN\n"
+        "-A MT_STALE -j RETURN\n-A MT_ORDER -j MT_STALE\n"
+        "-A MT_ORDER -j MT_ACTIVE\n-A MT_ORDER -j RETURN\nCOMMIT\n";
+    ASSERT_EQ(MT_OK, exe->ops->restore(exe, (const uint8_t *)seed, strlen(seed)));
+    const char *jump[] = {"-j", "MT_ORDER"};
+    const char *active[] = {"-j", "MT_ACTIVE"};
+    const char *ret[] = {"-j", "RETURN"};
+    ASSERT_EQ(MT_OK, mt_ipt_register_chain_patch(ipt, "mangle", "PREROUTING"));
+    ASSERT_EQ(MT_OK, mt_ipt_append(ipt, "mangle", "PREROUTING", jump, 2));
+    ASSERT_EQ(MT_OK, mt_ipt_register_chain_override(ipt, "mangle", "MT_ACTIVE"));
+    ASSERT_EQ(MT_OK, mt_ipt_append(ipt, "mangle", "MT_ACTIVE", ret, 2));
+    ASSERT_EQ(MT_OK, mt_ipt_register_chain_patch(ipt, "mangle", "MT_ORDER"));
+    ASSERT_EQ(MT_OK, mt_ipt_append_ordered(ipt, "mangle", "MT_ORDER", 100, active, 2));
+    ASSERT_EQ(MT_OK, mt_ipt_append_ordered(ipt, "mangle", "MT_ORDER", INT_MAX, ret, 2));
+    for (unsigned pass = 0; pass < 2; pass++) {
+        ASSERT_EQ(MT_OK, mt_ipt_commit_reconcile(ipt, "MT_"));
+        ASSERT_FALSE(mt_fake_ipt_chain_exists(fake, "mangle", "MT_STALE"));
+        mt_ipt_rule_t *const *rules = NULL;
+        size_t n = 0;
+        ASSERT(mt_fake_ipt_get_rules(fake, "mangle", "MT_ORDER", &rules, &n));
+        ASSERT_EQ(2u, n);
+        ASSERT(rule_eq_strs(rules[0], active, 2));
+        ASSERT(rule_eq_strs(rules[1], ret, 2));
+        ASSERT(mt_fake_ipt_get_rules(fake, "mangle", "USER_KEEP", &rules, &n));
+        ASSERT_EQ(1u, n);
+        ASSERT(mt_ipt_rule_contains(rules[0], "MT_NOT_A_TARGET"));
+        ASSERT(mt_fake_ipt_get_rules(fake, "mangle", "PREROUTING", &rules, &n));
+        ASSERT_EQ(2u, n);
+        const char *foreign[] = {"-j", "USER_KEEP"};
+        ASSERT(rule_eq_strs(rules[0], foreign, 2));
+        ASSERT(rule_eq_strs(rules[1], jump, 2));
+    }
+    ASSERT_EQ(MT_ERR_INVAL, mt_ipt_commit_reconcile(ipt, ""));
+    ASSERT_EQ(MT_ERR_INVAL, mt_ipt_commit_reconcile(ipt, NULL));
+    mt_ipt_free(ipt);
+    PASS();
+}
+
 GREATEST_MAIN_DEFS();
 
 int main(int argc, char **argv) {
@@ -462,5 +516,6 @@ int main(int argc, char **argv) {
     RUN_TEST(ipv6_rules);
     RUN_TEST(error_on_uninitialized_chain);
     RUN_TEST(patch_removes_duplicates);
+    RUN_TEST(reconcile_prunes_only_unwanted_managed_rules);
     GREATEST_MAIN_END();
 }

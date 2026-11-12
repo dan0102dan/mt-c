@@ -14,10 +14,12 @@ on:
       - 'tools/ci/openwrt-host-libs.sh'
       - '.github/workflows/check-c.yml'
 
+# Keep native tests and the MIPS cross toolchain on the validated LTS.
+# Upgrade the distro explicitly rather than inheriting ubuntu-latest migrations.
 jobs:
   build_test:
     name: Build, test, sanitize (${{ matrix.variant }})
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
       matrix:
@@ -73,7 +75,7 @@ jobs:
 
   openwrt_native:
     name: OpenWrt native ubus integration
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v5
       - name: Install tooling
@@ -108,7 +110,7 @@ jobs:
 
   differential:
     name: Differential/regression suites (vs golden snapshots)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - name: Checkout repository
         uses: actions/checkout@v5
@@ -125,7 +127,7 @@ jobs:
 
   cross_build:
     name: Cross-build skeleton (mipsel)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - name: Checkout repository
         uses: actions/checkout@v5
