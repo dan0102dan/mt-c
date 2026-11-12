@@ -62,6 +62,17 @@ function accept(value: Status, resetDraft: boolean) {
 }
 let pending: Promise<void> | undefined;
 let generation = 0;
+export function stagePolicyImport(baseline: PolicySettings, draft: PolicySettings) {
+  generation++;
+  policy.baseline = JSON.stringify(baseline);
+  policy.draft = { ...draft };
+  policy.loaded = true;
+  policy.failed = false;
+}
+export function acceptPolicyImport(baseline: PolicySettings, draft: PolicySettings) {
+  stagePolicyImport(baseline, draft);
+  policy.persistencePending = false;
+}
 export function fetchPolicySettings(
   silent = false,
   options: { fresh?: boolean } = {},

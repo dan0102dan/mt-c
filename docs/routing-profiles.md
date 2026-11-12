@@ -105,6 +105,11 @@ WebUI-editable settings (the Keenetic policy filter on supported builds). Daemon
 HTTP/DNS/netfilter/logging settings are excluded from exports and ignored when
 reading older portable files. Import preserves the device's daemon settings.
 
+Import stages these values for review and editing; it does not save them.
+Use Save to apply the selected sections and required profiles together, or
+reload to discard the draft. See [Portable configuration import](config-import.md)
+for conflict choices, retry behavior and regression coverage.
+
 ## What “available” means
 
 This implementation detects **local link/routing failure**, not remote Internet

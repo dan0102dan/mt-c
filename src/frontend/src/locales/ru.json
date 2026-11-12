@@ -421,5 +421,9 @@
   "The settings could not be applied. Your draft is preserved.": "Не удалось применить настройки. Ваш черновик сохранён.",
   "The applied settings do not match this request. Your draft is preserved.": "Применённые настройки не соответствуют запросу. Ваш черновик сохранён.",
   "Another settings change was observed. Your draft is preserved.": "Обнаружено другое изменение настроек. Ваш черновик сохранён.",
-  "Example: br0, br-lan": "Например: br0, br-lan"
+  "Example: br0, br-lan": "Например: br0, br-lan",
+  "Failed to save imported configuration": "Не удалось сохранить импортированную конфигурацию",
+  "Configuration changed; refresh the import preview": "Черновик изменился. Откройте импорт заново.",
+  "Configuration changed on the server. Reload before saving; your draft is unchanged.": "Конфигурация на сервере изменилась. Экспортируйте черновик, если хотите его сохранить, и обновите страницу.",
+  "Save the imported configuration before syncing subscriptions.": "Сохраните импортированную конфигурацию перед синхронизацией подписок."
 }

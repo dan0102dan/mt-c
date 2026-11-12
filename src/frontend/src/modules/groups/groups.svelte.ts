@@ -105,9 +105,14 @@ export class GroupsStore {
 
   tracker = $state(new ChangeTracker<Group[]>([]));
   #savedRules = new Map<string, Rule[]>();
+  #loadGeneration = 0;
+  importPending = $state(false);
+  delegateSave?: () => Promise<void>;
   saving = $state(false);
   persistencePending = $state(false);
-  hasUnsavedChanges = $derived(this.tracker.isDirty || this.persistencePending);
+  hasUnsavedChanges = $derived(
+    this.tracker.isDirty || this.persistencePending || this.importPending,
+  );
   data = $derived.by(() => this.tracker.data);
   dataRevision = $state(0);
   valid_rules = $state(true);
@@ -290,6 +295,7 @@ export class GroupsStore {
   }
 
   destroy() {
+    this.#loadGeneration++;
     if (typeof window !== "undefined") {
       window.removeEventListener("keydown", this.handleSaveShortcut);
     }
@@ -301,6 +307,10 @@ export class GroupsStore {
   }
 
   mount = async (options: { preserveDrafts?: boolean } = {}) => {
+    const generation = ++this.#loadGeneration;
+    if (typeof window !== "undefined") {
+      window.addEventListener("keydown", this.handleSaveShortcut);
+    }
     // Existing keyed panels stay mounted during an import refresh and will
     // not report their initial render a second time.
     if (!options.preserveDrafts) this.finishedGroupsCount = 0;
@@ -309,6 +319,7 @@ export class GroupsStore {
       const fetched = (
         (await fetcher.get<{ groups: Group[] }>("/groups?with_rules=true"))?.groups ?? []
       ).map((group) => withPriorityDefault(group, DEFAULT_GROUP_PRIORITY));
+      if (generation !== this.#loadGeneration) return;
       if (options.preserveDrafts) this.tracker.rebase(fetched);
       else this.tracker = new ChangeTracker(fetched);
       this.#savedRules = snapshotGroupRules(fetched);
@@ -317,17 +328,41 @@ export class GroupsStore {
         setTimeout(() => this.checkRulesValidityState(), 10);
       }
     } catch (error) {
-      this.fetchError = true;
-      console.error("Failed to load groups:", error);
+      if (generation === this.#loadGeneration) {
+        this.fetchError = true;
+        console.error("Failed to load groups:", error);
+      }
     } finally {
-      this.refreshDuplicateRuleIds();
-      this.dataLoaded = true;
-    }
-
-    if (typeof window !== "undefined") {
-      window.addEventListener("keydown", this.handleSaveShortcut);
+      if (generation === this.#loadGeneration) {
+        this.refreshDuplicateRuleIds();
+        this.dataLoaded = true;
+      }
     }
   };
+
+  /** Stage editor values against the actual server collection, without saving. */
+  stageImport(baseline: readonly Group[], draft: readonly Group[]) {
+    const saved = structuredClone([...baseline]).map((group) =>
+      withPriorityDefault(group, DEFAULT_GROUP_PRIORITY),
+    );
+    const next = structuredClone([...draft]).map((group) =>
+      withPriorityDefault(group, DEFAULT_GROUP_PRIORITY),
+    );
+    this.#loadGeneration++;
+    this.#savedRules = snapshotGroupRules(saved);
+    this.tracker.reset(saved);
+    this.tracker.replaceDraft(next);
+    this.fetchError = false;
+    this.dataLoaded = true;
+    this.markDataRevision();
+    this.refreshDuplicateRuleIds();
+  }
+
+  /** A confirmed import save becomes the baseline; unrelated drafts stay editable. */
+  acceptImport(baseline: readonly Group[], retainedDraft: readonly Group[] = baseline) {
+    this.stageImport(baseline, retainedDraft);
+    this.persistencePending = false;
+  }
 
   handleSaveShortcut = (event: KeyboardEvent) => {
     if (
@@ -340,7 +375,7 @@ export class GroupsStore {
       return;
     if (document.querySelector('[data-dialog-content][data-state="open"]')) return;
     if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "s") {
-      if (this.canSave) {
+      if (this.importPending || this.canSave) {
         event.preventDefault();
         this.saveChanges();
       }
@@ -646,7 +681,12 @@ export class GroupsStore {
   }
 
   async saveChanges() {
+    if (this.importPending) {
+      await this.delegateSave?.();
+      return;
+    }
     if (!this.canSave) return;
+    this.#loadGeneration++;
     this.saving = true;
     overlay.show(t("saving changes..."));
     try {

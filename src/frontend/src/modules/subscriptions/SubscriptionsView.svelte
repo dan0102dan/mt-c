@@ -86,7 +86,8 @@
     actionsClass="subscription-controls-actions"
     controlsClass="subscription-controls"
     addLabel={t("Add Subscription")}
-    canSave={store.canSave}
+    canSave={transfer.pending() ? transfer.canSave("subscriptions") : store.canSave}
+    saveBusy={transfer.pending() ? transfer.busy() : store.saving}
     exportLabel={t("Export Config")}
     importLabel={t("Import Config")}
     onExport={() => void transfer.exportConfig()}

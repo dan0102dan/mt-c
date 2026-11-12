@@ -7,12 +7,14 @@
   import Switch from "../../../components/ui/Switch.svelte";
   import { locales, t } from "../../../data/locale.svelte";
   import {
+    acceptPolicyImport,
     fetchPolicySettings,
     policy,
     policyDirty,
     refreshPolicies,
     savePolicySettings,
     selectedPolicyId,
+    stagePolicyImport,
   } from "./state.svelte";
 
   import {
@@ -44,6 +46,9 @@
       get: () => (policy.loaded ? { ...policy.draft } : undefined),
       dirty: () => policy.loaded && policyDirty(),
       saving: () => policy.saving,
+      valid: () => valid,
+      stage: stagePolicyImport,
+      accept: acceptPolicyImport,
       refresh: async () => {
         // The user can start a new draft while a whole-config request is in
         // flight. Keep it, and replace only a clean baseline with fresh data.

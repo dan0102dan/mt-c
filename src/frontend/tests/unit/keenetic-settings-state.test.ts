@@ -5,7 +5,7 @@ import type { PolicySettings, Status } from "../../src/modules/settings/keenetic
 import { installSvelteRunesMocks } from "../mocks/setup-svelte-runes";
 
 installSvelteRunesMocks();
-const { fetchPolicySettings, policy, policyDirty } =
+const { acceptPolicyImport, fetchPolicySettings, policy, policyDirty, stagePolicyImport } =
   await import("../../src/modules/settings/keenetic/state.svelte");
 const { fetcher } = await import("../../src/utils/fetcher");
 
@@ -124,3 +124,53 @@ Deno.test(
     }
   },
 );
+
+Deno.test("policy import stages an isolated draft and leaves its saved baseline unchanged", () => {
+  seed();
+  const imported: PolicySettings = { enabled: false, policy_id: "imported", mode: "exclude" };
+  stagePolicyImport(original, imported);
+  assert.deepEqual(policy.draft, imported);
+  assert.equal(policy.baseline, JSON.stringify(original));
+  assert.equal(policyDirty(), true);
+  policy.draft.policy_id = "edited-before-save";
+  assert.equal(imported.policy_id, "imported");
+  assert.equal(original.policy_id, "original");
+  stagePolicyImport(original, original);
+  assert.equal(policyDirty(), false);
+});
+
+Deno.test(
+  "a policy response captured before import cannot overwrite its staged draft",
+  async () => {
+    seed();
+    const stale = Promise.withResolvers<unknown>();
+    const imported: PolicySettings = { enabled: true, policy_id: "imported", mode: "exclude" };
+    await withGet(
+      () => stale.promise,
+      async () => {
+        const loading = fetchPolicySettings(true);
+        stagePolicyImport(original, imported);
+        stale.resolve(status(original, "disabled"));
+        await loading;
+      },
+    );
+    assert.deepEqual(policy.draft, imported);
+    assert.equal(policy.baseline, JSON.stringify(original));
+    assert.equal(policy.runtime.state, "ready");
+    assert.equal(policyDirty(), true);
+  },
+);
+
+Deno.test("confirmed policy import clears persistence retry while retaining later edits", () => {
+  seed();
+  policy.persistencePending = true;
+  const saved: PolicySettings = { enabled: true, policy_id: "imported", mode: "exclude" };
+  const edited: PolicySettings = { ...saved, policy_id: "later-edit" };
+  acceptPolicyImport(saved, edited);
+  assert.equal(policy.baseline, JSON.stringify(saved));
+  assert.deepEqual(policy.draft, edited);
+  assert.equal(policy.persistencePending, false);
+  assert.equal(policyDirty(), true);
+  acceptPolicyImport(saved, saved);
+  assert.equal(policyDirty(), false);
+});
