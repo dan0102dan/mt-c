@@ -1031,8 +1031,8 @@ jobs:
             --preset "$PRESET" \
             --openwrt-version "$OPENWRT_VERSION"
 
-      - name: Upload router-emulator smoke logs
-        if: always() && (github.event_name == 'push' || github.event_name == 'pull_request') && matrix.name == 'aarch64_cortex-a53' && (matrix.openwrt_version == '24.10.4' || matrix.openwrt_version == '25.12.5')
+      - name: Upload router-emulator smoke logs on failure
+        if: failure() && (github.event_name == 'push' || github.event_name == 'pull_request') && matrix.name == 'aarch64_cortex-a53' && (matrix.openwrt_version == '24.10.4' || matrix.openwrt_version == '25.12.5')
         uses: actions/upload-artifact@v6
         with:
           name: router-emulator-smoke-${{ matrix.openwrt_version }}-aarch64_cortex-a53

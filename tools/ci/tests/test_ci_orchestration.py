@@ -66,6 +66,31 @@ class TestCIOrchestration(unittest.TestCase):
             self.assertIn(f"matrix.openwrt_version == '{version}'", build)
         self.assertIn("Upload router-emulator smoke logs", build)
 
+
+    def test_diagnostics_are_failure_only_but_packages_remain_downloadable(self):
+        netfilter = workflow("check-netfilter.yml")
+        nf_upload = netfilter.split(
+            "      - name: Preserve failing test logs\n", 1
+        )[1]
+        self.assertIn("        if: failure()\n", nf_upload)
+        self.assertIn("name: netfilter-recovery-legacy-nft", nf_upload)
+        self.assertIn("path: src/backend-c/recovery-*.log", nf_upload)
+
+        build = workflow("build.yml")
+        em_upload = build.split(
+            "      - name: Upload router-emulator smoke logs on failure\n", 1
+        )[1].split("\n      - name:", 1)[0]
+        self.assertIn("        if: failure() &&", em_upload)
+        self.assertIn("router-emulator-smoke-", em_upload)
+        self.assertIn("retention-days: 7", em_upload)
+
+        package_upload = build.split(
+            "      - name: Upload package artifact 1\n", 1
+        )[1].split("\n      - name:", 1)[0]
+        self.assertNotIn("if: failure()", package_upload)
+        self.assertIn("actions/upload-artifact@v6", package_upload)
+        self.assertIn("if-no-files-found: error", package_upload)
+
     def test_entware_registry_contract_is_still_checked(self):
         self.assertIn("test_ghcr_login.py", workflow("check-packaging.yml"))
         self.assertIn("Authenticate Entware builder registry", workflow("build.yml"))

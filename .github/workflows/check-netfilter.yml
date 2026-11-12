@@ -55,8 +55,8 @@ jobs:
             echo '::endgroup::'
           done
           exit "$failed"
-      - name: Preserve test results
-        if: always()
+      - name: Preserve failing test logs
+        if: failure()
         uses: actions/upload-artifact@v4
         with:
           name: netfilter-recovery-legacy-nft
