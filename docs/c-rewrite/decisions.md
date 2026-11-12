@@ -4511,3 +4511,21 @@ custom prefixes, and bursts during an active pass. `check-netfilter.yml` runs
 the same recovery tests with real legacy/nft backends in disposable network
 namespaces on every relevant push/PR. This validates the failure mechanism,
 not the exact event source or browser session on a physical Keenetic router.
+
+## D-94 — Exclude a confirmed absent Keenetic policy without stopping routing (2026-11-12)
+
+**Status: accepted.** This refines D-79's fail-closed policy for unavailable
+RCI inventories. A successful, validated RCI inventory without the selected
+policy means the exclude set is empty; MT routes all devices. Include routes
+none. An existing policy without a usable mark closes both modes. On startup,
+a failed RCI request closes both modes until a successful inventory confirms
+the situation. Subsequent errors retain the last confirmed scope, including
+confirmed absence; they cannot invent an empty inventory.
+
+This intentionally narrows the original fail-closed behavior to cases of
+unknown membership. When the policy appears with a valid mark, the next
+successful refresh replaces the unrestricted scope with mark-based routing
+and DNS guards. Both IPv4 and IPv6 are covered, including startup, failures,
+policy creation/removal, revalidation, and unmarked policies. Config fields
+stay unchanged. The API adds an optional processing_all=true runtime flag
+only when the unrestricted scope is already applied.

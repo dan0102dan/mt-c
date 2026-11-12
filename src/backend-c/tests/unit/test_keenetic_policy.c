@@ -94,11 +94,11 @@ TEST dns_guards_and_ordered_dispatch_compile_for_both_families(void)
 {
     mt_kn_policy_config_t config = {.enabled = true, .policy_id = "Policy0"};
     for (unsigned family = 0; family < 2; family++) {
-        for (unsigned mode = 0; mode < 3; mode++) {
-            config.mode = mode == 1 ? MT_KN_POLICY_EXCLUDE : MT_KN_POLICY_INCLUDE;
+        for (unsigned mode = 0; mode < 4; mode++) {
+            config.mode = mode == 1 || mode == 3 ? MT_KN_POLICY_EXCLUDE : MT_KN_POLICY_INCLUDE;
             mt_kn_policy_scope_t scope;
             ASSERT_EQ(MT_OK, mt_kn_policy_scope_init(&scope, &config, "MT_"));
-            scope.ready = mode != 2; scope.mark = 0xffffd00;
+            scope.ready = mode < 2; scope.confirmed_absent = mode == 3; scope.mark = 0xffffd00;
             mt_fake_ipt_t *f = mt_fake_ipt_new(family ? MT_IPT_PROTO_IPV6 : MT_IPT_PROTO_IPV4); ASSERT(f);
             mt_ipt_t *ipt = mt_ipt_new(mt_fake_ipt_as_executable(f)); ASSERT(ipt);
             ASSERT_EQ(MT_OK, mt_netfilter_register_base_chains(family ? NULL : ipt, family ? ipt : NULL));
@@ -117,10 +117,17 @@ TEST dns_guards_and_ordered_dispatch_compile_for_both_families(void)
             ASSERT(mt_fake_ipt_get_rules(f, "mangle", scope.dispatch, &rules, &count));
             ASSERT_EQ(3u, count); ASSERT_STR_EQ("MT_subscription", rules[0]->parts[1]); ASSERT_STR_EQ("MT_group", rules[1]->parts[1]);
             ASSERT(mt_fake_ipt_get_rules(f, "nat", "MT_DNSOR", &rules, &count));
-            ASSERT_EQ(3u, count);
-            ASSERT_STR_EQ("RETURN", rules[0]->parts[rules[0]->n_parts - 1]);
-            ASSERT_EQ(mode == 2 ? 2u : mode == 1 ? 6u : 7u, rules[0]->n_parts);
-            if (mode != 2) { ASSERT_STR_EQ("0xffffd00/0x0fffffff", rules[0]->parts[mode == 1 ? 3 : 4]); }
+            ASSERT_EQ(mode == 3 ? 2u : 3u, count);
+            if (mode != 3) {
+                ASSERT_STR_EQ("RETURN", rules[0]->parts[rules[0]->n_parts - 1]);
+                ASSERT_EQ(mode == 2 ? 2u : mode == 1 ? 6u : 7u, rules[0]->n_parts);
+                if (mode != 2) { ASSERT_STR_EQ("0xffffd00/0x0fffffff", rules[0]->parts[mode == 1 ? 3 : 4]); }
+            } else {
+                ASSERT_STR_EQ("-p", rules[0]->parts[0]); /* DNS DNAT is no longer blocked. */
+                ASSERT(mt_fake_ipt_get_rules(f, "mangle", scope.gate, &rules, &count));
+                ASSERT_EQ(1u, count);
+                ASSERT_STR_EQ(scope.dispatch, rules[0]->parts[1]);
+            }
             ASSERT_EQ(MT_OK, mt_port_remap_disable(remap)); mt_port_remap_free(remap); mt_ipt_free(ipt);
         }
     }
