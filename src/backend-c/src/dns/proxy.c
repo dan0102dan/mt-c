@@ -314,7 +314,7 @@ static const char *dns_client_address(const exchange_t *ex, char *buf, size_t le
     } else if (family == AF_INET6) {
         addr = &((const struct sockaddr_in6 *)&ex->client)->sin6_addr;
     }
-    if (!addr || !inet_ntop(family, addr, buf, len)) {
+    if (!addr || !inet_ntop(family, addr, buf, (socklen_t)len)) {
         snprintf(buf, len, "unknown");
     }
     return buf;
