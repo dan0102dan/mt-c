@@ -1,0 +1,400 @@
+diff --git a/.github/workflows/check-netfilter.yml b/.github/workflows/check-netfilter.yml
+index 82d9285..8baef75 100644
+--- a/.github/workflows/check-netfilter.yml
++++ b/.github/workflows/check-netfilter.yml
+@@ -37,13 +37,14 @@ jobs:
+       - name: Build recovery tests with Keenetic code enabled
+         id: build
+         working-directory: src/backend-c
+-        run: make ENTWARE_KN=1 CFLAGS_EXTRA=-Werror build/host/tests/test_nfrebuild_recovery
++        run: make ENTWARE_KN=1 CFLAGS_EXTRA=-Werror build/host/tests/test_nfrebuild_recovery build/host/tests/test_nfcommit
+       - name: Checked fake and deterministic fault injection
+         if: steps.build.outcome == 'success'
+         working-directory: src/backend-c
+         run: |
+           set -euo pipefail
+           timeout 90s build/host/tests/test_nfrebuild_recovery -v 2>&1 | tee recovery-fake.log
++          timeout 30s build/host/tests/test_nfcommit -v 2>&1 | tee recovery-worker.log
+       - name: Real kernel recovery in a disposable network namespace
+         if: always() && steps.build.outcome == 'success'
+         working-directory: src/backend-c
+diff --git a/docs/c-rewrite/compatibility-contract.md b/docs/c-rewrite/compatibility-contract.md
+index 4f0b139..483b431 100644
+--- a/docs/c-rewrite/compatibility-contract.md
++++ b/docs/c-rewrite/compatibility-contract.md
+@@ -246,6 +246,10 @@ transcripts + IT in netns.
+ - `iptables` batching: desired state compiled against `iptables-save`
+   output; committed via `iptables-restore --noflush`; external flushes are
+   healed on the next Commit (netfilterd hook → ForceCommitIPTables).
++- D-93: runtime rebuild prepares the complete graph before a per-table
++  reconciliation commit; it must not first commit deletion of working rules.
++  Hook bursts queue one follow-up pass instead of aborting the active repair.
++  Explicit API interruption/shutdown and eventual recovery remain supported.
+ - D-73 (as amended on 2026-10-10) defines overlapping-set precedence:
+   the highest numeric group/subscription `priority` wins; when equal, a user
+   group beats a subscription regardless of ID. Within the same source type,
+diff --git a/docs/c-rewrite/decisions.md b/docs/c-rewrite/decisions.md
+index b599944..dcd4705 100644
+--- a/docs/c-rewrite/decisions.md
++++ b/docs/c-rewrite/decisions.md
+@@ -4419,3 +4419,48 @@ across live changes, persistence failure, mixed changes, degraded recovery and
+ the preview/PUT race. Browser coverage checks conditional DNS/auth notices,
+ reverted changes, Save-all ordering and preserved drafts on preview/refusal
+ failures. These retain the native and browser test-transport limits in D-91.
++
++
++## D-93 — Preserve live rules during netfilter reconciliation (2026-11-12)
++
++**Status: accepted.** Supersedes D-63's destructive runtime cleanup and
++cancel-on-every-notification policy, not its threading/locking or retry model.
++The 0.8.6 code could successfully remove IPv4 managed chains, then return
++`MT_ERR_CANCELED` before reinstalling them. Eventual recovery was insufficient:
++new connections could start while `MT_POLICY`/`MT_DNSOR` were absent.
++
++A runtime rebuild now resets only the in-memory registrations, prepares the
++entire desired graph, and calls `mt_ipt_commit_reconcile`. Using the same kernel
++snapshot as the normal compiler, reconciliation stages deletion of obsolete
++owned-prefix chains and unwanted references. Existing desired overrides and
++ordered patch chains are retained/replaced, never first removed by a separate
++cleanup commit. Foreign rules not referencing managed chains are preserved;
++quoted comments mentioning managed targets do not establish ownership.
++Startup/shutdown cleanup and ordinary incremental `mt_ipt_commit` semantics are
++unchanged. The old chain names, config, HTTP API, priority ordering, ipsets,
++route tables, and DNS matching contracts do not change.
++
++Each table's COMMIT contains both removals and replacements. Cancellation or
++failure can leave some tables/families at the previous configuration and others
++at the replacement, but no successfully applied mt-c transaction deliberately
++leaves an empty intermediate active graph. This is NOT global atomicity across
++IPv4, IPv6, filter, mangle, and nat, and cannot prevent an external firmware
++writer from removing rules; the existing worker retries those races.
++
++Ordinary netfilter/link notifications now coalesce into one follow-up pass
++without aborting a running repair, so a stream of notifications cannot starve
++that repair by repeatedly canceling it. Explicit API mutation and shutdown
++still interrupt promptly. Clearing the cancellation token and publishing a
++running pass, and raising an explicit interrupt, are serialized by the worker
++mutex to avoid a lost interrupt or a late interrupt hitting the next pass.
++The bounded initial settle window remains intentional; it is not a quiet-time
++debounce that can be postponed indefinitely by incoming events.
++
++Regression coverage observes chain contents and entry jumps after each restore,
++not only after eventual retry; injects cancellation after either family and
++between table COMMITs; tests snapshot/apply failures, pre-cancellation, stale
++ordered dispatcher entries, external wipes, duplicate jumps, foreign rules,
++custom prefixes, and bursts during an active pass. `check-netfilter.yml` runs
++the same recovery tests with real legacy/nft backends in disposable network
++namespaces on every relevant push/PR. This validates the failure mechanism,
++not the exact event source or browser session on a physical Keenetic router.
+diff --git a/src/backend-c/include/magitrickle/iptables.h b/src/backend-c/include/magitrickle/iptables.h
+index 0a50e6c..b48ac4d 100644
+--- a/src/backend-c/include/magitrickle/iptables.h
++++ b/src/backend-c/include/magitrickle/iptables.h
+@@ -245,4 +245,14 @@ void mt_ipt_rules_snapshot_free(mt_ipt_rules_snapshot_t *snap);
+  * mean "nothing durable happened, build it again", not "give up". */
+ mt_err_t mt_ipt_commit(mt_ipt_t *ipt);
+ 
++/* Full-graph rebuild only: first reset staged state and prepare ALL desired
++ * chains/jumps. Remove obsolete owned-prefix chains and references using the
++ * same current-rules snapshot as the normal compiler. Cleanup and replacement
++ * share a COMMIT per table: cancellation/error never deliberately installs an
++ * empty intermediate managed graph. Foreign rules are patched, not flushed.
++ * This is NOT a transaction spanning multiple tables or address families.
++ * Ordinary incremental updates must continue using mt_ipt_commit(). */
++mt_err_t mt_ipt_commit_reconcile(mt_ipt_t *ipt, const char *owned_prefix);
++
++
+ #endif /* MAGITRICKLE_IPTABLES_H */
+diff --git a/src/backend-c/include/magitrickle/nfcommit.h b/src/backend-c/include/magitrickle/nfcommit.h
+index 02bb630..4300d9f 100644
+--- a/src/backend-c/include/magitrickle/nfcommit.h
++++ b/src/backend-c/include/magitrickle/nfcommit.h
+@@ -1,6 +1,6 @@
+ /* Netfilter table committer: a thread that owns writing the netfilter
+- * tables, so that nobody has to wait for a write and no writer has to
+- * finish what it started.
++ * tables without blocking the hook caller. Ordinary notifications queue a
++ * following pass; explicit API mutation and shutdown can interrupt a pass.
+  *
+  * Why this exists (Keenetic / Entware `_kn` builds): the firmware's own
+  * userspace netfilter implementation rewrites a table whole and
+@@ -15,18 +15,17 @@
+  *   - Requests accumulate. mt_nfcommit_request() never blocks and never
+  *     reports anything; requests arriving while a rebuild runs collapse
+  *     into a single following pass.
+- *   - A request arriving mid-write aborts that write (the cancellation
+- *     token kills the running iptables-restore) and starts a fresh one.
+- *     Continuing to write into a table that was just replaced is worse
+- *     than useless.
++ *   - A request arriving mid-write does not abort it. Even a continuous
++ *     event stream must allow a complete repair. A follow-up pass reconciles
++ *     the latest kernel state; explicit interrupt/stop still cancel promptly.
+  *   - Nothing fails permanently. Any error just means the pass is
+  *     restarted; errors from losing a race with the firmware are expected
+  *     traffic, not incidents.
+  *
+- * The rebuild callback runs on the committer thread and must write the
+- * table whole -- drop everything of ours first, then fill -- so that the
+- * result never depends on what an aborted write left behind. It is
+- * responsible for its own synchronization against the loop thread; see
++ * The rebuild callback runs on the committer thread and must prepare a
++ * complete replacement before touching the kernel, with obsolete removals
++ * and desired rules in the same table transaction. It must NOT commit an
++ * empty intermediate graph. It owns synchronization against the loop; see
+  * mt_app_rebuild_netfilter (api/app.c) for the mutex this project uses,
+  * which extends decisions.md D-19 rather than breaking it: the DNS hot
+  * path still takes no locks, since it and the committer are both readers
+@@ -62,9 +61,9 @@ mt_err_t mt_nfcommit_start(mt_nfcommit_t *c);
+  * Must happen before anything the rebuild callback touches is torn down. */
+ void mt_nfcommit_stop(mt_nfcommit_t *c);
+ 
+-/* Thread-safe, non-blocking: abort whatever is being written and rebuild
+- * the table from scratch. NULL-safe, so callers on platforms without a
+- * committer can call it unconditionally. */
++/* Thread-safe, non-blocking: request reconciliation. If a pass is running,
++ * queue one follow-up without aborting it. NULL-safe for platforms without a
++ * committer. The initial settle window is bounded, not reset by every event. */
+ void mt_nfcommit_request(mt_nfcommit_t *c);
+ 
+ /* Aborts the pass in flight without asking for extra work: an aborted
+diff --git a/src/backend-c/src/api/app.c b/src/backend-c/src/api/app.c
+index a2712d2..f150fd8 100644
+--- a/src/backend-c/src/api/app.c
++++ b/src/backend-c/src/api/app.c
+@@ -1451,31 +1451,16 @@ void mt_app_set_port_remap(mt_app_t *app, mt_port_remap_t *remap) {
+ 
+ /* One pass of the rebuild, with the netfilter lock already held. */
+ static mt_err_t rebuild_netfilter_locked(mt_app_t *app, mt_cancel_t *cancel) {
+-    /* Take everything of ours out of the kernel before putting anything
+-     * back. What is left in the tables after an aborted write, or after
+-     * the firmware replaced them, is not something worth reasoning about
+-     * -- starting from "none of it is there" makes the result depend only
+-     * on the current group set. */
+     if (mt_cancel_raised(cancel)) { return MT_ERR_CANCELED; }
+ 
+-    /* Cleanup must compile ONLY removals discovered in the current kernel
+-     * snapshot. Retained desired jumps/overrides from a previous attempt can
+-     * otherwise recreate a jump while its target is being deleted (MT_DNSOR),
+-     * poisoning every subsequent retry. Reset both families under nf_mu. */
++    /* Rebuild the complete desired graph in memory, not in the kernel.
++     * An eager cleanup used to remove working chains in a separate commit;
++     * cancellation between cleanup and installation left live IPv4 without
++     * routing/DNS rules until a later retry. Reconcile stale objects together
++     * with their replacements at the final per-table COMMIT instead. */
+     mt_ipt_reset_staged(app->ipt4);
+     mt_ipt_reset_staged(app->ipt6);
+-    mt_err_t err = mt_netfilter_clean_iptables(app->ipt4, app->ipt6,
+-                                               app->chain_prefix);
+-
+-    /* Delete registrations are temporary too, including after failed or
+-     * canceled cleanup. Keep the engines/transports/cancel token themselves:
+-     * groups and the DNS remap still borrow those exact objects. */
+-    mt_ipt_reset_staged(app->ipt4);
+-    mt_ipt_reset_staged(app->ipt6);
+-    if (err != MT_OK) { return err; }
+-    if (mt_cancel_raised(cancel)) { return MT_ERR_CANCELED; }
+-
+-    err = mt_netfilter_register_base_chains(app->ipt4, app->ipt6);
++    mt_err_t err = mt_netfilter_register_base_chains(app->ipt4, app->ipt6);
+     if (err != MT_OK) { return err; }
+ 
+ #ifdef MT_ENTWARE_KN
+@@ -1499,11 +1484,11 @@ static mt_err_t rebuild_netfilter_locked(mt_app_t *app, mt_cancel_t *cancel) {
+     if (mt_cancel_raised(cancel)) { return MT_ERR_CANCELED; }
+ 
+     if (app->ipt4) {
+-        err = mt_ipt_commit(app->ipt4);
++        err = mt_ipt_commit_reconcile(app->ipt4, app->chain_prefix);
+         if (err != MT_OK) { return err; }
+     }
+     if (app->ipt6) {
+-        err = mt_ipt_commit(app->ipt6);
++        err = mt_ipt_commit_reconcile(app->ipt6, app->chain_prefix);
+         if (err != MT_OK) { return err; }
+     }
+     return MT_OK;
+@@ -1591,8 +1576,8 @@ void mt_app_stop_netfilter_committer(mt_app_t *app) {
+ 
+ mt_err_t mt_app_force_commit_iptables(mt_app_t *app) {
+     if (app->committer) {
+-        /* Nothing to wait for and nothing to report: the committer aborts
+-         * whatever it is writing and rebuilds the table from scratch. */
++        /* No blocking or config mutation: the committer finishes its current
++         * replacement and coalesces notifications into one following pass. */
+         mt_nfcommit_request(app->committer);
+         return MT_OK;
+     }
+diff --git a/src/backend-c/src/iptables/engine.c b/src/backend-c/src/iptables/engine.c
+index cc73a67..93f60c3 100644
+--- a/src/backend-c/src/iptables/engine.c
++++ b/src/backend-c/src/iptables/engine.c
+@@ -735,7 +735,92 @@ void mt_ipt_set_cancel(mt_ipt_t *ipt, mt_cancel_t *cancel) {
+     if (ipt->exe->ops->set_cancel) { ipt->exe->ops->set_cancel(ipt->exe, cancel); }
+ }
+ 
+-mt_err_t mt_ipt_commit(mt_ipt_t *ipt) {
++/* A full rebuild stages the entire desired managed graph first. Prune only
++ * obsolete chains/references from the SAME snapshot used by the compiler;
++ * removals and replacements then share each table's COMMIT. Never apply an
++ * intermediate "remove everything" transaction to the live firewall. */
++static bool references_prefix(const mt_ipt_rule_t *rule, const char *prefix) {
++    size_t n = strlen(prefix);
++    bool quoted = false, escaped = false;
++    for (size_t i = 0; i < rule->n_parts; i++) {
++        const char *part = rule->parts[i];
++        if (!quoted && i + 1 < rule->n_parts &&
++            (!strcmp(part, "-j") || !strcmp(part, "--jump") ||
++             !strcmp(part, "-g") || !strcmp(part, "--goto"))) {
++            return strncmp(rule->parts[i + 1], prefix, n) == 0;
++        }
++        /* Save's tokenizer retains quotes. Do not mistake "-j MT_..." in
++         * a quoted comment for the rule's actual jump/goto target. */
++        for (size_t j = 0; part[j]; j++) {
++            if (escaped) { escaped = false; }
++            else if (part[j] == '\\') { escaped = true; }
++            else if (part[j] == '"') { quoted = !quoted; }
++        }
++        escaped = false;
++    }
++    return false;
++}
++
++static bool desired_contains(const mt_ipt_command_t *commands, size_t n,
++                              const mt_ipt_rule_t *rule) {
++    for (size_t i = 0; i < n; i++) {
++        if ((commands[i].option == MT_IPT_OP_APPEND ||
++             commands[i].option == MT_IPT_OP_INSERT) &&
++            mt_ipt_rule_equal(commands[i].rule, rule)) { return true; }
++    }
++    return false;
++}
++
++static mt_err_t prune_obsolete(mt_ipt_t *ipt, const mt_ipt_rules_snapshot_t *cur,
++                                const char *prefix) {
++    for (size_t ti = 0; ti < cur->n_tables; ti++) {
++        const mt_ipt_table_rules_t *table = &cur->tables[ti];
++        for (size_t ci = 0; ci < table->n_chains; ci++) {
++            const mt_ipt_chain_rules_t *chain = &table->chains[ci];
++            bool owned = strncmp(chain->chain_name, prefix, strlen(prefix)) == 0;
++            table_reg_t *t = find_table(ipt, table->table_name);
++            chain_reg_t *c = t ? find_chain_reg(t, chain->chain_name) : NULL;
++            if (owned && !c) {
++                mt_err_t err = mt_ipt_register_chain_delete(ipt, table->table_name,
++                                                           chain->chain_name);
++                if (err != MT_OK) { return err; }
++                continue;
++            }
++            /* Overrides already replace all contents. For a patch (including
++             * the ordered POLICY_RULES dispatcher), compile against an empty
++             * chain to obtain the desired rules, independent of the kernel. */
++            if (c && c->owns_contents) { continue; }
++            mt_ipt_command_t *desired = NULL;
++            size_t n_desired = 0;
++            int8_t priority = 0;
++            mt_err_t err = MT_OK;
++            if (c) {
++                err = c->chain->ops->compile(c->chain, chain->chain_name, NULL, 0,
++                                             &desired, &n_desired, &priority);
++                if (err != MT_OK) { return err; }
++            }
++            bool registered = c != NULL;
++            for (size_t ri = 0; ri < chain->n_rules && err == MT_OK; ri++) {
++                const mt_ipt_rule_t *rule = chain->rules[ri];
++                if ((!owned && !references_prefix(rule, prefix)) ||
++                    desired_contains(desired, n_desired, rule)) { continue; }
++                if (!registered) {
++                    err = mt_ipt_register_chain_patch(ipt, table->table_name,
++                                                      chain->chain_name);
++                    if (err != MT_OK) { break; }
++                    registered = true;
++                }
++                err = mt_ipt_delete(ipt, table->table_name, chain->chain_name,
++                                    (const char *const *)rule->parts, rule->n_parts);
++            }
++            mt_ipt_command_list_free(desired, n_desired);
++            if (err != MT_OK) { return err; }
++        }
++    }
++    return MT_OK;
++}
++
++static mt_err_t commit_rules(mt_ipt_t *ipt, const char *owned_prefix) {
+     /* Checked here as well as inside the executable so an abort that
+      * lands between the two transfers still stops the write: reading the
+      * table we are about to diff against is pointless once we know the
+@@ -745,6 +830,10 @@ mt_err_t mt_ipt_commit(mt_ipt_t *ipt) {
+     mt_ipt_rules_snapshot_t *cur = NULL;
+     mt_err_t err = mt_ipt_get_current_rules(ipt, &cur);
+     if (err != MT_OK) { return err; }
++    if (owned_prefix) {
++        err = prune_obsolete(ipt, cur, owned_prefix);
++        if (err != MT_OK) { mt_ipt_rules_snapshot_free(cur); return err; }
++    }
+ 
+     mt_bytebuf_t buf;
+     mt_bytebuf_init(&buf);
+@@ -853,3 +942,12 @@ mt_err_t mt_ipt_commit(mt_ipt_t *ipt) {
+     mt_bytebuf_free(&buf);
+     return err;
+ }
++
++mt_err_t mt_ipt_commit(mt_ipt_t *ipt) {
++    return commit_rules(ipt, NULL);
++}
++
++mt_err_t mt_ipt_commit_reconcile(mt_ipt_t *ipt, const char *owned_prefix) {
++    if (!ipt || !owned_prefix || !*owned_prefix) { return MT_ERR_INVAL; }
++    return commit_rules(ipt, owned_prefix);
++}
+diff --git a/src/backend-c/src/netfilter/committer.c b/src/backend-c/src/netfilter/committer.c
+index 9e6298f..b55b0b3 100644
+--- a/src/backend-c/src/netfilter/committer.c
++++ b/src/backend-c/src/netfilter/committer.c
+@@ -100,25 +100,22 @@ void mt_nfcommit_request(mt_nfcommit_t *c) {
+ 
+     pthread_mutex_lock(&c->mu);
+     c->pending = true;
+-    bool abort_current = c->running;
++    /* A notification is not a config mutation. Let the complete replacement
++     * finish and owe one follow-up pass; repeated link/netfilter events must
++     * not keep canceling recovery before it can repair a firmware wipe. */
+     pthread_cond_signal(&c->cv);
+     pthread_mutex_unlock(&c->mu);
+-
+-    /* Raised outside the lock: the committer thread never blocks on the
+-     * token, and raising is already thread-safe. */
+-    if (abort_current) { mt_cancel_raise(c->cancel); }
+ }
+ 
+ void mt_nfcommit_interrupt(mt_nfcommit_t *c) {
+     if (!c) { return; }
+ 
+     pthread_mutex_lock(&c->mu);
+-    bool abort_current = c->running;
++    /* Serialize with clearing/publishing the next pass: a late raise must
++     * not hit its successor, nor be erased just after running becomes true.
++     * Explicit API mutations still yield promptly; they are not hook noise. */
++    if (c->running) { mt_cancel_raise(c->cancel); }
+     pthread_mutex_unlock(&c->mu);
+-
+-    /* No pending flag set here on purpose: committer_main re-arms itself
+-     * for any pass that did not finish, this one included. */
+-    if (abort_current) { mt_cancel_raise(c->cancel); }
+ }
+ 
+ /* Waits up to delay_ms, returning false if the committer should exit.
+@@ -165,13 +162,12 @@ static void *committer_main(void *arg) {
+             pthread_mutex_unlock(&c->mu);
+             break;
+         }
++        mt_cancel_clear(c->cancel);
+         c->pending = false;
+         c->running = true;
+         c->passes++;
+         pthread_mutex_unlock(&c->mu);
+ 
+-        mt_cancel_clear(c->cancel);
+-
+         mt_err_t err = c->rebuild(c->ud, c->cancel);
+ 
+         pthread_mutex_lock(&c->mu);
