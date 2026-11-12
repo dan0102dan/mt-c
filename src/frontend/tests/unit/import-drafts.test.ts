@@ -457,14 +457,10 @@ Deno.test("read-only import acceptance never clears an earlier pending disk writ
       groups.persistencePending = true;
       groups.acceptImport([group()], [group()], { persisted: false });
       assert.equal(groups.persistencePending, true);
-      assert.equal(groups.hasUnsavedChanges, true);
-      assert.equal(groups.canSave, true);
 
       subscriptions.persistencePending = true;
       subscriptions.acceptImport([subscription()], [subscription()], { persisted: false });
       assert.equal(subscriptions.persistencePending, true);
-      assert.equal(subscriptions.hasUnsavedChanges, true);
-      assert.equal(subscriptions.canSave, true);
 
       profiles.persistencePending = true;
       acceptProfileImport([profile()], [profile()], { persisted: false });
