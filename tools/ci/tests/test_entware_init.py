@@ -54,16 +54,16 @@ printf '%s\\n' "$uptime"
 ''',
             "socat": '''#!/bin/sh
 IFS= read -r request
-case "$request" in 'GET /api/v1/system/dns/capture HTTP/1.1'*) ;; *) exit 2 ;; esac
+case "$request" in 'GET /api/v1/system/ready HTTP/1.1'*) ;; *) exit 2 ;; esac
 [ -f "$ENTWARE_INIT_TEST_ROOT/running" ] || exit 1
 printf 'probe\\n' >> "$ENTWARE_INIT_TEST_ROOT/actions"
 uptime=$(cat "$ENTWARE_INIT_TEST_ROOT/clock")
 if [ "$uptime" -lt "${ENTWARE_INIT_SOCKET_AT:-0}" ]; then
     exit 1
 elif [ "$uptime" -lt "${ENTWARE_INIT_READY_AT:-301}" ]; then
-    printf 'HTTP/1.1 404 Not Found\\r\\n'
+    printf 'HTTP/1.1 503 Service Unavailable\\r\\n'
 else
-    printf 'HTTP/1.1 200 OK\\r\\n'
+    printf 'HTTP/1.1 %s\\r\\n' "${ENTWARE_INIT_HTTP_STATUS:-200 OK}"
 fi
 ''',
             "logger": "#!/bin/sh\nexit 0\n",
@@ -91,16 +91,20 @@ exec /bin/sleep 0.02
         self.env.pop("ENTWARE_INIT_CLOCK_STEP", None)
         self.env.pop("ENTWARE_INIT_DAEMON_FAIL", None)
         self.env.pop("ENTWARE_INIT_SOCKET_AT", None)
+        self.env.pop("ENTWARE_INIT_HTTP_STATUS", None)
 
-    def restart(self, *, running, stop_fails=False):
+    def service_action(self, action, *, running, stop_fails=False):
         if running:
             (self.directory / "running").touch()
         self.env["ENTWARE_INIT_STOP_FAIL"] = "1" if stop_fails else "0"
-        result = subprocess.run(["/bin/sh", str(self.script), "restart"],
+        result = subprocess.run(["/bin/sh", str(self.script), action],
                                 env=self.env, text=True, stdout=subprocess.PIPE,
                                 stderr=subprocess.STDOUT, timeout=20)
         actions = (self.directory / "actions").read_text().splitlines()
         return result, actions
+
+    def restart(self, **kwargs):
+        return self.service_action("restart", **kwargs)
 
     def test_failed_stop_cannot_report_restart_success_or_attempt_start(self):
         result, actions = self.restart(running=True, stop_fails=True)
@@ -130,6 +134,23 @@ exec /bin/sleep 0.02
         self.assertIn("probe", actions[2:])
         self.assertGreaterEqual(int((self.directory / "clock").read_text()), 304)
 
+    def test_foreground_start_waits_for_routing(self):
+        self.env["ENTWARE_INIT_READY_AT"] = "304"
+        result, actions = self.service_action("start", running=False)
+        self.assertEqual(0, result.returncode, result.stdout)
+        self.assertEqual("start", actions[0])
+        self.assertIn("probe", actions)
+        self.assertNotIn("stop", actions)
+        self.assertGreaterEqual(int((self.directory / "clock").read_text()), 304)
+
+    def test_start_waits_for_existing_process_without_launching_another(self):
+        self.env["ENTWARE_INIT_READY_AT"] = "304"
+        result, actions = self.service_action("start", running=True)
+        self.assertEqual(0, result.returncode, result.stdout)
+        self.assertEqual({"probe"}, set(actions))
+        self.assertIn("already running", result.stdout)
+        self.assertGreaterEqual(int((self.directory / "clock").read_text()), 304)
+
     def test_explicit_restart_waits_during_early_boot(self):
         (self.directory / "clock").write_text("20\n")
         self.env["ENTWARE_INIT_READY_AT"] = "23"
@@ -147,8 +168,35 @@ exec /bin/sleep 0.02
         self.assertEqual("start", actions[0])
         self.assertIn("probe", actions)
         self.assertIn("failed", result.stdout)
+        self.assertIn("timed out after 60s", result.stdout)
         self.assertTrue((self.directory / "running").exists())
         self.assertGreaterEqual(int((self.directory / "clock").read_text()), 361)
+
+    def assert_readiness_response_is_rejected(self, status):
+        self.env["ENTWARE_INIT_HTTP_STATUS"] = status
+        self.env["ENTWARE_INIT_CLOCK_STEP"] = "15"
+        result, actions = self.restart(running=False)
+        self.assertEqual(255, result.returncode, result.stdout)
+        self.assertIn("probe", actions)
+        self.assertIn("timed out after 60s", result.stdout)
+        self.assertTrue((self.directory / "running").exists())
+
+    def test_settings_only_recovery_cannot_report_routing_ready(self):
+        self.assert_readiness_response_is_rejected("404 Not Found")
+
+    def test_readiness_server_error_cannot_report_success(self):
+        self.assert_readiness_response_is_rejected("500 Internal Server Error")
+
+    def test_malformed_success_status_cannot_report_success(self):
+        self.assert_readiness_response_is_rejected("2000 Invalid Status")
+
+    def test_existing_process_without_readiness_cannot_report_start_success(self):
+        self.env["ENTWARE_INIT_READY_AT"] = "1000"
+        self.env["ENTWARE_INIT_CLOCK_STEP"] = "15"
+        result, actions = self.service_action("start", running=True)
+        self.assertEqual(255, result.returncode, result.stdout)
+        self.assertEqual({"probe"}, set(actions))
+        self.assertNotIn("already running", result.stdout)
 
     def test_restart_retries_when_socket_cannot_be_reached(self):
         self.env["ENTWARE_INIT_SOCKET_AT"] = "304"
@@ -162,6 +210,7 @@ exec /bin/sleep 0.02
         result, actions = self.restart(running=False)
         self.assertNotEqual(0, result.returncode, result.stdout)
         self.assertEqual(["start"], actions)
+        self.assertIn("daemon exited before routing was ready", result.stdout)
         self.assertLess(int((self.directory / "clock").read_text()), 361)
 
 

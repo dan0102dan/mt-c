@@ -3,6 +3,7 @@
 #include "greatest.h"
 
 #include <arpa/inet.h>
+#include <ifaddrs.h>
 #include <pthread.h>
 #include <stdatomic.h>
 #include <stdio.h>
@@ -23,6 +24,31 @@
 #include "magitrickle/subscriptions_api.h"
 #include "magitrickle/yamlio.h"
 
+/* Local address enumeration is a kernel transport too. Use fixed loopbacks
+ * so policy/readiness tests do not require host netlink permissions. */
+int __wrap_getifaddrs(struct ifaddrs **out);
+void __wrap_freeifaddrs(struct ifaddrs *list);
+int __wrap_getifaddrs(struct ifaddrs **out) {
+    struct addresses {
+        struct ifaddrs entries[2];
+        struct sockaddr_in ipv4;
+        struct sockaddr_in6 ipv6;
+    } *addresses = calloc(1, sizeof(*addresses));
+    *out = NULL;
+    if (!addresses) { return -1; }
+    addresses->ipv4.sin_family = AF_INET;
+    addresses->ipv4.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    addresses->ipv6.sin6_family = AF_INET6;
+    addresses->ipv6.sin6_addr = in6addr_loopback;
+    addresses->entries[0].ifa_name = addresses->entries[1].ifa_name = "lo";
+    addresses->entries[0].ifa_addr = (struct sockaddr *)&addresses->ipv4;
+    addresses->entries[1].ifa_addr = (struct sockaddr *)&addresses->ipv6;
+    addresses->entries[0].ifa_next = &addresses->entries[1];
+    *out = addresses->entries;
+    return 0;
+}
+void __wrap_freeifaddrs(struct ifaddrs *list) { free(list); }
+
 #ifdef MT_ENTWARE_KN
 #include "magitrickle/keenetic_policy_api.h"
 #include "magitrickle/netfilter_cleaner.h"
@@ -30,9 +56,11 @@
 #include "fake_iptables.h"
 static atomic_int fetch_calls, fetch_mode;
 static atomic_bool hold_fetch;
+static atomic_bool hold_snapshot, fail_snapshot;
+static atomic_uint snapshot_calls;
 static mt_err_t mock_fetch(mt_kn_policy_entry_t **entries, size_t *count, const atomic_bool *stop) {
     atomic_fetch_add(&fetch_calls, 1);
-    for (int i = 0; i < 100 && atomic_load(&hold_fetch) && !atomic_load(stop); i++) {
+    for (int i = 0; i < 500 && atomic_load(&hold_fetch) && !atomic_load(stop); i++) {
         struct timespec ts = {0, 10000000}; nanosleep(&ts, NULL);
     }
     *entries = NULL; *count = 0;
@@ -60,6 +88,11 @@ typedef struct counted_ipt {
 } counted_ipt_t;
 static mt_err_t counted_save(mt_ipt_executable_t *exe, uint8_t **out, size_t *len) {
     counted_ipt_t *c = (counted_ipt_t *)exe;
+    atomic_fetch_add(&snapshot_calls, 1);
+    for (unsigned i = 0; i < 5000 && atomic_load(&hold_snapshot); i++) {
+        struct timespec ts = {0, 1000000}; nanosleep(&ts, NULL);
+    }
+    if (atomic_load(&fail_snapshot)) { *out = NULL; *len = 0; return MT_ERR_IO; }
     return c->inner->ops->save(c->inner, out, len);
 }
 static mt_err_t counted_restore(mt_ipt_executable_t *exe, const uint8_t *data, size_t len) {
@@ -145,13 +178,15 @@ static void *loop_thread(void *ud) {
 
 #define TEST_PORT 18129
 
-static harness_t *harness_start_seeded(bool with_config_path, const char *yaml, int initial_fetch_mode) {
+static harness_t *harness_start_mode(bool with_config_path, const char *yaml, int initial_fetch_mode,
+                                     bool hold_initial_fetch, bool asynchronous_commits) {
     harness_t *h = calloc(1, sizeof(*h));
     if (!h || mt_config_init_defaults(&h->cfg) != MT_OK) { return NULL; }
     if (yaml && mt_config_load_buffer(&h->cfg, yaml, strlen(yaml)) != MT_OK) { return NULL; }
     h->cache = mt_cache_create(0);
     mt_app_deps_t deps = {.cfg = &h->cfg, .cache = h->cache};
 #ifdef MT_ENTWARE_KN
+    atomic_store(&hold_snapshot, false); atomic_store(&fail_snapshot, false); atomic_store(&snapshot_calls, 0);
     for (size_t i = 0; i < 2; i++) {
         h->transport[i] = counted_new(i ? MT_IPT_PROTO_IPV6 : MT_IPT_PROTO_IPV4);
         if (!h->transport[i]) { return NULL; }
@@ -162,6 +197,8 @@ static harness_t *harness_start_seeded(bool with_config_path, const char *yaml, 
     if (mt_netfilter_register_base_chains(deps.ipt4, deps.ipt6) != MT_OK) { return NULL; }
 #else
     (void)initial_fetch_mode;
+    (void)hold_initial_fetch;
+    (void)asynchronous_commits;
 #endif
     h->app = mt_app_create(&deps);
     if (!h->app) { return NULL; }
@@ -175,6 +212,7 @@ static harness_t *harness_start_seeded(bool with_config_path, const char *yaml, 
     mt_app_set_port_remap(h->app, h->remap);
     if (mt_port_remap_enable(h->remap) != MT_OK || mt_app_rebuild_netfilter(h->app, NULL) != MT_OK) { return NULL; }
 #endif
+    mt_app_set_running(h->app, true);
     h->ctx.app = h->app;
     if (with_config_path) {
         snprintf(h->config_path, sizeof(h->config_path), "/tmp/mt_system_test_XXXXXX");
@@ -187,10 +225,11 @@ static harness_t *harness_start_seeded(bool with_config_path, const char *yaml, 
     if (mt_loop_create(&h->loop) != MT_OK) { return NULL; }
     if (mt_httpd_create(h->loop, &h->tcp) != MT_OK) { return NULL; }
 #ifdef MT_ENTWARE_KN
-    atomic_store(&fetch_calls, 0); atomic_store(&fetch_mode, initial_fetch_mode); atomic_store(&hold_fetch, false);
+    atomic_store(&fetch_calls, 0); atomic_store(&fetch_mode, initial_fetch_mode); atomic_store(&hold_fetch, hold_initial_fetch);
     if (mt_kn_policy_service_create(h->loop, h->app, h->ctx.config_path, "0.8", mock_fetch, &h->service) != MT_OK) { return NULL; }
     if (mt_kn_policy_register_routes(h->tcp, h->service) != MT_OK) { return NULL; }
     if (mt_httpd_route(h->tcp, "GET", "/test/netfilter", netfilter_snapshot, h) != MT_OK) { return NULL; }
+    if (asynchronous_commits && mt_app_start_netfilter_committer(h->app) != MT_OK) { return NULL; }
 #endif
     mt_system_register_routes(h->tcp, &h->ctx);
     h->groups.app = h->app; h->subs.app = h->app;
@@ -201,11 +240,17 @@ static harness_t *harness_start_seeded(bool with_config_path, const char *yaml, 
     pthread_create(&h->thread, NULL, loop_thread, h);
     return h;
 }
+static harness_t *harness_start_seeded(bool with_config_path, const char *yaml, int initial_fetch_mode) {
+    return harness_start_mode(with_config_path, yaml, initial_fetch_mode, false, false);
+}
 static harness_t *harness_start(bool with_config_path) {
     return harness_start_seeded(with_config_path, NULL, 0);
 }
 
 static void harness_stop(harness_t *h) {
+#ifdef MT_ENTWARE_KN
+    atomic_store(&hold_fetch, false); atomic_store(&hold_snapshot, false);
+#endif
     mt_loop_stop(h->loop);
     pthread_join(h->thread, NULL);
 #ifdef MT_ENTWARE_KN
@@ -375,6 +420,103 @@ static int assert_closed_gates(void) {
         ASSERT(strstr(value->valuestring, "-A MT_DNSOR -j RETURN"));
     }
     cJSON_Delete(out); PASS();
+}
+static int await_readiness(void) {
+    int status = 0;
+    for (unsigned i = 0; i < 2000; i++) {
+        status = do_request("GET", "/api/v1/system/ready", NULL, NULL);
+        if (status == 200) { break; }
+        struct timespec ts = {0, 1000000}; nanosleep(&ts, NULL);
+    }
+    ASSERT_EQ(200, status);
+    PASS();
+}
+TEST readiness_waits_for_initial_policy_and_async_application(void) {
+    for (unsigned mode = 0; mode < 2; mode++) {
+        char yaml[256];
+        snprintf(yaml, sizeof(yaml), "configVersion: 0.8\napp: {keeneticPolicy: {enabled: true, policyId: Policy0, mode: %s}}\n", mode ? "exclude" : "include");
+        harness_t *h = harness_start_mode(false, yaml, 0, true, true); ASSERT(h);
+        for (unsigned i = 0; i < 1000 && !atomic_load(&fetch_calls); i++) {
+            struct timespec ts = {0, 1000000}; nanosleep(&ts, NULL);
+        }
+        ASSERT_EQ(1, atomic_load(&fetch_calls));
+        ASSERT_EQ(503, do_request("GET", "/api/v1/system/ready", NULL, NULL));
+        CHECK_CALL(assert_closed_gates());
+        unsigned snapshots = atomic_load(&snapshot_calls);
+        atomic_store(&hold_snapshot, true);
+        atomic_store(&hold_fetch, false);
+        ASSERT_EQ(200, do_request("GET", "/api/v1/keenetic/policies", NULL, NULL));
+        /* The RCI response is known, but its generation has not reached the
+         * kernel yet. The check must also stay responsive during that write. */
+        ASSERT_EQ(503, do_request("GET", "/api/v1/system/ready", NULL, NULL));
+        for (unsigned i = 0; i < 1000 && atomic_load(&snapshot_calls) == snapshots; i++) {
+            struct timespec ts = {0, 1000000}; nanosleep(&ts, NULL);
+        }
+        ASSERT(atomic_load(&snapshot_calls) > snapshots);
+        ASSERT_EQ(503, do_request("GET", "/api/v1/system/ready", NULL, NULL));
+        atomic_store(&hold_snapshot, false);
+        CHECK_CALL(await_readiness());
+        CHECK_CALL(assert_active_mark("0xffffd00/0x0fffffff", mode != 0));
+        harness_stop(h);
+    }
+    PASS();
+}
+TEST readiness_accepts_known_policy_outcomes_and_retains_them_on_rci_errors(void) {
+    const int inventories[] = {2, 10, 9}; /* ABSENT, UNMARKED, resolved mark zero */
+    for (unsigned mode = 0; mode < 2; mode++) {
+        for (size_t i = 0; i < sizeof(inventories)/sizeof(*inventories); i++) {
+            char yaml[256];
+            snprintf(yaml, sizeof(yaml), "configVersion: 0.8\napp: {keeneticPolicy: {enabled: true, policyId: Policy0, mode: %s}}\n", mode ? "exclude" : "include");
+            harness_t *h = harness_start_mode(false, yaml, 1, false, true); ASSERT(h);
+            ASSERT_EQ(502, do_request("GET", "/api/v1/keenetic/policies", NULL, NULL));
+            ASSERT_EQ(503, do_request("GET", "/api/v1/system/ready", NULL, NULL));
+            atomic_store(&fetch_mode, inventories[i]);
+            ASSERT_EQ(200, do_request("GET", "/api/v1/keenetic/policies", NULL, NULL));
+            CHECK_CALL(await_readiness());
+            if (inventories[i] == 2 && mode) { CHECK_CALL(assert_open_gates()); }
+            else if (inventories[i] == 9) { CHECK_CALL(assert_active_mark("0x0/0x0fffffff", mode != 0)); }
+            else { CHECK_CALL(assert_closed_gates()); }
+            atomic_store(&fetch_mode, 1);
+            ASSERT_EQ(502, do_request("GET", "/api/v1/keenetic/policies", NULL, NULL));
+            ASSERT_EQ(200, do_request("GET", "/api/v1/system/ready", NULL, NULL));
+            harness_stop(h);
+        }
+    }
+    PASS();
+}
+TEST readiness_ignores_optional_history_but_waits_for_same_generation_repairs(void) {
+    harness_t *h = harness_start_mode(false, NULL, 0, false, true); ASSERT(h);
+    ASSERT_EQ(200, do_request("GET", "/api/v1/system/ready", NULL, NULL));
+    ASSERT_EQ(503, do_request("GET", "/api/v1/system/dns/capture", NULL, NULL));
+    ASSERT_EQ(0, atomic_load(&fetch_calls)); /* Disabled policy never needs RCI. */
+    unsigned snapshots = atomic_load(&snapshot_calls);
+    atomic_store(&hold_snapshot, true); atomic_store(&fail_snapshot, true);
+    ASSERT_EQ(200, do_request("POST", "/api/v1/system/hooks/netfilterd",
+        "{\"type\":\"iptables\",\"table\":\"nat\"}", NULL));
+    /* Still the same successfully applied policy generation, but firmware
+     * requested a repair; even the worker's initial settle window is unready. */
+    ASSERT_EQ(503, do_request("GET", "/api/v1/system/ready", NULL, NULL));
+    for (unsigned i = 0; i < 1000 && atomic_load(&snapshot_calls) == snapshots; i++) {
+        struct timespec ts = {0, 1000000}; nanosleep(&ts, NULL);
+    }
+    ASSERT(atomic_load(&snapshot_calls) > snapshots);
+    ASSERT_EQ(503, do_request("GET", "/api/v1/system/ready", NULL, NULL));
+    atomic_store(&hold_snapshot, false);
+    cJSON *out = NULL;
+    bool failed = false;
+    for (unsigned i = 0; i < 1000; i++) {
+        ASSERT_EQ(200, do_request("GET", "/api/v1/keenetic/policy", NULL, &out));
+        failed = strcmp(state(out), "error") == 0;
+        cJSON_Delete(out); out = NULL;
+        if (failed) { break; }
+        struct timespec ts = {0, 1000000}; nanosleep(&ts, NULL);
+    }
+    ASSERT(failed);
+    ASSERT_EQ(503, do_request("GET", "/api/v1/system/ready", NULL, NULL));
+    atomic_store(&fail_snapshot, false);
+    CHECK_CALL(await_readiness());
+    ASSERT_EQ(0, atomic_load(&fetch_calls));
+    harness_stop(h); PASS();
 }
 TEST defaults_no_rci_and_invalid_requests_have_no_side_effects(void) {
     harness_t *h = harness_start(false); ASSERT(h);
@@ -687,6 +829,9 @@ int main(int argc, char **argv) {
     GREATEST_MAIN_BEGIN();
     RUN_TEST(generic_has_no_policy_routes);
 #ifdef MT_ENTWARE_KN
+    RUN_TEST(readiness_waits_for_initial_policy_and_async_application);
+    RUN_TEST(readiness_accepts_known_policy_outcomes_and_retains_them_on_rci_errors);
+    RUN_TEST(readiness_ignores_optional_history_but_waits_for_same_generation_repairs);
     RUN_TEST(defaults_no_rci_and_invalid_requests_have_no_side_effects);
     RUN_TEST(both_modes_persist_and_missing_include_stays_closed);
     RUN_TEST(missing_policy_is_persisted_in_both_modes_and_resolves_when_created);

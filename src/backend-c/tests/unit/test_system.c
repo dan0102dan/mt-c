@@ -283,6 +283,32 @@ static void detach_journal(mt_loop_t *loop, void *ud) {
     (void)loop;
     ((harness_t *)ud)->ctx.query_log = NULL;
 }
+static void start_without_journal(mt_loop_t *loop, void *ud) {
+    detach_journal(loop, ud);
+    mt_app_set_running(((harness_t *)ud)->app, true);
+}
+static void stop_runtime(mt_loop_t *loop, void *ud) {
+    (void)loop;
+    mt_app_set_running(((harness_t *)ud)->app, false);
+}
+TEST readiness_requires_running_runtime_but_not_optional_history(void) {
+    harness_t *h = harness_start(false); ASSERT(h);
+    ASSERT_FALSE(mt_app_routing_ready(NULL));
+    ASSERT_EQ(503, do_request("GET", "/api/v1/system/ready", NULL, NULL));
+    ASSERT_EQ(MT_OK, mt_loop_post(h->loop, start_without_journal, h));
+    int status = do_request("GET", "/api/v1/system/ready", NULL, NULL);
+    if (status == 503) { status = do_request("GET", "/api/v1/system/ready", NULL, NULL); }
+    ASSERT_EQ(200, status);
+    cJSON *out = NULL;
+    ASSERT_EQ(503, do_request("GET", "/api/v1/system/dns/capture", NULL, &out));
+    ASSERT_STR_EQ("DNS_LOG_UNAVAILABLE", cJSON_GetObjectItemCaseSensitive(out, "code")->valuestring);
+    cJSON_Delete(out);
+    ASSERT_EQ(MT_OK, mt_loop_post(h->loop, stop_runtime, h));
+    status = do_request("GET", "/api/v1/system/ready", NULL, NULL);
+    if (status == 200) { status = do_request("GET", "/api/v1/system/ready", NULL, NULL); }
+    ASSERT_EQ(503, status);
+    harness_stop(h); PASS();
+}
 TEST journal_get_is_bounded_and_uses_stable_id_cursors(void) {
     harness_t *h = harness_start(false); ASSERT(h);
     ASSERT_EQ(200, do_request("PUT", "/api/v1/system/dns/capture", "{\"enabled\":true}", NULL));
@@ -599,6 +625,7 @@ int main(int argc, char **argv) {
     RUN_TEST(interface_alias_failure_keeps_kernel_ids);
 #endif
     RUN_TEST(dns_journal_lists_and_clears_queries);
+    RUN_TEST(readiness_requires_running_runtime_but_not_optional_history);
     RUN_TEST(journal_get_is_bounded_and_uses_stable_id_cursors);
     RUN_TEST(unavailable_history_does_not_break_other_api_routes);
     RUN_TEST(capture_requires_explicit_valid_put_and_releases_storage);

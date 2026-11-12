@@ -762,6 +762,37 @@ paths:
       summary: Обновить правило
       tags:
       - rules
+  /api/v1/system/ready:
+    get:
+      summary: Check whether local DNS routing initialization has completed
+      description: >-
+        Read-only and not cached. Available in the normal runtime over the
+        administrative Unix socket and the authenticated WebUI API. Readiness
+        requires a running application and no queued or in-flight netfilter
+        application. On Keenetic, the current policy generation must be applied
+        successfully and an enabled policy must have an initial validated RCI
+        resolution. Disabled filtering needs no RCI response. Validated absent
+        or unmarked policies preserve their configured traffic scope. This
+        check does not depend on optional DNS history, perform RCI requests or
+        guarantee Internet connectivity. Both 200 and 503 have empty bodies.
+      responses:
+        "200":
+          description: Local initialization and current routing application are complete
+          headers:
+            Cache-Control:
+              type: string
+              description: Always no-store
+        "401":
+          description: WebUI authentication required when enabled
+        "404":
+          description: The normal runtime API is unavailable in settings-only recovery
+        "503":
+          description: Runtime initialization or routing application is pending or failed
+          headers:
+            Cache-Control:
+              type: string
+              description: Always no-store
+      tags: [system]
   /api/v1/system/settings:
     get:
       summary: Read editable application settings and the last apply result

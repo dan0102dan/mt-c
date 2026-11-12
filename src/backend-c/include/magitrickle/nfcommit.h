@@ -82,6 +82,11 @@ mt_cancel_t *mt_nfcommit_cancel(const mt_nfcommit_t *c);
 /* Number of rebuild passes actually started. Test/observability hook. */
 uint64_t mt_nfcommit_passes(const mt_nfcommit_t *c);
 
+/* Read-only state snapshot: no queued or running rebuild, including retries.
+ * Takes only the worker's short state mutex, never waits for netfilter I/O.
+ * NULL means this platform has no asynchronous committer. */
+bool mt_nfcommit_idle(const mt_nfcommit_t *c);
+
 /* Overrides the settle delay before a pass and the ceiling that repeated
  * hard failures back off to. Tests only -- must be called before start. */
 void mt_nfcommit_set_delays_for_test(mt_nfcommit_t *c, unsigned delay_ms, unsigned max_delay_ms);

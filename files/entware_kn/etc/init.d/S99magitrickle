@@ -30,17 +30,24 @@ get_uptime() {
 
 wait_for_routing() {
   routing_pid=$1
+  routing_failure="routing readiness timed out after ${READY_TIMEOUT}s"
   deadline=$(( $(get_uptime) + READY_TIMEOUT ))
   while [ "$(get_uptime)" -lt "$deadline" ]; do
     if [ -n "$routing_pid" ]; then
-      kill -0 "$routing_pid" 2>/dev/null || return 1
+      if ! kill -0 "$routing_pid" 2>/dev/null; then
+        routing_failure="daemon exited before routing was ready"
+        return 1
+      fi
     else
-      pidof "$PROC" >/dev/null 2>&1 || return 1
+      if ! pidof "$PROC" >/dev/null 2>&1; then
+        routing_failure="daemon exited before routing was ready"
+        return 1
+      fi
     fi
-    # The normal DNS API answers only once the loop is serving, after all
-    # configured groups and the DNS remap have been initialized.
+    # Readiness includes the initial Keenetic policy resolution and its
+    # applied netfilter generation; optional DNS history is unrelated.
     response=$(
-      printf 'GET /api/v1/system/dns/capture HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n' |
+      printf 'GET /api/v1/system/ready HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n' |
         socat -T 1 - UNIX-CONNECT:"$SOCKET_PATH",connect-timeout=1 2>/dev/null
     )
     case "$response" in
@@ -100,8 +107,8 @@ start() {
   fi
 
   if ! wait_for_routing "$started_pid"; then
-    echo -e "            $ansi_red failed. $ansi_std"
-    logger "Routing did not become ready for $DESC from $CALLER."
+    echo -e "            $ansi_red failed: $routing_failure. $ansi_std"
+    logger "Failed to start $DESC from $CALLER: $routing_failure."
     return 255
   fi
 

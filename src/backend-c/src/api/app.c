@@ -323,6 +323,25 @@ void mt_app_set_running(mt_app_t *app, bool running) {
     app->running = running;
 }
 
+bool mt_app_routing_ready(const mt_app_t *app) {
+    if (!app || !app->running) { return false; }
+#ifdef MT_ENTWARE_KN
+    /* Check worker state BEFORE its published outcome. Requests and policy
+     * mutations are loop-owned, so an idle worker cannot start fresh work
+     * concurrently with this read-only handler. A completed pass must then
+     * have acknowledged the current generation without an apply error. */
+    if (!mt_nfcommit_idle(app->committer)) { return false; }
+    mt_kn_policy_config_t config;
+    mt_kn_policy_resolution_t resolution;
+    bool applied;
+    mt_err_t error;
+    mt_app_policy_get(app, &config, &resolution, &applied, &error);
+    if (!applied || error != MT_OK ||
+        (config.enabled && resolution == MT_KN_POLICY_UNKNOWN)) { return false; }
+#endif
+    return true;
+}
+
 size_t mt_app_user_group_count(const mt_app_t *app) {
     return app->n_rulesets;
 }

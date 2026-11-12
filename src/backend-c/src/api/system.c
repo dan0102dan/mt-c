@@ -28,6 +28,15 @@ static void must_route(mt_httpd_t *h, const char *method, const char *pattern, m
     }
 }
 
+static void handle_ready(mt_http_req_t *req, mt_http_res_t *res, void *ud) {
+    (void)req;
+    mt_system_ctx_t *ctx = ud;
+    /* Available only on the normal runtime, never settings-only recovery.
+     * Keep the response independent of optional journals and JSON allocation. */
+    mt_http_res_set_header(res, "Cache-Control", "no-store");
+    mt_http_res_write(res, mt_app_routing_ready(ctx->app) ? 200 : 503, NULL, NULL, 0);
+}
+
 static mt_err_t interfaces_json(mt_system_ctx_t *ctx, bool labels, cJSON **result) {
 #ifndef MT_ENTWARE_KN
     (void)labels;
@@ -486,6 +495,7 @@ static void handle_dns_clear(mt_http_req_t *req, mt_http_res_t *res, void *ud)
 
 void mt_system_register_routes(mt_httpd_t *h, mt_system_ctx_t *ctx) {
     application_logs_register(h);
+    must_route(h, "GET", "/api/v1/system/ready", handle_ready, ctx);
     must_route(h, "GET", "/api/v1/system/dns/capture", handle_dns_capture, ctx);
     must_route(h, "PUT", "/api/v1/system/dns/capture", handle_dns_capture, ctx);
     mt_profiles_register_routes(h, ctx);

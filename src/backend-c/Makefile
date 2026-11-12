@@ -354,6 +354,10 @@ $(BUILDDIR)/tests/test_keenetic_ifstate_rci: tests/unit/test_keenetic_ifstate_rc
 	$(CC) $(CFLAGS) -Itests/vendor -Itests/unit $(LDFLAGS) -o $@ $< $(filter-out $(BUILDDIR)/src/interfaces/keenetic_ifstate_rci.o,$(LIB_OBJS)) $(TEST_SUPPORT_OBJS) $(LDLIBS) $(DEP_LIBS)
 
 # Local address snapshots/failures without a router or privileged namespaces.
+$(BUILDDIR)/tests/test_keenetic_policy_api: tests/unit/test_keenetic_policy_api.c $(LIB_OBJS) $(TEST_SUPPORT_OBJS)
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) -Itests/vendor -Itests/unit $(LDFLAGS) -Wl,--wrap=getifaddrs -Wl,--wrap=freeifaddrs -o $@ $< $(LIB_OBJS) $(TEST_SUPPORT_OBJS) $(LDLIBS) $(DEP_LIBS)
+
 $(BUILDDIR)/tests/test_keenetic_policy_addresses: tests/unit/test_keenetic_policy_addresses.c $(LIB_OBJS) $(TEST_SUPPORT_OBJS)
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -Itests/vendor -Itests/unit $(LDFLAGS) -Wl,--wrap=getifaddrs -Wl,--wrap=freeifaddrs -o $@ $< $(LIB_OBJS) $(TEST_SUPPORT_OBJS) $(LDLIBS) $(DEP_LIBS)

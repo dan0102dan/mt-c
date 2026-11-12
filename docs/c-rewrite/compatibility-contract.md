@@ -71,6 +71,7 @@ Routes (all under `/api/v1`):
 | POST /subscriptions/{id}/sync?save | not found → 404; invalid → 400; fetch fail → 502; 200 `{"status":"ok","subscription":{...}}` |
 | DELETE /subscriptions/{id}?save | 200 / 404 |
 | GET /system/interfaces | 200 `{"interfaces":[{"id","name"?}]}` |
+| GET /system/ready (D-95) | Empty, uncached 200 only after local runtime initialization and successful current netfilter application; 503 while pending/failed. Keenetic enabled policies require an initial validated RCI resolution, preserving D-94 disabled/absent/unmarked semantics. Independent of optional DNS history. Absent in settings-only recovery; normal TCP authentication applies. |
 | POST /system/config/save | 200 `{}`? (writes config; error → 500) |
 | GET /system/settings (D-91) | 200 typed `settings`, app-only `revision`, and nullable last `operation` with ID/state/target revision. Uses the current configuration projection; authenticated and not cached. |
 | POST /system/settings/preview (D-92) | JSON `{settings, revision}`; 200 `{dns_restart_required: boolean}` uses the current runtime and normalized changed values. Authenticated, not cached; no writes, operation reservation or DNS resolution. 400 invalid, 409 stale/busy, 500 preparation failure, 503 unavailable. |
