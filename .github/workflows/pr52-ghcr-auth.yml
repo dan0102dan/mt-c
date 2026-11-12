@@ -1,0 +1,193 @@
+name: Validate PR 52 Entware registry authentication
+on:
+  push:
+    branches: [test/pr52-ghcr-auth-20261112]
+    paths: [.github/workflows/pr52-ghcr-auth.yml]
+permissions:
+  contents: write
+  packages: read
+concurrency:
+  group: pr52-ghcr-auth-validation
+  cancel-in-progress: true
+jobs:
+  validate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - name: Apply minimal repair to the exact PR head
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/pr52-registry-validation
+          cp .github/pr52-ghcr-auth-test.py /tmp/pr52-ghcr-auth-test.py
+          git checkout --detach 9141b709475f6fc0fe75bd2b4e38e6e51c9c578e
+          cp /tmp/pr52-ghcr-auth-test.py tools/ci/tests/test_entware_registry.py
+          set +e
+          python3 tools/ci/tests/test_entware_registry.py > /tmp/pr52-registry-validation/negative-control.log 2>&1
+          result=$?
+          set -e
+          test "$result" = 1
+          grep -q 'FAILED (failures=' /tmp/pr52-registry-validation/negative-control.log
+          python3 - <<'PY'
+          from pathlib import Path
+          import hashlib
+          def expr(value):
+              return '$' + '{{ ' + value + ' }}'
+          p = Path('.github/workflows/build.yml')
+          raw = p.read_bytes()
+          assert hashlib.sha1(b'blob ' + str(len(raw)).encode() + b'\0' + raw).hexdigest() == '483bd071802cebdeab2ab4dd29e844a7344f89c3'
+          s = raw.decode()
+          old = '  build:\n    name: Build packages (' + expr('matrix.label') + ')\n    needs: prepare\n    runs-on: ubuntu-24.04\n'
+          new = old + ('    # The Entware SDK pulls its builder from GHCR. Authenticate that pull\n'
+                       "    # rather than depending on the registry's anonymous token service.\n"
+                       '    permissions:\n      contents: write\n      packages: read\n')
+          assert s.count(old) == 1
+          s = s.replace(old, new)
+          old = '      - name: Build with prebuilt Entware SDK\n'
+          new = ('      - name: Authenticate Entware builder registry\n'
+                 "        if: steps.toolchain.outputs.entware_config != ''\n"
+                 '        # v3, immutable; its post action removes the registry credentials.\n'
+                 '        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9\n'
+                 '        with:\n          registry: ghcr.io\n'
+                 '          username: ' + expr('github.actor') + '\n'
+                 '          password: ' + expr('github.token') + '\n'
+                 '          logout: true\n\n') + old
+          assert s.count(old) == 1
+          p.write_text(s.replace(old, new))
+          p = Path('.github/workflows/check-packaging.yml')
+          s = p.read_text()
+          old = "      - '.github/workflows/check-packaging.yml'\n"
+          assert s.count(old) == 2
+          s = s.replace(old, "      - '.github/workflows/build.yml'\n" + old)
+          old = '      - name: Test Entware packaged install hooks\n'
+          new = ('      - name: Check Entware registry authentication contract\n'
+                 '        run: python3 tools/ci/tests/test_entware_registry.py\n') + old
+          assert s.count(old) == 1
+          p.write_text(s.replace(old, new))
+          PY
+          git add -N tools/ci/tests/test_entware_registry.py
+          git diff --check
+          git diff --binary -- .github/workflows/build.yml .github/workflows/check-packaging.yml tools/ci/tests/test_entware_registry.py > /tmp/pr52-registry-validation/fix.patch
+      - name: Run regression and existing package contracts
+        run: |
+          set -euo pipefail
+          python3 tools/ci/tests/test_entware_registry.py 2>&1 | tee /tmp/pr52-registry-validation/registry-contract.log
+          python3 tools/ci/tests/test_entware_ipk.py 2>&1 | tee /tmp/pr52-registry-validation/ipk-contract.log
+          python3 tools/ci/tests/test_entware_init.py 2>&1 | tee /tmp/pr52-registry-validation/init-contract.log
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+      - name: Prepare the previously failing MIPS package feed
+        id: feed
+        run: |
+          set -euo pipefail
+          mkdir -p .build
+          cp config/entware/mips-3.4.config .config
+          eval export $(make _return_export_dynamic_env)
+          make build_frontend FRONTEND_OUT_DIR="${GITHUB_WORKSPACE}/src/frontend/dist"
+          make _return_export_dynamic_env > .build/entware-package.env
+          feed_dir="${RUNNER_TEMP}/mt-c-feed-mips-3.4"
+          artifacts_dir="${RUNNER_TEMP}/mt-c-artifacts-mips-3.4"
+          mkdir -p "$feed_dir/mt-c" "$artifacts_dir"
+          cp tools/ci/entware-package/Makefile "$feed_dir/mt-c/Makefile"
+          cp files/entware/_ipk/control/postinst "$feed_dir/mt-c/postinst"
+          {
+            printf 'MAGITRICKLE_VERSION:=%s\n' "$PKG_VERSION"
+            printf 'MAGITRICKLE_RELEASE:=%s\n' "$PKG_REVISION"
+            printf 'MAGITRICKLE_TARGET:=mips-3.4\n'
+          } > "$feed_dir/mt-c/version.mk"
+          tar -czf "$feed_dir/mt-c/mt-c-source.tar.gz" --transform "s,^,mt-c-${PKG_VERSION}/," LICENSE files src/backend-c src/frontend/dist
+          echo "feed_dir=$feed_dir" >> "$GITHUB_OUTPUT"
+          echo "artifacts_dir=$artifacts_dir" >> "$GITHUB_OUTPUT"
+      - name: Authenticate Entware builder registry
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+          logout: true
+      - name: Build real MIPS IPK with the unchanged pinned SDK action
+        uses: ownik/gh-action-entware-sdk@003ddc33bb3b12a2f96e0c4689c56351614cf01a
+        env:
+          ARCH: mips-3.4
+          ARTIFACTS_DIR: ${{ steps.feed.outputs.artifacts_dir }}
+          BUILD_LOG: 1
+          FEED_DIR: ${{ steps.feed.outputs.feed_dir }}
+          PACKAGES: mt-c
+          V: s
+      - name: Verify the installable artifact and target ABI
+        env:
+          ARTIFACTS_DIR: ${{ steps.feed.outputs.artifacts_dir }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY' 2>&1 | tee /tmp/pr52-registry-validation/mips-package.log
+          import hashlib, io, os, pathlib, subprocess, tarfile
+          matches = list(pathlib.Path(os.environ['ARTIFACTS_DIR']).rglob('mt-c_*.ipk'))
+          assert len(matches) == 1, matches
+          package = matches[0]
+          subprocess.run(['python3', 'tools/ci/check-entware-ipk.py', '--package', str(package), '--postinst', 'files/entware/_ipk/control/postinst'], check=True)
+          if subprocess.run(['ar', 't', str(package)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode == 0:
+              data = subprocess.check_output(['ar', 'p', str(package), 'data.tar.gz'])
+          else:
+              with tarfile.open(package) as outer:
+                  name = next(m for m in outer.getmembers() if m.name.lstrip('./') == 'data.tar.gz')
+                  data = outer.extractfile(name).read()
+          with tarfile.open(fileobj=io.BytesIO(data), mode='r:gz') as inner:
+              name = next(m for m in inner.getmembers() if m.name.lstrip('./') == 'opt/bin/magitrickled')
+              binary = pathlib.Path('/tmp/pr52-magitrickled')
+              binary.write_bytes(inner.extractfile(name).read())
+          header = subprocess.check_output(['readelf', '-h', str(binary)], text=True)
+          program = subprocess.check_output(['readelf', '-l', str(binary)], text=True)
+          assert 'MIPS' in header and 'big endian' in header
+          assert '/opt/lib/ld.so.1' in program
+          print(header, program)
+          print('PACKAGE', package.name)
+          print('SHA256', hashlib.sha256(package.read_bytes()).hexdigest())
+          print('PASS: authenticated GHCR pull, real MIPS build, IPK contract and Entware ABI')
+          PY
+      - name: Prepare validated Git objects without updating any branch
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json, os, pathlib, urllib.request
+          repo = os.environ['GITHUB_REPOSITORY']
+          parent = '9141b709475f6fc0fe75bd2b4e38e6e51c9c578e'
+          root = pathlib.Path('/tmp/pr52-registry-validation')
+          def api(endpoint, body=None):
+              payload = None if body is None else json.dumps(body).encode()
+              req = urllib.request.Request('https://api.github.com/repos/' + repo + endpoint, data=payload,
+                  headers={'Authorization': 'Bearer ' + os.environ['GH_TOKEN'], 'Accept': 'application/vnd.github+json', 'Content-Type': 'application/json', 'X-GitHub-Api-Version': '2022-11-28'})
+              with urllib.request.urlopen(req, timeout=60) as response:
+                  return json.load(response)
+          current = api('/git/ref/heads/fix/keenetic-policy-refresh-20261112')['object']['sha']
+          assert current == parent, 'PR head moved; refusing to publish an outdated repair'
+          parent_tree = api('/git/commits/' + parent)['tree']['sha']
+          assert parent_tree == '4312fcfe308f6edd1d3606ab6898ce9d4addd71e'
+          paths = ['.github/workflows/build.yml', '.github/workflows/check-packaging.yml', 'tools/ci/tests/test_entware_registry.py']
+          entries = []
+          for path in paths:
+              blob = api('/git/blobs', {'content': pathlib.Path(path).read_text(), 'encoding': 'utf-8'})
+              entries.append({'path': path, 'mode': '100644', 'type': 'blob', 'sha': blob['sha']})
+          tree = api('/git/trees', {'base_tree': parent_tree, 'tree': entries})
+          (root / 'tree.json').write_text(json.dumps({'tree_sha': tree['sha'], 'entries': entries}, indent=2))
+          author = {'name': 'dan0102dan', 'email': 'me@dan0102dan.ru'}
+          commit = api('/git/commits', {'message': 'ci: authenticate Entware builder pulls from GHCR', 'tree': tree['sha'], 'parents': [parent], 'author': author, 'committer': author})
+          summary = {'commit_sha': commit['sha'], 'tree_sha': tree['sha'], 'parent_sha': parent, 'files': paths}
+          (root / 'commit.json').write_text(json.dumps(summary, indent=2))
+          print(json.dumps(summary, indent=2))
+          PY
+      - name: Preserve validation evidence
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: pr52-registry-validation-${{ github.run_attempt }}
+          path: /tmp/pr52-registry-validation/
+          retention-days: 7
+          if-no-files-found: error
