@@ -735,7 +735,92 @@ void mt_ipt_set_cancel(mt_ipt_t *ipt, mt_cancel_t *cancel) {
     if (ipt->exe->ops->set_cancel) { ipt->exe->ops->set_cancel(ipt->exe, cancel); }
 }
 
-mt_err_t mt_ipt_commit(mt_ipt_t *ipt) {
+/* A full rebuild stages the entire desired managed graph first. Prune only
+ * obsolete chains/references from the SAME snapshot used by the compiler;
+ * removals and replacements then share each table's COMMIT. Never apply an
+ * intermediate "remove everything" transaction to the live firewall. */
+static bool references_prefix(const mt_ipt_rule_t *rule, const char *prefix) {
+    size_t n = strlen(prefix);
+    bool quoted = false, escaped = false;
+    for (size_t i = 0; i < rule->n_parts; i++) {
+        const char *part = rule->parts[i];
+        if (!quoted && i + 1 < rule->n_parts &&
+            (!strcmp(part, "-j") || !strcmp(part, "--jump") ||
+             !strcmp(part, "-g") || !strcmp(part, "--goto"))) {
+            return strncmp(rule->parts[i + 1], prefix, n) == 0;
+        }
+        /* Save's tokenizer retains quotes. Do not mistake "-j MT_..." in
+         * a quoted comment for the rule's actual jump/goto target. */
+        for (size_t j = 0; part[j]; j++) {
+            if (escaped) { escaped = false; }
+            else if (part[j] == '\\') { escaped = true; }
+            else if (part[j] == '"') { quoted = !quoted; }
+        }
+        escaped = false;
+    }
+    return false;
+}
+
+static bool desired_contains(const mt_ipt_command_t *commands, size_t n,
+                              const mt_ipt_rule_t *rule) {
+    for (size_t i = 0; i < n; i++) {
+        if ((commands[i].option == MT_IPT_OP_APPEND ||
+             commands[i].option == MT_IPT_OP_INSERT) &&
+            mt_ipt_rule_equal(commands[i].rule, rule)) { return true; }
+    }
+    return false;
+}
+
+static mt_err_t prune_obsolete(mt_ipt_t *ipt, const mt_ipt_rules_snapshot_t *cur,
+                                const char *prefix) {
+    for (size_t ti = 0; ti < cur->n_tables; ti++) {
+        const mt_ipt_table_rules_t *table = &cur->tables[ti];
+        for (size_t ci = 0; ci < table->n_chains; ci++) {
+            const mt_ipt_chain_rules_t *chain = &table->chains[ci];
+            bool owned = strncmp(chain->chain_name, prefix, strlen(prefix)) == 0;
+            table_reg_t *t = find_table(ipt, table->table_name);
+            chain_reg_t *c = t ? find_chain_reg(t, chain->chain_name) : NULL;
+            if (owned && !c) {
+                mt_err_t err = mt_ipt_register_chain_delete(ipt, table->table_name,
+                                                           chain->chain_name);
+                if (err != MT_OK) { return err; }
+                continue;
+            }
+            /* Overrides already replace all contents. For a patch (including
+             * the ordered POLICY_RULES dispatcher), compile against an empty
+             * chain to obtain the desired rules, independent of the kernel. */
+            if (c && c->owns_contents) { continue; }
+            mt_ipt_command_t *desired = NULL;
+            size_t n_desired = 0;
+            int8_t priority = 0;
+            mt_err_t err = MT_OK;
+            if (c) {
+                err = c->chain->ops->compile(c->chain, chain->chain_name, NULL, 0,
+                                             &desired, &n_desired, &priority);
+                if (err != MT_OK) { return err; }
+            }
+            bool registered = c != NULL;
+            for (size_t ri = 0; ri < chain->n_rules && err == MT_OK; ri++) {
+                const mt_ipt_rule_t *rule = chain->rules[ri];
+                if ((!owned && !references_prefix(rule, prefix)) ||
+                    desired_contains(desired, n_desired, rule)) { continue; }
+                if (!registered) {
+                    err = mt_ipt_register_chain_patch(ipt, table->table_name,
+                                                      chain->chain_name);
+                    if (err != MT_OK) { break; }
+                    registered = true;
+                }
+                err = mt_ipt_delete(ipt, table->table_name, chain->chain_name,
+                                    (const char *const *)rule->parts, rule->n_parts);
+            }
+            mt_ipt_command_list_free(desired, n_desired);
+            if (err != MT_OK) { return err; }
+        }
+    }
+    return MT_OK;
+}
+
+static mt_err_t commit_rules(mt_ipt_t *ipt, const char *owned_prefix) {
     /* Checked here as well as inside the executable so an abort that
      * lands between the two transfers still stops the write: reading the
      * table we are about to diff against is pointless once we know the
@@ -745,6 +830,10 @@ mt_err_t mt_ipt_commit(mt_ipt_t *ipt) {
     mt_ipt_rules_snapshot_t *cur = NULL;
     mt_err_t err = mt_ipt_get_current_rules(ipt, &cur);
     if (err != MT_OK) { return err; }
+    if (owned_prefix) {
+        err = prune_obsolete(ipt, cur, owned_prefix);
+        if (err != MT_OK) { mt_ipt_rules_snapshot_free(cur); return err; }
+    }
 
     mt_bytebuf_t buf;
     mt_bytebuf_init(&buf);
@@ -852,4 +941,13 @@ mt_err_t mt_ipt_commit(mt_ipt_t *ipt) {
     err = ipt->exe->ops->restore(ipt->exe, buf.data, buf.len);
     mt_bytebuf_free(&buf);
     return err;
+}
+
+mt_err_t mt_ipt_commit(mt_ipt_t *ipt) {
+    return commit_rules(ipt, NULL);
+}
+
+mt_err_t mt_ipt_commit_reconcile(mt_ipt_t *ipt, const char *owned_prefix) {
+    if (!ipt || !owned_prefix || !*owned_prefix) { return MT_ERR_INVAL; }
+    return commit_rules(ipt, owned_prefix);
 }
