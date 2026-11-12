@@ -10,5 +10,6 @@
   "Exclude: MT processes all devices except those in the selected policy": "Exclude: MT обрабатывает все устройства, кроме устройств выбранной политики",
   "Could not load policies. Reload the page to retry.": "Не удалось загрузить политики. Перезагрузите страницу для повтора.",
   "The filter will become active when the policy is available.": "Фильтр начнёт работать, когда политика станет доступна.",
+  "The selected policy does not exist. MT is processing all devices until it appears.": "Политика не создана. MT обрабатывает все устройства, пока политика не появится.",
   "Choose which devices mt-c processes using a Keenetic router policy.": "Выберите устройства, которые обрабатывает mt-c, с помощью политики роутера Keenetic."
 }

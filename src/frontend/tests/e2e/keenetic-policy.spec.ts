@@ -49,6 +49,9 @@ async function backend(page: Page, enabled = false) {
             : selected?.available
               ? "ready"
               : "unavailable",
+          ...(state.settings.enabled && state.settings.mode === "exclude" && !selected
+            ? { processing_all: true }
+            : {}),
         },
       };
       await route.fulfill({
@@ -176,6 +179,30 @@ test.describe("Keenetic policy settings", { tag: "@entware_kn" }, () => {
       );
     });
   }
+
+  test("missing mt in exclude mode explains that routing remains active", async ({ page }) => {
+    const state = await backend(page);
+    state.policies = [];
+    await openSettings(page);
+    await page.getByRole("tab", { name: "Keenetic", exact: true }).click();
+    await panel(page).getByRole("switch", { name: "Use policy based filter" }).click();
+    await panel(page).getByRole("switch", { name: "Processing mode" }).click();
+    await save(page).click();
+    await expect.poll(() => state.settings.mode).toBe("exclude");
+    await expect(
+      panel(page).getByText(
+        "The selected policy does not exist. MT is processing all devices until it appears.",
+      ),
+    ).toBeVisible();
+
+    await page.locator(".locale button").click();
+    await expect(
+      panel(page).getByText(
+        "Политика не создана. MT обрабатывает все устройства, пока политика не появится.",
+      ),
+    ).toBeVisible();
+  });
+
   test("off by default, explicit save, include/exclude and reload", async ({ page }) => {
     const state = await backend(page);
     await openSettings(page);
