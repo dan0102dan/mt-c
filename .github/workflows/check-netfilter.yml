@@ -37,13 +37,14 @@ jobs:
       - name: Build recovery tests with Keenetic code enabled
         id: build
         working-directory: src/backend-c
-        run: make ENTWARE_KN=1 CFLAGS_EXTRA=-Werror build/host/tests/test_nfrebuild_recovery
+        run: make ENTWARE_KN=1 CFLAGS_EXTRA=-Werror build/host/tests/test_nfrebuild_recovery build/host/tests/test_nfcommit
       - name: Checked fake and deterministic fault injection
         if: steps.build.outcome == 'success'
         working-directory: src/backend-c
         run: |
           set -euo pipefail
           timeout 90s build/host/tests/test_nfrebuild_recovery -v 2>&1 | tee recovery-fake.log
+          timeout 30s build/host/tests/test_nfcommit -v 2>&1 | tee recovery-worker.log
       - name: Real kernel recovery in a disposable network namespace
         if: always() && steps.build.outcome == 'success'
         working-directory: src/backend-c

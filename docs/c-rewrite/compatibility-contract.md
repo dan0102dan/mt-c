@@ -246,6 +246,10 @@ transcripts + IT in netns.
 - `iptables` batching: desired state compiled against `iptables-save`
   output; committed via `iptables-restore --noflush`; external flushes are
   healed on the next Commit (netfilterd hook → ForceCommitIPTables).
+- D-93: runtime rebuild prepares the complete graph before a per-table
+  reconciliation commit; it must not first commit deletion of working rules.
+  Hook bursts queue one follow-up pass instead of aborting the active repair.
+  Explicit API interruption/shutdown and eventual recovery remain supported.
 - D-73 (as amended on 2026-10-10) defines overlapping-set precedence:
   the highest numeric group/subscription `priority` wins; when equal, a user
   group beats a subscription regardless of ID. Within the same source type,

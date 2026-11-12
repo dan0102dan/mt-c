@@ -7,10 +7,12 @@ on:
       - '.github/**'
       - '!.github/workflows/check.yml'
 
+# Keep the locked Playwright version on its supported CI distro.
+# Upgrade the OS explicitly; ubuntu-latest migrations must not change the test environment.
 jobs:
   test_frontend:
     name: Frontend testing
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     env:
       VITE_ENTWARE_KN: '0'
     steps:

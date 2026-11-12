@@ -245,4 +245,14 @@ void mt_ipt_rules_snapshot_free(mt_ipt_rules_snapshot_t *snap);
  * mean "nothing durable happened, build it again", not "give up". */
 mt_err_t mt_ipt_commit(mt_ipt_t *ipt);
 
+/* Full-graph rebuild only: first reset staged state and prepare ALL desired
+ * chains/jumps. Remove obsolete owned-prefix chains and references using the
+ * same current-rules snapshot as the normal compiler. Cleanup and replacement
+ * share a COMMIT per table: cancellation/error never deliberately installs an
+ * empty intermediate managed graph. Foreign rules are patched, not flushed.
+ * This is NOT a transaction spanning multiple tables or address families.
+ * Ordinary incremental updates must continue using mt_ipt_commit(). */
+mt_err_t mt_ipt_commit_reconcile(mt_ipt_t *ipt, const char *owned_prefix);
+
+
 #endif /* MAGITRICKLE_IPTABLES_H */

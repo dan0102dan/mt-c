@@ -1,6 +1,6 @@
 /* Netfilter table committer: a thread that owns writing the netfilter
- * tables, so that nobody has to wait for a write and no writer has to
- * finish what it started.
+ * tables without blocking the hook caller. Ordinary notifications queue a
+ * following pass; explicit API mutation and shutdown can interrupt a pass.
  *
  * Why this exists (Keenetic / Entware `_kn` builds): the firmware's own
  * userspace netfilter implementation rewrites a table whole and
@@ -15,18 +15,17 @@
  *   - Requests accumulate. mt_nfcommit_request() never blocks and never
  *     reports anything; requests arriving while a rebuild runs collapse
  *     into a single following pass.
- *   - A request arriving mid-write aborts that write (the cancellation
- *     token kills the running iptables-restore) and starts a fresh one.
- *     Continuing to write into a table that was just replaced is worse
- *     than useless.
+ *   - A request arriving mid-write does not abort it. Even a continuous
+ *     event stream must allow a complete repair. A follow-up pass reconciles
+ *     the latest kernel state; explicit interrupt/stop still cancel promptly.
  *   - Nothing fails permanently. Any error just means the pass is
  *     restarted; errors from losing a race with the firmware are expected
  *     traffic, not incidents.
  *
- * The rebuild callback runs on the committer thread and must write the
- * table whole -- drop everything of ours first, then fill -- so that the
- * result never depends on what an aborted write left behind. It is
- * responsible for its own synchronization against the loop thread; see
+ * The rebuild callback runs on the committer thread and must prepare a
+ * complete replacement before touching the kernel, with obsolete removals
+ * and desired rules in the same table transaction. It must NOT commit an
+ * empty intermediate graph. It owns synchronization against the loop; see
  * mt_app_rebuild_netfilter (api/app.c) for the mutex this project uses,
  * which extends decisions.md D-19 rather than breaking it: the DNS hot
  * path still takes no locks, since it and the committer are both readers
@@ -62,9 +61,9 @@ mt_err_t mt_nfcommit_start(mt_nfcommit_t *c);
  * Must happen before anything the rebuild callback touches is torn down. */
 void mt_nfcommit_stop(mt_nfcommit_t *c);
 
-/* Thread-safe, non-blocking: abort whatever is being written and rebuild
- * the table from scratch. NULL-safe, so callers on platforms without a
- * committer can call it unconditionally. */
+/* Thread-safe, non-blocking: request reconciliation. If a pass is running,
+ * queue one follow-up without aborting it. NULL-safe for platforms without a
+ * committer. The initial settle window is bounded, not reset by every event. */
 void mt_nfcommit_request(mt_nfcommit_t *c);
 
 /* Aborts the pass in flight without asking for extra work: an aborted

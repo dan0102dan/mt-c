@@ -35,6 +35,9 @@ typedef struct {
     unsigned fail_save, fail_restore, cancel_after_restore;
     mt_err_t failure;
     bool real;
+    mt_ipt_t *view; /* borrowed, inspect committed state after each write */
+    bool watch_presence, watch_policy;
+    unsigned presence_gaps, cancel_after_first_table;
 } gate_t;
 
 static const char *jump_target(const mt_ipt_rule_t *rule) {
@@ -111,6 +114,39 @@ static size_t find_transcript_command(const uint8_t *data, size_t len, const cha
     return SIZE_MAX;
 }
 
+/* Observe the actual committed state, not just the final state after retry.
+ * A complete replacement must keep both the chain contents and its entry jump.
+ * Deliberate firmware wipes are tested separately with this observer disabled. */
+static bool chain_connected(const mt_ipt_rules_snapshot_t *snap, const char *table,
+                             const char *parent, const char *name) {
+    const mt_ipt_table_rules_t *t = mt_ipt_rules_snapshot_find_table(snap, table);
+    const mt_ipt_chain_rules_t *c = mt_ipt_table_rules_find_chain(t, name);
+    const mt_ipt_chain_rules_t *p = mt_ipt_table_rules_find_chain(t, parent);
+    if (!c || !c->n_rules || !p) { return false; }
+    size_t jumps = 0;
+    for (size_t i = 0; i < p->n_rules; i++) {
+        const char *target = jump_target(p->rules[i]);
+        if (target && !strcmp(target, name)) { jumps++; }
+    }
+    return jumps == 1;
+}
+
+static bool active_chains_present(gate_t *g) {
+    mt_ipt_rules_snapshot_t *snap = NULL;
+    if (mt_ipt_get_current_rules(g->view, &snap) != MT_OK) { return false; }
+    char dns[32], policy[32], dispatch[32];
+    snprintf(dns, sizeof(dns), "%sDNSOR", g->prefix);
+    snprintf(policy, sizeof(policy), "%sPOLICY", g->prefix);
+    snprintf(dispatch, sizeof(dispatch), "%sPOLICY_RULES", g->prefix);
+    bool ok = chain_connected(snap, "nat", "PREROUTING", dns);
+    if (g->watch_policy) {
+        ok = ok && chain_connected(snap, "mangle", "PREROUTING", policy) &&
+             chain_connected(snap, "mangle", policy, dispatch);
+    }
+    mt_ipt_rules_snapshot_free(snap);
+    return ok;
+}
+
 static mt_err_t gate_restore(mt_ipt_executable_t *self, const uint8_t *data, size_t len) {
     gate_t *g = (gate_t *)self;
     /* The Keenetic target rejects this optional match at COMMIT. Enforce
@@ -130,10 +166,20 @@ static mt_err_t gate_restore(mt_ipt_executable_t *self, const uint8_t *data, siz
         g->bad_delete_order++;
     }
     if (++g->restores == g->fail_restore) { return g->failure; }
+    bool partial = g->restores == g->cancel_after_first_table;
+    if (partial) {
+        size_t commit = find_transcript_command(data, len, "COMMIT\n");
+        if (commit == SIZE_MAX) { return MT_ERR_PROTO; }
+        len = commit + strlen("COMMIT\n");
+    }
     mt_err_t err = g->real ? g->inner->ops->restore(g->inner, data, len)
                          : checked_fake_restore(g, data, len);
-    if (err == MT_OK && g->restores == g->cancel_after_restore) {
+    if (err == MT_OK && g->watch_presence && !active_chains_present(g)) {
+        g->presence_gaps++;
+    }
+    if (err == MT_OK && (partial || g->restores == g->cancel_after_restore)) {
         mt_cancel_raise(g->cancel);
+        if (partial) { return MT_ERR_CANCELED; }
     }
     return err;
 }
@@ -212,6 +258,7 @@ static void setup(unsigned families, const char *prefix) {
         fx.g[i] = g;
         fx.ipt[i] = mt_ipt_new(&g->base);
         assert(fx.ipt[i]);
+        g->view = fx.ipt[i];
         assert(raw_restore(g, "*nat\n:PREROUTING - [0:0]\n:FOREIGN_KEEP - [0:0]\n"
                               "-A FOREIGN_KEEP -j RETURN\n"
                               "-A PREROUTING -p udp --dport 65000 -j FOREIGN_KEEP\nCOMMIT\n") == MT_OK);
@@ -332,10 +379,11 @@ TEST repeated_recovery_and_foreign_rules(void) {
 
 TEST retry_after_apply_failure(unsigned family) {
     setup(3, "MT_");
-    /* First restore cleans; the second writes desired state. For IPv6 this
-     * also exercises IPv4 having committed while IPv6 has not. */
+    /* A full rebuild now has a single replacement per family, no eager
+     * cleanup. Remove the entry jump to force a real recovery write. */
+    ASSERT_EQ(MT_OK, remove_jump(family, false));
     fx.g[family]->failure = MT_ERR_IO;
-    fx.g[family]->fail_restore = fx.g[family]->restores + 2;
+    fx.g[family]->fail_restore = fx.g[family]->restores + 1;
     ASSERT_EQ(MT_ERR_IO, mt_app_rebuild_netfilter(fx.app, NULL));
     ASSERT_EQ(MT_OK, mt_app_rebuild_netfilter(fx.app, NULL));
     return assert_recovered();
@@ -350,8 +398,9 @@ TEST retry_after_snapshot_failure(void) {
     return assert_recovered();
 }
 
-TEST cancel_after_cleanup_then_retry(void) {
+TEST cancel_after_replacement_then_retry(void) {
     setup(3, "MT_");
+    ASSERT_EQ(MT_OK, remove_jump(0, false));
     mt_cancel_t *cancel = mt_cancel_new();
     ASSERT(cancel);
     fx.g[0]->cancel_after_restore = fx.g[0]->restores + 1;
@@ -532,6 +581,149 @@ TEST scoped_dns_rebuild_on_a_kernel_without_addrtype(void) {
 }
 #endif
 
+/* Reproduction of the November 2026 live-routing gap. The old cleanup/apply
+ * split passed eventual-recovery tests while removing MT_POLICY and MT_DNSOR
+ * from the live kernel between restores (and until retry on cancellation). */
+static void setup_continuity(void) {
+    setup(3, "MT_");
+#ifdef MT_ENTWARE_KN
+    mt_kn_policy_config_t config = {.enabled = true, .policy_id = "Policy0"};
+    assert(mt_app_policy_set(fx.app, &config, true, 0xffffd00) == MT_OK);
+    fx.g[0]->watch_policy = fx.g[1]->watch_policy = true;
+#endif
+    for (unsigned i = 0; i < 2; i++) {
+        assert(active_chains_present(fx.g[i]));
+        /* A harmless extra rule forces an actual replacement even when the
+         * fake's save format matches desired state byte-for-byte. */
+        assert(raw_restore(fx.g[i], "*nat\n-A MT_DNSOR -j RETURN\nCOMMIT\n") == MT_OK);
+        fx.g[i]->watch_presence = true;
+    }
+}
+
+TEST rebuild_preserves_active_chains_at_every_write(void) {
+    setup_continuity();
+    for (unsigned pass = 0; pass < 4; pass++) {
+        ASSERT_EQ(MT_OK, mt_app_rebuild_netfilter(fx.app, NULL));
+        for (unsigned i = 0; i < 2; i++) {
+            ASSERT(active_chains_present(fx.g[i]));
+            ASSERT_EQ(0u, fx.g[i]->presence_gaps);
+        }
+    }
+    PASS();
+}
+
+TEST cancellation_preserves_active_chains(unsigned family) {
+    setup_continuity();
+    mt_cancel_t *cancel = mt_cancel_new();
+    ASSERT(cancel);
+    fx.g[family]->cancel_after_restore = fx.g[family]->restores + 1;
+    mt_err_t result = mt_app_rebuild_netfilter(fx.app, cancel);
+    bool raised = mt_cancel_raised(cancel);
+    /* Cancellation after the last complete write may return success. Neither
+     * return value is permission to remove the other family's working rules. */
+    mt_cancel_free(cancel);
+    ASSERT(raised);
+    ASSERT(result == MT_ERR_CANCELED || result == MT_OK);
+    for (unsigned i = 0; i < 2; i++) {
+        ASSERT(active_chains_present(fx.g[i]));
+        ASSERT_EQ(0u, fx.g[i]->presence_gaps);
+    }
+    ASSERT_EQ(MT_OK, mt_app_rebuild_netfilter(fx.app, NULL));
+    for (unsigned i = 0; i < 2; i++) { ASSERT(active_chains_present(fx.g[i])); }
+    PASS();
+}
+
+TEST apply_failure_preserves_active_chains(unsigned family) {
+    setup_continuity();
+    fx.g[family]->failure = MT_ERR_IO;
+    fx.g[family]->fail_restore = fx.g[family]->restores + 1;
+    ASSERT_EQ(MT_ERR_IO, mt_app_rebuild_netfilter(fx.app, NULL));
+    for (unsigned i = 0; i < 2; i++) {
+        ASSERT(active_chains_present(fx.g[i]));
+        ASSERT_EQ(0u, fx.g[i]->presence_gaps);
+    }
+    ASSERT_EQ(MT_OK, mt_app_rebuild_netfilter(fx.app, NULL));
+    for (unsigned i = 0; i < 2; i++) { ASSERT(active_chains_present(fx.g[i])); }
+    PASS();
+}
+
+TEST snapshot_failure_preserves_active_chains(void) {
+    setup_continuity();
+    fx.g[1]->failure = MT_ERR_IO;
+    fx.g[1]->fail_save = fx.g[1]->saves + 1;
+    ASSERT_EQ(MT_ERR_IO, mt_app_rebuild_netfilter(fx.app, NULL));
+    for (unsigned i = 0; i < 2; i++) {
+        ASSERT(active_chains_present(fx.g[i]));
+        ASSERT_EQ(0u, fx.g[i]->presence_gaps);
+    }
+    ASSERT_EQ(MT_OK, mt_app_rebuild_netfilter(fx.app, NULL));
+    PASS();
+}
+
+#ifdef MT_ENTWARE_KN
+TEST cancellation_between_tables_preserves_active_chains(unsigned family) {
+    setup_continuity();
+    /* Unlike an atomic fake batch, real restore commits tables separately.
+     * Stop after the first COMMIT while another table and family remain old. */
+    ASSERT_EQ(MT_OK, raw_restore(fx.g[family],
+        "*mangle\n-A MT_POLICY -j RETURN\nCOMMIT\n"));
+    mt_cancel_t *cancel = mt_cancel_new();
+    ASSERT(cancel);
+    fx.g[family]->cancel_after_first_table = fx.g[family]->restores + 1;
+    mt_err_t result = mt_app_rebuild_netfilter(fx.app, cancel);
+    bool raised = mt_cancel_raised(cancel);
+    mt_cancel_free(cancel);
+    ASSERT_EQ(MT_ERR_CANCELED, result);
+    ASSERT(raised);
+    for (unsigned i = 0; i < 2; i++) {
+        ASSERT(active_chains_present(fx.g[i]));
+        ASSERT_EQ(0u, fx.g[i]->presence_gaps);
+    }
+    ASSERT_EQ(MT_OK, mt_app_rebuild_netfilter(fx.app, NULL));
+    for (unsigned i = 0; i < 2; i++) { ASSERT(active_chains_present(fx.g[i])); }
+    PASS();
+}
+
+TEST rebuild_prunes_stale_dispatch_without_detaching_policy(void) {
+    setup_continuity();
+    for (unsigned i = 0; i < 2; i++) {
+        ASSERT_EQ(MT_OK, raw_restore(fx.g[i],
+            "*mangle\n:MT_STALE - [0:0]\n-A MT_STALE -j RETURN\n"
+            "-I MT_POLICY_RULES 1 -j MT_STALE\nCOMMIT\n"));
+    }
+    ASSERT_EQ(MT_OK, mt_app_rebuild_netfilter(fx.app, NULL));
+    for (unsigned i = 0; i < 2; i++) {
+        ASSERT(active_chains_present(fx.g[i]));
+        ASSERT_EQ(0u, fx.g[i]->presence_gaps);
+        mt_ipt_rules_snapshot_t *snap = NULL;
+        ASSERT_EQ(MT_OK, mt_ipt_get_current_rules(fx.ipt[i], &snap));
+        const mt_ipt_table_rules_t *t = mt_ipt_rules_snapshot_find_table(snap, "mangle");
+        const mt_ipt_chain_rules_t *d = mt_ipt_table_rules_find_chain(t, "MT_POLICY_RULES");
+        bool good = d && d->n_rules == 1 && has_arg(d->rules[0], "RETURN") &&
+                    mt_ipt_table_rules_find_chain(t, "MT_STALE") == NULL;
+        mt_ipt_rules_snapshot_free(snap);
+        ASSERT(good);
+    }
+    PASS();
+}
+#endif
+
+TEST precanceled_rebuild_does_not_write(void) {
+    setup_continuity();
+    unsigned before[2] = {fx.g[0]->restores, fx.g[1]->restores};
+    mt_cancel_t *cancel = mt_cancel_new();
+    ASSERT(cancel);
+    mt_cancel_raise(cancel);
+    mt_err_t result = mt_app_rebuild_netfilter(fx.app, cancel);
+    mt_cancel_free(cancel);
+    ASSERT_EQ(MT_ERR_CANCELED, result);
+    for (unsigned i = 0; i < 2; i++) {
+        ASSERT_EQ(before[i], fx.g[i]->restores);
+        ASSERT(active_chains_present(fx.g[i]));
+    }
+    PASS();
+}
+
 GREATEST_MAIN_DEFS();
 
 int main(int argc, char **argv) {
@@ -555,13 +747,25 @@ int main(int argc, char **argv) {
     RUN_TESTp(retry_after_apply_failure, 0);
     RUN_TESTp(retry_after_apply_failure, 1);
     RUN_TEST(retry_after_snapshot_failure);
-    RUN_TEST(cancel_after_cleanup_then_retry);
+    RUN_TEST(cancel_after_replacement_then_retry);
     RUN_TEST(cleanup_removes_goto_references);
     RUN_TEST(foreign_user_chain_survives_owned_chain_cleanup);
     RUN_TEST(custom_prefix_recovery);
     RUN_TEST(event_burst_eventually_recovers);
 #ifdef MT_ENTWARE_KN
     RUN_TEST(scoped_dns_rebuild_on_a_kernel_without_addrtype);
+#endif
+    RUN_TEST(rebuild_preserves_active_chains_at_every_write);
+    RUN_TESTp(cancellation_preserves_active_chains, 0);
+    RUN_TESTp(cancellation_preserves_active_chains, 1);
+    RUN_TESTp(apply_failure_preserves_active_chains, 0);
+    RUN_TESTp(apply_failure_preserves_active_chains, 1);
+    RUN_TEST(snapshot_failure_preserves_active_chains);
+    RUN_TEST(precanceled_rebuild_does_not_write);
+#ifdef MT_ENTWARE_KN
+    RUN_TESTp(cancellation_between_tables_preserves_active_chains, 0);
+    RUN_TESTp(cancellation_between_tables_preserves_active_chains, 1);
+    RUN_TEST(rebuild_prunes_stale_dispatch_without_detaching_policy);
 #endif
     GREATEST_MAIN_END();
 }
