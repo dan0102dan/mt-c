@@ -4,6 +4,7 @@ import { t } from "../../data/locale.svelte";
 import { ChangeTracker } from "../../utils/change-tracker.svelte";
 
 import { type Group, type Rule } from "../../types";
+import { isAcceptedRegex } from "../../utils/accepted-regex";
 import { appliedGroups } from "../../utils/applied-save";
 import { CooperativeBudget } from "../../utils/cooperative-data";
 import { defaultGroup, defaultRule } from "../../utils/defaults";
@@ -384,7 +385,12 @@ export class GroupsStore {
     for (const group of next) {
       for (let index = 0; index < group.rules.length; index++) {
         const rule = group.rules[index];
-        if (!rule.rule || (VALIDATOP_MAP[rule.type] && !VALIDATOP_MAP[rule.type](rule.rule)))
+        if (
+          !rule.rule ||
+          (!isAcceptedRegex(rule, savedRules.get(group.id)) &&
+            VALIDATOP_MAP[rule.type] &&
+            !VALIDATOP_MAP[rule.type](rule.rule))
+        )
           validRules = false;
         if (index % 256 === 0 && performance.now() >= deadline) {
           await this.#yieldToMain();
@@ -800,13 +806,19 @@ export class GroupsStore {
     }
   }
 
+  isSavedRegexRule = (groupId: string, rule: Rule) =>
+    isAcceptedRegex(rule, this.#savedRules.get(groupId));
+
   checkRulesValidityState = () => {
     this.#validationGeneration++;
     this.#validatedRevision = this.dataRevision;
     this.valid_rules = this.data.every((group) =>
       group.rules.every(
         (rule) =>
-          Boolean(rule.rule) && (!VALIDATOP_MAP[rule.type] || VALIDATOP_MAP[rule.type](rule.rule)),
+          Boolean(rule.rule) &&
+          (this.isSavedRegexRule(group.id, rule) ||
+            !VALIDATOP_MAP[rule.type] ||
+            VALIDATOP_MAP[rule.type](rule.rule)),
       ),
     );
   };
@@ -821,7 +833,12 @@ export class GroupsStore {
     try {
       for (const group of this.data) {
         for (const rule of group.rules) {
-          if (!rule.rule || (VALIDATOP_MAP[rule.type] && !VALIDATOP_MAP[rule.type](rule.rule))) {
+          if (
+            !rule.rule ||
+            (!this.isSavedRegexRule(group.id, rule) &&
+              VALIDATOP_MAP[rule.type] &&
+              !VALIDATOP_MAP[rule.type](rule.rule))
+          ) {
             valid = false;
             break;
           }

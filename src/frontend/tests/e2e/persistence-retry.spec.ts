@@ -8,7 +8,7 @@ type Failure = "persistence" | "server" | "conflict" | "network";
 
 /** Keep runtime and disk distinct. Apply the same strict optimistic checks as
  * the real handlers (also covered by the C HTTP/YAML regression tests). */
-async function editor(page: Page, kind: Kind, failures: Failure[]) {
+async function editor(page: Page, kind: Kind, failures: Failure[], acceptedRegex = false) {
   const initial: Group & Subscription = {
     id: "aabbccdd",
     name: "Retry",
@@ -19,7 +19,19 @@ async function editor(page: Page, kind: Kind, failures: Failure[]) {
     url: "https://example.com/list.txt",
     interval: 86400,
     lastUpdate: 1700000000,
-    rules: [{ id: "11223344", name: "Rule", rule: "one.example", type: "domain", enable: true }],
+    rules: [
+      {
+        id: "11223344",
+        name: "Rule",
+        rule: acceptedRegex
+          ? kind === "subscriptions"
+            ? "DOMAIN-REGEX,(?i)EXAMPLE"
+            : "(?i)EXAMPLE"
+          : "one.example",
+        type: acceptedRegex ? "regex" : "domain",
+        enable: true,
+      },
+    ],
   };
   let live = structuredClone(initial);
   let disk = structuredClone(initial);
@@ -61,6 +73,7 @@ async function editor(page: Page, kind: Kind, failures: Failure[]) {
         }
       }
       const staged = structuredClone(live);
+      staged.name = incoming.name;
       for (const change of incoming.ruleChanges) {
         const rule = staged.rules.find((item) => item.id === change.id)!;
         rule.type = change.type;
@@ -187,4 +200,25 @@ for (const kind of ["groups", "subscriptions"] as const) {
       await expect.poll(e.warns).toBe(false);
     });
   }
+}
+
+for (const kind of ["groups", "subscriptions"] as const) {
+  test(`${kind}: accepted PCRE rules allow collapsed metadata saves and persistence retries`, async ({
+    page,
+  }) => {
+    const e = await editor(page, kind, ["persistence"], true);
+    const panel = page.locator(kind === "groups" ? ".group-wrapper" : ".subscription-panel");
+    await panel.locator("[data-collapsible-trigger]").first().click();
+    await expect(e.toggle).toBeHidden();
+    await panel
+      .locator(kind === "groups" ? "input.group-name" : "input.subscription-name")
+      .fill("Updated metadata");
+    await e.submit(500);
+    await e.submit(200);
+    expect(e.requests.every((request) => request.ruleChanges.length === 0)).toBe(true);
+    expect(e.disk().name).toBe("Updated metadata");
+    expect(e.disk().rules[0].rule).toBe(
+      kind === "groups" ? "(?i)EXAMPLE" : "DOMAIN-REGEX,(?i)EXAMPLE",
+    );
+  });
 }
