@@ -29,10 +29,16 @@
   function isPatternInvalid() {
     // Imported wildcard source is validated by the backend; the old UI
     // validator deliberately does not allow every supported imported glob.
-    const typedWildcard = rule.type === "wildcard" &&
+    const typedWildcard =
+      rule.type === "wildcard" &&
       (rule.rule.startsWith("DOMAIN-KEYWORD,") || rule.rule.startsWith("DOMAIN-WILDCARD,"));
-    return pattern.length === 0 ||
-      (!typedWildcard && VALIDATOP_MAP[rule.type] && !VALIDATOP_MAP[rule.type](pattern));
+    return (
+      pattern.length === 0 ||
+      (!typedWildcard &&
+        !store.isSavedRegexRule(store.data[subscription_index].id, rule) &&
+        VALIDATOP_MAP[rule.type] &&
+        !VALIDATOP_MAP[rule.type](pattern))
+    );
   }
 
   async function handleTypeChange(value: string) {

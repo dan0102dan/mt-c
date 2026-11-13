@@ -46,7 +46,9 @@
   }
 
   const patternInvalid = $derived(
-    !rule.rule || Boolean(VALIDATOP_MAP[rule.type] && !VALIDATOP_MAP[rule.type](rule.rule)),
+    !rule.rule ||
+      (!store.isSavedRegexRule(group_id, rule) &&
+        Boolean(VALIDATOP_MAP[rule.type] && !VALIDATOP_MAP[rule.type](rule.rule))),
   );
 
   function patternValidation() {

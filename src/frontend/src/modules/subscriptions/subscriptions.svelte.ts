@@ -2,6 +2,7 @@ import { t } from "../../data/locale.svelte";
 import { ChangeTracker } from "../../utils/change-tracker.svelte";
 
 import { type Subscription, type SubscriptionRule } from "../../types";
+import { isAcceptedRegex } from "../../utils/accepted-regex";
 import { appliedSubscriptions } from "../../utils/applied-save";
 import { randomId } from "../../utils/defaults";
 import { overlay, toast } from "../../utils/events";
@@ -334,7 +335,10 @@ export class SubscriptionsStore {
           (rule.rule.startsWith("DOMAIN-KEYWORD,") || rule.rule.startsWith("DOMAIN-WILDCARD,"));
         if (
           !pattern.length ||
-          (!typedWildcard && VALIDATOP_MAP[rule.type] && !VALIDATOP_MAP[rule.type](pattern))
+          (!typedWildcard &&
+            !isAcceptedRegex(rule, savedRules.get(sub.id)) &&
+            VALIDATOP_MAP[rule.type] &&
+            !VALIDATOP_MAP[rule.type](pattern))
         )
           validRules = false;
         if (index % 256 === 0 && performance.now() >= deadline) await pause();
@@ -548,6 +552,9 @@ export class SubscriptionsStore {
     }
   }
 
+  isSavedRegexRule = (subscriptionId: string, rule: SubscriptionRule) =>
+    isAcceptedRegex(rule, this.#savedRules.get(subscriptionId));
+
   checkRulesValidityState = () => {
     this.#validatedRevision = this.dataRevision;
     this.valid_rules = this.data.every((subscription) =>
@@ -558,7 +565,10 @@ export class SubscriptionsStore {
           (rule.rule.startsWith("DOMAIN-KEYWORD,") || rule.rule.startsWith("DOMAIN-WILDCARD,"));
         return (
           pattern.length > 0 &&
-          (typedWildcard || !VALIDATOP_MAP[rule.type] || VALIDATOP_MAP[rule.type](pattern))
+          (typedWildcard ||
+            this.isSavedRegexRule(subscription.id, rule) ||
+            !VALIDATOP_MAP[rule.type] ||
+            VALIDATOP_MAP[rule.type](pattern))
         );
       }),
     );

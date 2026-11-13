@@ -253,3 +253,38 @@ for (const kind of ["groups", "subscriptions"] as const) {
     }
   });
 }
+
+for (const kind of ["groups", "subscriptions"] as const) {
+  Deno.test(
+    `${kind}: accepted PCRE baseline survives metadata and staged imports but not pattern edits`,
+    async () => {
+      const store = kind === "groups" ? new GroupsStore() : new SubscriptionsStore();
+      const saved = { ...subscription(), ...group() };
+      saved.rules[0].type = "regex";
+      saved.rules[0].rule = kind === "groups" ? "(?i)EXAMPLE" : "DOMAIN-REGEX,(?i)EXAMPLE";
+      try {
+        store.stageImport([saved], [saved]);
+        store.checkRulesValidityState();
+        assert.equal(store.valid_rules, true);
+        store.data[0].name = "Metadata";
+        store.checkRulesValidityState();
+        assert.equal(store.valid_rules, true);
+        store.data[0].rules[0].rule += "(";
+        store.checkRulesValidityState();
+        assert.equal(store.valid_rules, false);
+        store.data[0].rules[0].rule = saved.rules[0].rule;
+        store.data[0].rules[0].id = "new-rule";
+        store.checkRulesValidityState();
+        assert.equal(store.valid_rules, false);
+        const prepared = await store.prepareImport(
+          [saved],
+          [{ ...saved, name: "Imported metadata" }],
+        );
+        prepared.commit();
+        assert.equal(store.valid_rules, true);
+      } finally {
+        store.destroy();
+      }
+    },
+  );
+}
