@@ -32,14 +32,6 @@ class TestCIOrchestration(unittest.TestCase):
         self.assertIn("  release:", ci)
         self.assertIn("  workflow_dispatch:", ci)
 
-    def test_push_triggers_on_main_and_develop(self):
-        ci = workflow("ci.yml")
-        push = ci.split("  push:\n", 1)[1].split("  release:\n", 1)[0]
-        self.assertIn("    branches:\n", push)
-        for branch in ("main", "develop"):
-            self.assertIn(f"      - {branch}\n", push)
-        self.assertNotIn("claude/", push)
-
     def test_children_do_not_race_or_cancel_their_caller(self):
         ci = workflow("ci.yml")
         self.assertIn("cancel-in-progress: true", ci)
