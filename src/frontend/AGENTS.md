@@ -51,7 +51,16 @@
 - `RouteSelect.svelte` — общий выбор прямого интерфейса или профиля.
 - `Tooltip.svelte`, `DropdownMenu.svelte`, `Switch.svelte`, `Checkbox.svelte`.
 - `GenericDialog.svelte` и диалоги модулей — образцы работы с диалогами.
-- `Placeholder.svelte` — loading/empty/error и действия повтора.
+- `Placeholder.svelte` — loading/empty/error и действия повтора; внутри существующей
+  панели используй `embedded`, чтобы не создавать вложенную карточку.
+- `PanelSurface.svelte` — оболочка панели с общими `header`/`footer` snippets.
+  Сложные панели с DnD сохраняют свой DOM и используют те же токены.
+- `SearchField.svelte` — общий поиск; `expandable` сохраняет мобильное раскрытие
+  Groups/Subscriptions. Владелец состояния передаёт `bind:value`.
+- `FormSection.svelte`, `FormField.svelte`, `SwitchField.svelte` — секции формы,
+  подписи/ошибки и переключатели. Нативным полям и Select передавай `form-control`;
+  ID и `aria-describedby` связывают поле с подсказкой/ошибкой.
+- `SectionDescription.svelte` — единая типографика и отступы описаний вкладок.
 - `icons.ts` — именованные иконки действий. Не заменяй их emoji или новым набором.
 
 Пагинация — `src/components/Pagination.svelte`, уведомления/overlay —
@@ -152,6 +161,14 @@ Loading/empty/error/Retry оформляй через `Placeholder`, ввод �
 чередование строк и состояния кнопок. Не добавляй декоративные полоски, лишние
 карточки, новую палитру, градиенты и пояснения к очевидным действиям.
 Существующие эффекты общих компонентов сохраняй.
+
+Общая шкала `--space-1`…`--space-6` задаёт интервалы от 0.25 до 1.5rem;
+`--text-body`, `--text-small`, `--text-caption` — текст, подписи и метаданные.
+`--panel-inset`, `--radius-panel`, `--control-height` задают геометрию новых общих
+компонентов по образцу Groups/Subscriptions. Внутренние отступы принадлежат
+компоненту, не накапливай их на странице и вложенных оболочках. Состояния
+loading/empty/error выбирай взаимоисключающе; ошибка переподключения не прячет
+уже полученные строки.
 
 При сравнении различай padding страницы/шапки/строки, gap, ширину ячейки и размер
 кнопки с padding/border. У строк `RuleRow` и профилей справа `0.1rem` на desktop

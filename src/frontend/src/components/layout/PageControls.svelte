@@ -134,11 +134,7 @@
         inactive={!canSave && !saveBusy}
         disabled={!canSave || saveBusy}
       >
-        {#if saveBusy}
-          <span class="save-spinner" aria-hidden="true"></span>
-        {:else}
-          <Save size={22} />
-        {/if}
+        <Save size={22} />
       </Button>
     </Tooltip>
 
@@ -191,21 +187,6 @@
 </div>
 
 <style>
-  .save-spinner {
-    display: block;
-    box-sizing: border-box;
-    width: 22px;
-    height: 22px;
-    border: 2px solid currentColor;
-    border-right-color: transparent;
-    border-radius: 50%;
-    animation: save-spin 700ms linear infinite;
-  }
-  @keyframes save-spin {
-    to {
-      transform: rotate(360deg);
-    }
-  }
   .page-controls {
     --row-h: 48px;
     display: flex;
@@ -281,9 +262,6 @@
     color: var(--red);
   }
   @media (prefers-reduced-motion: reduce) {
-    .save-spinner {
-      animation: none;
-    }
     .context-add {
       transition: none;
       transform: none;

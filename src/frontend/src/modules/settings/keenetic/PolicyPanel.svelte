@@ -2,9 +2,11 @@
   import { getContext, onMount } from "svelte";
 
   import Button from "../../../components/ui/Button.svelte";
+  import FormField from "../../../components/ui/FormField.svelte";
   import Placeholder from "../../../components/ui/Placeholder.svelte";
+  import SectionDescription from "../../../components/ui/SectionDescription.svelte";
   import Select from "../../../components/ui/Select.svelte";
-  import Switch from "../../../components/ui/Switch.svelte";
+  import SwitchField from "../../../components/ui/SwitchField.svelte";
   import { locales, t } from "../../../data/locale.svelte";
   import {
     acceptPolicyImport,
@@ -94,9 +96,9 @@
   })}
 >
   <h2 id="keenetic-policy-title" class="sr-only">{t("Keenetic")}</h2>
-  <p class="settings-description">
+  <SectionDescription>
     {t("Choose which devices mt-c processes using a Keenetic router policy.")}
-  </p>
+  </SectionDescription>
 
   {#if !policy.loaded}
     <Placeholder variant={policy.failed ? "error" : "loading"} minHeight="auto">
@@ -111,56 +113,49 @@
   {:else}
     <fieldset class="policy-layout" class:enabled={policy.draft.enabled} disabled={policy.saving}>
       <div class="policy-switches">
-        <div class="switch-row">
-          <Switch
-            id="keenetic-policy-enabled"
-            bind:checked={policy.draft.enabled}
-            aria-label={t("Use policy based filter")}
-          />
-          <label for="keenetic-policy-enabled">{t("Use policy based filter")}</label>
-        </div>
+        <SwitchField
+          id="keenetic-policy-enabled"
+          bind:checked={policy.draft.enabled}
+          label={t("Use policy based filter")}
+        />
         {#if policy.draft.enabled}
-          <div class="switch-row mode-switch">
-            <Switch
-              id="keenetic-policy-mode"
-              bind:checked={
-                () => policy.draft.mode === "exclude",
-                (checked) => (policy.draft.mode = checked ? "exclude" : "include")
-              }
-              aria-label={t("Processing mode")}
-            />
-            <label for="keenetic-policy-mode">
-              {policy.draft.mode === "include"
-                ? t("Include: MT processes only devices in the selected policy")
-                : t("Exclude: MT processes all devices except those in the selected policy")}
-            </label>
-          </div>
+          <SwitchField
+            id="keenetic-policy-mode"
+            bind:checked={
+              () => policy.draft.mode === "exclude",
+              (checked) => (policy.draft.mode = checked ? "exclude" : "include")
+            }
+            ariaLabel={t("Processing mode")}
+          >
+            {policy.draft.mode === "include"
+              ? t("Include: MT processes only devices in the selected policy")
+              : t("Exclude: MT processes all devices except those in the selected policy")}
+          </SwitchField>
         {/if}
       </div>
       {#if policy.draft.enabled}
         <div class="policy-fields">
-          <div class="policy-choice">
-            <span id="keenetic-policy-label">{t("Router policy")}</span>
-            <div class="picker-row">
-              <Select
-                {options}
-                compact
-                bind:selected={() => selectedId, (id) => (policy.draft.policy_id = id)}
-                ariaLabel={t("Router policy")}
-                disabled={policy.listing || policy.saving}
-                missingLabel={policy.draft.policy_id
-                  ? `${policy.draft.policy_id} · ${t("Policy unavailable")}`
-                  : "mt"}
-              />
-              {#if !policy.listing && (policy.listFailed || !selected?.available)}
-                <p class="validation" role="status">
-                  {policy.listFailed
-                    ? t("Could not load policies. Reload the page to retry.")
-                    : t("The filter will become active when the policy is available.")}
-                </p>
-              {/if}
-            </div>
-          </div>
+          <FormField
+            label={t("Router policy")}
+            hint={!policy.listing && (policy.listFailed || !selected?.available)
+              ? policy.listFailed
+                ? t("Could not load policies. Reload the page to retry.")
+                : t("The filter will become active when the policy is available.")
+              : undefined}
+          >
+            <Select
+              {options}
+              compact
+              bounded
+              triggerClass="form-control"
+              bind:selected={() => selectedId, (id) => (policy.draft.policy_id = id)}
+              ariaLabel={t("Router policy")}
+              disabled={policy.listing || policy.saving}
+              missingLabel={policy.draft.policy_id
+                ? `${policy.draft.policy_id} · ${t("Policy unavailable")}`
+                : "mt"}
+            />
+          </FormField>
         </div>
       {/if}
     </fieldset>
@@ -179,75 +174,33 @@
     padding: 0;
     margin: 0;
   }
-  .switch-row {
-    display: flex;
-    align-items: center;
-    gap: 0.65rem;
-    padding: 0.5rem 0;
-    line-height: 1.5;
+  .policy-layout {
+    padding-inline: var(--panel-inset);
   }
   .policy-layout.enabled {
     display: grid;
     grid-template-columns: minmax(0, 3fr) minmax(0, 2fr);
-    gap: 1.5rem;
-    align-items: stretch;
+    gap: var(--space-6);
+    align-items: start;
   }
-  .policy-switches {
+  .policy-switches,
+  .policy-fields {
     min-width: 0;
   }
   .policy-fields {
-    min-width: 0;
-    border-left: 1px solid var(--bg-light-extra);
-    padding: 0.5rem 0 0.5rem 1.5rem;
+    padding-block: var(--space-2);
   }
-  .policy-choice {
-    display: grid;
-    gap: 0.5rem;
-  }
-  .policy-choice > span {
-    line-height: 1.5;
-    color: var(--text-2);
-  }
-  .picker-row {
-    min-width: 0;
-  }
-  .picker-row :global(.select-wrap),
-  .picker-row :global([data-select-trigger]) {
+  .policy-fields :global(.select-wrap),
+  .policy-fields :global([data-select-trigger]) {
+    width: 100%;
     max-width: 100%;
     min-width: 0;
   }
-  .picker-row :global([data-select-trigger]) {
-    padding: 0.3rem 0.5rem;
-    background: var(--bg-light);
-    border: 1px solid var(--bg-light-extra);
-  }
-  .picker-row :global([data-select-trigger]:hover),
-  .picker-row :global([data-select-trigger]:focus-visible) {
-    background: var(--bg-light-extra);
-  }
-  .mode-switch {
-    align-items: flex-start;
-    padding: 0.4rem 0;
-  }
-  .mode-switch :global([data-switch-root]) {
-    margin-top: 0.2rem;
-  }
-  .switch-row label {
-    cursor: pointer;
-  }
-  .validation {
-    margin: 0.5rem 0 0;
-    color: var(--text-2);
-    font-size: 0.8rem;
-    font-style: italic;
-    line-height: 1.5;
-  }
   .notice {
+    margin: var(--space-2) 0;
+    padding-inline: var(--panel-inset);
     color: var(--text);
-    line-height: 1.5;
-    border-left: 2px solid var(--accent);
-    padding-left: 0.75rem;
-    margin: 0.5rem 0;
+    font: 400 var(--text-small) / var(--line-height-body) var(--font);
   }
   .policy-settings :global(button:focus-visible) {
     outline: 2px solid var(--accent);
@@ -256,11 +209,10 @@
   @media (max-width: 700px) {
     .policy-layout.enabled {
       grid-template-columns: minmax(0, 1fr);
-      gap: 1rem;
+      gap: var(--space-4);
     }
     .policy-fields {
-      border-left: 0;
-      padding: 0;
+      padding-block: 0;
     }
   }
 </style>

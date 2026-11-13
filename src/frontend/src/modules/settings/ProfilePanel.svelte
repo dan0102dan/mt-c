@@ -225,10 +225,10 @@
   /* Same panel, title and striped rows as SubscriptionPanel/SubscriptionRuleRow. */
   .profile {
     background-color: var(--bg-medium);
-    border-radius: 0.5rem;
+    border-radius: var(--radius-panel);
     border: 1px solid var(--bg-light-extra);
     overflow: hidden;
-    margin: 1rem 0;
+    margin: var(--space-4) 0;
   }
   .profile:first-child {
     margin-top: 0;
@@ -237,9 +237,9 @@
     display: flex;
     justify-content: space-between;
     align-items: center;
-    gap: 0.5rem;
-    padding: 0.5rem;
-    border-radius: 0.5rem;
+    gap: var(--space-2);
+    padding: var(--panel-inset);
+    border-radius: var(--radius-panel);
     background-color: var(--bg-light);
   }
   .profile-info {
@@ -268,7 +268,7 @@
     display: flex;
     align-items: center;
     gap: 0.4rem;
-    font-size: 0.8rem;
+    font-size: var(--text-caption);
     min-height: 1.2em;
     line-height: 1.2;
     color: var(--text-2);
@@ -294,7 +294,7 @@
     padding: 0.1rem 0.1rem 0.1rem 0;
   }
   .interface-header {
-    font-size: 0.9rem;
+    font-size: var(--text-small);
     color: var(--text-2);
     text-align: center;
     padding-top: 0.6rem;
@@ -310,23 +310,23 @@
   .interface-label {
     display: flex;
     align-items: baseline;
-    gap: 0.5rem;
+    gap: var(--space-2);
     min-width: 0;
-    padding: 0 0.5rem;
+    padding: 0 var(--panel-inset);
   }
   .interface-id {
     flex-shrink: 0;
   }
   .interface-description {
     color: var(--text-2);
-    font-size: 0.9rem;
+    font-size: var(--text-small);
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
   }
   .order {
     text-align: center;
-    font-size: 0.9rem;
+    font-size: var(--text-small);
     color: var(--text-2);
   }
   .grip,
@@ -413,10 +413,10 @@
     }
     .interface-description {
       max-width: 100%;
-      font-size: 0.8rem;
+      font-size: var(--text-caption);
     }
     .order {
-      font-size: 0.8rem;
+      font-size: var(--text-caption);
     }
     .profile-name {
       font-size: 1.3rem;

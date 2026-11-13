@@ -8,6 +8,25 @@ test.describe("Groups Search", () => {
   test.beforeEach(async ({ page }) => {
     groupsPage = new GroupsPage(page);
 
+    // The layout eagerly mounts subscriptions and the updater beside this search.
+    await page.route("**/system/update/status", (route) =>
+      route.fulfill({ json: { stage: "idle" } }),
+    );
+    await page.route("**/system/update", (route) =>
+      route.fulfill({
+        json: {
+          installed_version: "1.0.0",
+          installed_revision: 1,
+          asset_suffix: "test.ipk",
+          can_install: true,
+          reason: "",
+        },
+      }),
+    );
+    await page.route("https://api.github.com/**", (route) => route.fulfill({ json: [] }));
+    await page.route("**/subscriptions", (route) => route.fulfill({ json: { subscriptions: [] } }));
+    // Profiles are loaded during authentication even while the Groups tab is visible.
+    await page.route("**/profiles", (route) => route.fulfill({ json: { profiles: [] } }));
     await page.route("**/auth", async (route) => {
       await route.fulfill({ json: { enabled: false } });
     });

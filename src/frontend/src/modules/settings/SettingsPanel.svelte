@@ -348,11 +348,6 @@
     clip-path: inset(50%);
     border: 0;
   }
-  :global(.settings-content .settings-description) {
-    margin: 0 0 1.25rem;
-    color: var(--text-2);
-    font: 400 0.95rem / 1.5 var(--font);
-  }
   :global(.settings-tabs) {
     display: flex;
     flex-wrap: wrap;
@@ -380,6 +375,13 @@
     outline-offset: 2px;
   }
   @media (max-width: 700px) {
+    :global(.settings-tabs) {
+      gap: var(--space-1);
+    }
+    :global(.settings-tabs [data-tabs-trigger]) {
+      padding-inline: 0.35rem;
+      font-size: var(--text-small);
+    }
     .settings-toolbar :global(.page-controls-search) {
       width: 100%;
     }

@@ -2,6 +2,24 @@ import { expect, test } from "@playwright/test";
 
 for (const tab of ["Groups", "Subscriptions"]) {
   test(`${tab}: search stays open on desktop and supports system shortcuts`, async ({ page }) => {
+    // The layout eagerly mounts subscriptions and the updater beside this search.
+    await page.route("**/system/update/status", (route) =>
+      route.fulfill({ json: { stage: "idle" } }),
+    );
+    await page.route("**/system/update", (route) =>
+      route.fulfill({
+        json: {
+          installed_version: "1.0.0",
+          installed_revision: 1,
+          asset_suffix: "test.ipk",
+          can_install: true,
+          reason: "",
+        },
+      }),
+    );
+    await page.route("https://api.github.com/**", (route) => route.fulfill({ json: [] }));
+    // Profiles are loaded during authentication even while the Groups tab is visible.
+    await page.route("**/profiles", (route) => route.fulfill({ json: { profiles: [] } }));
     await page.route("**/auth", (route) => route.fulfill({ json: { enabled: false } }));
     await page.route("**/groups?with_rules=true", (route) =>
       route.fulfill({ json: { groups: [] } }),
