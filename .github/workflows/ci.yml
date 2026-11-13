@@ -7,7 +7,7 @@ on:
   push:
     branches:
       - develop
-      - claude/magitrickle-c-rewrite-phase-0-t7iwas
+      - main
     paths-ignore:
       - '**.md'
   release:
