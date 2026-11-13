@@ -5,17 +5,18 @@ import { ChangeTracker } from "../../utils/change-tracker.svelte";
 
 import { type Group, type Rule } from "../../types";
 import { appliedGroups } from "../../utils/applied-save";
+import { CooperativeBudget } from "../../utils/cooperative-data";
 import { defaultGroup, defaultRule } from "../../utils/defaults";
 import { overlay, toast } from "../../utils/events";
 import { fetcher } from "../../utils/fetcher";
 import { DEFAULT_GROUP_PRIORITY, isValidPriority, withPriorityDefault } from "../../utils/priority";
 import { type SortDirection, type SortField } from "../../utils/rule-sorter";
+import { VALIDATOP_MAP } from "../../utils/rule-validators";
 import { buildGroupUpdate, snapshotGroupRules } from "./group-payload";
 import {
   cloneGroupsWithNewIds as cloneGroupsWithNewIdsData,
   cloneGroupWithNewIds as cloneGroupWithNewIdsData,
   prependGroups as prependGroupsData,
-  prependRules as prependRulesData,
   restoreGroupRulesOrder as restoreGroupRulesOrderData,
   sortGroupRules as sortGroupRulesData,
   toConfigPayload as toConfigPayloadData,
@@ -25,7 +26,6 @@ import { captureRuleMove } from "./rule-motion";
 export const GROUPS_STORE_CONTEXT = Symbol("groups-store");
 
 const SEARCH_DEBOUNCE_MS = 150 as const;
-const IMPORT_RULES_CHUNK_SIZE = 300 as const;
 const IMPORT_GROUPS_CLONE_CHUNK_SIZE = 20 as const;
 const IMPORT_GROUPS_INSERT_CHUNK_SIZE = 25 as const;
 export const RULE_SEARCH_MATCH_NAME = 1 << 0;
@@ -74,7 +74,8 @@ type DuplicateComputationResult = {
   duplicateRules: Set<string>;
   duplicateGroups: Set<string>;
   duplicateRuleKeys: Map<string, string>;
-  duplicateConflictsByGroup: Map<string, GroupDuplicateConflict[]>;
+  conflictsByKey: Map<string, GroupDuplicateConflict[]>;
+  keysByGroup: Map<string, Set<string>>;
 };
 
 type SearchIndexRule = {
@@ -106,6 +107,7 @@ export class GroupsStore {
   tracker = $state(new ChangeTracker<Group[]>([]));
   #savedRules = new Map<string, Rule[]>();
   #loadGeneration = 0;
+  #focusGeneration = 0;
   importPending = $state(false);
   delegateSave?: () => Promise<void>;
   saving = $state(false);
@@ -116,6 +118,7 @@ export class GroupsStore {
   data = $derived.by(() => this.tracker.data);
   dataRevision = $state(0);
   valid_rules = $state(true);
+  #validatedRevision = -1;
   valid_priorities = $derived(this.data.every((group) => isValidPriority(group.priority)));
   canSave = $derived(
     this.hasUnsavedChanges &&
@@ -126,6 +129,23 @@ export class GroupsStore {
   );
 
   open_state = $state<Record<string, boolean>>({});
+  panelState = $state<
+    Record<
+      string,
+      {
+        sortField: SortField | null;
+        sortDirection: SortDirection;
+        initialOrderIds: string[] | null;
+      }
+    >
+  >({});
+  ensureGroupVisible?: (groupId: string) => Promise<void>;
+  ruleScrollers = new Map<string, (ruleId: string) => Promise<void>>();
+
+  getPanelState(groupId: string) {
+    this.panelState[groupId] ??= { sortField: null, sortDirection: "asc", initialOrderIds: null };
+    return this.panelState[groupId];
+  }
 
   searchValue = $state("");
   visibleGroups = $state<VisibleGroup[]>([]);
@@ -149,14 +169,11 @@ export class GroupsStore {
     this.searchActive && !this.searchPending && this.visibleGroups.length === 0,
   );
 
-  finishedGroupsCount = $state(0);
   fetchError = $state(false);
   dataLoaded = $state(false);
 
-  isAllRendered = $derived(
-    this.dataLoaded &&
-      (this.data.length === 0 || this.finishedGroupsCount >= this.data.length || this.searchActive),
-  );
+  // Readiness follows loaded data, never the number of mounted virtual rows.
+  isAllRendered = $derived(this.dataLoaded);
 
   isEmptyData = $derived(
     this.dataLoaded &&
@@ -168,14 +185,18 @@ export class GroupsStore {
   duplicateRuleIds = $state<Set<string>>(new Set());
   duplicateGroupIds = $state<Set<string>>(new Set());
   duplicateRuleKeys = $state<Map<string, string>>(new Map());
-  duplicateConflictsByGroup = $state<Map<string, GroupDuplicateConflict[]>>(new Map());
+  // Detailed rows are requested only by an open menu. Sharing the key index
+  // avoids materializing every group's copy of all matching rules at once.
+  duplicateConflictsByGroup = new Map<string, GroupDuplicateConflict[]>();
+  #conflictsByKey = new Map<string, GroupDuplicateConflict[]>();
+  #duplicateKeysByGroup = new Map<string, Set<string>>();
+  #duplicateIndexVersion = $state(0);
+  #duplicateWorkGeneration = 0;
+  #validationGeneration = 0;
   activeDuplicateKey = $state<string | null>(null);
   duplicateHighlightPinned = $state(false);
   highlightedRuleId = $state<string | null>(null);
   duplicateFocusRequest = $state<DuplicateRuleFocusRequest | null>(null);
-
-  renderGroupsLimit = $state(1);
-  renderGroupsTimeout: number | null = null;
 
   #forcedGroupIds = new Set<string>();
   #forcedRuleIdsByGroup = new Map<string, Set<string>>();
@@ -209,7 +230,9 @@ export class GroupsStore {
       $effect(() => {
         this.dataRevision;
         if (typeof window === "undefined") return;
-        setTimeout(() => this.checkRulesValidityState(), 10);
+        setTimeout(() => {
+          if (this.#validatedRevision !== this.dataRevision) void this.#checkRulesValidityAsync();
+        }, 10);
       });
 
       $effect(() => {
@@ -248,23 +271,6 @@ export class GroupsStore {
       });
 
       $effect(() => {
-        if (this.searchActive) {
-          this.renderGroupsLimit = this.data.length;
-          if (this.renderGroupsTimeout) {
-            clearTimeout(this.renderGroupsTimeout);
-            this.renderGroupsTimeout = null;
-          }
-        } else {
-          this.scheduleGroupsNext();
-        }
-      });
-
-      $effect(() => {
-        this.data.length;
-        this.scheduleGroupsNext();
-      });
-
-      $effect(() => {
         if (this.isAllRendered) {
           this.onRenderComplete?.();
         }
@@ -285,17 +291,14 @@ export class GroupsStore {
           clearTimeout(this.#highlightedRuleTimer);
           this.#highlightedRuleTimer = null;
         }
-
-        if (this.renderGroupsTimeout) {
-          clearTimeout(this.renderGroupsTimeout);
-          this.renderGroupsTimeout = null;
-        }
       };
     });
   }
 
   destroy() {
     this.#loadGeneration++;
+    this.#duplicateWorkGeneration++;
+    this.#validationGeneration++;
     if (typeof window !== "undefined") {
       window.removeEventListener("keydown", this.handleSaveShortcut);
     }
@@ -311,9 +314,6 @@ export class GroupsStore {
     if (typeof window !== "undefined") {
       window.addEventListener("keydown", this.handleSaveShortcut);
     }
-    // Existing keyed panels stay mounted during an import refresh and will
-    // not report their initial render a second time.
-    if (!options.preserveDrafts) this.finishedGroupsCount = 0;
     this.fetchError = false;
     try {
       const fetched = (
@@ -325,7 +325,9 @@ export class GroupsStore {
       this.#savedRules = snapshotGroupRules(fetched);
       this.markDataRevision();
       if (typeof window !== "undefined") {
-        setTimeout(() => this.checkRulesValidityState(), 10);
+        setTimeout(() => {
+          if (this.#validatedRevision !== this.dataRevision) void this.#checkRulesValidityAsync();
+        }, 10);
       }
     } catch (error) {
       if (generation === this.#loadGeneration) {
@@ -356,6 +358,77 @@ export class GroupsStore {
     this.dataLoaded = true;
     this.markDataRevision();
     this.refreshDuplicateRuleIds();
+  }
+
+  /** Build the replacement offscreen; the page commits all prepared sections together. */
+  async prepareImport(baseline: readonly Group[], draft: readonly Group[]) {
+    const generation = this.#loadGeneration;
+    const revision = this.dataRevision;
+    const saved = baseline.map((group) => withPriorityDefault(group, DEFAULT_GROUP_PRIORITY));
+    const next = draft.map((group) => withPriorityDefault(group, DEFAULT_GROUP_PRIORITY));
+    const tracker = await ChangeTracker.fromDraftAsync(saved, next);
+    const savedRules = new Map<string, Rule[]>();
+    let deadline = performance.now() + 4;
+    for (const group of saved) {
+      const rules: Rule[] = [];
+      for (const rule of group.rules) {
+        rules.push({ ...rule });
+        if (rules.length % 256 === 0 && performance.now() >= deadline) {
+          await this.#yieldToMain();
+          deadline = performance.now() + 4;
+        }
+      }
+      savedRules.set(group.id, rules);
+    }
+    let validRules = true;
+    for (const group of next) {
+      for (let index = 0; index < group.rules.length; index++) {
+        const rule = group.rules[index];
+        if (!rule.rule || (VALIDATOP_MAP[rule.type] && !VALIDATOP_MAP[rule.type](rule.rule)))
+          validRules = false;
+        if (index % 256 === 0 && performance.now() >= deadline) {
+          await this.#yieldToMain();
+          deadline = performance.now() + 4;
+        }
+      }
+    }
+    const work = this.#duplicateComputation(next);
+    let result = work.next();
+    while (!result.done) {
+      if (performance.now() >= deadline) {
+        await this.#yieldToMain();
+        deadline = performance.now() + 4;
+      }
+      result = work.next();
+    }
+    const duplicates = result.value;
+    const validate = () => {
+      if (generation !== this.#loadGeneration || revision !== this.dataRevision)
+        throw new Error("Configuration changed; refresh the import preview");
+    };
+    return {
+      validate,
+      commit: () => {
+        validate();
+        this.#loadGeneration++;
+        if (this.#duplicateRuleIdsTimer) {
+          clearTimeout(this.#duplicateRuleIdsTimer);
+          this.#duplicateRuleIdsTimer = null;
+        }
+        this.#savedRules = savedRules;
+        this.tracker = tracker;
+        this.fetchError = false;
+        this.dataLoaded = true;
+        this.valid_rules = validRules;
+        this.markDataRevision();
+        this.#validatedRevision = this.dataRevision;
+        if (this.#duplicateRuleIdsTimer) {
+          clearTimeout(this.#duplicateRuleIdsTimer);
+          this.#duplicateRuleIdsTimer = null;
+        }
+        this.#applyDuplicateComputation(duplicates);
+      },
+    };
   }
 
   /** A confirmed import save becomes the baseline; unrelated drafts stay editable. */
@@ -728,12 +801,49 @@ export class GroupsStore {
   }
 
   checkRulesValidityState = () => {
-    if (typeof document === "undefined") return;
-    this.valid_rules = !document.querySelector(".rule input.invalid");
+    this.#validationGeneration++;
+    this.#validatedRevision = this.dataRevision;
+    this.valid_rules = this.data.every((group) =>
+      group.rules.every(
+        (rule) =>
+          Boolean(rule.rule) && (!VALIDATOP_MAP[rule.type] || VALIDATOP_MAP[rule.type](rule.rule)),
+      ),
+    );
   };
 
-  #sortDuplicateConflicts(conflicts: GroupDuplicateConflict[]) {
-    conflicts.sort((a, b) => {
+  async #checkRulesValidityAsync() {
+    const generation = ++this.#validationGeneration;
+    const revision = this.dataRevision;
+    const budget = new CooperativeBudget();
+    let valid = true;
+    // A pending scan must not allow saving an as-yet unvalidated edit.
+    this.valid_rules = false;
+    try {
+      for (const group of this.data) {
+        for (const rule of group.rules) {
+          if (!rule.rule || (VALIDATOP_MAP[rule.type] && !VALIDATOP_MAP[rule.type](rule.rule))) {
+            valid = false;
+            break;
+          }
+          const pause = budget.checkpoint();
+          if (pause) {
+            await pause;
+            if (generation !== this.#validationGeneration || revision !== this.dataRevision) return;
+          }
+        }
+        if (!valid) break;
+      }
+      if (generation === this.#validationGeneration && revision === this.dataRevision) {
+        this.valid_rules = valid;
+        this.#validatedRevision = revision;
+      }
+    } finally {
+      budget.close();
+    }
+  }
+
+  *#sortDuplicateConflicts(conflicts: GroupDuplicateConflict[]): Generator<void, void, void> {
+    const compare = (a: GroupDuplicateConflict, b: GroupDuplicateConflict) => {
       const byKey = a.duplicateKey.localeCompare(b.duplicateKey);
       if (byKey !== 0) return byKey;
 
@@ -747,36 +857,78 @@ export class GroupsStore {
       const byPattern = (a.rulePattern || "").localeCompare(b.rulePattern || "");
       if (byPattern !== 0) return byPattern;
       return a.ruleId.localeCompare(b.ruleId);
-    });
+    };
+    if (conflicts.length < 256) {
+      conflicts.sort(compare);
+      return;
+    }
+    // A single shared pattern can itself contain 100k matches. Built-in sort
+    // cannot yield; merge in bounded pieces for the background index builder.
+    let source = conflicts;
+    let target = new Array<GroupDuplicateConflict>(conflicts.length);
+    let operations = 0;
+    for (let width = 1; width < conflicts.length; width *= 2) {
+      for (let start = 0; start < conflicts.length; start += width * 2) {
+        const middle = Math.min(start + width, conflicts.length);
+        const end = Math.min(start + width * 2, conflicts.length);
+        let left = start;
+        let right = middle;
+        for (let index = start; index < end; index++) {
+          target[index] =
+            left < middle && (right >= end || compare(source[left], source[right]) <= 0)
+              ? source[left++]
+              : source[right++];
+          if (++operations % 256 === 0) yield;
+        }
+      }
+      [source, target] = [target, source];
+    }
+    if (source !== conflicts) {
+      for (let index = 0; index < source.length; index++) {
+        conflicts[index] = source[index];
+        if (++operations % 256 === 0) yield;
+      }
+    }
   }
 
   #computeDuplicates(): DuplicateComputationResult {
+    const work = this.#duplicateComputation(this.data);
+    let result = work.next();
+    while (!result.done) result = work.next();
+    return result.value;
+  }
+
+  *#duplicateComputation(
+    data: readonly Group[],
+  ): Generator<void, DuplicateComputationResult, void> {
     const duplicateRules = new Set<string>();
     const duplicateGroups = new Set<string>();
     const duplicateRuleKeys = new Map<string, string>();
-    const rulesByKey = new Map<
-      string,
-      { rule: Rule; groupId: string; groupName: string; groupColor: string }[]
-    >();
+    type Entry = { rule: Rule; groupId: string; groupName: string; groupColor: string };
+    const firstByKey = new Map<string, Entry>();
+    const rulesByKey = new Map<string, Entry[]>();
 
-    for (const group of this.data) {
+    let visited = 0;
+    for (const group of data) {
+      const groupId = group.id;
+      const groupName = group.name;
+      const groupColor = group.color || "#ffffff";
       for (const rule of group.rules) {
-        const normalizedPattern = rule.rule.trim();
-        if (!normalizedPattern) continue;
-
-        const key = `${rule.type}:${rule.rule}`;
-        duplicateRuleKeys.set(rule.id, key);
-        let rules = rulesByKey.get(key);
-        if (!rules) {
-          rules = [];
-          rulesByKey.set(key, rules);
+        if (++visited % 256 === 0) yield;
+        const pattern = rule.rule;
+        if (!pattern.trim()) continue;
+        const key = `${rule.type}:${pattern}`;
+        const entry = { rule, groupId, groupName, groupColor };
+        const first = firstByKey.get(key);
+        if (!first) firstByKey.set(key, entry);
+        else {
+          let matches = rulesByKey.get(key);
+          if (!matches) {
+            matches = [first];
+            rulesByKey.set(key, matches);
+          }
+          matches.push(entry);
         }
-        rules.push({
-          rule,
-          groupId: group.id,
-          groupName: group.name,
-          groupColor: group.color || "#ffffff",
-        });
       }
     }
 
@@ -784,10 +936,12 @@ export class GroupsStore {
     const duplicateKeysByGroup = new Map<string, Set<string>>();
 
     for (const [key, rules] of rulesByKey) {
+      yield;
       if (rules.length < 2) continue;
 
       for (const entry of rules) {
         duplicateRules.add(entry.rule.id);
+        duplicateRuleKeys.set(entry.rule.id, key);
         duplicateGroups.add(entry.groupId);
         let keys = duplicateKeysByGroup.get(entry.groupId);
         if (!keys) {
@@ -795,11 +949,12 @@ export class GroupsStore {
           duplicateKeysByGroup.set(entry.groupId, keys);
         }
         keys.add(key);
+        if (++visited % 256 === 0) yield;
       }
 
-      conflictsByKey.set(
-        key,
-        rules.map((entry) => ({
+      const conflicts: GroupDuplicateConflict[] = [];
+      for (const entry of rules) {
+        conflicts.push({
           ruleId: entry.rule.id,
           ruleName: entry.rule.name,
           rulePattern: entry.rule.rule,
@@ -810,36 +965,32 @@ export class GroupsStore {
           inCurrentGroup: false,
           duplicateKey: key,
           totalRulesWithSameKey: rules.length,
-        })),
-      );
-    }
-
-    const duplicateConflictsByGroup = new Map<string, GroupDuplicateConflict[]>();
-
-    for (const [groupId, keys] of duplicateKeysByGroup) {
-      const conflicts: GroupDuplicateConflict[] = [];
-      for (const key of keys) {
-        const sameKeyConflicts = conflictsByKey.get(key);
-        if (!sameKeyConflicts) continue;
-        for (const conflict of sameKeyConflicts) {
-          conflicts.push({
-            ...conflict,
-            inCurrentGroup: conflict.groupId === groupId,
-          });
-        }
+        });
+        if (++visited % 256 === 0) yield;
       }
-      this.#sortDuplicateConflicts(conflicts);
-      duplicateConflictsByGroup.set(groupId, conflicts);
+      // Sort each shared key once. An open menu only needs to concatenate
+      // these groups, with its own group's entries at the end of each key.
+      yield* this.#sortDuplicateConflicts(conflicts);
+      conflictsByKey.set(key, conflicts);
     }
 
-    return { duplicateRules, duplicateGroups, duplicateRuleKeys, duplicateConflictsByGroup };
+    return {
+      duplicateRules,
+      duplicateGroups,
+      duplicateRuleKeys,
+      conflictsByKey,
+      keysByGroup: duplicateKeysByGroup,
+    };
   }
 
   #applyDuplicateComputation(result: DuplicateComputationResult) {
     this.duplicateRuleIds = result.duplicateRules;
     this.duplicateGroupIds = result.duplicateGroups;
     this.duplicateRuleKeys = result.duplicateRuleKeys;
-    this.duplicateConflictsByGroup = result.duplicateConflictsByGroup;
+    this.#conflictsByKey = result.conflictsByKey;
+    this.#duplicateKeysByGroup = result.keysByGroup;
+    this.duplicateConflictsByGroup.clear();
+    this.#duplicateIndexVersion++;
     this.#syncActiveDuplicateKey();
   }
 
@@ -869,6 +1020,7 @@ export class GroupsStore {
   }
 
   refreshDuplicateRuleIds = () => {
+    this.#duplicateWorkGeneration++;
     if (this.#duplicateRuleIdsTimer) {
       clearTimeout(this.#duplicateRuleIdsTimer);
       this.#duplicateRuleIdsTimer = null;
@@ -877,6 +1029,7 @@ export class GroupsStore {
   };
 
   scheduleDuplicateRuleIdsRefresh = (delayMs = 120) => {
+    const generation = ++this.#duplicateWorkGeneration;
     if (typeof window === "undefined") {
       this.refreshDuplicateRuleIds();
       return;
@@ -888,9 +1041,31 @@ export class GroupsStore {
 
     this.#duplicateRuleIdsTimer = window.setTimeout(() => {
       this.#duplicateRuleIdsTimer = null;
-      this.#applyDuplicateComputation(this.#computeDuplicates());
+      void this.#refreshDuplicatesAsync(generation);
     }, delayMs);
   };
+
+  async #refreshDuplicatesAsync(generation: number) {
+    const revision = this.dataRevision;
+    const work = this.#duplicateComputation(this.data);
+    const budget = new CooperativeBudget();
+    try {
+      let result = work.next();
+      while (!result.done) {
+        const pause = budget.checkpoint(true);
+        if (pause) {
+          await pause;
+          if (generation !== this.#duplicateWorkGeneration || revision !== this.dataRevision)
+            return;
+        }
+        result = work.next();
+      }
+      if (generation === this.#duplicateWorkGeneration && revision === this.dataRevision)
+        this.#applyDuplicateComputation(result.value);
+    } finally {
+      budget.close();
+    }
+  }
 
   isRuleDuplicate = (ruleId: string) => this.duplicateRuleIds.has(ruleId);
   getRuleSearchMatchMask = (ruleId: string) => this.searchRuleMatchMaskById.get(ruleId) ?? 0;
@@ -997,11 +1172,11 @@ export class GroupsStore {
       this.performSearch();
     }
 
-    this.renderGroupsLimit = Math.max(this.renderGroupsLimit, groupIndex + 1);
     this.open_state[groupId] = true;
 
     const nonce = (this.duplicateFocusRequest?.nonce ?? 0) + 1;
     this.duplicateFocusRequest = { groupId, ruleId, nonce };
+    void this.ensureGroupVisible?.(groupId);
     return true;
   };
 
@@ -1012,8 +1187,25 @@ export class GroupsStore {
     this.duplicateFocusRequest = null;
   };
 
-  getDuplicateConflictsForGroup = (groupId: string): GroupDuplicateConflict[] =>
-    this.duplicateConflictsByGroup.get(groupId) ?? [];
+  getDuplicateConflictsForGroup = (groupId: string): GroupDuplicateConflict[] => {
+    void this.#duplicateIndexVersion;
+    const cached = this.duplicateConflictsByGroup.get(groupId);
+    if (cached) return cached;
+    const keys = this.#duplicateKeysByGroup.get(groupId);
+    if (!keys) return [];
+    const conflicts: GroupDuplicateConflict[] = [];
+    for (const key of [...keys].sort((a, b) => a.localeCompare(b))) {
+      const matching = this.#conflictsByKey.get(key) ?? [];
+      for (const conflict of matching) if (conflict.groupId !== groupId) conflicts.push(conflict);
+      for (const conflict of matching)
+        if (conflict.groupId === groupId) conflicts.push({ ...conflict, inCurrentGroup: true });
+    }
+    // Visiting many groups must not accumulate another O(groups × rules) cache.
+    if (this.duplicateConflictsByGroup.size >= 2)
+      this.duplicateConflictsByGroup.delete(this.duplicateConflictsByGroup.keys().next().value!);
+    this.duplicateConflictsByGroup.set(groupId, conflicts);
+    return conflicts;
+  };
 
   markDataRevision = () => {
     this.dataRevision += 1;
@@ -1021,6 +1213,12 @@ export class GroupsStore {
   };
 
   async addRuleToGroup(group_index: number, rule: Rule, focus = false) {
+    const origin = typeof document === "undefined" ? null : document.activeElement;
+    const originMenu = origin?.closest<HTMLElement>("[data-dropdown-menu-content]");
+    const menuTrigger = originMenu
+      ?.closest(".group-actions")
+      ?.querySelector<HTMLElement>("[data-dropdown-menu-trigger]");
+    const focusGeneration = focus ? ++this.#focusGeneration : this.#focusGeneration;
     const group = this.data[group_index];
     if (!group) return;
     group.rules.unshift(rule);
@@ -1032,12 +1230,26 @@ export class GroupsStore {
       this.forceVisibleRule(group.id, rule.id);
     }
     if (!focus) return;
+    this.open_state[group.id] = true;
+    await tick();
+    await this.ensureGroupVisible?.(group.id);
+    await this.ruleScrollers.get(group.id)?.(rule.id);
     await tick();
     const el = document.querySelector(
       `.rule[data-group-uuid="${group.id}"][data-uuid="${rule.id}"]`,
     );
     if (el) {
-      el.querySelector<HTMLInputElement>("div.name input")?.focus();
+      // Mounting a distant virtual row can take several frames. An explicit
+      // focus move or a newer Add action wins over this deferred autofocus.
+      if (
+        focusGeneration === this.#focusGeneration &&
+        (document.activeElement === origin ||
+          document.activeElement === menuTrigger ||
+          document.activeElement === document.body ||
+          !document.activeElement?.isConnected)
+      ) {
+        el.querySelector<HTMLInputElement>("div.name input")?.focus();
+      }
       el.querySelector<HTMLInputElement>("div.pattern input")?.classList.add("invalid");
       this.checkRulesValidityState();
     }
@@ -1143,6 +1355,8 @@ export class GroupsStore {
   };
 
   async addGroup() {
+    const origin = typeof document === "undefined" ? null : document.activeElement;
+    const focusGeneration = ++this.#focusGeneration;
     const group = defaultGroup();
     this.data.unshift(group);
     this.open_state[group.id] = true;
@@ -1152,8 +1366,17 @@ export class GroupsStore {
     }
     await this.addRuleToGroup(0, defaultRule(), false);
     await tick();
+    await this.ensureGroupVisible?.(group.id);
+    await tick();
     const el = document.querySelector(`.group-header[data-group-index="0"]`);
-    el?.querySelector<HTMLInputElement>("input.group-name")?.focus();
+    if (
+      focusGeneration === this.#focusGeneration &&
+      (document.activeElement === origin ||
+        document.activeElement === document.body ||
+        !document.activeElement?.isConnected)
+    ) {
+      el?.querySelector<HTMLInputElement>("input.group-name")?.focus();
+    }
   }
 
   deleteGroup = (index: number, confirmed = false) => {
@@ -1163,6 +1386,7 @@ export class GroupsStore {
     if (removed) {
       this.removeForcedGroup(removed.id);
       delete this.open_state[removed.id];
+      delete this.panelState[removed.id];
     }
     this.markDataRevision();
   };
@@ -1174,7 +1398,9 @@ export class GroupsStore {
   sortGroupRules(groupIndex: number, field: SortField, direction: SortDirection) {
     const group = this.data[groupIndex];
     if (!group) return false;
-    sortGroupRulesData(group, field, direction);
+    sortGroupRulesData(group, field, direction, (target, items) =>
+      this.tracker.replaceArray(target, items),
+    );
     this.markDataRevision();
     return true;
   }
@@ -1183,7 +1409,9 @@ export class GroupsStore {
     const group = this.data[groupIndex];
     if (!group) return false;
 
-    const restored = restoreGroupRulesOrderData(group, ruleIds);
+    const restored = restoreGroupRulesOrderData(group, ruleIds, (target, items) =>
+      this.tracker.replaceArray(target, items),
+    );
     if (!restored) return false;
     this.markDataRevision();
     return true;
@@ -1214,22 +1442,61 @@ export class GroupsStore {
   }
 
   async overwriteGroups(groups: Group[]) {
-    this.finishedGroupsCount = 0;
-    this.renderGroupsLimit = 1;
     this.data.splice(0, this.data.length);
     this.open_state = {};
+    this.panelState = {};
     await this.addGroups(groups);
     if (!groups.length) {
       this.markDataRevision();
     }
   }
 
-  async addRulesToGroup(groupIndex: number, rules: Rule[]) {
+  async addRulesToGroup(groupIndex: number, rules: Rule[], options: { signal?: AbortSignal } = {}) {
     const group = this.data[groupIndex];
     if (!group || !rules.length) return;
-
-    await prependRulesData(group, rules, () => this.#yieldToMain(), IMPORT_RULES_CHUNK_SIZE);
-    this.markDataRevision();
+    const tracker = this.tracker;
+    const target = group.rules;
+    const generation = this.#loadGeneration;
+    const revision = this.dataRevision;
+    const budget = new CooperativeBudget(4, options.signal);
+    try {
+      // Client IDs share the tracker's identity namespace across every group.
+      // Native import creates new rules, so resolve collisions before staging.
+      const reserved = new Set<string>();
+      for (const existing of this.data) {
+        reserved.add(existing.id);
+        for (const rule of existing.rules) {
+          reserved.add(rule.id);
+          const pause = budget.checkpoint();
+          if (pause) await pause;
+        }
+      }
+      const incoming: Rule[] = [];
+      for (const rule of rules) {
+        let id = rule.id;
+        while (!id || reserved.has(id))
+          id = crypto.getRandomValues(new Uint32Array(1))[0].toString(16).padStart(8, "0");
+        reserved.add(id);
+        incoming.push(id === rule.id ? rule : { ...rule, id });
+        const pause = budget.checkpoint();
+        if (pause) await pause;
+      }
+      const prepared = await tracker.preparePrepend(target, incoming, options);
+      if (options.signal?.aborted) throw new DOMException("Import cancelled", "AbortError");
+      if (
+        tracker !== this.tracker ||
+        generation !== this.#loadGeneration ||
+        revision !== this.dataRevision ||
+        this.data[groupIndex]?.rules !== target
+      )
+        throw new Error("Configuration changed while importing rules");
+      prepared.commit();
+      // A request started before this atomic edit may no longer replace it.
+      this.#loadGeneration++;
+      this.markDataRevision();
+    } finally {
+      budget.close();
+    }
   }
 
   async #yieldToMain() {
@@ -1237,25 +1504,5 @@ export class GroupsStore {
     await new Promise<void>((resolve) => {
       window.setTimeout(resolve, 0);
     });
-  }
-
-  handleGroupFinished = () => {
-    this.finishedGroupsCount += 1;
-  };
-
-  scheduleGroupsNext() {
-    if (typeof window === "undefined") return;
-    if (this.renderGroupsTimeout) return;
-    if (this.renderGroupsLimit >= this.data.length) return;
-
-    this.renderGroupsTimeout = window.setTimeout(() => {
-      this.renderGroupsTimeout = null;
-      if (this.searchActive) {
-        this.renderGroupsLimit = this.data.length;
-        return;
-      }
-      this.renderGroupsLimit = Math.min(this.renderGroupsLimit + 2, this.data.length);
-      this.scheduleGroupsNext();
-    }, 15);
   }
 }

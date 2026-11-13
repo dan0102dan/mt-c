@@ -1,11 +1,13 @@
 import { expect, test } from "@playwright/test";
 
+import { mockBackgroundApi } from "./fixtures/background-api";
 import { GroupsPage } from "./pages/GroupsPage";
 
 test.describe("Drag and Drop", () => {
   let groupsPage: GroupsPage;
 
   test.beforeEach(async ({ page }) => {
+    await mockBackgroundApi(page);
     groupsPage = new GroupsPage(page);
     await page.route("**/auth", async (route) => route.fulfill({ json: { enabled: false } }));
     await page.route("**/groups?with_rules=true", async (route) =>

@@ -117,12 +117,28 @@ export async function prependRules(
   }
 }
 
-export function sortGroupRules(group: Group, field: SortField, direction: SortDirection) {
+type ReplaceRules = (target: Rule[], items: readonly Rule[]) => void;
+
+const replacePlainRules: ReplaceRules = (target, items) => {
+  target.length = items.length;
+  for (let index = 0; index < items.length; index++) target[index] = items[index];
+};
+
+export function sortGroupRules(
+  group: Group,
+  field: SortField,
+  direction: SortDirection,
+  replace: ReplaceRules = replacePlainRules,
+) {
   const sorted = sortRules(group.rules, field, direction);
-  group.rules.splice(0, group.rules.length, ...sorted);
+  replace(group.rules, sorted);
 }
 
-export function restoreGroupRulesOrder(group: Group, ruleIds: string[]) {
+export function restoreGroupRulesOrder(
+  group: Group,
+  ruleIds: string[],
+  replace: ReplaceRules = replacePlainRules,
+) {
   const ruleMap = new Map(group.rules.map((rule) => [rule.id, rule]));
   const orderedRules = ruleIds
     .map((id) => ruleMap.get(id))
@@ -133,7 +149,7 @@ export function restoreGroupRulesOrder(group: Group, ruleIds: string[]) {
   const orderedRuleIds = new Set(orderedRules.map((rule) => rule.id));
   const remainingRules = group.rules.filter((rule) => !orderedRuleIds.has(rule.id));
 
-  group.rules.splice(0, group.rules.length, ...orderedRules, ...remainingRules);
+  replace(group.rules, orderedRules.concat(remainingRules));
   return true;
 }
 

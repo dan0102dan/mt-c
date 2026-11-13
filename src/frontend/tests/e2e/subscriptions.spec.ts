@@ -120,6 +120,9 @@ test.describe("Subscriptions", () => {
       makeSubscription("a1b2c3d4", "https://old.example/list.txt"),
     ]);
 
+    await page.locator(".subscription-panel [data-collapsible-trigger]").first().click();
+    await expect(page.locator(".subscription-rule")).toContainText("a1b2c3d4.example.com");
+
     await page.locator(".subscription-url-input").first().fill(" https://new.example/list.txt ");
     await page.locator(".action.sync button").first().click();
 

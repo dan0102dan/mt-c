@@ -653,3 +653,121 @@ describe("ChangeTracker", () => {
     });
   });
 });
+
+describe("ChangeTracker detached backing data", () => {
+  it("keeps constructor/reset inputs and foreign inserted objects independent", () => {
+    const initial = [{ id: "group", name: "Initial", rules: [createItem()] }];
+    const tracker = new ChangeTracker(initial);
+    tracker.data[0].rules[0].name = "Draft";
+    assert.strictEqual(initial[0].rules[0].name, "Test Rule");
+    const saved = [{ id: "group", name: "Saved", rules: [createItem()] }];
+    tracker.reset(saved);
+    tracker.data[0].rules[0].name = "After reset";
+    assert.strictEqual(saved[0].rules[0].name, "Test Rule");
+    const incoming = createItem({ id: "foreign" });
+    tracker.data[0].rules.push(incoming);
+    tracker.data[0].rules[1].name = "Changed";
+    assert.strictEqual(incoming.name, "Test Rule");
+  });
+
+  it("indexes the inserted owned copy when acknowledging a new nested object", () => {
+    const tracker = new ChangeTracker<{ id: string; name: string; rules: RuleItem[] }[]>([]);
+    const incoming = { id: "group", name: "Saved", rules: [createItem()] };
+    tracker.data.push(incoming);
+    tracker.acknowledgeNewItem(tracker.data, incoming);
+    assert.strictEqual(tracker.isDirty, false);
+    tracker.data[0].rules.push(createItem({ id: "new-rule" }));
+    assert.strictEqual(tracker.isDirty, true);
+    assert.strictEqual(incoming.rules.length, 1);
+    assert.ok(tracker.changes.added.some((item) => item.id === "new-rule"));
+  });
+
+  it("moves untouched owned objects without losing their nested array baseline", () => {
+    const tracker = new ChangeTracker([
+      { id: "group-a", name: "A", rules: [createItem({ id: "a" })] },
+      { id: "group-b", name: "B", rules: [createItem({ id: "b" })] },
+    ]);
+    const moved = tracker.data.pop()!;
+    tracker.data.unshift(moved);
+    tracker.data.reverse();
+    assert.strictEqual(tracker.isDirty, false);
+    tracker.data[1].rules.push(createItem({ id: "new-rule" }));
+    assert.strictEqual(tracker.isDirty, true);
+    assert.ok(tracker.changes.added.some((item) => item.id === "new-rule"));
+  });
+});
+
+describe("ChangeTracker cooperative draft preparation", () => {
+  const baseline = () => [
+    { id: "g1", name: "One", rules: [createItem({ id: "r1" }), createItem({ id: "r2" })] },
+    { id: "g2", name: "Two", rules: [createItem({ id: "r3" })] },
+  ];
+
+  it("matches synchronous dirty fields, membership, acknowledgements and reversions", async () => {
+    const saved = baseline();
+    const draft = baseline();
+    draft[0].name = "Edited";
+    draft[0].rules.reverse();
+    draft[0].rules[1].name = "Nested edit";
+    draft[0].rules.push(createItem({ id: "r4" }));
+    draft.splice(1, 1, { id: "g3", name: "New", rules: [createItem({ id: "r5" })] });
+    const original = JSON.stringify({ saved, draft });
+    const sync = new ChangeTracker(saved);
+    sync.replaceDraft(draft);
+    const prepared = await ChangeTracker.fromDraftAsync(saved, draft, { budgetMs: 1 });
+    const compare = () => {
+      assert.deepStrictEqual(
+        JSON.parse(JSON.stringify(prepared.data)),
+        JSON.parse(JSON.stringify(sync.data)),
+      );
+      assert.deepStrictEqual(prepared.changes, sync.changes);
+      assert.deepStrictEqual([...prepared.dirtyRootIds].sort(), [...sync.dirtyRootIds].sort());
+      assert.strictEqual(prepared.isDirty, sync.isDirty);
+    };
+    compare();
+    assert.strictEqual(JSON.stringify({ saved, draft }), original);
+    for (const tracker of [sync, prepared]) {
+      tracker.acknowledgeUpdate(tracker.data[0], { name: "Canonical" });
+    }
+    compare();
+    for (const tracker of [sync, prepared]) tracker.replaceDraft(saved);
+    compare();
+    for (const tracker of [sync, prepared]) tracker.reset(saved);
+    compare();
+    assert.strictEqual(prepared.isDirty, false);
+  });
+
+  it("yields while cloning a single large group without changing the live tracker", async () => {
+    const saved = baseline();
+    const live = new ChangeTracker(saved);
+    const draft = [
+      {
+        ...saved[0],
+        rules: Array.from({ length: 10000 }, (_, index) => createItem({ id: `r${index}` })),
+      },
+    ];
+    let timerRan = false;
+    const timer = setTimeout(() => {
+      timerRan = true;
+    }, 0);
+    const pending = ChangeTracker.fromDraftAsync(saved, draft, { budgetMs: 1 });
+    assert.strictEqual(live.data[0].rules.length, 2);
+    const prepared = await pending;
+    clearTimeout(timer);
+    assert.strictEqual(timerRan, true);
+    assert.strictEqual(prepared.data[0].rules.length, 10000);
+    assert.strictEqual(live.data[0].rules.length, 2);
+    prepared.data[0].rules[9999].name = "Changed after publish";
+    assert.strictEqual(draft[0].rules[9999].name, "Test Rule");
+    assert.ok(prepared.changes.added.some((item) => item.id === "r9999"));
+  });
+
+  it("aborts preparation before publishing a partial tracker", async () => {
+    const controller = new AbortController();
+    controller.abort();
+    await assert.rejects(
+      ChangeTracker.fromDraftAsync(baseline(), baseline(), { signal: controller.signal }),
+      { name: "AbortError" },
+    );
+  });
+});

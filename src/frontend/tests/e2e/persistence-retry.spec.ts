@@ -1,6 +1,7 @@
 import { expect, test, type Page } from "@playwright/test";
 
 import type { Group, Subscription } from "../../src/types";
+import { mockBackgroundApi } from "./fixtures/background-api";
 
 type Kind = "groups" | "subscriptions";
 type Failure = "persistence" | "server" | "conflict" | "network";
@@ -24,6 +25,7 @@ async function editor(page: Page, kind: Kind, failures: Failure[]) {
   let disk = structuredClone(initial);
   const requests: any[] = [];
   const statuses: number[] = [];
+  await mockBackgroundApi(page);
   await page.route("**/api/v1/**", async (route) => {
     const req = route.request();
     const path = new URL(req.url()).pathname;
@@ -89,7 +91,7 @@ async function editor(page: Page, kind: Kind, failures: Failure[]) {
       return route.fulfill({ json: { groups: kind === "groups" ? [live] : [] } });
     if (path.endsWith("/subscriptions"))
       return route.fulfill({ json: { subscriptions: kind === "subscriptions" ? [live] : [] } });
-    return route.continue();
+    return route.fallback();
   });
   await page.goto("/");
   if (kind === "subscriptions") await page.getByRole("tab", { name: "Subscriptions" }).click();

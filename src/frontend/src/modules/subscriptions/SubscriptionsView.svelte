@@ -5,6 +5,7 @@
   import SelectionFrame from "../../components/bulk/SelectionFrame.svelte";
   import PageControls from "../../components/layout/PageControls.svelte";
   import Placeholder from "../../components/ui/Placeholder.svelte";
+  import VirtualList from "../../components/ui/VirtualList.svelte";
   import { t } from "../../data/locale.svelte";
   import SubscriptionPanel from "./components/SubscriptionPanel.svelte";
   import SubscriptionSearch from "./components/SubscriptionSearch.svelte";
@@ -44,6 +45,22 @@
   const unregisterTransfer = transfer.registerSubscriptions(store);
 
   let selectedIds = $state<string[]>([]);
+  let list: VirtualList;
+  let viewportWidth = $state(1280);
+  const visibleIndices = $derived(
+    store.searchActive ? store.visibleSubscriptions.map((entry) => entry.group_index) : undefined,
+  );
+  const visibleCount = $derived(visibleIndices?.length ?? store.data.length);
+  const subscriptionIndex = (index: number) => visibleIndices?.[index] ?? index;
+  function estimateSubscription(index: number) {
+    const originalIndex = subscriptionIndex(index);
+    const sub = store.data[originalIndex];
+    if (!sub) return 100;
+    const rules = store.searchActive
+      ? (store.visibilityMap.get(originalIndex)?.length ?? sub.rules.length)
+      : sub.rules.length;
+    return 100 + (store.open_state[sub.id] ? 32 + rules * (viewportWidth <= 700 ? 82 : 33) : 0);
+  }
   let selectedItems = $derived(store.data.filter((item) => selectedIds.includes(item.id)));
   function toggleSelection(id: string) {
     selectedIds = selectedIds.includes(id)
@@ -68,6 +85,7 @@
 
   async function handleAdd(event: CustomEvent<AddSubscriptionEvent>) {
     await store.addSubscription(event.detail);
+    await list?.scrollToIndex(0, "start");
   }
 
   onMount(() => {
@@ -79,6 +97,8 @@
     store.destroy();
   });
 </script>
+
+<svelte:window bind:innerWidth={viewportWidth} />
 
 <div class="subscriptions-page">
   <PageControls
@@ -105,7 +125,7 @@
     <Placeholder variant="error" minHeight="auto" subtitle={t("Check connection or try again")}>
       {t("Failed to load subscriptions")}
     </Placeholder>
-  {:else if !store.isAllRendered}
+  {:else if !store.dataLoaded}
     <Placeholder variant="loading" minHeight="auto">
       {t("Loading subscriptions...")}
     </Placeholder>
@@ -125,53 +145,63 @@
 
   <div
     class="subscription-list"
-    class:visible={store.isAllRendered}
-    style={store.isAllRendered ? "" : "display: none;"}
+    class:visible={store.dataLoaded}
+    style={store.dataLoaded ? "" : "display: none;"}
     oninput={store.markDataRevision}
     onchange={store.markDataRevision}
   >
-    {#each store.data.slice(0, store.renderSubscriptionsLimit) as sub, sub_index (sub.id)}
-      {@const isVisible = !store.searchActive || store.visibilityMap.has(sub_index)}
+    <VirtualList
+      bind:this={list}
+      count={visibleCount}
+      getKey={(index) => store.data[subscriptionIndex(index)].id}
+      estimateSize={estimateSubscription}
+      {active}
+      revision={visibleIndices ?? store.data}
+    >
+      {#snippet children(index)}
+        {@const sub_index = subscriptionIndex(index)}
+        {@const sub = store.data[sub_index]}
 
-      <div class="subscription-wrapper" class:is-hidden={!isVisible}>
-        <div class="subscription-wrapper-inner">
-          {#if sub_index === store.firstVisibleSubscriptionIndex}
+        <div class="subscription-wrapper">
+          <div class="subscription-wrapper-inner">
+            {#if sub_index === store.firstVisibleSubscriptionIndex}
+              <div
+                class="subscription-drop-slot subscription-drop-slot--top"
+                aria-hidden="true"
+                use:droppable={{
+                  data: { group_index: sub_index, insert: "before" } as SubscriptionDropSlotData,
+                  scope: "subscription",
+                  canDrop: (source: SubscriptionDragData, target: SubscriptionDropSlotData) =>
+                    source.group_index !== target.group_index,
+                  dropEffect: "move",
+                  onDrop: store.handleSubscriptionSlotDrop,
+                }}
+              ></div>
+            {/if}
+
+            <SelectionFrame
+              selected={selectedIds.includes(sub.id)}
+              name={sub.name}
+              ontoggle={() => toggleSelection(sub.id)}
+            >
+              <SubscriptionPanel subscription_index={sub_index} {active} />
+            </SelectionFrame>
+
             <div
-              class="subscription-drop-slot subscription-drop-slot--top"
+              class="subscription-drop-slot subscription-drop-slot--bottom"
               aria-hidden="true"
               use:droppable={{
-                data: { group_index: sub_index, insert: "before" } as SubscriptionDropSlotData,
+                data: { group_index: sub_index, insert: "after" } as SubscriptionDropSlotData,
                 scope: "subscription",
-                canDrop: (source: SubscriptionDragData, target: SubscriptionDropSlotData) =>
-                  source.group_index !== target.group_index,
+                canDrop: () => true,
                 dropEffect: "move",
                 onDrop: store.handleSubscriptionSlotDrop,
               }}
             ></div>
-          {/if}
-
-          <SelectionFrame
-            selected={selectedIds.includes(sub.id)}
-            name={sub.name}
-            ontoggle={() => toggleSelection(sub.id)}
-          >
-            <SubscriptionPanel subscription_index={sub_index} />
-          </SelectionFrame>
-
-          <div
-            class="subscription-drop-slot subscription-drop-slot--bottom"
-            aria-hidden="true"
-            use:droppable={{
-              data: { group_index: sub_index, insert: "after" } as SubscriptionDropSlotData,
-              scope: "subscription",
-              canDrop: () => true,
-              dropEffect: "move",
-              onDrop: store.handleSubscriptionSlotDrop,
-            }}
-          ></div>
+          </div>
         </div>
-      </div>
-    {/each}
+      {/snippet}
+    </VirtualList>
   </div>
 </div>
 
@@ -223,7 +253,8 @@
 
   .subscription-wrapper {
     position: relative;
-    margin: 1rem 0;
+    margin: 0;
+    padding-bottom: 1rem;
     display: grid;
     grid-template-rows: 1fr;
     opacity: 1;
@@ -232,32 +263,12 @@
 
   .subscription-wrapper-inner {
     min-height: 0;
-    overflow: hidden;
-  }
-
-  .subscription-wrapper:not(.is-hidden) .subscription-wrapper-inner {
     overflow: visible;
-  }
-
-  .subscription-wrapper.is-hidden {
-    grid-template-rows: 0fr;
-    opacity: 0;
-    margin-top: 0;
-    margin-bottom: 0;
-    pointer-events: none;
   }
 
   .subscription-wrapper:has(:global([data-select-trigger][data-state="open"])),
   .subscription-wrapper:has(:global([data-dropdown-menu-trigger][data-state="open"])) {
     z-index: 1;
-  }
-
-  .subscription-wrapper:first-of-type {
-    margin-top: 1rem;
-  }
-
-  .subscription-wrapper:last-of-type {
-    margin-bottom: 1rem;
   }
 
   .subscription-drop-slot {
@@ -276,7 +287,7 @@
   }
 
   .subscription-drop-slot--bottom {
-    bottom: -1rem;
+    bottom: 0;
   }
 
   :global(html[data-dnd-scope="subscription"]) .subscription-drop-slot {

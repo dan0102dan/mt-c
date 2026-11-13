@@ -45,17 +45,11 @@
     throw new Error("GroupsStore context is missing");
   }
 
-  let input: HTMLInputElement;
+  const patternInvalid = $derived(
+    !rule.rule || Boolean(VALIDATOP_MAP[rule.type] && !VALIDATOP_MAP[rule.type](rule.rule)),
+  );
 
   function patternValidation() {
-    if (
-      input.value.length === 0 ||
-      (VALIDATOP_MAP[rule.type] && !VALIDATOP_MAP[rule.type](input.value))
-    ) {
-      input.classList.add("invalid");
-    } else {
-      input.classList.remove("invalid");
-    }
     store.markDataRevision();
   }
 
@@ -242,7 +236,8 @@
           class="table-input pattern-input"
           class:search-text-hidden={hasPatternSearchHighlight}
           bind:value={rule.rule}
-          bind:this={input}
+          class:invalid={patternInvalid}
+          aria-invalid={patternInvalid}
           oninput={patternValidation}
           onfocusout={patternValidation}
         />

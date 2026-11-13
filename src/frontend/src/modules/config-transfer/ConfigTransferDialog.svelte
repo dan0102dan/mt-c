@@ -1,6 +1,6 @@
 <script lang="ts">
   import { Tabs } from "bits-ui";
-  import { untrack } from "svelte";
+  import { onMount, untrack } from "svelte";
 
   import Button from "../../components/ui/Button.svelte";
   import Checkbox from "../../components/ui/Checkbox.svelte";
@@ -12,12 +12,10 @@
   import { t } from "../../data/locale.svelte";
 
   import { Check, Scan } from "../../components/ui/icons";
-  import { randomId } from "../../utils/defaults";
-  import { newProfileId } from "../settings/profiles-data";
   import { unsupportedSettings } from "./adapter";
+  import type { ImportPreview, PlannerRequest, PlannerResponse } from "./import-planner";
   import {
     conflictKey,
-    planImport,
     sections,
     type Choice,
     type ImportPlan,
@@ -189,41 +187,99 @@
   });
   let choices = $state<ChoiceMap>({});
   let policyId = $state("");
-  const generatedIds = new Map<string, string>();
-  const reservedIds = untrack(() => {
-    const ids = new Set<string>();
-    for (const source of [current, imported]) {
-      for (const section of ["groups", "subscriptions", "profiles"] as const) {
-        for (const item of source[section] ?? []) ids.add(item.id);
-      }
-      for (const group of source.groups ?? []) {
-        for (const rule of group.rules) ids.add(rule.id);
-      }
-    }
-    return ids;
-  });
-  function newId(section: "groups" | "subscriptions" | "profiles", old: string) {
-    const key = conflictKey(section, old);
-    if (!generatedIds.has(key)) {
-      let id: string;
-      do {
-        id = section === "profiles" ? newProfileId() : randomId();
-      } while (reservedIds.has(id));
-      generatedIds.set(key, id);
-      reservedIds.add(id);
-    }
-    return generatedIds.get(key)!;
-  }
-
-  const plan = $derived.by(() =>
-    planImport(current, input, {
+  let worker = $state.raw<Worker>();
+  let version = 0;
+  let planning = $state(true);
+  let applying = $state(false);
+  let planError = $state("");
+  let preparedKey = $state("");
+  let requestedKey = "";
+  const selectionKey = $derived(
+    JSON.stringify({
       mode,
-      selected,
-      choices: new Map(Object.entries(choices)),
-      policyId: policyId || undefined,
-      newId,
+      excluded: [...excluded],
+      choices: Object.entries(choices),
+      policyId,
     }),
   );
+  const working = $derived(busy || applying);
+  const pending = $derived(!planError && (planning || preparedKey !== selectionKey));
+  let plan = $state.raw<ImportPreview>({
+    problems: [],
+    conflicts: [],
+    changes: [],
+    next: { groups: [], subscriptions: [], profiles: [] },
+  });
+
+  onMount(() => {
+    let alive = true;
+    try {
+      const planner = new Worker(new URL("./import-planner.worker.ts", import.meta.url), {
+        type: "module",
+      });
+      planner.onmessage = (event: MessageEvent<PlannerResponse>) => {
+        const message = event.data;
+        if (!alive || message.version !== version) return;
+        if (message.type === "preview") {
+          plan = message.preview;
+          preparedKey = requestedKey;
+          planning = false;
+          planError = "";
+        } else if (message.type === "error") {
+          planning = false;
+          applying = false;
+          planError = t("Failed to import configuration");
+          console.error("Import planner failed", message.message);
+        } else if (applying && preparedKey === selectionKey) {
+          void onapply(message.plan).finally(() => {
+            applying = false;
+          });
+        } else {
+          applying = false;
+        }
+      };
+      planner.onerror = () => {
+        if (!alive) return;
+        planning = false;
+        applying = false;
+        planError = t("Failed to import configuration");
+      };
+      planner.postMessage({ type: "init", current, imported } satisfies PlannerRequest);
+      worker = planner;
+      return () => {
+        alive = false;
+        worker = undefined;
+        planner.terminate();
+      };
+    } catch (error) {
+      planning = false;
+      planError = t("Failed to import configuration");
+      console.error("Import planner could not start", error);
+    }
+  });
+
+  $effect(() => {
+    const key = selectionKey;
+    if (!worker) return;
+    requestedKey = key;
+    planning = true;
+    planError = "";
+    const request: PlannerRequest = {
+      type: "plan",
+      version: ++version,
+      mode,
+      excluded: [...excluded],
+      choices: Object.entries(choices),
+      policyId: policyId || undefined,
+    };
+    worker.postMessage(request);
+  });
+
+  function applyPlan() {
+    if (working || pending || !selectedCount || errors.length || !worker) return;
+    applying = true;
+    worker.postMessage({ type: "apply", version } satisfies PlannerRequest);
+  }
 
   const inputPolicy = $derived.by(() => {
     if (!selected.has("settings")) return undefined;
@@ -239,6 +295,7 @@
     return !id;
   });
   const errors = $derived([
+    ...(planError ? [planError] : []),
     ...plan.problems.map(problemMessage),
     ...(selected.has("settings")
       ? unsupportedSettings(input.settings ?? {}, current.settings).map(
@@ -300,12 +357,12 @@
 </script>
 
 <GenericDialog {open} title={t("Import Config")} maxWidth={420} on:close={onclose}>
-  <div slot="body" class="import-config" aria-busy={busy}>
+  <div slot="body" class="import-config" aria-busy={working || pending}>
     <Tabs.Root value={activeTab} onValueChange={showTab}>
       <div class="import-tabs">
         <Tabs.List aria-label={t("Import sections")}>
           {#each tabs as tab}
-            <Tabs.Trigger value={tab} disabled={busy} aria-label={names[tab]}>
+            <Tabs.Trigger value={tab} disabled={working} aria-label={names[tab]}>
               {names[tab]}
               <span class="selected-count" aria-hidden="true">{selectedCounts[tab]}</span>
             </Tabs.Trigger>
@@ -318,14 +375,14 @@
               <div class="controls">
                 <Button
                   type="button"
-                  disabled={busy || !visibleEntries.length}
+                  disabled={working || !visibleEntries.length}
                   onclick={() => selectAll(true)}
                 >
                   <Check size={16} /><span class="with-icon">{t("All")}</span>
                 </Button>
                 <Button
                   type="button"
-                  disabled={busy || !visibleEntries.length}
+                  disabled={working || !visibleEntries.length}
                   onclick={() => selectAll(false)}
                 >
                   <Scan size={16} /><span class="with-icon">{t("Reset")}</span>
@@ -343,7 +400,7 @@
                         <Checkbox
                           ariaLabel={entry.name}
                           checked={!excluded.has(entry.key)}
-                          disabled={busy}
+                          disabled={working}
                           on:change={(event) => toggleEntry(entry.key, event.detail.checked)}
                         />
                         <div
@@ -387,11 +444,16 @@
           ]}
           onValueChange={(value) => (policyId = value)}
           ariaLabel={t("Keenetic policy mapping")}
-          disabled={busy}
+          disabled={working}
         />
       </section>
     {/if}
 
+    {#if pending && !preparedKey}
+      <Placeholder variant="loading" compact iconSize={22} minHeight="auto"
+        >{t("Loading...")}</Placeholder
+      >
+    {/if}
     {#if plan.conflicts.length && mode === "merge"}
       <section class="mapping" aria-label={t("Conflicts")}>
         <h3>{t("Objects already exist")}</h3>
@@ -405,7 +467,7 @@
               onValueChange={(value) =>
                 setChoice(conflictKey(conflict.section, conflict.id), value)}
               ariaLabel={`${t("Resolve conflict for")} ${conflict.name}`}
-              disabled={busy}
+              disabled={working}
             />
           </label>
         {/each}
@@ -415,21 +477,19 @@
   <div slot="actions" class="dialog-actions">
     <div class="mode-toggle">
       <span class:active={!replaceMode}>{t("Append")}</span>
-      <Switch bind:checked={replaceMode} disabled={busy} aria-label={t("Replace")} />
+      <Switch bind:checked={replaceMode} disabled={working} aria-label={t("Replace")} />
       <span class:active={replaceMode}>{t("Replace")}</span>
     </div>
     <div class="buttons">
-      <Button type="button" onclick={onclose} disabled={busy}>{t("Cancel")}</Button>
+      <Button type="button" onclick={onclose} disabled={working}>{t("Cancel")}</Button>
       <Tooltip value={errors.join("\n") || t("Import")}
         ><Button
           type="button"
           aria-description={errors.length ? errors.join("\n") : undefined}
-          disabled={busy || !selectedCount || !!errors.length}
-          onclick={() => {
-            if (!busy && selectedCount && !errors.length) void onapply(plan);
-          }}
+          disabled={working || pending || !selectedCount || !!errors.length}
+          onclick={applyPlan}
         >
-          {busy ? t("Applying…") : t("Import")}
+          {working ? t("Applying…") : t("Import")}
         </Button></Tooltip
       >
     </div>

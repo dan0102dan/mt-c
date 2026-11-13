@@ -31,8 +31,8 @@
     assertImportApplied,
     configForApply,
     decodePortable,
-    snapshotFromServer,
     profilesWithUsage,
+    snapshotFromServer,
     subscriptionEditorsForImport,
     type SavedSubscription,
     type ServerSnapshot,
@@ -51,10 +51,10 @@
     type PendingImportDraft,
   } from "../../modules/config-transfer/draft";
   import {
-    assertPlanCurrent,
     copy,
     exportSnapshot,
     fingerprint,
+    sameConfiguration,
     type ImportPlan,
     type PortableConfig,
     type Section,
@@ -282,25 +282,30 @@
     const preview = importPreview;
     transferBusy = true;
     let failure = t("Failed to import configuration");
+    const yieldUI = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
     try {
+      await yieldUI();
       if (savingInProgress()) {
         failure = t("Wait for the current save to finish before importing.");
         throw new Error(failure);
       }
       const before = currentSnapshot(preview.server);
+      await yieldUI();
       if (plan.baseline !== fingerprint(before)) {
         failure = t("Configuration changed; refresh the import preview");
+        throw new Error(failure);
       }
-      assertPlanCurrent(plan, before);
+      if (plan.problems.length) throw new Error(plan.problems.join("\n"));
       const changed = new Set(
         plan.changes
           .filter((change) => change.kind !== "unchanged")
           .map((change) => change.section),
       );
-      const baseline = copy(importBaseline ?? preview.server);
+      const baseline = importBaseline ?? preview.server;
+      await yieldUI();
       const saved = snapshotFromServer(baseline.config);
-      const next = copy(plan.next);
-      const staged = stageImportDraft(saved, before, plan, pendingImport);
+      const next = plan.next;
+      const staged = stageImportDraft(saved, before, plan, pendingImport, plan.changes);
       if (!changed.size) {
         let alreadySaved = false;
         try {
@@ -328,18 +333,30 @@
         savedSubscriptions(baseline.config.subscriptions),
         subscriptionsStore ? copy(subscriptionsStore.data) : [],
       );
-      // Everything above is read-only. Staging updates only in-memory editors;
-      // the original server revision remains the Save precondition.
-      if (changed.has("groups")) groupsStore?.stageImport(copy(saved.groups), next.groups);
-      if (changed.has("subscriptions")) {
-        subscriptionsStore?.stageImport(
-          savedSubscriptions(baseline.config.subscriptions),
-          subscriptions,
-        );
-        subscriptionRuleBaseline = copy(subscriptions);
-      }
+      // Prepare offscreen without publishing a partially staged transaction.
+      const preparedGroups = changed.has("groups")
+        ? await groupsStore?.prepareImport(saved.groups, next.groups)
+        : undefined;
+      const preparedSubscriptions = changed.has("subscriptions")
+        ? await subscriptionsStore?.prepareImport(
+            savedSubscriptions(baseline.config.subscriptions),
+            subscriptions,
+          )
+        : undefined;
+      // A background refresh or other editor mutation must not be overwritten
+      // while preparation yields to the browser.
+      preparedGroups?.validate();
+      preparedSubscriptions?.validate();
+      if (!sameConfiguration(currentSnapshot(preview.server), before))
+        throw new Error(t("Configuration changed; refresh the import preview"));
+      preparedGroups?.commit();
+      preparedSubscriptions?.commit();
+      if (changed.has("subscriptions")) subscriptionRuleBaseline = copy(subscriptions);
       if (changed.has("profiles"))
-        stageProfileImport(profilesWithUsage(saved.profiles, saved), profilesWithUsage(next.profiles, next));
+        stageProfileImport(
+          profilesWithUsage(saved.profiles, saved),
+          profilesWithUsage(next.profiles, next),
+        );
       if (changed.has("settings") && policyBaseline && policyDraft)
         policySource?.stage(policyBaseline, policyDraft);
       importBaseline = baseline;

@@ -96,6 +96,24 @@ export function fingerprint(value: unknown): string {
     .join(",")}}`;
 }
 
+/** Compare JSON configuration without allocating full canonical strings.
+ * Object key order/undefined fields are ignored; collection order is retained. */
+export function sameConfiguration(left: unknown, right: unknown): boolean {
+  if (left === right) return true;
+  if (!left || !right || typeof left !== "object" || typeof right !== "object") return false;
+  if (Array.isArray(left) || Array.isArray(right)) {
+    if (!Array.isArray(left) || !Array.isArray(right) || left.length !== right.length) return false;
+    for (let index = 0; index < left.length; index++)
+      if (!sameConfiguration(left[index], right[index])) return false;
+    return true;
+  }
+  const a = left as Record<string, unknown>,
+    b = right as Record<string, unknown>;
+  const keys = Object.keys(a).filter((key) => a[key] !== undefined);
+  if (keys.length !== Object.keys(b).filter((key) => b[key] !== undefined).length) return false;
+  return keys.every((key) => sameConfiguration(a[key], b[key]));
+}
+
 function assertSafeSettings(value: Json): void {
   if (value === null || typeof value !== "object") return;
   for (const [key, child] of Object.entries(value)) {
@@ -339,10 +357,11 @@ export function planImport(
     replaceSection: boolean,
   ): T[] {
     // Preserve order and identity on merge. Matching URL/name alone is not identity.
-    const result = replaceSection ? [] : copy(previous);
+    const result = replaceSection ? [] : [...previous];
     const seen = new Set<string>();
     for (const raw of imported) {
-      const item = copy(raw);
+      // Imported objects were detached before routing/profile remapping.
+      const item = raw;
       if (seen.has(item.id)) {
         problems.push(`Duplicate ${section} ID: ${item.id}`);
         continue;
@@ -364,12 +383,13 @@ export function planImport(
         }
         if (choice === "copy") {
           const oldId = item.id;
-          item.id = options.newId(section, oldId);
-          const collision = [...previous, ...result, ...imported].some((p) => p.id === item.id);
+          const allocatedId = options.newId(section, oldId);
+          const collision = [...previous, ...result, ...imported].some((p) => p.id === allocatedId);
           if (collision) {
-            problems.push(`Allocated ${section} ID already exists: ${item.id}`);
+            problems.push(`Allocated ${section} ID already exists: ${allocatedId}`);
             continue;
           }
+          item.id = allocatedId;
           if (section === "profiles") profileIds.set(oldId, item.id);
           result.push(item);
           if (section === "groups") acceptedGroupIds.add(item.id);
@@ -393,7 +413,7 @@ export function planImport(
   }
   next.profiles = merge(
     "profiles",
-    current.profiles,
+    next.profiles,
     chosenProfiles,
     selected("profiles") && options.mode === "replace",
   );
@@ -417,16 +437,11 @@ export function planImport(
     });
     // Keep the collections independently typed: rules belong only to user groups.
     if (section === "groups") {
-      next.groups = merge(
-        "groups",
-        current.groups,
-        imported as Group[],
-        options.mode === "replace",
-      );
+      next.groups = merge("groups", next.groups, imported as Group[], options.mode === "replace");
     } else {
       next.subscriptions = merge(
         "subscriptions",
-        current.subscriptions,
+        next.subscriptions,
         imported as SubscriptionDefinition[],
         options.mode === "replace",
       );

@@ -11,6 +11,8 @@ import {
   isValidPriority,
   withPriorityDefault,
 } from "../../utils/priority";
+import { VALIDATOP_MAP } from "../../utils/rule-validators";
+import { subscriptionRulePattern } from "../../utils/subscription-pattern";
 import { buildSubscriptionUpdate, snapshotRules } from "./subscription-payload";
 
 export const SUBSCRIPTIONS_STORE_CONTEXT = Symbol("subscriptions-store");
@@ -89,6 +91,7 @@ export class SubscriptionsStore {
   data = $derived.by(() => this.tracker.data);
   dataRevision = $state(0);
   valid_rules = $state(true);
+  #validatedRevision = -1;
   valid_priorities = $derived(
     this.data.every((subscription) => isValidPriority(subscription.priority)),
   );
@@ -155,14 +158,9 @@ export class SubscriptionsStore {
 
   fetchError = $state(false);
   dataLoaded = $state(false);
-  finishedSubscriptionsCount = $state(0);
 
-  isAllRendered = $derived(
-    this.dataLoaded &&
-      (this.data.length === 0 ||
-        this.finishedSubscriptionsCount >= this.data.length ||
-        this.searchActive),
-  );
+  // Readiness belongs to accepted data, not to the number of DOM components.
+  isAllRendered = $derived(this.dataLoaded);
 
   isEmptyData = $derived(
     this.dataLoaded &&
@@ -171,9 +169,6 @@ export class SubscriptionsStore {
       !this.searchPending &&
       this.data.length === 0,
   );
-
-  renderSubscriptionsLimit = $state(1);
-  renderSubscriptionsTimeout: number | null = null;
 
   #savedRules = new Map<string, SubscriptionRule[]>();
   #forcedSubscriptionIds = new Set<string>();
@@ -204,7 +199,9 @@ export class SubscriptionsStore {
       $effect(() => {
         this.dataRevision;
         if (typeof window === "undefined") return;
-        setTimeout(() => this.checkRulesValidityState(), 10);
+        setTimeout(() => {
+          if (this.#validatedRevision !== this.dataRevision) this.checkRulesValidityState();
+        }, 10);
       });
 
       $effect(() => {
@@ -237,23 +234,6 @@ export class SubscriptionsStore {
       });
 
       $effect(() => {
-        if (this.searchActive) {
-          this.renderSubscriptionsLimit = this.data.length;
-          if (this.renderSubscriptionsTimeout) {
-            clearTimeout(this.renderSubscriptionsTimeout);
-            this.renderSubscriptionsTimeout = null;
-          }
-        } else {
-          this.scheduleSubscriptionsNext();
-        }
-      });
-
-      $effect(() => {
-        this.data.length;
-        this.scheduleSubscriptionsNext();
-      });
-
-      $effect(() => {
         if (this.isAllRendered) {
           this.onRenderComplete?.();
         }
@@ -263,11 +243,6 @@ export class SubscriptionsStore {
         if (this.#debounceTimer) {
           clearTimeout(this.#debounceTimer);
           this.#debounceTimer = null;
-        }
-
-        if (this.renderSubscriptionsTimeout) {
-          clearTimeout(this.renderSubscriptionsTimeout);
-          this.renderSubscriptionsTimeout = null;
         }
       };
     });
@@ -290,9 +265,6 @@ export class SubscriptionsStore {
     if (typeof window !== "undefined") {
       window.addEventListener("keydown", this.handleSaveShortcut);
     }
-    // Existing keyed panels stay mounted during an import refresh and will
-    // not report their initial render a second time.
-    if (!options.preserveDrafts) this.finishedSubscriptionsCount = 0;
     this.fetchError = false;
     try {
       const fetched = (
@@ -305,7 +277,9 @@ export class SubscriptionsStore {
       this.#savedRules = new Map(fetched.map((sub) => [sub.id, snapshotRules(sub.rules)]));
       this.markDataRevision();
       if (typeof window !== "undefined") {
-        setTimeout(() => this.checkRulesValidityState(), 10);
+        setTimeout(() => {
+          if (this.#validatedRevision !== this.dataRevision) this.checkRulesValidityState();
+        }, 10);
       }
     } catch (error) {
       if (generation === this.#loadGeneration) {
@@ -328,6 +302,62 @@ export class SubscriptionsStore {
     this.fetchError = false;
     this.dataLoaded = true;
     this.markDataRevision();
+  }
+
+  async prepareImport(baseline: readonly Subscription[], draft: readonly Subscription[]) {
+    const generation = this.#loadGeneration;
+    const revision = this.dataRevision;
+    const saved = baseline.map(editorSubscription);
+    const next = draft.map(editorSubscription);
+    const tracker = await ChangeTracker.fromDraftAsync(saved, next);
+    const savedRules = new Map<string, SubscriptionRule[]>();
+    let deadline = performance.now() + 4;
+    const pause = async () => {
+      await new Promise<void>((resolve) => setTimeout(resolve, 0));
+      deadline = performance.now() + 4;
+    };
+    for (const sub of saved) {
+      const rules: SubscriptionRule[] = [];
+      for (const rule of sub.rules) {
+        rules.push({ ...rule });
+        if (rules.length % 256 === 0 && performance.now() >= deadline) await pause();
+      }
+      savedRules.set(sub.id, rules);
+    }
+    let validRules = true;
+    for (const sub of next) {
+      for (let index = 0; index < sub.rules.length; index++) {
+        const rule = sub.rules[index];
+        const pattern = subscriptionRulePattern(rule.rule, rule.type);
+        const typedWildcard =
+          rule.type === "wildcard" &&
+          (rule.rule.startsWith("DOMAIN-KEYWORD,") || rule.rule.startsWith("DOMAIN-WILDCARD,"));
+        if (
+          !pattern.length ||
+          (!typedWildcard && VALIDATOP_MAP[rule.type] && !VALIDATOP_MAP[rule.type](pattern))
+        )
+          validRules = false;
+        if (index % 256 === 0 && performance.now() >= deadline) await pause();
+      }
+    }
+    const validate = () => {
+      if (generation !== this.#loadGeneration || revision !== this.dataRevision)
+        throw new Error("Configuration changed; refresh the import preview");
+    };
+    return {
+      validate,
+      commit: () => {
+        validate();
+        this.#loadGeneration++;
+        this.#savedRules = savedRules;
+        this.tracker = tracker;
+        this.fetchError = false;
+        this.dataLoaded = true;
+        this.valid_rules = validRules;
+        this.markDataRevision();
+        this.#validatedRevision = this.dataRevision;
+      },
+    };
   }
 
   acceptImport(
@@ -519,8 +549,19 @@ export class SubscriptionsStore {
   }
 
   checkRulesValidityState = () => {
-    if (typeof document === "undefined") return;
-    this.valid_rules = !document.querySelector(".subscription-rule .invalid");
+    this.#validatedRevision = this.dataRevision;
+    this.valid_rules = this.data.every((subscription) =>
+      subscription.rules.every((rule) => {
+        const pattern = subscriptionRulePattern(rule.rule, rule.type);
+        const typedWildcard =
+          rule.type === "wildcard" &&
+          (rule.rule.startsWith("DOMAIN-KEYWORD,") || rule.rule.startsWith("DOMAIN-WILDCARD,"));
+        return (
+          pattern.length > 0 &&
+          (typedWildcard || !VALIDATOP_MAP[rule.type] || VALIDATOP_MAP[rule.type](pattern))
+        );
+      }),
+    );
   };
 
   markDataRevision = () => {
@@ -688,24 +729,4 @@ export class SubscriptionsStore {
     const { group_index: to_index, insert } = target;
     this.changeSubscriptionIndex(from_index, to_index, insert);
   };
-
-  handleSubscriptionFinished = () => {
-    this.finishedSubscriptionsCount += 1;
-  };
-
-  scheduleSubscriptionsNext() {
-    if (typeof window === "undefined") return;
-    if (this.renderSubscriptionsTimeout) return;
-    if (this.renderSubscriptionsLimit >= this.data.length) return;
-
-    this.renderSubscriptionsTimeout = window.setTimeout(() => {
-      this.renderSubscriptionsTimeout = null;
-      if (this.searchActive) {
-        this.renderSubscriptionsLimit = this.data.length;
-        return;
-      }
-      this.renderSubscriptionsLimit = Math.min(this.renderSubscriptionsLimit + 2, this.data.length);
-      this.scheduleSubscriptionsNext();
-    }, 15);
-  }
 }

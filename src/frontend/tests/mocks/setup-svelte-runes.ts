@@ -16,6 +16,7 @@ export function installSvelteRunesMocks() {
   derived.by = (fn: () => unknown) => fn();
 
   const effect = (() => {}) as any;
+  effect.tracking = () => false;
   effect.root = (fn: () => void | (() => void)) => {
     const cleanup = fn();
     return typeof cleanup === "function" ? cleanup : () => {};

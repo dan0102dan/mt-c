@@ -152,6 +152,8 @@ test.describe("Groups Search", () => {
 
     await groupsPage.goto();
 
+    // Closed panels intentionally have no rule DOM in the virtual view.
+    await page.locator(".group [data-collapsible-trigger]").click();
     await expect(page.locator(".rule")).toHaveCount(2);
 
     await groupsPage.search("Alpha");
@@ -199,6 +201,7 @@ test.describe("Groups Search", () => {
 
     await groupsPage.goto();
 
+    await page.locator(".group [data-collapsible-trigger]").click();
     // Search by pattern part
     await groupsPage.search("192");
     await expect(page.locator(".rule")).toHaveCount(1);
@@ -246,6 +249,7 @@ test.describe("Groups Search", () => {
     await groupsPage.goto();
 
     const group = page.locator(".group-wrapper").first();
+    await group.locator("[data-collapsible-trigger]").click();
     const groupNameOverlay = group.locator(".group-name-field .group-name-search-overlay");
 
     await groupsPage.search("zeta");

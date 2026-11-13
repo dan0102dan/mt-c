@@ -2,18 +2,20 @@
   import Button from "../../../components/ui/Button.svelte";
   import DropdownMenu from "../../../components/ui/DropdownMenu.svelte";
   import Tooltip from "../../../components/ui/Tooltip.svelte";
+  import VirtualList from "../../../components/ui/VirtualList.svelte";
   import { t } from "../../../data/locale.svelte";
   import type { GroupDuplicateConflict } from "../groups.svelte";
 
   import { TriangleAlert } from "../../../components/ui/icons";
 
   type Props = {
-    conflicts: GroupDuplicateConflict[];
+    getConflicts: () => GroupDuplicateConflict[];
     isRuleHighlighted: (ruleId: string) => boolean;
     onConflictClick: (groupId: string, ruleId: string) => void;
   };
 
-  let { conflicts, isRuleHighlighted, onConflictClick }: Props = $props();
+  let { getConflicts, isRuleHighlighted, onConflictClick }: Props = $props();
+  let scrollElement = $state<HTMLElement>();
 
   function duplicateConflictGroupTitle(conflict: GroupDuplicateConflict) {
     const normalizedName = conflict.groupName.trim();
@@ -26,59 +28,71 @@
   }
 </script>
 
-{#if conflicts.length > 0}
-  <DropdownMenu>
-    {#snippet trigger()}
-      <Tooltip value={t("Contains duplicate rules")}>
-        <span
-          aria-label={t("Show duplicate conflicts")}
-          class="group-duplicate-indicator group-duplicate-menu-trigger"
-        >
-          <TriangleAlert size={18} />
-        </span>
-      </Tooltip>
-    {/snippet}
-    {#snippet item1()}
-      <div class="group-duplicate-menu-list">
-        {#each conflicts as conflict (conflict.ruleId)}
-          <Button
-            general
-            class={isRuleHighlighted(conflict.ruleId)
-              ? "duplicate-conflict-button active"
-              : "duplicate-conflict-button"}
-            onclick={() => onConflictClick(conflict.groupId, conflict.ruleId)}
-          >
-            <div class="dd-label duplicate-conflict-label">
-              <div class="duplicate-conflict-title">
-                <span class="duplicate-conflict-type">{conflict.ruleType}</span>
-                <span class="duplicate-conflict-pattern-title"
-                  >{conflict.rulePattern || t("Unnamed rule")}</span
-                >
+<DropdownMenu>
+  {#snippet trigger()}
+    <Tooltip value={t("Contains duplicate rules")}>
+      <span
+        aria-label={t("Show duplicate conflicts")}
+        class="group-duplicate-indicator group-duplicate-menu-trigger"
+      >
+        <TriangleAlert size={18} />
+      </span>
+    </Tooltip>
+  {/snippet}
+  {#snippet item1()}
+    {@const conflicts = getConflicts()}
+    <div class="group-duplicate-menu-list" bind:this={scrollElement}>
+      <VirtualList
+        count={conflicts.length}
+        getKey={(index) => conflicts[index].ruleId}
+        estimateSize={70}
+        {scrollElement}
+      >
+        {#snippet children(index)}
+          {@const conflict = conflicts[index]}
+          <div class="duplicate-conflict-row">
+            <Button
+              general
+              class={isRuleHighlighted(conflict.ruleId)
+                ? "duplicate-conflict-button active"
+                : "duplicate-conflict-button"}
+              onclick={() => onConflictClick(conflict.groupId, conflict.ruleId)}
+            >
+              <div class="dd-label duplicate-conflict-label">
+                <div class="duplicate-conflict-title">
+                  <span class="duplicate-conflict-type">{conflict.ruleType}</span>
+                  <span class="duplicate-conflict-pattern-title"
+                    >{conflict.rulePattern || t("Unnamed rule")}</span
+                  >
+                </div>
+                <div class="duplicate-conflict-subtitle">
+                  <span class="duplicate-conflict-group">
+                    <span
+                      class="group-color-dot"
+                      style="background-color: {duplicateConflictGroupColor(conflict)}"
+                    ></span>
+                    {duplicateConflictGroupTitle(conflict)}
+                  </span>
+                  {#if conflict.ruleName.trim()}
+                    <span class="duplicate-conflict-rule-name">{conflict.ruleName.trim()}</span>
+                  {/if}
+                </div>
               </div>
-              <div class="duplicate-conflict-subtitle">
-                <span class="duplicate-conflict-group">
-                  <span
-                    class="group-color-dot"
-                    style="background-color: {duplicateConflictGroupColor(conflict)}"
-                  ></span>
-                  {duplicateConflictGroupTitle(conflict)}
-                </span>
-                {#if conflict.ruleName.trim()}
-                  <span class="duplicate-conflict-rule-name">{conflict.ruleName.trim()}</span>
-                {/if}
+              <div class="duplicate-conflict-count">
+                x{conflict.totalRulesWithSameKey}
               </div>
-            </div>
-            <div class="duplicate-conflict-count">
-              x{conflict.totalRulesWithSameKey}
-            </div>
-          </Button>
-        {/each}
-      </div>
-    {/snippet}
-  </DropdownMenu>
-{/if}
+            </Button>
+          </div>
+        {/snippet}
+      </VirtualList>
+    </div>
+  {/snippet}
+</DropdownMenu>
 
 <style>
+  .duplicate-conflict-row {
+    padding-bottom: 0.1rem;
+  }
   :global(.group-duplicate-indicator) {
     color: var(--yellow);
     display: inline-flex;

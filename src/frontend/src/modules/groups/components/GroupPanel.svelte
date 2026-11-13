@@ -1,15 +1,15 @@
 <script lang="ts">
   import { Collapsible } from "bits-ui";
-  import { createEventDispatcher, getContext, tick } from "svelte";
+  import { createEventDispatcher, getContext, onMount, tick, untrack } from "svelte";
   import { slide } from "svelte/transition";
 
-  import Pagination from "../../../components/Pagination.svelte";
   import Button from "../../../components/ui/Button.svelte";
   import DropdownMenu from "../../../components/ui/DropdownMenu.svelte";
   import EdgeNumberInput from "../../../components/ui/EdgeNumberInput.svelte";
   import RouteSelect from "../../../components/ui/RouteSelect.svelte";
   import Switch from "../../../components/ui/Switch.svelte";
   import Tooltip from "../../../components/ui/Tooltip.svelte";
+  import VirtualList from "../../../components/ui/VirtualList.svelte";
   import { t } from "../../../data/locale.svelte";
   import { GROUPS_STORE_CONTEXT, type GroupsStore } from "../groups.svelte";
   import GroupDuplicateMenu from "./GroupDuplicateMenu.svelte";
@@ -29,13 +29,13 @@
     SortNeutral,
   } from "../../../components/ui/icons";
   import { draggable, droppable } from "../../../lib/dnd";
-  import { type Rule } from "../../../types";
   import { copyRulePatternsToClipboard } from "../../../utils/copy-rule-patterns";
   import { defaultRule } from "../../../utils/defaults";
   import { type SortDirection, type SortField } from "../../../utils/rule-sorter";
 
   type Props = {
     group_index: number;
+    active?: boolean;
     selectionActive?: boolean;
     selected?: boolean;
     ontoggleSelection?: () => void;
@@ -43,6 +43,7 @@
 
   let {
     group_index,
+    active = true,
     selectionActive = false,
     selected = false,
     ontoggleSelection,
@@ -54,8 +55,19 @@
   }
   const dispatch = createEventDispatcher();
 
-  const PAGE_SIZE = 50;
-  let currentPage = $state(1);
+  let ruleList = $state<VirtualList>();
+  const panelState = store.getPanelState(untrack(() => store.data[group_index].id));
+  onMount(() => {
+    const groupId = store.data[group_index].id;
+    store.ruleScrollers.set(groupId, async (ruleId) => {
+      await tick();
+      const index = findRulePosition(ruleId);
+      if (index >= 0) await ruleList?.scrollToIndex(index, "center");
+    });
+    return () => {
+      store.ruleScrollers.delete(groupId);
+    };
+  });
 
   let client_width = $state<number>(Infinity);
   let is_desktop = $derived(client_width > 668);
@@ -72,10 +84,12 @@
   let hasGroupNameSearchHighlight = $derived(Boolean(groupNameHighlightParts));
   let visibleRuleIndices = $derived(store.visibilityMap.get(group_index));
   let effectiveOpen = $derived(group ? (store.open_state[group.id] ?? false) : false);
-  let duplicateConflicts = $derived(group ? store.getDuplicateConflictsForGroup(group.id) : []);
+  let hasDuplicateConflicts = $derived(group ? store.duplicateGroupIds.has(group.id) : false);
+  let animateExpansion = $state(false);
 
   function toggleOpen() {
     if (!group) return;
+    animateExpansion = true;
     store.open_state[group.id] = !effectiveOpen;
   }
 
@@ -139,87 +153,35 @@
       : (group?.rules.length ?? 0),
   );
 
-  let usePagination = $derived(totalRulesCount > PAGE_SIZE);
-
-  $effect(() => {
-    if (searchActive && visibleRuleIndices) {
-      currentPage = 1;
-    }
-  });
-
-  $effect(() => {
-    const maxPage = Math.ceil(totalRulesCount / PAGE_SIZE);
-    if (currentPage > maxPage && maxPage > 0) {
-      currentPage = 1;
-    }
-  });
-
-  let displayedRules = $derived.by(() => {
-    if (!group) return [];
-    let rulesToRender: { rule: Rule; originalIndex: number }[] = [];
-
-    let sourceIndices: number[] = [];
-    if (searchActive && Array.isArray(visibleRuleIndices)) {
-      sourceIndices = visibleRuleIndices;
-    } else {
-      sourceIndices = new Array(group.rules.length);
-      for (let i = 0; i < group.rules.length; i++) sourceIndices[i] = i;
-    }
-
-    let startIndex = 0;
-    let endIndex = sourceIndices.length;
-
-    if (usePagination) {
-      startIndex = (currentPage - 1) * PAGE_SIZE;
-      endIndex = Math.min(startIndex + PAGE_SIZE, sourceIndices.length);
-    }
-
-    for (let i = startIndex; i < endIndex; i++) {
-      const idx = sourceIndices[i];
-      if (group.rules[idx]) {
-        rulesToRender.push({ rule: group.rules[idx], originalIndex: idx });
-      }
-    }
-    return rulesToRender;
-  });
-
-  let reportedFinished = false;
-  $effect(() => {
-    if (searchActive) return;
-    if (!reportedFinished && (totalRulesCount === 0 || displayedRules.length > 0)) {
-      reportedFinished = true;
-      store.handleGroupFinished();
-    }
-  });
-
-  let sortField = $state<SortField | null>(null);
-  let sortDirection = $state<SortDirection>("asc");
-  let initialOrderIds = $state<string[] | null>(null);
+  const originalIndexAt = (index: number) =>
+    searchActive && Array.isArray(visibleRuleIndices) ? visibleRuleIndices[index] : index;
 
   function handleSort(field: SortField) {
     if (!group) return;
-    if (!initialOrderIds) {
-      initialOrderIds = group.rules.map((rule) => rule.id);
+    if (!panelState.initialOrderIds) {
+      panelState.initialOrderIds = group.rules.map((rule) => rule.id);
     }
 
-    if (sortField === field && sortDirection === "desc") {
-      sortField = null;
-      sortDirection = "asc";
+    if (panelState.sortField === field && panelState.sortDirection === "desc") {
+      panelState.sortField = null;
+      panelState.sortDirection = "asc";
 
-      if (initialOrderIds) {
-        store.restoreGroupRulesOrder(group_index, initialOrderIds);
+      if (panelState.initialOrderIds) {
+        store.restoreGroupRulesOrder(group_index, panelState.initialOrderIds);
+        void tick().then(() => ruleList?.refresh());
       }
       return;
     }
 
-    if (sortField === field) {
-      sortDirection = "desc";
+    if (panelState.sortField === field) {
+      panelState.sortDirection = "desc";
     } else {
-      sortField = field;
-      sortDirection = "asc";
+      panelState.sortField = field;
+      panelState.sortDirection = "asc";
     }
 
-    store.sortGroupRules(group_index, field, sortDirection);
+    store.sortGroupRules(group_index, field, panelState.sortDirection);
+    void tick().then(() => ruleList?.refresh());
   }
 
   function findRulePosition(ruleId: string) {
@@ -244,12 +206,10 @@
 
     void (async () => {
       const rulePosition = findRulePosition(request.ruleId);
-      if (rulePosition >= 0) {
-        currentPage = Math.floor(rulePosition / PAGE_SIZE) + 1;
-      }
-
       store.open_state[group.id] = true;
 
+      await tick();
+      if (rulePosition >= 0) await ruleList?.scrollToIndex(rulePosition, "center");
       await tick();
 
       if (typeof window !== "undefined") {
@@ -284,8 +244,8 @@
 
   $effect(() => {
     group?.rules.length;
-    if (sortField === null) {
-      initialOrderIds = null;
+    if (panelState.sortField === null) {
+      panelState.initialOrderIds = null;
     }
   });
 </script>
@@ -357,13 +317,13 @@
                 placeholder={t("group name...")}
                 class="group-name"
                 class:search-text-hidden={hasGroupNameSearchHighlight}
-                class:has-warning={duplicateConflicts.length > 0}
+                class:has-warning={hasDuplicateConflicts}
                 bind:value={group.name}
               />
               {#if hasGroupNameSearchHighlight && groupNameHighlightParts}
                 <div
                   class="search-highlight-overlay group-name-search-overlay"
-                  class:has-warning={duplicateConflicts.length > 0}
+                  class:has-warning={hasDuplicateConflicts}
                   aria-hidden="true"
                 >
                   {#each groupNameHighlightParts as part}
@@ -376,9 +336,9 @@
                 </div>
               {/if}
             </div>
-            {#if duplicateConflicts.length > 0}
+            {#if hasDuplicateConflicts}
               <GroupDuplicateMenu
-                conflicts={duplicateConflicts}
+                getConflicts={() => store.getDuplicateConflictsForGroup(group.id)}
                 isRuleHighlighted={store.isRuleHighlighted}
                 onConflictClick={handleDuplicateConflictClick}
               />
@@ -476,70 +436,92 @@
       </div>
 
       <Collapsible.Content>
-        <div transition:slide={searchActive ? { duration: 0 } : {}}>
-          {#if totalRulesCount > 0}
-            <div class="group-rules-header">
-              <div class="group-rules-header-column total">
-                #{totalRulesCount}
-              </div>
-              <!-- svelte-ignore a11y_click_events_have_key_events -->
-              <!-- svelte-ignore a11y_no_static_element_interactions -->
-              <!-- svelte-ignore a11y_click_events_have_key_events -->
-              <!-- svelte-ignore a11y_no_static_element_interactions -->
-              <div class="group-rules-header-column clickable" onclick={() => handleSort("name")}>
-                {t("Name")}
-                <div class="sort-icon">
-                  {#if sortField === "name" && sortDirection === "desc"}
-                    <SortAsc size={16} />
-                  {:else if sortField === "name"}
-                    <SortDesc size={16} />
-                  {:else}
-                    <SortNeutral size={16} />
+        {#snippet child({ props })}
+          {#if effectiveOpen}
+            <div {...props}>
+              <div transition:slide={searchActive || !animateExpansion ? { duration: 0 } : {}}>
+                {#if totalRulesCount > 0}
+                  <div class="group-rules-header">
+                    <div class="group-rules-header-column total">
+                      #{totalRulesCount}
+                    </div>
+                    <!-- svelte-ignore a11y_click_events_have_key_events -->
+                    <!-- svelte-ignore a11y_no_static_element_interactions -->
+                    <!-- svelte-ignore a11y_click_events_have_key_events -->
+                    <!-- svelte-ignore a11y_no_static_element_interactions -->
+                    <div
+                      class="group-rules-header-column clickable"
+                      onclick={() => handleSort("name")}
+                    >
+                      {t("Name")}
+                      <div class="sort-icon">
+                        {#if panelState.sortField === "name" && panelState.sortDirection === "desc"}
+                          <SortAsc size={16} />
+                        {:else if panelState.sortField === "name"}
+                          <SortDesc size={16} />
+                        {:else}
+                          <SortNeutral size={16} />
+                        {/if}
+                      </div>
+                    </div>
+                    <div class="group-rules-header-column">{t("Type")}</div>
+                    <!-- svelte-ignore a11y_click_events_have_key_events -->
+                    <!-- svelte-ignore a11y_no_static_element_interactions -->
+                    <div
+                      class="group-rules-header-column clickable"
+                      onclick={() => handleSort("pattern")}
+                    >
+                      {t("Pattern")}
+                      <div class="sort-icon">
+                        {#if panelState.sortField === "pattern" && panelState.sortDirection === "desc"}
+                          <SortAsc size={16} />
+                        {:else if panelState.sortField === "pattern"}
+                          <SortDesc size={16} />
+                        {:else}
+                          <SortNeutral size={16} />
+                        {/if}
+                      </div>
+                    </div>
+                    <div class="group-rules-header-column">{t("Enabled")}</div>
+                  </div>
+                {/if}
+                <div class="group-rules">
+                  {#if totalRulesCount > 0}
+                    <VirtualList
+                      bind:this={ruleList}
+                      recycle
+                      count={totalRulesCount}
+                      getKey={(index) => group.rules[originalIndexAt(index)].id}
+                      estimateSize={client_width <= 700 ? 112 : 35}
+                      active={active && effectiveOpen}
+                      revision={visibleRuleIndices ?? group.rules}
+                    >
+                      {#snippet children(index)}
+                        {@const originalIndex = originalIndexAt(index)}
+                        {@const rule = group.rules[originalIndex]}
+                        <RuleRow
+                          key={rule.id}
+                          bind:rule={group.rules[originalIndex]}
+                          rule_index={originalIndex}
+                          {group_index}
+                          rule_id={rule.id}
+                          group_id={group.id}
+                          isDuplicate={store.isRuleDuplicate(rule.id)}
+                          isHighlighted={store.isRuleHighlighted(rule.id)}
+                          style={index % 2 ? "" : "background-color: var(--bg-light)"}
+                        />
+                      {/snippet}
+                    </VirtualList>
                   {/if}
                 </div>
               </div>
-              <div class="group-rules-header-column">{t("Type")}</div>
-              <!-- svelte-ignore a11y_click_events_have_key_events -->
-              <!-- svelte-ignore a11y_no_static_element_interactions -->
-              <div
-                class="group-rules-header-column clickable"
-                onclick={() => handleSort("pattern")}
-              >
-                {t("Pattern")}
-                <div class="sort-icon">
-                  {#if sortField === "pattern" && sortDirection === "desc"}
-                    <SortAsc size={16} />
-                  {:else if sortField === "pattern"}
-                    <SortDesc size={16} />
-                  {:else}
-                    <SortNeutral size={16} />
-                  {/if}
-                </div>
-              </div>
-              <div class="group-rules-header-column">{t("Enabled")}</div>
             </div>
+          {:else}
+            <!-- Keep the ARIA target without attaching Bits' measurement
+                 observer or creating a nested rule list for closed panels. -->
+            <div id={typeof props.id === "string" ? props.id : undefined} hidden></div>
           {/if}
-          <div class="group-rules">
-            {#if totalRulesCount > 0}
-              {#each displayedRules as { rule, originalIndex }, i (rule.id)}
-                <RuleRow
-                  key={rule.id}
-                  bind:rule={group.rules[originalIndex]}
-                  rule_index={originalIndex}
-                  {group_index}
-                  rule_id={rule.id}
-                  group_id={group.id}
-                  isDuplicate={store.isRuleDuplicate(rule.id)}
-                  isHighlighted={store.isRuleHighlighted(rule.id)}
-                  style={i % 2 ? "" : "background-color: var(--bg-light)"}
-                />
-              {/each}
-            {/if}
-          </div>
-          {#if usePagination}
-            <Pagination totalItems={totalRulesCount} pageSize={PAGE_SIZE} bind:currentPage />
-          {/if}
-        </div>
+        {/snippet}
       </Collapsible.Content>
     </Collapsible.Root>
   </div>
