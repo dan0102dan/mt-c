@@ -22,6 +22,14 @@ test("50k subscription: summary, URL-only create, compact save, canonical IDs", 
       enable: true,
     })),
   };
+  await page.route("**/profiles", (route) => route.fulfill({ json: { profiles: [] } }));
+  await page.route("**/system/update/status", (route) =>
+    route.fulfill({ json: { stage: "idle" } }),
+  );
+  await page.route("**/system/update", (route) =>
+    route.fulfill({ json: { installed_version: "test", can_install: false } }),
+  );
+  await page.route("https://api.github.com/**", (route) => route.fulfill({ json: [] }));
   let created = false;
   let summarySeen = false;
   const saves: Record<string, any>[] = [];
@@ -66,7 +74,9 @@ test("50k subscription: summary, URL-only create, compact save, canonical IDs", 
   await page.locator("#sub-name").fill("Large list");
   await page.getByRole("button", { name: "Add", exact: true }).click();
   await expect(page.locator(".subscription-panel")).toHaveCount(1);
-  await expect(page.locator(".subscription-rule")).toHaveCount(50);
+  await expect(page.locator(".subscription-rule").first()).toBeVisible();
+  await expect.poll(() => page.locator(".subscription-rule").count()).toBeLessThan(250);
+  await expect(page.locator(".subscription-panel .pagination")).toHaveCount(0);
   await page.locator(".subscription-url-input").fill("https://example.com/renamed.txt");
   await page.locator("#save-subscriptions").click();
   await expect.poll(() => saves.length).toBe(1);

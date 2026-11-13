@@ -1,118 +1,190 @@
 <script lang="ts">
   import LoaderCircle from "@lucide/svelte/icons/loader-circle";
-  import { createEventDispatcher, tick } from "svelte";
+  import { createEventDispatcher, flushSync, onDestroy, tick, untrack } from "svelte";
   import { slide } from "svelte/transition";
 
   import Button from "../../../components/ui/Button.svelte";
   import GenericDialog from "../../../components/ui/GenericDialog.svelte";
   import Select from "../../../components/ui/Select.svelte";
+  import VirtualList from "../../../components/ui/VirtualList.svelte";
   import { t } from "../../../data/locale.svelte";
 
   import { RULE_TYPES, type Rule } from "../../../types";
-  import { defaultRule } from "../../../utils/defaults";
+  import { toast } from "../../../utils/events";
   import {
-    isValidDomain,
-    isValidNamespace,
-    isValidRegex,
-    isValidSubnet,
-    isValidSubnet6,
-    isValidWildcard,
-    VALIDATOP_MAP,
-  } from "../../../utils/rule-validators";
+    boundedRuleListLines,
+    type ParsedRuleLine,
+    type RuleListJob,
+    type RuleListResponse,
+    type RuleListType,
+  } from "../rule-list-parser";
 
-  let { open = $bindable(false), group_index = null } = $props();
-
+  type Props = {
+    open?: boolean;
+    group_index?: number | null;
+    onImportRules?: (groupIndex: number, rules: Rule[], signal: AbortSignal) => Promise<void>;
+  };
+  let { open = $bindable(false), group_index = null, onImportRules }: Props = $props();
   const dispatch = createEventDispatcher();
 
   let import_rules_text = $state("");
   let triedSubmit = $state(false);
   let isParsing = $state(false);
+  let isApplying = $state(false);
   let isEditing = $state(true);
+  let editorFocused = $state(false);
+  let bulkPastePending = $state(false);
   let textAreaRef = $state<HTMLTextAreaElement | null>(null);
   let editorHeight = $state(200);
   let editorMinHeight = $state(200);
   let editorMaxHeight = $state(500);
+  let previewLines = $state.raw<ParsedRuleLine[]>([]);
+  let totalLines = $state(0);
+  let stats = $state<Record<string, number>>({});
+  let selectedRuleType = $state<RuleListType>("auto");
+  let previewScroller = $state<HTMLDivElement>();
+  let previewLineHeight = $state(22.8);
 
   const MIN_EDITOR_HEIGHT = 200;
   const ABSOLUTE_MIN_EDITOR_HEIGHT = 120;
   const DESKTOP_MAX_EDITOR_HEIGHT = 500;
   const ROWS_LIMIT = 500;
+  const RULE_TYPE_SELECT = [{ value: "auto", label: "Auto" }, ...RULE_TYPES];
+  const isEmpty = $derived(!import_rules_text.trim());
+  const isBulkText = $derived(bulkPastePending || import_rules_text.length >= 65536);
+
+  let resizeFrame = 0;
+  let pasteTimer: ReturnType<typeof setTimeout> | undefined;
+  let worker: Worker | undefined;
+  let version = 0;
+  let parsedVersion = -1;
+  let nextRequest = 0;
+  let submitRequested = false;
+  let applyController: AbortController | undefined;
+  const pending = new Map<
+    number,
+    { resolve: (response: RuleListResponse) => void; reject: (error: Error) => void }
+  >();
+
+  function disposeParser(
+    error: Error = new DOMException("Rule list parsing cancelled", "AbortError"),
+  ) {
+    worker?.terminate();
+    worker = undefined;
+    for (const request of pending.values()) request.reject(error);
+    pending.clear();
+  }
+
+  function invalidateParser() {
+    version++;
+    parsedVersion = -1;
+    disposeParser();
+    applyController?.abort();
+    applyController = undefined;
+    isApplying = false;
+    isParsing = false;
+  }
+
+  function requestParser(job: RuleListJob): Promise<RuleListResponse> {
+    if (!worker) {
+      worker = new Worker(new URL("../rule-list-parser.worker.ts", import.meta.url), {
+        type: "module",
+      });
+      worker.onmessage = (event: MessageEvent<RuleListResponse>) => {
+        const response = event.data;
+        const request = pending.get(response.id);
+        if (!request) return;
+        pending.delete(response.id);
+        if (response.type === "error") request.reject(new Error(response.message));
+        else request.resolve(response);
+      };
+      worker.onerror = (event) => {
+        event.preventDefault();
+        disposeParser(new Error(event.message || "Rule list parsing failed"));
+      };
+    }
+    const id = ++nextRequest;
+    const parser = worker;
+    return new Promise((resolve, reject) => {
+      pending.set(id, { resolve, reject });
+      parser.postMessage({ ...job, id });
+    });
+  }
 
   function getEditorHeightBounds() {
-    if (typeof window === "undefined") {
-      return { minHeight: MIN_EDITOR_HEIGHT, maxHeight: DESKTOP_MAX_EDITOR_HEIGHT };
-    }
     const rootFontSize = parseFloat(getComputedStyle(document.documentElement).fontSize) || 16;
     const isMobile = window.matchMedia("(max-width: 600px)").matches;
     const viewportHeight = window.visualViewport?.height || window.innerHeight;
     const reservedHeight = (isMobile ? 10 : 14) * rootFontSize;
-    const viewportLimitedMax = viewportHeight - reservedHeight;
     const maxHeight = Math.min(
       DESKTOP_MAX_EDITOR_HEIGHT,
-      Math.max(ABSOLUTE_MIN_EDITOR_HEIGHT, viewportLimitedMax),
+      Math.max(ABSOLUTE_MIN_EDITOR_HEIGHT, viewportHeight - reservedHeight),
     );
-    const minHeight = Math.min(MIN_EDITOR_HEIGHT, maxHeight);
-    return { minHeight, maxHeight };
+    return { minHeight: Math.min(MIN_EDITOR_HEIGHT, maxHeight), maxHeight };
   }
 
   function getTextMetrics() {
-    if (!textAreaRef || typeof window === "undefined") {
-      return { lineHeight: 22, paddingY: 24 };
-    }
+    if (!textAreaRef) return { lineHeight: 22.8, paddingY: 24 };
     const styles = getComputedStyle(textAreaRef);
     const fontSize = parseFloat(styles.fontSize) || 16;
-    let lineHeight = parseFloat(styles.lineHeight);
-    if (Number.isNaN(lineHeight)) {
-      lineHeight = fontSize * 1.5;
-    }
-    const paddingY = (parseFloat(styles.paddingTop) || 0) + (parseFloat(styles.paddingBottom) || 0);
-    return { lineHeight, paddingY };
+    return {
+      lineHeight: parseFloat(styles.lineHeight) || fontSize * 1.5,
+      paddingY: (parseFloat(styles.paddingTop) || 0) + (parseFloat(styles.paddingBottom) || 0),
+    };
   }
 
-  function scheduleEditorResize() {
-    if (!textAreaRef) return;
-    requestAnimationFrame(() => {
+  function scheduleEditorResize(force = false) {
+    if (!textAreaRef || resizeFrame) return;
+    // Once bulk input fills the box, typing changes no dimensions. Reading
+    // computed styles here would force native layout of the entire text.
+    if (!force && isBulkText && editorHeight === editorMaxHeight) return;
+    resizeFrame = requestAnimationFrame(() => {
+      resizeFrame = 0;
       if (!textAreaRef) return;
+      if (!force && isBulkText && editorHeight === editorMaxHeight) return;
       const { minHeight, maxHeight } = getEditorHeightBounds();
       editorMinHeight = minHeight;
       editorMaxHeight = maxHeight;
-      const tokens = import_rules_text.split(/[\n,]+/).filter((t) => t.trim().length > 0);
-      const lineCount = Math.max(1, tokens.length);
       const { lineHeight, paddingY } = getTextMetrics();
+      previewLineHeight = lineHeight;
       const baseLines = Math.max(1, Math.floor((minHeight - paddingY) / lineHeight));
-      const extraLines = Math.max(0, lineCount - baseLines);
-      const targetHeight = minHeight + extraLines * lineHeight;
-      editorHeight = Math.max(minHeight, Math.min(targetHeight, maxHeight));
+      const saturation = baseLines + Math.ceil((maxHeight - minHeight) / lineHeight);
+      const lineCount = isBulkText
+        ? saturation
+        : boundedRuleListLines(import_rules_text, saturation);
+      editorHeight = Math.max(
+        minHeight,
+        Math.min(minHeight + Math.max(0, lineCount - baseLines) * lineHeight, maxHeight),
+      );
     });
   }
 
-  type ParsedLine = {
-    text: string;
-    type: string | null;
-    isValid: boolean;
-  };
-
-  let previewLines = $state<ParsedLine[]>([]);
-  // svelte-ignore non_reactive_update
-  let allParsedLines: ParsedLine[] = [];
-  let stats = $state<Record<string, number>>({});
-
-  const RULE_TYPE_SELECT = [{ value: "auto", label: "Auto" }, ...RULE_TYPES];
-  type RuleTypeValue = (typeof RULE_TYPE_SELECT)[number]["value"];
-  let selectedRuleType = $state<RuleTypeValue>("auto");
-
-  let isEmpty = $derived(!import_rules_text.trim());
-
   $effect(() => {
-    const type = selectedRuleType;
-    if (!isEditing && import_rules_text.trim()) {
-      parseRules(true);
-    }
+    selectedRuleType;
+    untrack(() => {
+      const previewVisible = open && !isEditing;
+      invalidateParser();
+      if (previewVisible) void parseRules();
+    });
   });
-
   $effect(() => {
     import_rules_text;
     scheduleEditorResize();
+  });
+  $effect(() => {
+    if (!open)
+      untrack(() => {
+        invalidateParser();
+        // Clear after the dialog has unmounted, rather than rebuilding the
+        // native 100k-line renderer with an empty value during its close.
+        import_rules_text = "";
+      });
+  });
+  onDestroy(() => {
+    applyController?.abort();
+    disposeParser();
+    cancelAnimationFrame(resizeFrame);
+    clearTimeout(pasteTimer);
   });
 
   const TYPE_COLORS: Record<string, string> = {
@@ -124,7 +196,6 @@
     subnet6: "#088484",
     INVALID: "#e53e3e",
   };
-
   const TYPE_LABELS: Record<string, string> = {
     namespace: "namespace",
     wildcard: "wildcard",
@@ -135,127 +206,131 @@
     INVALID: "INVALID",
   };
 
-  function handleKeydown(e: KeyboardEvent) {
-    if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
-      e.preventDefault();
+  function handleKeydown(event: KeyboardEvent) {
+    if (open && (event.metaKey || event.ctrlKey) && event.key === "Enter") {
+      event.preventDefault();
       submit();
     }
   }
 
-  function detectRuleType(pattern: string): keyof typeof VALIDATOP_MAP | null {
-    const p = pattern.trim();
-    if (isValidSubnet6(p)) return "subnet6";
-    if (isValidSubnet(p)) return "subnet";
-    if (isValidNamespace(p)) return "namespace";
-    if (isValidDomain(p)) return "domain";
-    if (isValidRegex(p)) return "regex";
-    if (isValidWildcard(p)) return "wildcard";
-    return null;
-  }
-
-  function getParsedData(text: string, ruleType: RuleTypeValue): ParsedLine[] {
-    const lines = text.split(/[\n,]+/);
-    return lines.map((line) => {
-      const trimmed = line.trim();
-      if (!trimmed || trimmed.startsWith("#")) {
-        return { text: line, type: null, isValid: false };
-      }
-
-      let type: string | null = null;
-      if (ruleType === "auto") {
-        type = detectRuleType(trimmed);
-      } else {
-        const validator = VALIDATOP_MAP[ruleType];
-        if (validator && validator(trimmed)) {
-          type = ruleType;
-        }
-      }
-
-      return {
-        text: line,
-        type: type || "INVALID",
-        isValid: !!type,
-      };
-    });
-  }
-
-  async function parseRules(force = false) {
-    if (!force && (!import_rules_text.trim() || isParsing)) return;
-
+  async function parseRules() {
+    if (!open || !import_rules_text.trim() || isParsing) return;
+    const requestedVersion = version;
     isParsing = true;
     isEditing = false;
-
-    await new Promise((r) => setTimeout(r, 400));
-    const lines = getParsedData(import_rules_text, selectedRuleType);
-    allParsedLines = lines;
-    previewLines = lines.slice(0, ROWS_LIMIT);
-
-    const c: Record<string, number> = {};
-    lines.forEach((l) => {
-      if (l.text.trim() && !l.text.trim().startsWith("#")) {
-        const type = l.type || "INVALID";
-        c[type] = (c[type] || 0) + 1;
+    let applying = false;
+    try {
+      if (parsedVersion !== requestedVersion) {
+        const response = await requestParser({
+          type: "parse",
+          version: requestedVersion,
+          text: import_rules_text,
+          ruleType: selectedRuleType,
+        });
+        if (!open || requestedVersion !== version || response.type !== "preview") return;
+        previewLines = response.preview.lines;
+        totalLines = response.preview.totalLines;
+        stats = response.preview.stats;
+        parsedVersion = requestedVersion;
       }
-    });
-    stats = c;
-
-    isParsing = false;
+      if (submitRequested) {
+        const response = await requestParser({ type: "apply", version: requestedVersion });
+        if (!open || requestedVersion !== version || response.type !== "rules") return;
+        if (response.rules.length && group_index !== null) {
+          applying = true;
+          isApplying = true;
+          const controller = new AbortController();
+          applyController = controller;
+          if (onImportRules) await onImportRules(group_index, response.rules, controller.signal);
+          else dispatch("import", { group_index, rules: response.rules });
+          if (!open || requestedVersion !== version || controller.signal.aborted) return;
+          applyController = undefined;
+          close();
+        }
+      }
+    } catch (error) {
+      if (requestedVersion !== version || (error instanceof Error && error.name === "AbortError"))
+        return;
+      if (!applying) {
+        console.error("Rule list parsing failed", error);
+        toast.error(t("Failed to import rules"));
+        isEditing = true;
+      }
+      // The owner reports apply errors; preserve the parsed input for retry.
+    } finally {
+      if (requestedVersion === version) {
+        isParsing = false;
+        isApplying = false;
+        applyController = undefined;
+        submitRequested = false;
+        if (open && !isEditing && document.activeElement === textAreaRef) {
+          await tick();
+          // Automatic paste parsing may finish while the user is still in the
+          // editor. Respect a newer focus move before exposing the preview.
+          if (requestedVersion === version && !isEditing && document.activeElement === textAreaRef)
+            previewScroller?.focus({ preventScroll: true });
+        }
+      }
+    }
   }
 
   function submit() {
     triedSubmit = true;
-    if (group_index === null) return;
-
-    const currentParsed = isEditing
-      ? getParsedData(import_rules_text, selectedRuleType)
-      : allParsedLines;
-
-    const rules: Rule[] = [];
-    const seen = new Set<string>();
-
-    currentParsed.forEach((l) => {
-      const trimmed = l.text.trim();
-      if (l.isValid && l.type && l.type !== "INVALID" && trimmed && !trimmed.startsWith("#")) {
-        const key = `${l.type}|${trimmed}`;
-        if (!seen.has(key)) {
-          seen.add(key);
-          rules.push({
-            ...defaultRule(),
-            rule: trimmed,
-            type: l.type as any,
-          });
-        }
-      }
-    });
-
-    if (rules.length === 0) return;
-    finishImport(rules);
-  }
-
-  function finishImport(rules: Rule[]) {
-    dispatch("import", { group_index, rules });
-    close();
+    if (isApplying || group_index === null || !import_rules_text.trim()) return;
+    submitRequested = true;
+    if (!isParsing) void parseRules();
   }
 
   function close() {
-    import_rules_text = "";
+    invalidateParser();
+    clearTimeout(pasteTimer);
+    submitRequested = false;
     previewLines = [];
-    allParsedLines = [];
+    totalLines = 0;
     stats = {};
     triedSubmit = false;
+    editorFocused = false;
+    bulkPastePending = false;
     isEditing = true;
     selectedRuleType = "auto";
     dispatch("close");
   }
 
-  function onPaste() {
-    setTimeout(() => parseRules(), 50);
+  function handleInput(event: Event) {
+    if (!(event instanceof InputEvent) || event.inputType !== "insertFromPaste")
+      clearTimeout(pasteTimer);
+    invalidateParser();
+    isEditing = true;
+    bulkPastePending = false;
+    submitRequested = false;
+  }
+
+  function onPaste(event: ClipboardEvent) {
+    if ((event.clipboardData?.getData("text/plain").length ?? 0) >= 65536) {
+      // Apply the final bulk dimensions before native paste lays out its text.
+      // Native insertion and undo remain owned by the browser.
+      const { minHeight, maxHeight } = getEditorHeightBounds();
+      cancelAnimationFrame(resizeFrame);
+      resizeFrame = 0;
+      flushSync(() => {
+        bulkPastePending = true;
+        editorMinHeight = minHeight;
+        editorMaxHeight = maxHeight;
+        editorHeight = maxHeight;
+      });
+    }
+    clearTimeout(pasteTimer);
+    pasteTimer = setTimeout(() => void parseRules(), 50);
   }
 
   function onBlur() {
-    if (import_rules_text.trim()) {
-      parseRules();
+    editorFocused = false;
+    if (!isEditing || isParsing || isApplying || !import_rules_text.trim()) return;
+    if (parsedVersion === version) {
+      isEditing = false;
+      return;
     }
+    void parseRules();
   }
 
   async function switchToEdit() {
@@ -265,7 +340,7 @@
   }
 </script>
 
-<svelte:window onkeydown={handleKeydown} onresize={scheduleEditorResize} />
+<svelte:window onkeydown={handleKeydown} onresize={() => scheduleEditorResize(true)} />
 
 <GenericDialog
   {open}
@@ -279,26 +354,38 @@
     <div
       class="editor-container"
       class:parsing={isParsing}
+      class:bulk={isBulkText}
       style={`--editor-height: ${editorHeight}px; --editor-min-height: ${editorMinHeight}px; --editor-max-height: ${editorMaxHeight}px`}
     >
-      {#if isEditing || isParsing}
-        <textarea
-          bind:this={textAreaRef}
-          bind:value={import_rules_text}
-          placeholder={t("Insert a list of IPs or domains, one per line")}
-          class:invalid={triedSubmit && isEmpty}
-          disabled={isParsing}
-          onpaste={onPaste}
-          onblur={onBlur}
-        ></textarea>
-        {#if isParsing}
-          <div class="parsing-overlay">
-            <span class="spin"><LoaderCircle size={30} /></span>
-          </div>
-        {/if}
-      {:else}
+      <!-- Keep the native editor and its text buffer when showing a preview. -->
+      <textarea
+        bind:this={textAreaRef}
+        bind:value={import_rules_text}
+        aria-hidden={!isEditing && !isParsing && !editorFocused}
+        tabindex={isEditing ? 0 : -1}
+        spellcheck={false}
+        autocapitalize="off"
+        {...{ autocorrect: "off" }}
+        autocomplete="off"
+        writingsuggestions="false"
+        wrap="off"
+        oninput={handleInput}
+        placeholder={t("Insert a list of IPs or domains, one per line")}
+        class:invalid={triedSubmit && isEmpty}
+        onfocus={() => (editorFocused = true)}
+        onpaste={onPaste}
+        onblur={onBlur}
+      ></textarea>
+      <div class="editor-focus-ring" aria-hidden="true"></div>
+      {#if isParsing}
+        <div class="parsing-overlay">
+          <span class="spin"><LoaderCircle size={30} /></span>
+        </div>
+      {:else if !isEditing}
         <div
           class="results-view"
+          class:has-more={totalLines > ROWS_LIMIT}
+          bind:this={previewScroller}
           onclick={switchToEdit}
           onkeydown={(e) => e.key === "Enter" && switchToEdit()}
           role="button"
@@ -307,20 +394,30 @@
           {#if previewLines.length === 0}
             <div class="empty-state">{t("No rules found")}</div>
           {/if}
-          {#each previewLines as line}
-            <div class="line-row" class:invalid={!line.isValid && line.text.trim().length > 0}>
-              <span class="line-text">{line.text}</span>
-              {#if line.text.trim() && !line.text.trim().startsWith("#")}
-                <span
-                  class="badge"
-                  style="--badge-color: {TYPE_COLORS[line.type || 'INVALID'] || 'var(--text-2)'}"
-                >
-                  {TYPE_LABELS[line.type || "INVALID"] || line.type}
-                </span>
-              {/if}
-            </div>
-          {/each}
-          {#if allParsedLines.length > ROWS_LIMIT}
+          <VirtualList
+            count={previewLines.length}
+            getKey={(index) => String(index)}
+            estimateSize={previewLineHeight}
+            scrollElement={previewScroller}
+            revision={previewLines}
+            active={open && !isEditing && !isParsing}
+          >
+            {#snippet children(index)}
+              {@const line = previewLines[index]}
+              <div class="line-row" class:invalid={!line.isValid && line.text.trim().length > 0}>
+                <span class="line-text">{line.text}</span>
+                {#if line.text.trim() && !line.text.trim().startsWith("#")}
+                  <span
+                    class="badge"
+                    style="--badge-color: {TYPE_COLORS[line.type || 'INVALID'] || 'var(--text-2)'}"
+                  >
+                    {TYPE_LABELS[line.type || "INVALID"] || line.type}
+                  </span>
+                {/if}
+              </div>
+            {/snippet}
+          </VirtualList>
+          {#if totalLines > ROWS_LIMIT}
             <div class="line-row ellipsis-row">
               <span class="line-text">...</span>
             </div>
@@ -329,8 +426,8 @@
       {/if}
     </div>
 
-    {#if !isEditing && !isParsing && Object.keys(stats).length > 0}
-      <div class="counts" transition:slide={{ duration: 160 }}>
+    {#snippet counts()}
+      <div class="counts">
         {#each Object.entries(stats) as [type, count]}
           <span
             class="badge count-badge"
@@ -340,13 +437,23 @@
           </span>
         {/each}
       </div>
+    {/snippet}
+    {#if !isEditing && !isParsing && Object.keys(stats).length > 0}
+      {#if isBulkText}
+        {@render counts()}
+      {:else}
+        <div transition:slide={{ duration: 160 }}>{@render counts()}</div>
+      {/if}
     {/if}
   </div>
 
   <div slot="actions" class="rule-type-select">
-    <Select options={RULE_TYPE_SELECT} bind:selected={selectedRuleType} />
-    <Button type="submit" onclick={submit} style="color: var(--text); font-size: 1rem;"
-      >{t("Import")}</Button
+    <Select options={RULE_TYPE_SELECT} bind:selected={selectedRuleType} disabled={isApplying} />
+    <Button
+      type="submit"
+      onclick={submit}
+      disabled={isApplying}
+      style="color: var(--text); font-size: 1rem;">{t("Import")}</Button
     >
   </div>
 </GenericDialog>
@@ -384,26 +491,46 @@
     color: var(--text);
   }
 
+  .editor-container.bulk {
+    transition: none;
+  }
+
   textarea {
+    position: absolute;
+    inset: 0;
     resize: none;
     padding: 0.75rem 1rem;
     white-space: pre;
+    outline: none;
+  }
+
+  .editor-focus-ring {
+    position: absolute;
+    inset: 0;
+    border: 1.5px solid transparent;
+    border-radius: 0.5rem;
+    pointer-events: none;
     transition:
       border 0.15s,
       box-shadow 0.15s;
   }
 
-  textarea:focus {
-    outline: none;
+  textarea:focus + .editor-focus-ring {
     border-color: var(--accent);
     box-shadow: 0 0 0 2px var(--accent-light, #aaf2ff33);
   }
 
+  textarea.invalid + .editor-focus-ring {
+    border-color: var(--red);
+  }
+
   textarea.invalid {
-    border-color: var(--danger) !important;
+    border-color: var(--red) !important;
   }
 
   .results-view {
+    position: absolute;
+    inset: 0;
     overflow-y: auto;
     padding: 0.75rem 0;
     cursor: text;
@@ -411,12 +538,22 @@
     flex-direction: column;
   }
 
+  .results-view :global(.virtual-list) {
+    flex-shrink: 0;
+  }
+
+  .results-view.has-more {
+    padding-bottom: 0;
+  }
+
   .line-row {
     display: flex;
     align-items: center;
     justify-content: space-between;
     padding: 0 1rem;
+    height: 1.5em;
     min-height: 1.5em;
+    flex-shrink: 0;
     line-height: 1.5;
     gap: 0.75rem;
   }
@@ -439,12 +576,25 @@
   }
 
   .ellipsis-row {
+    height: 3rem;
+    min-height: 3rem;
+    box-sizing: border-box;
+    border-top: 1px solid var(--bg-light-extra);
     text-align: center;
     color: var(--text-2);
-    opacity: 0.5;
     font-size: 1.5rem;
     line-height: 1;
+    cursor: pointer;
     user-select: none;
+    transition:
+      background-color 0.15s,
+      color 0.15s;
+  }
+
+  .ellipsis-row:hover,
+  .results-view:focus-visible .ellipsis-row {
+    background: var(--bg-light-extra);
+    color: var(--text);
   }
 
   .parsing-overlay {

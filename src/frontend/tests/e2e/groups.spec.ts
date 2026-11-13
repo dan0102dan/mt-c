@@ -8,6 +8,16 @@ test.describe("Groups Management", () => {
   test.beforeEach(async ({ page }) => {
     groupsPage = new GroupsPage(page);
 
+    await page.route("**/profiles", (route) => route.fulfill({ json: { profiles: [] } }));
+    await page.route("**/subscriptions", (route) => route.fulfill({ json: { subscriptions: [] } }));
+    await page.route("**/system/update/status", (route) =>
+      route.fulfill({ json: { stage: "idle" } }),
+    );
+    await page.route("**/system/update", (route) =>
+      route.fulfill({ json: { installed_version: "test", can_install: false } }),
+    );
+    await page.route("https://api.github.com/**", (route) => route.fulfill({ json: [] }));
+
     // Mock Auth to be disabled
     await page.route("**/auth", async (route) => {
       await route.fulfill({ json: { enabled: false } });
@@ -353,9 +363,8 @@ test.describe("Groups Management", () => {
       .toBe("previous clipboard value");
   });
 
-  test("should paginate rules", async ({ page }) => {
-    // Generate 60 rules
-    const rules = Array.from({ length: 60 }, (_, i) => ({
+  test("should scroll through virtual rules without pagination", async ({ page }) => {
+    const rules = Array.from({ length: 600 }, (_, i) => ({
       id: (10000000 + i).toString(), // 8 digit decimal string is mostly valid? Hex is safer.
       // 10000000 is 8 chars.
       name: `Rule ${i}`,
@@ -384,28 +393,19 @@ test.describe("Groups Management", () => {
 
     await groupsPage.goto(); // Reload to get new mock
 
-    // Check total count header
-    await expect(page.locator(".group-rules-header-column.total")).toHaveText("#60");
-
     // Ensure group is expanded (fetched groups are closed by default)
     const groupRules = page.locator(".group-rules");
     if (!(await groupRules.isVisible())) {
       await page.locator("[data-collapsible-trigger]").first().click();
     }
     await expect(groupRules).toBeVisible();
+    await expect(page.locator(".group-rules-header-column.total")).toHaveText("#600");
 
-    // Check visible rules (first page 50)
-    await expect(page.locator(".rule")).toHaveCount(50);
-
-    // Check pagination controls
-    // Button uses title attribute "Next Page"
-    await expect(page.getByTitle("Next Page")).toBeVisible();
-
-    // Go to next page
-    await page.getByTitle("Next Page").click();
-
-    // Check remaining 10
-    await expect(page.locator(".rule")).toHaveCount(10);
+    await expect(page.locator(".group .pagination")).toHaveCount(0);
+    await expect.poll(() => page.locator(".rule").count()).toBeLessThan(250);
+    await page.evaluate(() => window.scrollTo(0, document.documentElement.scrollHeight));
+    await expect(page.locator('.rule[data-index="599"] .name input')).toHaveValue("Rule 599");
+    await expect.poll(() => page.locator(".rule").count()).toBeLessThan(250);
   });
 
   test("should toggle rule enabled state", async ({ page }) => {

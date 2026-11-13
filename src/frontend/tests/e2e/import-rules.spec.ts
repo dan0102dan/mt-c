@@ -1,5 +1,6 @@
-import { expect, test } from "@playwright/test";
+import { expect, test, type Page } from "@playwright/test";
 
+import { mockBackgroundApi } from "./fixtures/background-api";
 import { GroupsPage } from "./pages/GroupsPage";
 
 test.describe("Import Rules Dialog", () => {
@@ -7,6 +8,7 @@ test.describe("Import Rules Dialog", () => {
 
   test.beforeEach(async ({ page }) => {
     groupsPage = new GroupsPage(page);
+    await mockBackgroundApi(page);
 
     // Mock Auth
     await page.route("**/auth", async (route) => route.fulfill({ json: { enabled: false } }));
@@ -31,9 +33,12 @@ test.describe("Import Rules Dialog", () => {
 
     await page.route("**/interfaces", async (route) => route.fulfill({ json: { interfaces: [] } }));
     await groupsPage.goto();
+    const collapse = page.locator(".group [data-collapsible-trigger]");
+    await expect(collapse).toBeVisible();
+    if ((await collapse.getAttribute("aria-expanded")) === "false") await collapse.click();
   });
 
-  async function openImportDialog(page: any) {
+  async function openImportDialog(page: Page) {
     // Locate the import button using the tooltip value wrapper
     const wrapper = page.locator('[data-value="Import Rule List"]');
     const btn = wrapper.locator("button");

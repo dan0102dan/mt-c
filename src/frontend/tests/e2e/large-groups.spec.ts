@@ -1,6 +1,7 @@
 import { expect, test } from "@playwright/test";
 
 import type { Group } from "../../src/types";
+import { mockBackgroundApi } from "./fixtures/background-api";
 
 test("50k group: compact metadata/rule saves and server IDs survive a second edit", async ({
   page,
@@ -21,6 +22,7 @@ test("50k group: compact metadata/rule saves and server IDs survive a second edi
     })),
   };
   const saves: any[] = [];
+  await mockBackgroundApi(page);
   await page.route("**/auth", (r) => r.fulfill({ json: { enabled: false } }));
   await page.route("**/interfaces", (r) => r.fulfill({ json: { interfaces: [{ id: "eth0" }] } }));
   await page.route("**/subscriptions", (r) => r.fulfill({ json: { subscriptions: [] } }));

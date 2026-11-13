@@ -24,6 +24,7 @@ export function stageImportDraft(
   beforeEditor: Snapshot,
   plan: ImportPlan,
   pending?: PendingImportDraft,
+  changes = diffSnapshots(beforeEditor, plan.next),
 ): PendingImportDraft {
   const next: PendingImportDraft = pending
     ? copy(pending)
@@ -39,7 +40,8 @@ export function stageImportDraft(
     else if (change.fields && fields) change.fields = [...new Set([...change.fields, ...fields])];
     else change.fields = null;
   }
-  for (const change of diffSnapshots(beforeEditor, plan.next)) {
+  // A caller that already validated the plan baseline can reuse its worker diff.
+  for (const change of changes) {
     if (change.section === "settings" || change.kind === "unchanged") continue;
     if (next.sections.includes(change.section)) continue;
     const fields = change.fields

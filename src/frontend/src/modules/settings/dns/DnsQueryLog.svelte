@@ -5,7 +5,10 @@
   import Pagination from "../../../components/Pagination.svelte";
   import Button from "../../../components/ui/Button.svelte";
   import GenericDialog from "../../../components/ui/GenericDialog.svelte";
+  import PanelSurface from "../../../components/ui/PanelSurface.svelte";
   import Placeholder from "../../../components/ui/Placeholder.svelte";
+  import SearchField from "../../../components/ui/SearchField.svelte";
+  import SectionDescription from "../../../components/ui/SectionDescription.svelte";
   import Select from "../../../components/ui/Select.svelte";
   import Tooltip from "../../../components/ui/Tooltip.svelte";
   import { requireAuthentication, token } from "../../../data/auth.svelte";
@@ -17,7 +20,6 @@
     ListOrdered,
     Pause,
     Play,
-    Search,
     SortAsc,
     SortCountAsc,
     SortCountDesc,
@@ -144,15 +146,20 @@
   const timeSortAction = $derived(
     (timeSort === "desc") === timeSortActive ? "Oldest first" : "Newest first",
   );
-  const statusLabel = $derived(
-    paused
-      ? t("Viewing is paused; recording continues.")
-      : streamState === "live" || streamState === "unavailable"
-        ? ""
-        : streamState === "reconnecting"
-          ? t("Reconnecting...")
-          : t("Connecting..."),
+  // A capture/clear failure is more actionable than a transport failure. Keep
+  // one status message while any confirmed query rows remain available below.
+  const errorMessage = $derived(
+    captureFailed
+      ? t("Failed to change DNS recording")
+      : clearFailed
+        ? t("Failed to clear DNS queries")
+        : failed
+          ? streamState === "unavailable"
+            ? t("DNS history unavailable; DNS forwarding is still running.")
+            : t("Failed to load DNS queries")
+          : "",
   );
+  const statusLabel = $derived(paused ? t("Viewing is paused; recording continues.") : "");
   $effect(() => {
     filtersKey;
     page = 1;
@@ -217,6 +224,7 @@
     requestGeneration++;
     changing = true;
     captureFailed = false;
+    clearFailed = false;
     try {
       const result = await fetcher<unknown>("/system/dns/capture", {
         method: "PUT",
@@ -243,6 +251,7 @@
     loading = false;
     clearing = true;
     clearFailed = false;
+    captureFailed = false;
     try {
       const result = await fetcher<Partial<CaptureState> & { cleared: boolean }>(
         "/system/dns/queries",
@@ -340,104 +349,90 @@
   })}
 >
   <h2 id="dns-query-title" class="sr-only">{t("DNS queries")}</h2>
-  <p class="settings-description">
+  <SectionDescription>
     {t(
       "Record and inspect DNS queries from your devices. Use search and filters to find requests.",
     )}
-  </p>
-  <div class="dns-panel">
-    {#if capture?.enabled && capture.dropped}
-      <div class="capture-toolbar">
-        <span class="dropped-count">{t("Queries not recorded")}: {capture.dropped}</span>
-      </div>
-    {/if}
-    {#if captureFailed}
+  </SectionDescription>
+  <PanelSurface class="dns-panel">
+    {#snippet header()}
+      {#if !capture || capture.enabled}
+        <div class="dns-toolbar">
+          <SearchField
+            class="dns-search"
+            label={t("Search domain")}
+            placeholder={t("Search domains...")}
+            bind:value={search}
+          />
+          <div class="device-field">
+            <Select options={deviceOptions} bind:selected={device} ariaLabel={t("Device")} />
+          </div>
+          <div class="dns-actions">
+            <Tooltip value={grouped ? t("Individual queries") : t("Group by domain")}>
+              <Button
+                type="button"
+                aria-label={grouped ? t("Individual queries") : t("Group by domain")}
+                aria-pressed={grouped}
+                onclick={() => (grouped = !grouped)}
+              >
+                {#if grouped}<LayoutList size={22} />{:else}<ListOrdered size={22} />{/if}
+              </Button>
+            </Tooltip>
+            <Tooltip value={paused ? t("Resume") : t("Pause")}>
+              <Button
+                type="button"
+                aria-label={paused ? t("Resume") : t("Pause")}
+                aria-pressed={paused}
+                onclick={() => (paused = !paused)}
+              >
+                {#if paused}<Play size={22} aria-hidden="true" />{:else}<Pause
+                    size={22}
+                    aria-hidden="true"
+                  />{/if}
+              </Button>
+            </Tooltip>
+            <Tooltip value={t("Clear history")}>
+              <Button
+                type="button"
+                aria-label={t("Clear history")}
+                disabled={clearing || changing || !queries.length}
+                inactive={clearing || changing || !queries.length}
+                onclick={() => (confirmation = "clear")}><Clear size={22} /></Button
+              >
+            </Tooltip>
+          </div>
+          {#if capture?.enabled && capture.dropped}
+            <span class="dropped-count">{t("Queries not recorded")}: {capture.dropped}</span>
+          {/if}
+        </div>
+      {/if}
+    {/snippet}
+    {#if errorMessage}
       <div class="dns-message">
-        <Placeholder variant="error" compact minHeight="auto"
-          >{t("Failed to change DNS recording")}</Placeholder
-        >
+        <Placeholder variant="error" embedded compact minHeight="auto">{errorMessage}</Placeholder>
       </div>
     {/if}
     {#if capture && !capture.enabled}
-      <div class="dns-message">
-        <Placeholder
-          variant="empty"
-          minHeight="auto"
-          subtitle={t("No DNS history is collected until you start recording.")}
-        >
-          {t("DNS recording is off")}
-        </Placeholder>
-      </div>
-    {:else}
-      <div class="dns-toolbar">
-        <label class="search-field"
-          ><span aria-hidden="true"><Search size={20} /></span>
-          <span class="sr-only">{t("Search domain")}</span>
-          <input
-            data-page-search
-            type="search"
-            placeholder={t("Search domains...")}
-            bind:value={search}
-            autocomplete="off"
-          />
-        </label>
-        <div class="device-field">
-          <Select options={deviceOptions} bind:selected={device} ariaLabel={t("Device")} />
-        </div>
-        <div class="dns-actions">
-          <Tooltip value={grouped ? t("Individual queries") : t("Group by domain")}>
-            <Button
-              small
-              type="button"
-              aria-label={grouped ? t("Individual queries") : t("Group by domain")}
-              aria-pressed={grouped}
-              onclick={() => (grouped = !grouped)}
-            >
-              {#if grouped}<LayoutList size={20} />{:else}<ListOrdered size={20} />{/if}
-            </Button>
-          </Tooltip>
-          <Tooltip value={paused ? t("Resume") : t("Pause")}>
-            <Button
-              small
-              type="button"
-              aria-label={paused ? t("Resume") : t("Pause")}
-              aria-pressed={paused}
-              onclick={() => (paused = !paused)}
-            >
-              {#if paused}<Play size={20} aria-hidden="true" />{:else}<Pause
-                  size={20}
-                  aria-hidden="true"
-                />{/if}
-            </Button>
-          </Tooltip>
-          <Tooltip value={t("Clear history")}>
-            <Button
-              small
-              type="button"
-              aria-label={t("Clear history")}
-              disabled={clearing || changing || !queries.length}
-              inactive={clearing || changing || !queries.length}
-              onclick={() => (confirmation = "clear")}><Clear size={20} /></Button
-            >
-          </Tooltip>
-        </div>
-      </div>
-      {#if clearFailed}
-        <div class="dns-message">
-          <Placeholder variant="error" compact minHeight="auto"
-            >{t("Failed to clear DNS queries")}</Placeholder
+      {#if !errorMessage}<div class="dns-message">
+          <Placeholder
+            variant="empty"
+            embedded
+            minHeight="auto"
+            subtitle={t("No DNS history is collected until you start recording.")}
           >
-        </div>
-      {/if}
-      {#if !queries.length && loading}
+            {t("DNS recording is off")}
+          </Placeholder>
+        </div>{/if}
+    {:else}
+      {#if !queries.length && loading && !errorMessage}
         <div class="dns-message">
-          <Placeholder variant="loading" compact minHeight="auto"
+          <Placeholder variant="loading" embedded compact minHeight="auto"
             >{t("Loading DNS queries...")}</Placeholder
           >
         </div>
       {:else if !total}
-        {#if !failed}<div class="dns-message">
-            <Placeholder variant="empty" compact minHeight="auto">
+        {#if !errorMessage}<div class="dns-message">
+            <Placeholder variant="empty" embedded compact minHeight="auto">
               {queries.length ? t("No matching DNS queries") : t("No DNS queries captured yet")}
             </Placeholder>
           </div>{/if}
@@ -491,7 +486,8 @@
               {#each groupedPage as item (item.domain)}<tr>
                   <td class="domain"
                     ><span class="cell-label" aria-hidden="true">{t("Domain")}</span><span
-                      class="cell-value" title={item.domain}>{item.domain}</span
+                      class="cell-value"
+                      title={item.domain}>{item.domain}</span
                     ></td
                   >
                   <td class="number"
@@ -502,7 +498,7 @@
                   <td
                     ><span class="cell-label" aria-hidden="true">{t("Clients")}</span><span
                       class="cell-value client-identities"
-                      >
+                    >
                       {#each item.clients.slice(0, item.clients.length > 2 ? 1 : 2) as client (client)}
                         {@render clientIdentity(client)}
                       {/each}
@@ -511,7 +507,8 @@
                           <Popover.Trigger
                             class="dns-more-clients"
                             aria-label={`${t("Show all clients")} (${item.clients.length})`}
-                          >+{item.clients.length - 1}</Popover.Trigger>
+                            >+{item.clients.length - 1}</Popover.Trigger
+                          >
                           <Popover.Portal>
                             <Popover.Content
                               role="dialog"
@@ -601,21 +598,14 @@
         onPageChange={(value) => (page = value)}
       />
     {/if}
-    {#if failed}<div class="dns-message">
-        <Placeholder variant="error" compact minHeight="auto">
-          {streamState === "unavailable"
-            ? t("DNS history unavailable; DNS forwarding is still running.")
-            : t("Failed to load DNS queries")}
-        </Placeholder>
-      </div>{/if}
-  </div>
+  </PanelSurface>
 </section>
 
 <style>
   .confirmation-message {
     margin: 0;
     color: var(--text-2);
-    font: 400 1rem / 1.5 var(--font);
+    font: 400 var(--text-body) / var(--line-height-body) var(--font);
   }
   .confirmation-actions {
     display: flex;
@@ -641,7 +631,7 @@
   }
   .client-address {
     color: var(--text-2);
-    font-size: 0.8rem;
+    font-size: var(--text-caption);
   }
   .client-name,
   .client-address {
@@ -685,61 +675,19 @@
   .dns-table :global(button.dns-more-clients:hover) {
     color: var(--text);
   }
-  .dns-panel {
-    min-width: 0;
-    background-color: var(--bg-medium);
-    border: 1px solid var(--bg-light-extra);
-    border-radius: 0.5rem;
-  }
-  .capture-toolbar,
   .dns-toolbar {
     display: flex;
     align-items: center;
     flex-wrap: wrap;
-    gap: 0.5rem;
-    padding: 0.5rem;
-    background-color: var(--bg-light);
+    gap: var(--space-2);
   }
-  .capture-toolbar {
-    border-radius: 0.5rem 0.5rem 0 0;
-    border-bottom: 1px solid var(--bg-light-extra);
+  .dns-toolbar :global(.dns-search) {
+    flex: 1 1 12rem;
   }
   .dropped-count {
+    flex-basis: 100%;
     color: var(--text-2);
-    font-size: 0.85rem;
-  }
-  .search-field {
-    display: flex;
-    align-items: center;
-    gap: 0.4rem;
-    flex: 1 1 12rem;
-    min-width: 0;
-    padding: 0.3rem 0.5rem;
-    background: var(--bg-medium);
-    border: 1px solid var(--bg-light-extra);
-    border-radius: 0.5rem;
-    color: var(--text-2);
-  }
-  .search-field > span:first-child {
-    display: inline-flex;
-    flex-shrink: 0;
-  }
-  .search-field:focus-within {
-    border-color: var(--accent);
-  }
-  input {
-    box-sizing: border-box;
-    width: 100%;
-    min-width: 0;
-    padding: 0;
-    border: none;
-    outline: none;
-    background: transparent;
-    color: var(--text);
-    font: 400 1rem / 1.5 var(--font);
-  }
-  input::placeholder {
-    color: var(--text-2);
+    font-size: var(--text-small);
   }
   .device-field {
     min-width: 0;
@@ -763,13 +711,13 @@
     background-color: var(--bg-dark);
     border-color: var(--bg-light-extra);
   }
-  .dns-panel :global(button:focus-visible),
+  :global(.dns-panel button:focus-visible),
   :global(.query-details:focus-visible) {
     outline: 2px solid var(--accent);
     outline-offset: 2px;
   }
   .dns-message {
-    padding: 1rem 0.5rem;
+    padding: var(--space-4) var(--panel-inset);
   }
   .dns-table {
     width: 100%;
@@ -777,7 +725,7 @@
     table-layout: fixed;
     text-align: left;
     color: var(--text);
-    font: 400 1rem / 1.5 var(--font);
+    font: 400 var(--text-body) / var(--line-height-body) var(--font);
   }
   .time-column {
     width: 5.5rem;
@@ -801,7 +749,7 @@
     padding: 0.6rem 0.5rem 0.2rem;
     border-bottom: 1px solid var(--bg-light-extra);
     color: var(--text-2);
-    font-size: 0.9rem;
+    font-size: var(--text-small);
     font-weight: 400;
     overflow-wrap: anywhere;
   }
@@ -870,13 +818,13 @@
   }
   .timestamp {
     color: var(--text-2);
-    font-size: 0.8rem;
+    font-size: var(--text-caption);
     font-variant-numeric: tabular-nums;
     white-space: nowrap;
   }
   .number {
     color: var(--text-2);
-    font-size: 0.9rem;
+    font-size: var(--text-small);
     font-variant-numeric: tabular-nums;
   }
   :global(.query-details) {
@@ -902,7 +850,7 @@
     border-radius: 0.5rem;
     background: var(--bg-dark-extra);
     color: var(--text-2);
-    font: 400 0.8rem / 1.5 var(--font);
+    font: 400 var(--text-caption) / var(--line-height-body) var(--font);
     box-shadow: var(--shadow-popover);
     overflow-wrap: anywhere;
   }
@@ -944,7 +892,7 @@
     border: 0;
   }
   @media (max-width: 700px) {
-    .search-field {
+    .dns-toolbar :global(.dns-search) {
       flex-basis: 100%;
     }
     .device-field {
@@ -1009,7 +957,7 @@
       display: block;
       text-align: right;
       color: var(--text-2);
-      font: 400 0.9rem / 1.5 var(--font);
+      font: 400 var(--text-small) / var(--line-height-body) var(--font);
       overflow-wrap: anywhere;
     }
   }

@@ -1,11 +1,13 @@
 import { expect, test } from "@playwright/test";
 
+import { mockBackgroundApi } from "./fixtures/background-api";
 import { GroupsPage } from "./pages/GroupsPage";
 
 test.describe("Accessibility", () => {
   let groupsPage: GroupsPage;
 
   test.beforeEach(async ({ page }) => {
+    await mockBackgroundApi(page);
     groupsPage = new GroupsPage(page);
     await page.route("**/auth", async (route) => route.fulfill({ json: { enabled: false } }));
     await page.route("**/groups?with_rules=true", async (route) =>
@@ -21,6 +23,20 @@ test.describe("Accessibility", () => {
     // After creation, focus should be on the group name input
     const groupNameInput = page.locator(".group-wrapper").first().locator("input.group-name");
     await expect(groupNameInput).toBeFocused();
+  });
+
+  test("deferred Add focus preserves the user's subsequent navigation", async ({ page }) => {
+    await groupsPage.createGroup();
+    const route = page
+      .locator(".group-wrapper")
+      .first()
+      .getByRole("button", { name: "Route", exact: true });
+    await route.focus();
+    // Let virtual scroll-to-item measurement finish; it must not move focus back.
+    await page.evaluate(async () => {
+      for (let frame = 0; frame < 6; frame++) await new Promise(requestAnimationFrame);
+    });
+    await expect(route).toBeFocused();
   });
 
   test("should tab through group controls", async ({ page }) => {

@@ -8,6 +8,25 @@ test.describe("Groups Search", () => {
   test.beforeEach(async ({ page }) => {
     groupsPage = new GroupsPage(page);
 
+    // The layout eagerly mounts subscriptions and the updater beside this search.
+    await page.route("**/system/update/status", (route) =>
+      route.fulfill({ json: { stage: "idle" } }),
+    );
+    await page.route("**/system/update", (route) =>
+      route.fulfill({
+        json: {
+          installed_version: "1.0.0",
+          installed_revision: 1,
+          asset_suffix: "test.ipk",
+          can_install: true,
+          reason: "",
+        },
+      }),
+    );
+    await page.route("https://api.github.com/**", (route) => route.fulfill({ json: [] }));
+    await page.route("**/subscriptions", (route) => route.fulfill({ json: { subscriptions: [] } }));
+    // Profiles are loaded during authentication even while the Groups tab is visible.
+    await page.route("**/profiles", (route) => route.fulfill({ json: { profiles: [] } }));
     await page.route("**/auth", async (route) => {
       await route.fulfill({ json: { enabled: false } });
     });
@@ -133,6 +152,8 @@ test.describe("Groups Search", () => {
 
     await groupsPage.goto();
 
+    // Closed panels intentionally have no rule DOM in the virtual view.
+    await page.locator(".group [data-collapsible-trigger]").click();
     await expect(page.locator(".rule")).toHaveCount(2);
 
     await groupsPage.search("Alpha");
@@ -180,6 +201,7 @@ test.describe("Groups Search", () => {
 
     await groupsPage.goto();
 
+    await page.locator(".group [data-collapsible-trigger]").click();
     // Search by pattern part
     await groupsPage.search("192");
     await expect(page.locator(".rule")).toHaveCount(1);
@@ -227,6 +249,7 @@ test.describe("Groups Search", () => {
     await groupsPage.goto();
 
     const group = page.locator(".group-wrapper").first();
+    await group.locator("[data-collapsible-trigger]").click();
     const groupNameOverlay = group.locator(".group-name-field .group-name-search-overlay");
 
     await groupsPage.search("zeta");

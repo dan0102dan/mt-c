@@ -1,6 +1,7 @@
 import { expect, test, type Page } from "@playwright/test";
 
 import type { Group, Subscription } from "../../src/types";
+import { mockBackgroundApi } from "./fixtures/background-api";
 
 type Kind = "groups" | "subscriptions";
 type Item = Omit<Group & Subscription, "priority"> & { priority?: number };
@@ -36,6 +37,7 @@ async function editor(
   }));
   let disk = structuredClone(live);
   const requests: any[] = [];
+  await mockBackgroundApi(page);
   await page.route("**/api/v1/**", async (route) => {
     const request = route.request();
     const path = new URL(request.url()).pathname;
@@ -89,7 +91,7 @@ async function editor(
       return route.fulfill({ json: { groups: kind === "groups" ? [live, ...extraGroups] : [] } });
     if (path.endsWith("/subscriptions"))
       return route.fulfill({ json: { subscriptions: kind === "subscriptions" ? [live] : [] } });
-    return route.continue();
+    return route.fallback();
   });
   await page.goto("/");
   if (kind === "subscriptions") await page.getByRole("tab", { name: "Subscriptions" }).click();
@@ -97,7 +99,8 @@ async function editor(
   const trigger = triggers.first();
   const input = page.getByRole("spinbutton");
   const save = page.locator(kind === "groups" ? "#save-changes" : "#save-subscriptions");
-  await expect(triggers).toHaveCount(1 + extraGroupCount);
+  await expect(trigger).toBeVisible();
+  if (!extraGroupCount) await expect(triggers).toHaveCount(1);
   return {
     trigger,
     input,
@@ -250,9 +253,9 @@ for (const width of [1280, 390]) {
       enable: true,
     }));
     const e = await editor(page, "groups", 300, [], undefined, rules, 20);
-    await expect(page.locator(".rule")).toHaveCount(40);
+    // Expand the logical group; virtual lists deliberately leave offscreen rules unmounted.
     await page.locator('[data-value="Expand Group"] button').first().click();
-    await expect(page.locator(".rule").last()).toBeVisible();
+    await expect(page.locator(".rule").first()).toBeVisible();
     await expect
       .poll(() => page.evaluate(() => document.documentElement.scrollHeight))
       .toBeGreaterThan(1500);
@@ -275,7 +278,9 @@ for (const width of [1280, 390]) {
     expect(e.requests).toHaveLength(1);
     expect(await scrollPosition(page)).toEqual(initialScroll);
     await page.locator(".group-name").first().fill("Renamed");
-    const lowerInput = page.locator(".rule .pattern-input").last();
+    // Keep a logical row identity: scrolling can change the last mounted DOM row.
+    const lowerRuleId = await page.locator(".rule").last().getAttribute("data-uuid");
+    const lowerInput = page.locator(`.rule[data-uuid="${lowerRuleId}"] .pattern-input`);
     await lowerInput.focus();
     await expect(lowerInput).toBeInViewport();
     await page.evaluate(() => window.scrollTo(0, 60));

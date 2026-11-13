@@ -132,18 +132,41 @@ const withPatchedGlobal = async <T>(key: string, value: unknown, action: () => T
 };
 
 describe("GroupsStore mutations and validation", () => {
-  it("checkRulesValidityState toggles valid_rules based on invalid inputs", async () => {
-    const store = createStore();
+  it("validates offscreen rules without consulting mounted input elements", async () => {
+    const rules = Array.from({ length: 1000 }, (_, index) => makeRule(`r${index}`));
+    const store = createStore([makeGroup("g1", rules)]);
+    await withPatchedGlobal(
+      "document",
+      {
+        querySelector: () => {
+          throw new Error("DOM validation is incomplete");
+        },
+      },
+      () => {
+        store.checkRulesValidityState();
+        assert.strictEqual(store.valid_rules, true);
+        store.data[0].rules[999].rule = "";
+        store.checkRulesValidityState();
+        assert.strictEqual(store.valid_rules, false);
+        store.data[0].rules[999].rule = "restored.example.test";
+        store.checkRulesValidityState();
+        assert.strictEqual(store.valid_rules, true);
+      },
+    );
+  });
 
-    await withPatchedGlobal("document", { querySelector: () => ({}) }, () => {
-      store.checkRulesValidityState();
-      assert.strictEqual(store.valid_rules, false);
-    });
-
-    await withPatchedGlobal("document", { querySelector: () => null }, () => {
-      store.checkRulesValidityState();
-      assert.strictEqual(store.valid_rules, true);
-    });
+  it("uses each rule type's validator for offscreen wildcard patterns", () => {
+    const rule = { ...makeRule("wildcard"), type: "wildcard", rule: "*.example.test" };
+    const store = createStore([makeGroup("g1", [rule])]);
+    store.checkRulesValidityState();
+    assert.strictEqual(store.valid_rules, true);
+    store.data[0].rules[0].rule = "**.example.test";
+    store.checkRulesValidityState();
+    assert.strictEqual(store.valid_rules, false);
+    store.data[0].rules[0].rule = "*.example.test";
+    store.data[0].rules[0].type = "domain";
+    store.checkRulesValidityState();
+    assert.strictEqual(store.valid_rules, false);
   });
 
   it("markDataRevision increments revision counter", () => {
@@ -288,14 +311,14 @@ describe("GroupsStore mutations and validation", () => {
     assert.strictEqual(store.open_state.g1, true);
     assert.strictEqual(store.open_state.g2, true);
 
-    store.renderGroupsLimit = 5;
-    store.finishedGroupsCount = 9;
+    store.dataLoaded = true;
+    store.getPanelState("g1").sortField = "name";
     await store.overwriteGroups([makeGroup("new1")]);
     assert.deepStrictEqual(groupIds(store), ["new1"]);
     assert.strictEqual("g1" in store.open_state, false);
     assert.strictEqual(store.open_state.new1, true);
-    assert.strictEqual(store.renderGroupsLimit, 1);
-    assert.strictEqual(store.finishedGroupsCount, 0);
+    assert.strictEqual(store.dataLoaded, true);
+    assert.deepStrictEqual(store.panelState, {});
   });
 
   it("addRulesToGroup prepends rules and no-ops for empty or invalid target", async () => {
@@ -323,5 +346,75 @@ describe("GroupsStore mutations and validation", () => {
 
     assert.strictEqual(store.data[0].name, "group-g1");
     assert.strictEqual(store.data[0].rules[0].name, "r1");
+  });
+
+  it("imports 100k rules atomically, keeps order and avoids existing client identities", async () => {
+    const baseline = [makeGroup("g1", [makeRule("saved-rule")])];
+    const store = createStore(baseline);
+    store.tracker.reset(baseline);
+    const rules = Array.from({ length: 100000 }, (_, index) =>
+      makeRule((0x30000000 + index).toString(16), `import-${index}`),
+    );
+    rules[0].id = "saved-rule";
+    const target = store.data[0].rules;
+    const importing = store.addRulesToGroup(0, rules);
+    assert.strictEqual(target.length, 1, "preparation must not publish chunks");
+    await importing;
+    assert.strictEqual(store.data[0].rules, target);
+    assert.strictEqual(target.length, 100001);
+    assert.strictEqual(new Set(target.map((rule) => rule.id)).size, target.length);
+    assert.strictEqual(target[0].name, "import-0");
+    assert.strictEqual(target[99999].name, "import-99999");
+    assert.strictEqual(target[100000].id, "saved-rule");
+    assert.strictEqual(rules[0].id, "saved-rule", "source remains detached");
+    assert.strictEqual(store.dataRevision, 1);
+    assert.strictEqual(store.tracker.isDirty, true);
+    target.splice(0, 100000);
+    assert.strictEqual(store.tracker.isDirty, false, "removing the batch restores the baseline");
+  });
+
+  it("aborted or stale large native imports retain the live draft", async () => {
+    const store = createStore([makeGroup("g1", [makeRule("saved-rule")])]);
+    const rules = Array.from({ length: 10000 }, (_, index) => makeRule(`incoming-${index}`));
+    const controller = new AbortController();
+    const cancelled = store.addRulesToGroup(0, rules, { signal: controller.signal });
+    controller.abort();
+    await assert.rejects(cancelled, { name: "AbortError" });
+    assert.deepStrictEqual(ruleIds(store, 0), ["saved-rule"]);
+    const stale = store.addRulesToGroup(0, rules);
+    store.data[0].name = "Changed while preparing";
+    store.markDataRevision();
+    await assert.rejects(
+      stale,
+      /(?:Configuration changed while importing rules|Draft changed during bulk insertion)/,
+    );
+    assert.strictEqual(store.data[0].name, "Changed while preparing");
+    assert.deepStrictEqual(ruleIds(store, 0), ["saved-rule"]);
+  });
+
+  it("shares duplicate indexes and bounds detailed per-group conflict caches", () => {
+    const groups = Array.from({ length: 50 }, (_, group) =>
+      makeGroup(
+        `g${group}`,
+        Array.from({ length: 200 }, (_, rule) =>
+          makeRule(`g${group}-r${rule}`, "", `shared-${rule}.example.test`),
+        ),
+      ),
+    );
+    const store = createStore(groups);
+    store.refreshDuplicateRuleIds();
+    assert.strictEqual(store.duplicateRuleIds.size, 10000);
+    assert.strictEqual(store.duplicateGroupIds.size, 50);
+    assert.strictEqual(store.duplicateConflictsByGroup.size, 0, "closed menus create no copies");
+    for (const groupId of ["g0", "g1", "g2"]) {
+      const conflicts = store.getDuplicateConflictsForGroup(groupId);
+      assert.strictEqual(conflicts.length, 10000);
+      assert.strictEqual(conflicts.filter((item) => item.inCurrentGroup).length, 200);
+      assert.strictEqual(store.duplicateConflictsByGroup.size <= 2, true);
+    }
+    store.data[0].rules[0].rule = "now-unique.example.test";
+    store.refreshDuplicateRuleIds();
+    assert.strictEqual(store.isRuleDuplicate("g0-r0"), false);
+    assert.strictEqual(store.duplicateConflictsByGroup.size, 0);
   });
 });

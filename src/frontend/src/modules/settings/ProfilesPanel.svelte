@@ -3,6 +3,7 @@
 
   import Button from "../../components/ui/Button.svelte";
   import Placeholder from "../../components/ui/Placeholder.svelte";
+  import SectionDescription from "../../components/ui/SectionDescription.svelte";
   import { t } from "../../data/locale.svelte";
   import { fetchProfiles, profiles, profilesDirty, saveProfiles } from "../../data/profiles.svelte";
   import ProfilePanel from "./ProfilePanel.svelte";
@@ -66,11 +67,11 @@
   })}
 >
   <h2 id="profiles-title" class="sr-only">{t("Profiles")}</h2>
-  <p class="settings-description">
+  <SectionDescription>
     {t(
       "Set the interface order for automatic failover. Assign profiles to groups or subscriptions.",
     )}
-  </p>
+  </SectionDescription>
   {#if profiles.failed}
     <Placeholder variant="error" minHeight="auto">
       {t("Failed to load profiles")}

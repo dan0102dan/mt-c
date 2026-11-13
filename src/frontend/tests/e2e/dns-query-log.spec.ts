@@ -41,6 +41,7 @@ function createBackend() {
     snapshots: 0,
     clears: 0,
     failNext: false,
+    unavailable: false,
     holdEnd: false,
   };
   const clients = new Set<ServerResponse>();
@@ -58,7 +59,7 @@ function createBackend() {
     }
     if (req.url?.endsWith("/stream")) {
       state.connections++;
-      if (state.failNext) {
+      if (state.failNext || state.unavailable) {
         state.failNext = false;
         res.writeHead(503).end();
         return;
@@ -95,6 +96,16 @@ function createBackend() {
     state,
     server,
     clients,
+    setCapture(enabled: boolean) {
+      if (!enabled) state.history = [];
+      broadcast("capture", {
+        enabled,
+        memory_limit: 1024 * 1024,
+        memory_used: 0,
+        count: state.history.length,
+        capacity: 1000,
+      });
+    },
     endSnapshot() {
       for (const [res, through] of pending) res.write(frame("snapshot_end", { through }));
       pending.clear();
@@ -232,12 +243,37 @@ test("pause closes the subscription; resume and reconnect replace the snapshot",
   await region.getByRole("button", { name: "Resume", exact: true }).click();
   await expect(region.locator("tbody tr")).toHaveCount(4);
   dns.disconnect();
-  await expect(region.locator(".dns-summary").getByRole("status")).toHaveText("Reconnecting...");
+  await expect(region.getByRole("alert")).toHaveText("Failed to load DNS queries");
+  await expect(region.locator(".dns-summary").getByRole("status")).toBeHidden();
+  await expect(region.locator("tbody tr")).toHaveCount(4);
   await expect(region.getByRole("button", { name: "Retry", exact: true })).toHaveCount(0);
   await expect.poll(() => dns.state.connections).toBe(3);
   await expect(region.locator(".dns-summary [role='status']")).toHaveText("");
   await expect(region.locator("tbody tr")).toHaveCount(4);
 });
+for (const width of [1280, 390]) {
+  test(`disabled recording shows one status during a connection failure at ${width}px`, async ({
+    page,
+    dns,
+  }) => {
+    await page.setViewportSize({ width, height: 844 });
+    const region = await setup(page, dns);
+    await expect(region.locator("tbody tr")).toHaveCount(3);
+    dns.setCapture(false);
+    await expect(region.getByText("DNS recording is off", { exact: true })).toBeVisible();
+    await expect(region.getByRole("alert")).toHaveCount(0);
+    dns.state.unavailable = true;
+    dns.disconnect();
+    await expect(region.getByRole("alert")).toHaveText("Failed to load DNS queries");
+    await expect(region.getByText("DNS recording is off", { exact: true })).toHaveCount(0);
+    await expect(region.locator(".placeholder")).toHaveCount(1);
+    await expect(region.locator("tbody tr")).toHaveCount(0);
+    dns.state.unavailable = false;
+    await expect(region.getByText("DNS recording is off", { exact: true })).toBeVisible();
+    await expect(region.getByRole("alert")).toHaveCount(0);
+  });
+}
+
 test("clear broadcasts and a failed connection retries without a snapshot GET", async ({
   page,
   dns,
@@ -605,10 +641,47 @@ for (const width of [1280, 390]) {
   });
 }
 
-test("recording action morphs the circle into the stop square and back", async ({
+test("latest failed DNS action replaces the previous operation error without losing rows", async ({
   page,
   dns,
 }) => {
+  const region = await setup(page, dns);
+  await expect(region.locator("tbody tr")).toHaveCount(3);
+  dns.setCapture(true);
+  const stop = page.getByRole("button", { name: "Stop recording", exact: true });
+  await expect(stop).toBeEnabled();
+  const headers = {
+    "access-control-allow-origin": "*",
+    "access-control-allow-methods": "PUT, DELETE, OPTIONS",
+    "access-control-allow-headers": "authorization, content-type",
+  };
+  for (const path of ["capture", "queries"]) {
+    await page.route(`**/api/v1/system/dns/${path}`, async (route) => {
+      await route.fulfill(
+        route.request().method() === "OPTIONS"
+          ? { status: 204, headers }
+          : { status: 500, headers, json: { error: "Operation failed" } },
+      );
+    });
+  }
+  for (const action of ["stop", "clear", "stop"]) {
+    const clearing = action === "clear";
+    await (
+      clearing ? region.getByRole("button", { name: "Clear history", exact: true }) : stop
+    ).click();
+    await page
+      .getByRole("dialog", { name: clearing ? "Clear history" : "Stop recording?", exact: true })
+      .getByRole("button", { name: clearing ? "Clear history" : "Stop recording", exact: true })
+      .click();
+    await expect(region.getByRole("alert")).toHaveText(
+      clearing ? "Failed to clear DNS queries" : "Failed to change DNS recording",
+    );
+    await expect(region.getByRole("alert")).toHaveCount(1);
+    await expect(region.locator("tbody tr")).toHaveCount(3);
+  }
+});
+
+test("recording action morphs the circle into the stop square and back", async ({ page, dns }) => {
   await setup(page, dns);
 
   const changes: boolean[] = [];

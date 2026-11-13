@@ -24,7 +24,6 @@
   import { getContext } from "svelte";
   import { slide } from "svelte/transition";
 
-  import Pagination from "../../../components/Pagination.svelte";
   import Button from "../../../components/ui/Button.svelte";
   import DropdownMenu from "../../../components/ui/DropdownMenu.svelte";
   import EdgeNumberInput from "../../../components/ui/EdgeNumberInput.svelte";
@@ -32,6 +31,7 @@
   import Select from "../../../components/ui/Select.svelte";
   import Switch from "../../../components/ui/Switch.svelte";
   import Tooltip from "../../../components/ui/Tooltip.svelte";
+  import VirtualList from "../../../components/ui/VirtualList.svelte";
   import { t } from "../../../data/locale.svelte";
   import { SUBSCRIPTIONS_STORE_CONTEXT, type SubscriptionsStore } from "../subscriptions.svelte";
   import SubscriptionRuleRow from "./SubscriptionRuleRow.svelte";
@@ -47,20 +47,19 @@
     Refresh,
   } from "../../../components/ui/icons";
   import { draggable } from "../../../lib/dnd";
-  import { type SubscriptionRule } from "../../../types";
 
   type Props = {
     subscription_index: number;
+    active?: boolean;
   };
 
-  let { subscription_index }: Props = $props();
+  let { subscription_index, active = true }: Props = $props();
 
   const store = getContext<SubscriptionsStore>(SUBSCRIPTIONS_STORE_CONTEXT);
   if (!store) {
     throw new Error("SubscriptionsStore context is missing");
   }
 
-  const PAGE_SIZE = 50;
   const lastUpdateDateFormatter = new Intl.DateTimeFormat("ru-RU", {
     day: "2-digit",
     month: "2-digit",
@@ -72,7 +71,6 @@
     second: "2-digit",
     hour12: false,
   });
-  let currentPage = $state(1);
 
   let client_width = $state<number>(Infinity);
   let is_desktop = $derived(client_width > 668);
@@ -82,9 +80,11 @@
   let visibleRuleIndices = $derived(store.visibilityMap.get(subscription_index));
   let effectiveOpen = $derived(subscription ? (store.open_state[subscription.id] ?? false) : false);
   let urlError = $derived(subscription ? store.subscriptionUrlErrors.get(subscription.id) : null);
+  let animateExpansion = $state(false);
 
   function toggleOpen() {
     if (!subscription) return;
+    animateExpansion = true;
     store.open_state[subscription.id] = !effectiveOpen;
   }
 
@@ -94,59 +94,10 @@
       : (subscription?.rules.length ?? 0),
   );
 
-  let usePagination = $derived(totalRulesCount > PAGE_SIZE);
-
-  $effect(() => {
-    if (searchActive && visibleRuleIndices) {
-      currentPage = 1;
-    }
-  });
-
-  $effect(() => {
-    const maxPage = Math.ceil(totalRulesCount / PAGE_SIZE);
-    if (currentPage > maxPage && maxPage > 0) {
-      currentPage = 1;
-    }
-  });
-
-  let displayedRules = $derived.by(() => {
-    if (!subscription) return [];
-
-    let rulesToRender: { rule: SubscriptionRule; originalIndex: number }[] = [];
-
-    let sourceIndices: number[] = [];
-    if (searchActive && Array.isArray(visibleRuleIndices)) {
-      sourceIndices = visibleRuleIndices;
-    } else {
-      sourceIndices = new Array(subscription.rules.length);
-      for (let i = 0; i < subscription.rules.length; i++) sourceIndices[i] = i;
-    }
-
-    let startIndex = 0;
-    let endIndex = sourceIndices.length;
-
-    if (usePagination) {
-      startIndex = (currentPage - 1) * PAGE_SIZE;
-      endIndex = Math.min(startIndex + PAGE_SIZE, sourceIndices.length);
-    }
-
-    for (let i = startIndex; i < endIndex; i++) {
-      const idx = sourceIndices[i];
-      if (subscription.rules[idx]) {
-        rulesToRender.push({ rule: subscription.rules[idx], originalIndex: idx });
-      }
-    }
-    return rulesToRender;
-  });
-
-  let reportedFinished = false;
-  $effect(() => {
-    if (searchActive) return;
-    if (!reportedFinished && (totalRulesCount === 0 || displayedRules.length > 0)) {
-      reportedFinished = true;
-      store.handleSubscriptionFinished();
-    }
-  });
+  // Keep the source collection in the store; only visible rows create components.
+  function originalRuleIndex(index: number) {
+    return searchActive && Array.isArray(visibleRuleIndices) ? visibleRuleIndices[index] : index;
+  }
 
   function formatTime(timestamp: number | undefined | null) {
     if (!timestamp) return t("Never updated");
@@ -346,37 +297,52 @@
       </div>
 
       <Collapsible.Content>
-        <div transition:slide={searchActive ? { duration: 0 } : {}}>
-          {#if totalRulesCount > 0}
-            <div class="subscription-rules-header">
-              <div class="subscription-rules-header-column total">
-                #{totalRulesCount}
-              </div>
-              <div class="subscription-rules-header-column pattern">
-                {t("Pattern")}
-              </div>
-              <div class="subscription-rules-header-column">{t("Type")}</div>
+        {#snippet child({ props })}
+          {#if effectiveOpen}
+            <div {...props}>
+              <div transition:slide={searchActive || !animateExpansion ? { duration: 0 } : {}}>
+                {#if totalRulesCount > 0}
+                  <div class="subscription-rules-header">
+                    <div class="subscription-rules-header-column total">
+                      #{totalRulesCount}
+                    </div>
+                    <div class="subscription-rules-header-column pattern">
+                      {t("Pattern")}
+                    </div>
+                    <div class="subscription-rules-header-column">{t("Type")}</div>
 
-              <div class="subscription-rules-header-column">{t("Enabled")}</div>
+                    <div class="subscription-rules-header-column">{t("Enabled")}</div>
+                  </div>
+                {/if}
+                <div class="subscription-rules">
+                  {#if totalRulesCount > 0}
+                    <VirtualList
+                      recycle
+                      count={totalRulesCount}
+                      getKey={(index) => subscription.rules[originalRuleIndex(index)].id}
+                      estimateSize={client_width <= 700 ? 82 : 33}
+                      active={active && effectiveOpen}
+                      revision={visibleRuleIndices ?? subscription.rules}
+                    >
+                      {#snippet children(index)}
+                        {@const originalIndex = originalRuleIndex(index)}
+                        <SubscriptionRuleRow
+                          key={subscription.rules[originalIndex].id}
+                          bind:rule={subscription.rules[originalIndex]}
+                          rule_index={originalIndex}
+                          {subscription_index}
+                          style={index % 2 ? "" : "background-color: var(--bg-light)"}
+                        />
+                      {/snippet}
+                    </VirtualList>
+                  {/if}
+                </div>
+              </div>
             </div>
+          {:else}
+            <div id={typeof props.id === "string" ? props.id : undefined} hidden></div>
           {/if}
-          <div class="subscription-rules">
-            {#if totalRulesCount > 0}
-              {#each displayedRules as { rule, originalIndex }, i (rule.id)}
-                <SubscriptionRuleRow
-                  key={rule.id}
-                  bind:rule={subscription.rules[originalIndex]}
-                  rule_index={originalIndex}
-                  {subscription_index}
-                  style={i % 2 ? "" : "background-color: var(--bg-light)"}
-                />
-              {/each}
-            {/if}
-          </div>
-          {#if usePagination}
-            <Pagination totalItems={totalRulesCount} pageSize={PAGE_SIZE} bind:currentPage />
-          {/if}
-        </div>
+        {/snippet}
       </Collapsible.Content>
     </Collapsible.Root>
   </div>

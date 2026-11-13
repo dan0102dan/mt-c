@@ -35,6 +35,21 @@
   --font: "Overpass", Arial, Helvetica, sans-serif;
   --font-mono: Monaco, monospace;
 
+  /* Shared geometry follows the Groups and Subscriptions controls. */
+  --space-1: 0.25rem;
+  --space-2: 0.5rem;
+  --space-3: 0.75rem;
+  --space-4: 1rem;
+  --space-5: 1.25rem;
+  --space-6: 1.5rem;
+  --text-body: 1rem;
+  --text-small: 0.9rem;
+  --text-caption: 0.8rem;
+  --line-height-body: 1.5;
+  --radius-panel: 0.5rem;
+  --panel-inset: var(--space-2);
+  --control-height: calc(22px + 1.2rem + 2px);
+
   --accent: #42bdf9;
   --shadow-popover: 0px 0px 10px 1px var(--bg-dark-extra);
 }

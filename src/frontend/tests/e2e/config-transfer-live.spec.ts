@@ -577,12 +577,13 @@ test("double clicking Import only stages once and double clicking Save only appl
   page.on("request", (request) => {
     if (request.url().endsWith("/system/config/apply") && request.method() === "POST") writes++;
   });
-  await dialog
-    .getByRole("button", { name: "Import", exact: true })
-    .evaluate((element: HTMLButtonElement) => {
-      element.click();
-      element.click();
-    });
+  const importButton = dialog.getByRole("button", { name: "Import", exact: true });
+  // Worker preparation deliberately disables Apply until the latest plan is ready.
+  await expect(importButton).toBeEnabled();
+  await importButton.evaluate((element: HTMLButtonElement) => {
+    element.click();
+    element.click();
+  });
   await expect(dialog).toHaveCount(0);
   expect(writes).toBe(0);
   expect((await backend.snapshot()).config.profiles).toEqual([]);

@@ -3,12 +3,15 @@
   import { getContext, onDestroy, tick, untrack } from "svelte";
 
   import Button from "../../../components/ui/Button.svelte";
+  import FormField from "../../../components/ui/FormField.svelte";
+  import FormSection from "../../../components/ui/FormSection.svelte";
   import GenericDialog from "../../../components/ui/GenericDialog.svelte";
   import Placeholder from "../../../components/ui/Placeholder.svelte";
   import Select from "../../../components/ui/Select.svelte";
-  import Switch from "../../../components/ui/Switch.svelte";
+  import SwitchField from "../../../components/ui/SwitchField.svelte";
   import { fetchInterfaces, interfaces } from "../../../data/interfaces.svelte";
   import { t } from "../../../data/locale.svelte";
+  import SettingsSection from "../SettingsSection.svelte";
   import { GeneralSettingsState, type PreparedSettingsSave } from "./settings-state.svelte";
 
   import { Add, GroupCollapse, GroupExpand } from "../../../components/ui/icons";
@@ -16,7 +19,7 @@
     CONFIG_TRANSFER_CONTEXT,
     type ConfigTransferControls,
   } from "../../config-transfer/context";
-  import { settingsSection } from "../section-controls";
+  import type { SectionControls } from "../section-controls";
   import {
     changesWebAccess,
     fieldForPath,
@@ -28,13 +31,12 @@
     webTargetUrl,
     type DraftField,
     type GeneralDraft,
-    type SwitchField,
+    type SwitchField as SwitchKey,
     type TextField,
   } from "./config";
 
   type Props = { active: boolean; pageSaving?: boolean };
   let { active, pageSaving = false }: Props = $props();
-  const section = settingsSection();
   const transfer = getContext<ConfigTransferControls | undefined>(CONFIG_TRANSFER_CONTEXT);
   const config = new GeneralSettingsState();
   let confirmation = $state(false);
@@ -187,6 +189,23 @@
     answerConfirmation(false);
     config.destroy();
   });
+
+  function controls(): Omit<SectionControls, "dialog" | "toolbarFeedback"> {
+    return {
+      dirty: config.dirty,
+      canSave: config.canSave && !blocked,
+      saveLast: true,
+      prepareSave: confirmSave,
+      validationMessage: blocked
+        ? t("Save changes in Groups and Subscriptions before changing web access.")
+        : config.pending
+          ? t("Check the pending settings application before saving again.")
+          : invalid && config.snapshot
+            ? t("Check the highlighted settings.")
+            : undefined,
+      onSave: save,
+    };
+  }
 </script>
 
 <svelte:window onbeforeunload={beforeUnload} />
@@ -240,9 +259,13 @@
   min?: number,
   max?: number,
 )}
-  <div class="setting-field">
-    <label for={`general-${key}`}>{t(label)}</label>
+  <FormField
+    id={`general-${key}`}
+    label={t(label)}
+    error={fieldError(key) ? t(fieldError(key) ?? "") : undefined}
+  >
     <input
+      class="form-control"
       id={`general-${key}`}
       {type}
       aria-label={key === "webAddress"
@@ -263,27 +286,22 @@
       aria-invalid={Boolean(fieldError(key))}
       aria-describedby={fieldError(key) ? `general-${key}-error` : undefined}
     />
-    {#if fieldError(key)}
-      <p id={`general-${key}-error`} class="field-error">{t(fieldError(key) ?? "")}</p>
-    {/if}
-  </div>
+  </FormField>
 {/snippet}
 
-{#snippet toggle(key: SwitchField, label: string, ariaLabel: string = label)}
-  <div class="switch-row">
-    <Switch
-      id={`general-${key}`}
-      aria-label={t(ariaLabel)}
-      disabled={formDisabled || (key === "authEnabled" && !config.draft.webEnabled)}
-      bind:checked={
-        () => config.draft[key],
-        (value) => {
-          config.draft[key] = value;
-        }
+{#snippet toggle(key: SwitchKey, label: string, ariaLabel: string = label)}
+  <SwitchField
+    id={`general-${key}`}
+    label={t(label)}
+    ariaLabel={t(ariaLabel)}
+    disabled={formDisabled || (key === "authEnabled" && !config.draft.webEnabled)}
+    bind:checked={
+      () => config.draft[key],
+      (value) => {
+        config.draft[key] = value;
       }
-    />
-    <label for={`general-${key}`}>{t(label)}</label>
-  </div>
+    }
+  />
 {/snippet}
 
 {#snippet feedback()}
@@ -344,40 +362,26 @@
   {/if}
 {/snippet}
 
-<section
+<SettingsSection
   id="general"
-  aria-labelledby="general-heading"
+  title={t("General settings")}
   aria-busy={config.busy}
   data-application-state={config.outcome}
-  use:section={() => ({
-    dirty: config.dirty,
-    canSave: config.canSave && !blocked,
-    saveLast: true,
-    prepareSave: confirmSave,
-    dialog: confirmationDialog,
-    toolbarFeedback:
-      !config.busy &&
-      !pageSaving &&
-      (blocked ||
-        (config.snapshot &&
-          config.error &&
-          (!config.error.field || !fieldForPath(config.error.field))) ||
-        config.nextWeb ||
-        config.pending ||
-        externalApplication)
-        ? feedback
-        : undefined,
-    validationMessage: blocked
-      ? t("Save changes in Groups and Subscriptions before changing web access.")
-      : config.pending
-        ? t("Check the pending settings application before saving again.")
-        : invalid && config.snapshot
-          ? t("Check the highlighted settings.")
-          : undefined,
-    onSave: save,
-  })}
+  {controls}
+  showFeedback={Boolean(
+    !config.busy &&
+    !pageSaving &&
+    (blocked ||
+      (config.snapshot &&
+        config.error &&
+        (!config.error.field || !fieldForPath(config.error.field))) ||
+      config.nextWeb ||
+      config.pending ||
+      externalApplication),
+  )}
 >
-  <h2 id="general-heading" class="sr-only">{t("General settings")}</h2>
+  {#snippet dialog()}{@render confirmationDialog()}{/snippet}
+  {#snippet toolbarFeedback()}{@render feedback()}{/snippet}
   {#if !config.snapshot}
     <Placeholder variant={config.error ? "error" : "loading"} minHeight="auto">
       {config.error ? t("Failed to load general settings") : t("Loading settings…")}
@@ -390,8 +394,7 @@
   {:else}
     <fieldset class="general-form" disabled={formDisabled}>
       <legend class="sr-only">{t("General settings")}</legend>
-      <div class="settings-group">
-        <h3>{t("DNS")}</h3>
+      <FormSection id="general-dns-heading" title={t("DNS")}>
         <div class="field-grid endpoint-grid">
           {@render field("upstreamAddress", "Upstream DNS server")}
           {@render field("upstreamPort", "Upstream server port", "number", 1, 65535)}
@@ -416,15 +419,18 @@
             </div>
           </Collapsible.Content>
         </Collapsible.Root>
-      </div>
+      </FormSection>
 
-      <div class="settings-group">
-        <h3>{t("Traffic routing")}</h3>
-        <div class="setting-field interface-field">
-          <label for="general-links">{t("DNS interception interfaces")}</label>
+      <FormSection id="general-routing-heading" title={t("Traffic routing")}>
+        <FormField
+          id="general-links"
+          label={t("DNS interception interfaces")}
+          error={fieldError("links") ? t(fieldError("links") ?? "") : undefined}
+        >
           <div class="interface-picker">
             <input
               id="general-links"
+              class="form-control"
               type="text"
               bind:value={config.draft.links}
               autocomplete="off"
@@ -446,10 +452,7 @@
                 >{/snippet}
             </Select>
           </div>
-          {#if fieldError("links")}
-            <p id="general-links-error" class="field-error">{t(fieldError("links") ?? "")}</p>
-          {/if}
-        </div>
+        </FormField>
         <div class="switches">
           {@render toggle("ipv4", "Process IPv4 traffic")}
           {@render toggle("ipv6", "Process IPv6 traffic")}
@@ -464,10 +467,9 @@
             UINT32_MAX,
           )}
         </div>
-      </div>
+      </FormSection>
 
-      <div class="settings-group">
-        <h3>{t("Web interface")}</h3>
+      <FormSection id="general-web-heading" title={t("Web interface")}>
         {@render toggle("webEnabled", "Enable", "Enable web interface")}
         <fieldset class="web-fields" disabled={formDisabled || !config.draft.webEnabled}>
           <legend class="sr-only">{t("Web access options")}</legend>
@@ -477,29 +479,29 @@
             {@render field("webPort", "Port", "number", 1, 65535)}
           </div>
         </fieldset>
-      </div>
+      </FormSection>
 
-      <div class="settings-group">
-        <h3>{t("Logging")}</h3>
-        <div class="setting-field log-field">
-          <span>{t("Log detail level")}</span>
-          <Select
-            options={logOptions}
-            bind:selected={config.draft.logLevel}
-            ariaLabel={t("Log detail level")}
-            triggerClass={fieldError("logLevel") ? "invalid" : undefined}
-            disabled={formDisabled}
-            compact
-            bounded
-          />
-          {#if fieldError("logLevel")}<p class="field-error" role="alert">
-              {t(fieldError("logLevel") ?? "")}
-            </p>{/if}
+      <FormSection id="general-logging-heading" title={t("Logging")}>
+        <div class="log-field">
+          <FormField
+            label={t("Log detail level")}
+            error={fieldError("logLevel") ? t(fieldError("logLevel") ?? "") : undefined}
+          >
+            <Select
+              options={logOptions}
+              bind:selected={config.draft.logLevel}
+              ariaLabel={t("Log detail level")}
+              triggerClass={fieldError("logLevel") ? "form-control invalid" : "form-control"}
+              disabled={formDisabled}
+              compact
+              bounded
+            />
+          </FormField>
         </div>
-      </div>
+      </FormSection>
     </fieldset>
   {/if}
-</section>
+</SettingsSection>
 
 <style>
   fieldset {
@@ -510,106 +512,43 @@
   }
   .general-form {
     display: grid;
-    gap: 1.5rem;
-  }
-  .settings-group {
-    min-width: 0;
-    padding-bottom: 1.5rem;
-    border-bottom: 1px solid var(--bg-light-extra);
-  }
-  .settings-group:last-child {
-    border-bottom: 0;
-    padding-bottom: 0;
-  }
-  h3 {
-    margin: 0 0 0.85rem;
-    font-size: 1rem;
-    font-weight: 600;
+    gap: var(--space-6);
   }
   .field-grid {
     display: grid;
     grid-template-columns: repeat(2, minmax(0, 1fr));
-    gap: 1rem 1.5rem;
+    gap: var(--space-4) var(--space-6);
   }
   .endpoint-grid {
     grid-template-columns: minmax(0, 3fr) minmax(8rem, 1fr);
   }
-  .setting-field {
-    min-width: 0;
-    display: grid;
-    align-content: start;
-    gap: 0.4rem;
-  }
-  .setting-field > label,
-  .setting-field > span {
-    color: var(--text-2);
-    font-size: 0.9rem;
-    line-height: 1.5;
-  }
-  input {
-    box-sizing: border-box;
-    width: 100%;
-    min-width: 0;
-    padding: 0.5rem 0.65rem;
-    border: 1px solid var(--bg-light-extra);
-    border-radius: 0.5rem;
-    background: var(--bg-light);
-    color: var(--text);
-    font: 400 0.95rem/1.4 var(--font);
-  }
-  input[type="number"] {
-    appearance: textfield;
-  }
-  input[type="number"]::-webkit-inner-spin-button,
-  input[type="number"]::-webkit-outer-spin-button {
-    -webkit-appearance: none;
-    margin: 0;
-  }
-  input[aria-invalid="true"],
-  .log-field :global([data-select-trigger].invalid) {
-    border-color: var(--red);
-  }
-  input:disabled,
   .interface-picker :global([data-select-trigger]:disabled),
   .log-field :global([data-select-trigger]:disabled) {
     opacity: 0.55;
   }
-  input:focus-visible,
   :global(#general .advanced-trigger:focus-visible),
   .interface-picker :global([data-select-trigger]:focus-visible),
-  .log-field :global([data-select-trigger]:focus-visible),
-  :global(#general [data-switch-root]:focus-visible) {
+  .log-field :global([data-select-trigger]:focus-visible) {
     outline: 1px solid var(--accent);
     outline-offset: 1px;
   }
   .switches {
-    margin-top: 0.75rem;
-  }
-  .switch-row {
-    display: flex;
-    align-items: center;
-    gap: 0.65rem;
-    min-width: 0;
-    padding: 0.45rem 0;
-    line-height: 1.5;
-  }
-  .switch-row label {
-    cursor: pointer;
+    margin-top: var(--space-3);
   }
   :global(#general .advanced) {
-    margin-top: 0.85rem;
+    margin-top: var(--space-4);
   }
   :global(#general .advanced-trigger) {
     display: inline-flex;
     align-items: center;
-    gap: 0.4rem;
+    gap: var(--space-2);
     max-width: 100%;
     padding: 0;
     border: 0;
     background: transparent;
     color: var(--text-2);
     cursor: pointer;
-    font: 400 0.9rem/1.5 var(--font);
+    font: 400 var(--text-small) / var(--line-height-body) var(--font);
     text-align: left;
   }
   :global(#general .advanced-trigger:disabled) {
@@ -617,32 +556,29 @@
     cursor: default;
   }
   :global(#general .advanced) .field-grid {
-    margin-top: 1rem;
+    margin-top: var(--space-4);
   }
   .interface-picker {
     display: flex;
     align-items: center;
-    gap: 0.5rem;
+    gap: var(--space-2);
     min-width: 0;
   }
   .interface-picker input {
     flex: 1;
   }
   .interface-picker :global([data-select-trigger]) {
-    padding: 0.5rem;
-    gap: 0.35rem;
+    padding: var(--space-2);
+    gap: var(--space-1);
     color: var(--text-2);
   }
   .add-interface-label {
-    font-size: 0.85rem;
+    font-size: var(--text-small);
     white-space: nowrap;
-  }
-  .interface-field {
-    max-width: 100%;
   }
   .switches + .field-grid,
   .web-fields .field-grid {
-    margin-top: 0.75rem;
+    margin-top: var(--space-3);
   }
   .log-field {
     max-width: 22rem;
@@ -651,54 +587,40 @@
   .log-field :global([data-select-trigger]) {
     width: 100%;
   }
-  .log-field :global([data-select-trigger]) {
-    box-sizing: border-box;
-    padding: 0.5rem 0.65rem;
-    background: var(--bg-light);
-    border: 1px solid var(--bg-light-extra);
-    border-radius: 0.5rem;
-  }
-  .field-error {
-    margin: 0;
-    font-size: 0.8rem;
-    line-height: 1.5;
-    overflow-wrap: anywhere;
-  }
-  .field-error,
   .application-error {
     color: var(--red);
   }
   .notice {
-    margin: 0.5rem 0;
-    font-size: 0.9rem;
-    line-height: 1.5;
+    margin: var(--space-2) 0;
+    font-size: var(--text-small);
+    line-height: var(--line-height-body);
   }
   .application-error,
   .connection-notice {
-    margin: 0.5rem 0;
-    font-size: 0.875rem;
-    line-height: 1.5;
+    margin: var(--space-2) 0;
+    font-size: var(--text-small);
+    line-height: var(--line-height-body);
     overflow-wrap: anywhere;
   }
   .application-error p,
   .connection-notice p {
-    margin: 0.25rem 0;
+    margin: var(--space-1) 0;
   }
   .connection-notice a {
     color: var(--blue-light-extra);
   }
   .confirmation-body {
-    line-height: 1.5;
+    line-height: var(--line-height-body);
     overflow-wrap: anywhere;
   }
   .confirmation-body p {
-    margin: 0 0 0.75rem;
+    margin: 0 0 var(--space-3);
   }
   .confirmation-actions {
     display: flex;
     justify-content: flex-end;
     flex-wrap: wrap;
-    gap: 0.5rem;
+    gap: var(--space-2);
   }
   .web-url {
     color: var(--blue-light-extra);
@@ -720,7 +642,7 @@
     .field-grid,
     .endpoint-grid {
       grid-template-columns: minmax(0, 1fr);
-      gap: 0.85rem;
+      gap: var(--space-4);
     }
   }
 </style>

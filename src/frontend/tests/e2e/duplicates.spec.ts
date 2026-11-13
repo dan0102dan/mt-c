@@ -15,6 +15,16 @@ function buildLargeGroupRules() {
 }
 
 async function mockBaseRoutes(page: Page) {
+  await page.route("**/profiles", (route) => route.fulfill({ json: { profiles: [] } }));
+  await page.route("**/subscriptions", (route) => route.fulfill({ json: { subscriptions: [] } }));
+  await page.route("**/system/update/status", (route) =>
+    route.fulfill({ json: { stage: "idle" } }),
+  );
+  await page.route("**/system/update", (route) =>
+    route.fulfill({ json: { installed_version: "test", can_install: false } }),
+  );
+  await page.route("https://api.github.com/**", (route) => route.fulfill({ json: [] }));
+
   await page.route("**/auth", async (route) => {
     await route.fulfill({ json: { enabled: false } });
   });
@@ -91,7 +101,7 @@ test.describe("Duplicate Indicators", () => {
     await groupsPage.goto();
   });
 
-  test("should show duplicate markers across groups and paginated rules", async ({ page }) => {
+  test("should show duplicate markers across groups and virtual rules", async ({ page }) => {
     const groupHeaders = page.locator(".group-header");
     await expect(groupHeaders).toHaveCount(3);
 
@@ -101,7 +111,7 @@ test.describe("Duplicate Indicators", () => {
 
     await groupHeaders.nth(0).locator("[data-collapsible-trigger]").click();
     const largeGroup = page.locator(".group-wrapper").nth(0);
-    await expect(largeGroup.locator(".rule")).toHaveCount(50);
+    await expect(largeGroup.locator(".rule").first()).toBeVisible();
 
     await expect(
       largeGroup.locator('.rule[data-group-index="0"][data-index="0"] .duplicate-indicator'),
@@ -110,14 +120,13 @@ test.describe("Duplicate Indicators", () => {
       largeGroup.locator('.rule[data-group-index="0"][data-index="1"] .duplicate-indicator'),
     ).toHaveCount(0);
 
-    await largeGroup.getByTitle("Next Page").click();
-    await expect(largeGroup.locator(".rule")).toHaveCount(10);
+    await page.evaluate(() => window.scrollTo(0, document.documentElement.scrollHeight));
     await expect(
       largeGroup.locator('.rule[data-group-index="0"][data-index="55"] .duplicate-indicator'),
     ).toBeVisible();
 
-    await groupHeaders.nth(1).locator("[data-collapsible-trigger]").click();
-    const secondGroup = page.locator(".group-wrapper").nth(1);
+    const secondGroup = page.locator('.group[data-uuid="g-second"]');
+    await secondGroup.locator("[data-collapsible-trigger]").click();
     await expect(
       secondGroup.locator('.rule[data-group-index="1"][data-index="0"] .duplicate-indicator'),
     ).toBeVisible();

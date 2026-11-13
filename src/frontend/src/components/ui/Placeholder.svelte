@@ -10,6 +10,7 @@
     loading?: boolean;
     variant?: Variant;
     compact?: boolean;
+    embedded?: boolean;
     iconSize?: number;
     minHeight?: string;
     subtitle?: string;
@@ -22,6 +23,7 @@
     loading = false,
     variant = "neutral",
     compact = false,
+    embedded = false,
     iconSize = 30,
     minHeight = "300px",
     subtitle,
@@ -42,6 +44,7 @@
 >
   <div
     class="card"
+    class:embedded
     data-variant={resolvedVariant}
     data-compact={compact ? "true" : "false"}
     data-no-subtitle={subtitle ? "false" : "true"}
@@ -82,6 +85,7 @@
 
 <style>
   .placeholder {
+    min-width: 0;
     width: 100%;
     display: flex;
     align-items: center;
@@ -89,7 +93,8 @@
   }
 
   .card {
-    width: min(320px, calc(100vw - 0.3rem));
+    box-sizing: border-box;
+    width: min(350px, 100%);
     display: flex;
     align-items: flex-start;
     gap: 12px;
@@ -115,6 +120,16 @@
     padding: 10px 17px 10px 12px;
     border-radius: 10px;
     gap: 10px;
+  }
+
+  .card.embedded {
+    box-sizing: border-box;
+    width: fit-content;
+    max-width: 100%;
+    padding: var(--space-4) var(--panel-inset);
+    border: 0;
+    border-radius: 0;
+    background: transparent;
   }
 
   .icon {
@@ -151,16 +166,17 @@
   }
 
   .title {
+    overflow-wrap: anywhere;
     color: var(--text);
     font-size: 0.98rem;
     font-weight: 400;
-    line-height: 1.25;
+    line-height: var(--line-height-body);
   }
 
   .subtitle {
     color: var(--text-2);
     font-size: 0.9rem;
-    line-height: 1.25;
+    line-height: var(--line-height-body);
   }
 
   .actions {
@@ -174,6 +190,16 @@
     display: inline-flex;
     transform-origin: 50% 50%;
     animation: spin 1s linear infinite;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .spin {
+      animation: none;
+    }
+    .card {
+      animation: none;
+      opacity: 1;
+    }
   }
 
   @keyframes spin {

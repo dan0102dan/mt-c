@@ -1,10 +1,14 @@
+import { requestViewportRead } from "../lib/virtual/viewport";
+
 type ScrollbarState = {
   dragging: boolean;
   dragStartY: number;
   scrollStart: number;
   scrollRatio: number;
+  dragFraction: number | null;
+  dragStartFraction: number;
+  dragTravel: number;
   hideTimer: number | null;
-  rafId: number | null;
   targetElement: HTMLElement | null;
   boundsTop: number;
   boundsBottom: number;
@@ -35,63 +39,44 @@ const setVisible = (track: HTMLDivElement, state: ScrollbarState) => {
   }, HIDE_DELAY);
 };
 
-const updateBounds = (track: HTMLDivElement, state: ScrollbarState) => {
+// Read geometry together before writing styles. Reading track.clientHeight
+// after changing its top/bottom forces layout on every virtual-row update.
+const updateThumb = (track: HTMLDivElement, thumb: HTMLDivElement, state: ScrollbarState) => {
   const target = state.targetElement ?? document.documentElement;
   const rect = target.getBoundingClientRect();
   const viewportHeight = window.innerHeight;
-  const margin = 8;
-
-  if (rect.height <= 0 || viewportHeight <= 0) {
-    track.classList.add("is-hidden");
-    return;
-  }
-
-  track.classList.remove("is-hidden");
-
+  const scrollHeight = document.documentElement.scrollHeight;
+  const clientHeight = document.documentElement.clientHeight;
+  const scrollTop = getScrollTop();
   const headerBottom = state.headerElement?.getBoundingClientRect().bottom ?? 0;
-  const top = Math.max(rect.top, headerBottom, margin);
-  const bottom = Math.max(viewportHeight - rect.bottom, margin);
-
+  const top = Math.max(rect.top, headerBottom, 8);
+  const bottom = Math.max(viewportHeight - rect.bottom, 8);
+  const trackHeight = viewportHeight - top - bottom;
+  const hidden =
+    rect.height <= 0 || viewportHeight <= 0 || scrollHeight <= clientHeight || trackHeight <= 0;
+  track.classList.toggle("is-hidden", hidden);
+  if (hidden) return;
+  if (state.boundsTop !== top) track.style.top = `${top}px`;
+  if (state.boundsBottom !== bottom) track.style.bottom = `${bottom}px`;
   state.boundsTop = top;
   state.boundsBottom = bottom;
-
-  track.style.top = `${state.boundsTop}px`;
-  track.style.bottom = `${state.boundsBottom}px`;
-};
-
-const updateThumb = (track: HTMLDivElement, thumb: HTMLDivElement, state: ScrollbarState) => {
-  if (state.rafId) return;
-
-  state.rafId = window.requestAnimationFrame(() => {
-    state.rafId = null;
-
-    updateBounds(track, state);
-
-    const scrollHeight = document.documentElement.scrollHeight;
-    const clientHeight = document.documentElement.clientHeight;
-    const scrollTop = getScrollTop();
-    if (scrollHeight <= clientHeight || state.boundsTop + state.boundsBottom >= clientHeight) {
-      track.classList.add("is-hidden");
-      return;
-    }
-
-    track.classList.remove("is-hidden");
-
-    const trackHeight = track.clientHeight;
-    const maxThumbHeight = trackHeight - 4;
-
-    const thumbHeight = Math.min(
-      Math.max((clientHeight / scrollHeight) * trackHeight, MIN_THUMB_HEIGHT),
-      maxThumbHeight,
-    );
-
-    const maxThumbTop = trackHeight - thumbHeight;
-    const scrollable = scrollHeight - clientHeight;
-    const thumbTop = scrollable > 0 ? (scrollTop / scrollable) * maxThumbTop : 0;
-
-    thumb.style.height = `${thumbHeight}px`;
-    thumb.style.transform = `translateY(${thumbTop}px)`;
-  });
+  const thumbHeight = Math.min(
+    Math.max((clientHeight / scrollHeight) * trackHeight, MIN_THUMB_HEIGHT),
+    trackHeight - 4,
+  );
+  const scrollable = scrollHeight - clientHeight;
+  // Measurements can change scrollHeight while the thumb is captured. Keep
+  // its requested fraction, including both edges, until the drag finishes.
+  const desiredTop =
+    state.dragging && state.dragFraction !== null
+      ? state.dragFraction * Math.max(0, scrollable)
+      : scrollTop;
+  if (Math.abs(desiredTop - scrollTop) > 0.5) setScrollTop(desiredTop);
+  const thumbTop = scrollable > 0 ? (desiredTop / scrollable) * (trackHeight - thumbHeight) : 0;
+  const height = `${thumbHeight}px`;
+  const transform = `translateY(${thumbTop}px)`;
+  if (thumb.style.height !== height) thumb.style.height = height;
+  if (thumb.style.transform !== transform) thumb.style.transform = transform;
 };
 
 export const initOverlayScrollbar = (options: OverlayScrollbarOptions = {}) => {
@@ -112,8 +97,10 @@ export const initOverlayScrollbar = (options: OverlayScrollbarOptions = {}) => {
     dragStartY: 0,
     scrollStart: 0,
     scrollRatio: 1,
+    dragFraction: null,
+    dragStartFraction: 0,
+    dragTravel: 0,
     hideTimer: null,
-    rafId: null,
     targetElement: null,
     boundsTop: 0,
     boundsBottom: 0,
@@ -148,36 +135,43 @@ export const initOverlayScrollbar = (options: OverlayScrollbarOptions = {}) => {
     }
   };
 
-  const update = () => {
-    resolveTarget();
+  let targetDirty = true;
+  const read = () => {
+    if (targetDirty) {
+      resolveTarget();
+      targetDirty = false;
+    }
     updateThumb(track, thumb, state);
   };
+  const update = (resolve = false) => {
+    targetDirty ||= resolve;
+    requestViewportRead(read);
+  };
 
-  resolveTarget();
-  updateBounds(track, state);
-  update();
-
+  update(true);
   window.addEventListener(
     "scroll",
     () => {
       setVisible(track, state);
-      updateThumb(track, thumb, state);
+      update();
     },
     { passive: true },
   );
-
-  window.addEventListener("resize", () => {
-    updateBounds(track, state);
-    update();
-  });
-
+  window.addEventListener("resize", () => update(true));
   track.addEventListener("mouseenter", () => setVisible(track, state));
 
   if (options.targetSelector) {
-    const mutationObserver = new MutationObserver(() => {
-      resolveTarget();
-      updateBounds(track, state);
-      update();
+    const mutationObserver = new MutationObserver((records) => {
+      // Virtual rows are continuously added/removed. They cannot change the
+      // active collection/header; resolve selectors only on tab or root changes.
+      const tabsChanged = records.some(
+        (record) =>
+          record.type === "attributes" &&
+          record.target instanceof Element &&
+          record.target.hasAttribute("data-tabs-content"),
+      );
+      if (tabsChanged || !state.targetElement?.isConnected || !state.headerElement?.isConnected)
+        update(true);
     });
     mutationObserver.observe(document.body, {
       childList: true,
@@ -202,6 +196,9 @@ export const initOverlayScrollbar = (options: OverlayScrollbarOptions = {}) => {
     const scrollable = scrollHeight - clientHeight;
 
     state.scrollRatio = maxThumbTop > 0 && scrollable > 0 ? scrollable / maxThumbTop : 1;
+    state.dragTravel = maxThumbTop;
+    state.dragStartFraction = scrollable > 0 ? state.scrollStart / scrollable : 0;
+    state.dragFraction = state.dragStartFraction;
 
     thumb.setPointerCapture(event.pointerId);
     setVisible(track, state);
@@ -211,13 +208,20 @@ export const initOverlayScrollbar = (options: OverlayScrollbarOptions = {}) => {
     if (!state.dragging) return;
 
     const delta = event.clientY - state.dragStartY;
-    setScrollTop(state.scrollStart + delta * state.scrollRatio);
+    state.dragFraction =
+      state.dragTravel > 0
+        ? Math.min(1, Math.max(0, state.dragStartFraction + delta / state.dragTravel))
+        : 0;
+    setScrollTop(
+      state.dragFraction * Math.max(0, document.documentElement.scrollHeight - window.innerHeight),
+    );
   });
 
   const stopDragging = (event: PointerEvent) => {
     if (!state.dragging) return;
 
     state.dragging = false;
+    state.dragFraction = null;
     try {
       thumb.releasePointerCapture(event.pointerId);
     } catch {

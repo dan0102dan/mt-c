@@ -4,9 +4,11 @@
   import { tick, untrack } from "svelte";
 
   import Button from "../../components/ui/Button.svelte";
+  import PanelSurface from "../../components/ui/PanelSurface.svelte";
+  import SearchField from "../../components/ui/SearchField.svelte";
   import Tooltip from "../../components/ui/Tooltip.svelte";
 
-  import { Clear, Filter, ScrollToBottom } from "../../components/ui/icons";
+  import { Clear, ScrollToBottom } from "../../components/ui/icons";
   import { LOG_LEVELS, logLevel, logText, logWindow, matchesLog, type LogEntry } from "./log-view";
 
   type Props = {
@@ -92,69 +94,73 @@
   }
 </script>
 
-<div class="logs-controls">
-  <div class="filter">
-    <Filter size={22} opacity={0.5} />
-    <input
-      type="search"
-      class="filter-input"
-      data-page-search
-      aria-label={labels.filter}
-      placeholder={labels.filter}
-      bind:value={filter}
-      oninput={resetScroll}
-    />
-  </div>
-  <div class="logs-controls-actions">
-    <Tooltip value={labels.clear}>
-      <Button type="button" onclick={clearLines} aria-label={labels.clear} disabled={!hasEntries}>
-        <Clear size={22} />
-      </Button>
-    </Tooltip>
-    <Tooltip value={labels.scrollToBottom}>
-      <Button type="button" onclick={scrollToBottom} aria-label={labels.scrollToBottom}>
-        <ScrollToBottom size={22} />
-      </Button>
-    </Tooltip>
-  </div>
-</div>
-
-<div
-  bind:this={container}
-  bind:clientHeight={container_height}
-  onscroll={scrollTopChanges}
-  class="container"
-  role="region"
-  aria-label={labels.results}
-  tabindex="-1"
->
-  <div class="spacer" style:height={`${items_filtered.length * LINE_HEIGHT + 10}px`}></div>
-  {#if hasEntries && filter.trim() && !items_filtered.length}
-    <div class="empty">{labels.empty}</div>
-  {/if}
-  {#each visible_items as item, index (item.id)}
-    <div
-      class="line"
-      class:session={item.kind === "session"}
-      style:top={`${(window.start + index) * LINE_HEIGHT + 5}px`}
-    >
-      <span class="time">{logText(item.fields.time)}</span>
-      {#if item.kind === "session"}
-        {labels.session ?? item.message}
-      {:else}
-        <span class={Object.hasOwn(LOG_LEVELS, item.level) ? item.level : "unknown"}
-          >{logLevel(item.level)[1]}</span
-        >
-        {logText(item.message)}
-        {#each Object.entries(item.fields) as [key, value]}
-          {#if key !== "time"}
-            <span class="key">{logText(key)}=</span><span class="value">{logText(value)}</span>{" "}
-          {/if}
-        {/each}
-      {/if}
+<PanelSurface class="logs-panel">
+  {#snippet header()}
+    <div class="logs-controls">
+      <SearchField
+        class="logs-search"
+        label={labels.filter}
+        bind:value={filter}
+        oninput={resetScroll}
+      />
+      <div class="logs-controls-actions">
+        <Tooltip value={labels.clear}>
+          <Button
+            type="button"
+            onclick={clearLines}
+            aria-label={labels.clear}
+            disabled={!hasEntries}
+          >
+            <Clear size={22} />
+          </Button>
+        </Tooltip>
+        <Tooltip value={labels.scrollToBottom}>
+          <Button type="button" onclick={scrollToBottom} aria-label={labels.scrollToBottom}>
+            <ScrollToBottom size={22} />
+          </Button>
+        </Tooltip>
+      </div>
     </div>
-  {/each}
-</div>
+  {/snippet}
+
+  <div
+    bind:this={container}
+    bind:clientHeight={container_height}
+    onscroll={scrollTopChanges}
+    class="container"
+    role="region"
+    aria-label={labels.results}
+    tabindex="-1"
+  >
+    <div class="spacer" style:height={`${items_filtered.length * LINE_HEIGHT + 10}px`}></div>
+    {#if hasEntries && filter.trim() && !items_filtered.length}
+      <div class="empty">{labels.empty}</div>
+    {/if}
+    {#each visible_items as item, index (item.id)}
+      <div
+        class="line"
+        class:session={item.kind === "session"}
+        style:top={`${(window.start + index) * LINE_HEIGHT + 5}px`}
+      >
+        <span class="time">{logText(item.fields.time)}</span>
+        {#if item.kind === "session"}
+          {labels.session ?? item.message}
+        {:else}
+          <span class={Object.hasOwn(LOG_LEVELS, item.level) ? item.level : "unknown"}
+            >{logLevel(item.level)[1]}</span
+          >
+          {logText(item.message)}
+          {#each Object.entries(item.fields) as [key, value]}
+            {#if key !== "time"}
+              <span class="key">{logText(key)}=</span><span class="value">{logText(value)}</span
+              >{" "}
+            {/if}
+          {/each}
+        {/if}
+      </div>
+    {/each}
+  </div>
+</PanelSurface>
 
 <style>
   .container {
@@ -164,19 +170,16 @@
     overflow: auto;
     overflow-anchor: none;
     padding: 0 0.5rem;
-    border-radius: 0.5rem;
+    border-radius: 0 0 var(--radius-panel) var(--radius-panel);
     background-color: var(--bg-dark-extra);
-    border: 1px solid var(--bg-light-extra);
   }
   .spacer {
     position: relative;
   }
   .logs-controls {
     display: flex;
-    align-items: end;
-    gap: 0.5rem;
-    padding: 0.5rem 0;
-    margin-bottom: 0.5rem;
+    align-items: center;
+    gap: var(--space-2);
   }
   .logs-controls-actions {
     display: flex;
@@ -185,29 +188,8 @@
     gap: 0.5rem;
     flex-shrink: 0;
   }
-  .filter {
-    display: flex;
-    align-items: center;
-    gap: 0.5rem;
-    background-color: var(--bg-dark-extra);
-    padding: 0.5rem;
-    border: 1px solid var(--bg-light-extra);
-    border-radius: 0.5rem;
+  .logs-controls :global(.logs-search) {
     flex: 1;
-    min-width: 0;
-  }
-  .filter-input {
-    border: none;
-    background-color: transparent;
-    font: 400 1rem var(--font);
-    color: var(--text);
-    border-bottom: 1px solid transparent;
-    width: 100%;
-    min-width: 0;
-  }
-  .filter-input:focus-visible {
-    outline: none;
-    border-bottom-color: var(--accent);
   }
   .line {
     position: absolute;
@@ -255,7 +237,7 @@
     .logs-controls {
       flex-wrap: wrap;
     }
-    .filter {
+    .logs-controls :global(.logs-search) {
       flex-basis: 100%;
     }
     .logs-controls-actions {

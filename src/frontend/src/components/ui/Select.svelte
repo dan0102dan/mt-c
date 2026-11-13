@@ -32,6 +32,7 @@
     missingLabel,
     ...rest
   }: Props = $props();
+  let open = $state(false);
 
   const selected_option = $derived(options.find((o) => o.value === selected));
   const selected_label = $derived(selected_option?.label ?? missingLabel ?? selected ?? "");
@@ -55,7 +56,14 @@
 </script>
 
 <div class="select-wrap" class:missing={missing_selection} class:bounded {...rest}>
-  <Select.Root type="single" {onValueChange} {disabled} items={options} bind:value={selected}>
+  <Select.Root
+    type="single"
+    {onValueChange}
+    {disabled}
+    items={options}
+    bind:value={selected}
+    bind:open
+  >
     <Select.Trigger aria-label={ariaLabel} class={triggerClass}>
       {#if trigger}
         {@render trigger()}
@@ -74,38 +82,40 @@
       {/if}
     </Select.Trigger>
 
-    <Select.Content
-      strategy="fixed"
-      align="start"
-      sideOffset={4}
-      aria-label={ariaLabel}
-      class={bounded ? "bounded-select-content" : undefined}
-    >
-      {#each optionGroups as group}
-        <Select.Group>
-          {#if group.label}<Select.GroupHeading class="option-group-heading"
-              >{group.label}</Select.GroupHeading
-            >{/if}
-          {#each group.items as option}
-            <Select.Item value={option.value} label={option.label}>
-              {#snippet children({ selected })}
-                <div class="option">
-                  <div class="option-text">
-                    <span class="option-label">{option.label}</span>
-                    {#if option.description}
-                      <span class="option-description">{option.description}</span>
-                    {/if}
+    {#if open}
+      <Select.Content
+        strategy="fixed"
+        align="start"
+        sideOffset={4}
+        aria-label={ariaLabel}
+        class={bounded ? "bounded-select-content" : undefined}
+      >
+        {#each optionGroups as group}
+          <Select.Group>
+            {#if group.label}<Select.GroupHeading class="option-group-heading"
+                >{group.label}</Select.GroupHeading
+              >{/if}
+            {#each group.items as option}
+              <Select.Item value={option.value} label={option.label}>
+                {#snippet children({ selected })}
+                  <div class="option">
+                    <div class="option-text">
+                      <span class="option-label">{option.label}</span>
+                      {#if option.description}
+                        <span class="option-description">{option.description}</span>
+                      {/if}
+                    </div>
+                    <div class="option-check">
+                      {#if selected}<Check size={16} />{/if}
+                    </div>
                   </div>
-                  <div class="option-check">
-                    {#if selected}<Check size={16} />{/if}
-                  </div>
-                </div>
-              {/snippet}
-            </Select.Item>
-          {/each}
-        </Select.Group>
-      {/each}
-    </Select.Content>
+                {/snippet}
+              </Select.Item>
+            {/each}
+          </Select.Group>
+        {/each}
+      </Select.Content>
+    {/if}
   </Select.Root>
 </div>
 

@@ -5,6 +5,7 @@
   import SelectionFrame from "../../components/bulk/SelectionFrame.svelte";
   import PageControls from "../../components/layout/PageControls.svelte";
   import Placeholder from "../../components/ui/Placeholder.svelte";
+  import VirtualList from "../../components/ui/VirtualList.svelte";
   import { t } from "../../data/locale.svelte";
   import GroupPanel from "./components/GroupPanel.svelte";
   import Search from "./components/Search.svelte";
@@ -36,6 +37,20 @@
   setContext(GROUPS_STORE_CONTEXT, store);
   const transfer = getContext<ConfigTransferControls>(CONFIG_TRANSFER_CONTEXT);
   const unregisterTransfer = transfer.registerGroups(store);
+
+  let groupList = $state<VirtualList>();
+  let viewportWidth = $state(1280);
+  const visibleIndices = $derived(
+    store.searchActive
+      ? store.visibleGroups.map((entry) => entry.group_index)
+      : store.data.map((_, index) => index),
+  );
+  store.ensureGroupVisible = async (groupId) => {
+    await tick();
+    const index = visibleIndices.findIndex((original) => store.data[original]?.id === groupId);
+    if (index >= 0) await groupList?.scrollToIndex(index, "nearest");
+    await tick();
+  };
 
   let selectedIds = $state<string[]>([]);
   let selectedItems = $derived(store.data.filter((item) => selectedIds.includes(item.id)));
@@ -74,18 +89,20 @@
     importRulesModal = { open: false, groupIndex: null };
   }
 
-  async function handleImportRules(event: CustomEvent<{ group_index: number; rules: Rule[] }>) {
-    const { group_index, rules } = event.detail;
+  async function handleImportRules(group_index: number, rules: Rule[], signal: AbortSignal) {
     if (!rules.length) return;
 
     isImportingRules = true;
     await tick();
     try {
-      await store.addRulesToGroup(group_index, rules);
+      await store.addRulesToGroup(group_index, rules, { signal });
       pendingToast = t("Imported rules: " + rules.length);
     } catch (error) {
-      console.error("Failed to import rules:", error);
-      toast.error(t("Failed to import rules"));
+      if (!(error instanceof DOMException && error.name === "AbortError")) {
+        console.error("Failed to import rules:", error);
+        toast.error(t("Failed to import rules"));
+      }
+      throw error;
     } finally {
       isImportingRules = false;
     }
@@ -95,7 +112,6 @@
     const message = pendingToast;
     if (!message) return;
     if (isImportingRules) return;
-    if (!store.isAllRendered) return;
 
     let cancelled = false;
     const fire = () => {
@@ -126,6 +142,8 @@
   });
 </script>
 
+<svelte:window bind:innerWidth={viewportWidth} />
+
 <div class="groups-page">
   <PageControls
     {active}
@@ -151,7 +169,7 @@
     <Placeholder variant="error" minHeight="auto" subtitle={t("Check connection or try again")}>
       {t("Failed to load groups")}
     </Placeholder>
-  {:else if isImportingRules || !store.isAllRendered}
+  {:else if !store.dataLoaded}
     <Placeholder variant="loading" minHeight="auto">
       {t("Loading groups...")}
     </Placeholder>
@@ -167,57 +185,75 @@
 
   <div
     class="group-list"
-    class:visible={store.isAllRendered && !isImportingRules}
-    style={store.isAllRendered && !isImportingRules ? "" : "display: none;"}
+    class:visible={store.dataLoaded}
     oninput={store.markDataRevision}
     onchange={store.markDataRevision}
   >
-    {#each store.data.slice(0, store.renderGroupsLimit) as group, group_index (group.id)}
-      {@const isVisible = !store.searchActive || store.visibilityMap.has(group_index)}
+    <VirtualList
+      bind:this={groupList}
+      count={visibleIndices.length}
+      getKey={(index) => store.data[visibleIndices[index]].id}
+      estimateSize={(index) => {
+        const groupIndex = visibleIndices[index];
+        const group = store.data[groupIndex];
+        const count = store.searchActive
+          ? (store.visibilityMap.get(groupIndex)?.length ?? group.rules.length)
+          : group.rules.length;
+        return (
+          72 + (store.open_state[group.id] ? 28 + count * (viewportWidth <= 700 ? 112 : 35) : 0)
+        );
+      }}
+      {active}
+      revision={visibleIndices}
+    >
+      {#snippet children(index)}
+        {@const group_index = visibleIndices[index]}
+        {@const group = store.data[group_index]}
+        <div class="group-wrapper" class:last-group={index === visibleIndices.length - 1}>
+          {#if group_index === store.firstVisibleGroupIndex}
+            <div
+              class="group-drop-slot group-drop-slot--top"
+              aria-hidden="true"
+              use:droppable={{
+                data: { group_index, insert: "before" } as GroupDropSlotData,
+                scope: "group",
+                canDrop: (source: GroupDragData, target: GroupDropSlotData) =>
+                  store.canDropGroup(source, target),
+                dropEffect: "move",
+                onDrop: store.handleGroupSlotDrop,
+              }}
+            ></div>
+          {/if}
 
-      <div class="group-wrapper" class:is-hidden={!isVisible}>
-        {#if group_index === store.firstVisibleGroupIndex}
+          <SelectionFrame
+            selected={selectedIds.includes(group.id)}
+            name={group.name}
+            ontoggle={() => toggleSelection(group.id)}
+          >
+            <GroupPanel
+              {group_index}
+              {active}
+              selectionActive={selectedItems.length > 0}
+              selected={selectedIds.includes(group.id)}
+              ontoggleSelection={() => toggleSelection(group.id)}
+              on:importRules={() => openImportRulesModal(group_index)}
+            />
+          </SelectionFrame>
+
           <div
-            class="group-drop-slot group-drop-slot--top"
+            class="group-drop-slot group-drop-slot--bottom"
             aria-hidden="true"
             use:droppable={{
-              data: { group_index, insert: "before" } as GroupDropSlotData,
+              data: { group_index, insert: "after" } as GroupDropSlotData,
               scope: "group",
-              canDrop: (source: GroupDragData, target: GroupDropSlotData) =>
-                store.canDropGroup(source, target),
+              canDrop: store.canDropGroup,
               dropEffect: "move",
               onDrop: store.handleGroupSlotDrop,
             }}
           ></div>
-        {/if}
-
-        <SelectionFrame
-          selected={selectedIds.includes(group.id)}
-          name={group.name}
-          ontoggle={() => toggleSelection(group.id)}
-        >
-          <GroupPanel
-            {group_index}
-            selectionActive={selectedItems.length > 0}
-            selected={selectedIds.includes(group.id)}
-            ontoggleSelection={() => toggleSelection(group.id)}
-            on:importRules={() => openImportRulesModal(group_index)}
-          />
-        </SelectionFrame>
-
-        <div
-          class="group-drop-slot group-drop-slot--bottom"
-          aria-hidden="true"
-          use:droppable={{
-            data: { group_index, insert: "after" } as GroupDropSlotData,
-            scope: "group",
-            canDrop: store.canDropGroup,
-            dropEffect: "move",
-            onDrop: store.handleGroupSlotDrop,
-          }}
-        ></div>
-      </div>
-    {/each}
+        </div>
+      {/snippet}
+    </VirtualList>
   </div>
 </div>
 
@@ -225,7 +261,7 @@
   open={importRulesModal.open}
   group_index={importRulesModal.groupIndex}
   on:close={closeImportRulesModal}
-  on:import={handleImportRules}
+  onImportRules={handleImportRules}
 />
 
 {#if selectedItems.length}
@@ -269,11 +305,7 @@
 
   .group-wrapper {
     position: relative;
-    margin: 1rem 0;
-  }
-
-  .group-wrapper.is-hidden {
-    display: none;
+    padding-bottom: 1rem;
   }
 
   .group-drop-slot {
@@ -314,7 +346,7 @@
       linear-gradient(black, black) center / 100% 1rem no-repeat;
   }
 
-  .group-wrapper:not(:has(~ .group-wrapper:not(.is-hidden))) .group-drop-slot--bottom::before {
+  .group-wrapper.last-group .group-drop-slot--bottom::before {
     mask:
       radial-gradient(circle at 100% 0, transparent 0.5rem, black calc(0.5rem + 0.5px)) top left /
         0.5rem 0.5rem no-repeat,
@@ -349,7 +381,7 @@
   }
 
   .group-drop-slot--bottom {
-    bottom: -1rem;
+    bottom: 0;
   }
 
   :global(html[data-dnd-scope="group"]) .group-drop-slot {
