@@ -368,6 +368,34 @@ Deno.test("prepared draft adoption isolates new and restored nodes from both inp
   assert.equal(tracker.isDirty, false);
 });
 
+Deno.test("restoring an empty group retains edits of its rule moved to another group", () => {
+  const saved = [
+    { id: "a", rules: [] },
+    { id: "b", rules: [{ id: "moved", rule: "saved.test" }] },
+  ];
+  const tracker = new ChangeTracker(saved);
+  const moved = tracker.data[1].rules[0];
+  tracker.data[1].rules.pop();
+  tracker.data[0].rules.push(moved);
+  moved.rule = "edited.test";
+  tracker.data.pop();
+
+  tracker.replaceDraft([
+    { id: "a", rules: [{ id: "moved", rule: "edited.test" }] },
+    { id: "b", rules: [] },
+  ]);
+  assert.equal(tracker.data[0].rules[0], moved);
+  assert.deepEqual(tracker.changes.mutated, [{ id: "moved", rule: "edited.test" }]);
+
+  tracker.data[0].rules.pop();
+  tracker.data[1].rules.push(moved);
+  assert.equal(tracker.isDirty, true);
+  assert.deepEqual(tracker.changes.mutated, [{ id: "moved", rule: "edited.test" }]);
+  moved.rule = "saved.test";
+  assert.equal(tracker.isDirty, false);
+  assert.deepEqual(JSON.parse(JSON.stringify(tracker.data)), saved);
+});
+
 Deno.test("detached draft preparation yields and can cancel between tasks", async () => {
   const saved = fixture();
   const live = new ChangeTracker(saved);

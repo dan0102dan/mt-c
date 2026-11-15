@@ -593,38 +593,45 @@ export class ChangeTracker<T extends object> {
     }
   }
 
-  private collectLiveState(node: any, ids: Set<string>, arrays: Set<object>) {
+  private collectLiveState(node: any, objects: Map<string, object>, arrays: Set<object>) {
     if (!node || typeof node !== "object") return;
 
     if (Array.isArray(node)) {
       arrays.add(node);
       for (const item of node) {
-        this.collectLiveState(item, ids, arrays);
+        this.collectLiveState(item, objects, arrays);
       }
       return;
     }
 
-    if (node.id) {
-      ids.add(node.id);
+    // Only dirty IDs need a live object for reconciliation. Do not build a
+    // second index of every unchanged rule during a baseline update.
+    if (node.id && this.dirtyObjectProps.has(node.id)) {
+      objects.set(node.id, node);
     }
 
     for (const key in node) {
       if (typeof node[key] === "object") {
-        this.collectLiveState(node[key], ids, arrays);
+        this.collectLiveState(node[key], objects, arrays);
       }
     }
   }
 
   private pruneDirtyState() {
-    const liveIds = new Set<string>();
+    const liveObjects = new Map<string, object>();
     const liveArrays = new Set<object>();
 
-    this.collectLiveState(this.state, liveIds, liveArrays);
+    this.collectLiveState(this.state, liveObjects, liveArrays);
 
-    for (const id of Array.from(this.dirtyObjectProps.keys())) {
-      if (!liveIds.has(id)) {
+    for (const [id, props] of this.dirtyObjectProps) {
+      const target = liveObjects.get(id);
+      if (!target) {
         this.dirtyObjectProps.delete(id);
+        continue;
       }
+      // Reconcile the final live object, which may have moved elsewhere while
+      // its old parent was restored. A saved clone must not clear its edits.
+      for (const prop of Array.from(props)) this.checkObjectField(target, prop);
     }
 
     for (const array of Array.from(this.dirtyArrays)) {
@@ -715,12 +722,7 @@ export class ChangeTracker<T extends object> {
           for (let index = 0; index < desired.length; index++) {
             const item = desired[index];
             const restored = this.originalObjects.get(item.id);
-            if (!byId.has(item.id) && restored) {
-              // This node was rebuilt from its saved snapshot. Remove dirty
-              // entries left by the former instance before replaying edits.
-              this.clearDirtyStateFor(current[index]);
-              this.indexAndLink(current[index], restored);
-            }
+            if (!byId.has(item.id) && restored) this.indexAndLink(current[index], restored);
             this.replayDraft(current[index], item);
           }
         } else {
@@ -752,10 +754,7 @@ export class ChangeTracker<T extends object> {
     for (let index = 0; index < incoming.length; index++) {
       const item = incoming[index];
       const restored = this.originalObjects.get(item.id);
-      if (!current.has(item.id) && restored) {
-        this.clearDirtyStateFor(target[index]);
-        this.indexAndLink(target[index], restored);
-      }
+      if (!current.has(item.id) && restored) this.indexAndLink(target[index], restored);
       this.replayDraft(target[index], item);
     }
     this.checkArrayStructure(target);
