@@ -147,10 +147,6 @@ const group = {
   ],
 };
 async function showPage(page: Page, name: string) {
-  const menu = page.locator(".mobile-dropdown-btn");
-  await expect(menu).toBeAttached();
-  if ((await menu.isVisible()) && (await menu.getAttribute("aria-expanded")) !== "true")
-    await menu.click();
   await page.getByRole("tab", { name, exact: true }).click();
 }
 async function upload(page: Page, input: unknown, filename = "config.mtrickle") {

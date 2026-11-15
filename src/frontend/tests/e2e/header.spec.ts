@@ -1,6 +1,8 @@
 import { expect, test } from "@playwright/test";
 
-test.describe("Header Settings", () => {
+import { openInterface, selectLanguage } from "./helpers/interface";
+
+test.describe("Interface preferences and header", () => {
   test.beforeEach(async ({ page }) => {
     // Mock auth disabled to access layout directly
     await page.route("**/auth", async (route) => route.fulfill({ json: { enabled: false } }));
@@ -10,7 +12,7 @@ test.describe("Header Settings", () => {
     await page.route("**/interfaces", async (route) => route.fulfill({ json: { interfaces: [] } }));
     await page.route("**/profiles", (route) => route.fulfill({ json: { profiles: [] } }));
     await page.route("**/subscriptions", (route) => route.fulfill({ json: { subscriptions: [] } }));
-    // The header always mounts the updater; keep unrelated UI checks offline.
+    // Settings stay mounted with the updater; keep these UI checks offline.
     await page.route("**/system/update/status", (route) =>
       route.fulfill({ json: { stage: "idle" } }),
     );
@@ -27,13 +29,16 @@ test.describe("Header Settings", () => {
     );
     await page.route("https://api.github.com/**", (route) => route.fulfill({ json: [] }));
     await page.goto("/");
+    await openInterface(page);
   });
 
-  test("should display version", async ({ page }) => {
-    // Version is in .version span.version-text
-    const version = page.locator(".version .version-text");
+  test("build and app information live in Interface instead of the header", async ({ page }) => {
+    const version = page.locator("#interface .version .version-text");
     await expect(version).toBeVisible();
     await expect(version).not.toHaveText("");
+    const navigation = page.locator("nav");
+    await expect(navigation.getByRole("tab")).toHaveCount(3);
+    await expect(navigation.locator(".version, .locale, .info")).toHaveCount(0);
   });
 
   test("version popup opens from keyboard and follows language", async ({ page }) => {
@@ -47,29 +52,29 @@ test.describe("Header Settings", () => {
     await expect(popup.getByRole("button", { name: "Check for updates" })).toBeEnabled();
     await page.keyboard.press("Escape");
 
-    await page.locator(".locale button").click();
+    await selectLanguage(page, "Русский");
     await page.getByRole("button", { name: /Обновление программы:/ }).click();
     await expect(page.getByRole("dialog", { name: "Обновление программы" })).toBeVisible();
   });
 
-  test("should rotate locale", async ({ page }) => {
-    const localeBtn = page.locator(".locale button");
-
-    // Get initial text (flag)
-    const initialText = await localeBtn.textContent();
-
-    // Click to rotate
-    await localeBtn.click();
-
-    // Verify text changed
-    await expect(localeBtn).not.toHaveText(initialText || "");
-
-    // Click again to rotate back (assuming 2 locales, or just rotate more)
-    await localeBtn.click();
+  test("language selection updates the interface and survives reload", async ({ page }) => {
+    await selectLanguage(page, "Русский");
+    await expect(page.getByRole("tab", { name: "Интерфейс", exact: true })).toHaveAttribute(
+      "aria-selected",
+      "true",
+    );
+    await page.reload();
+    await expect(page.locator("#interface")).toBeVisible();
+    await expect(page.getByLabel("Язык", { exact: true })).toHaveText("Русский");
+    await selectLanguage(page, "English");
+    await expect(page.getByRole("tab", { name: "Interface", exact: true })).toHaveAttribute(
+      "aria-selected",
+      "true",
+    );
   });
 
   test("should open info dialog", async ({ page }) => {
-    const infoBtn = page.locator(".info button");
+    const infoBtn = page.locator("#interface").getByRole("button", { name: "About", exact: true });
     await expect(infoBtn).toBeVisible();
 
     await infoBtn.click();
@@ -93,8 +98,8 @@ test.describe("Header Settings", () => {
     // Check translations after switching language.
     await page.keyboard.press("Escape");
     await expect(dialog).not.toBeVisible();
-    await page.locator(".locale button").click();
-    await infoBtn.click();
+    await selectLanguage(page, "Русский");
+    await page.locator("#interface").getByRole("button", { name: "Инфо", exact: true }).click();
     await expect(dialog.locator("[data-dialog-title]")).toHaveText("Инфо");
     await expect(dialog.locator(".build")).toContainText("Билд:");
     await expect(dialog.getByText("Трекер багов")).toBeVisible();
@@ -103,6 +108,23 @@ test.describe("Header Settings", () => {
     // Close dialog
     await page.keyboard.press("Escape");
     await expect(dialog).not.toBeVisible();
+  });
+
+  test("mobile navigation keeps all sections directly accessible in both languages", async ({
+    page,
+  }) => {
+    await page.setViewportSize({ width: 390, height: 844 });
+    for (const language of ["English", "Русский"] as const) {
+      await selectLanguage(page, language);
+      const navigation = page.locator("nav");
+      await expect(navigation.getByRole("tab")).toHaveCount(3);
+      for (const tab of await navigation.getByRole("tab").all()) {
+        await expect(tab).toBeVisible();
+        await expect(tab).toBeInViewport();
+      }
+      const documentWidth = await page.evaluate(() => document.documentElement.scrollWidth);
+      expect(documentWidth).toBeLessThanOrEqual(390);
+    }
   });
 });
 

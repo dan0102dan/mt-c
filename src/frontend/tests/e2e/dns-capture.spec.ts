@@ -125,8 +125,6 @@ async function setup(page: Page, dns: Backend) {
   return page.locator(".dns-query-log");
 }
 async function settings(page: Page) {
-  const menu = page.getByRole("button", { name: "Open menu" });
-  if (await menu.isVisible()) await menu.click();
   await page.getByRole("tab", { name: "Settings" }).click();
   await page.getByRole("tab", { name: "DNS queries", exact: true }).click();
 }

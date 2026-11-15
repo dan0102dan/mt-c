@@ -36,8 +36,6 @@ for (const width of [1280, 390]) {
       return route.fulfill({ json: fixtures[path] ?? {} });
     });
     await page.goto("/");
-    const menu = page.getByRole("button", { name: "Open menu" });
-    if (await menu.isVisible()) await menu.click();
     await page.getByRole("tab", { name: "Settings", exact: true }).click();
     const profiles = page.getByRole("tab", { name: "Profiles", exact: true });
     const dns = page.getByRole("tab", { name: "DNS queries", exact: true });

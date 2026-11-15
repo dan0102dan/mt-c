@@ -100,7 +100,7 @@ test.describe("Groups Search", () => {
 
   test("should not intercept Ctrl+F while a dialog is open", async ({ page }) => {
     await expect(groupsPage.searchInput).toBeAttached();
-    await page.locator(".info button").click();
+    await page.locator('.group-header [data-value="Import Rule List"] button').first().click();
     await expect(page.locator('[data-dialog-content][data-state="open"]')).toBeVisible();
 
     const browserSearchWasPrevented = await page.evaluate(() => {

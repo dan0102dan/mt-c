@@ -1,6 +1,7 @@
 import { expect, test, type Locator, type Page } from "@playwright/test";
 
 import type { Group, Profile, Subscription } from "../../src/types";
+import { openInterface, selectLanguage } from "./helpers/interface";
 
 async function backend(page: Page) {
   const state = {
@@ -119,8 +120,6 @@ async function backend(page: Page) {
 }
 
 async function openSettings(page: Page) {
-  if ((page.viewportSize()?.width ?? 1280) <= 700)
-    await page.getByRole("button", { name: "Open menu", exact: true }).click();
   await page.getByRole("tab", { name: "Settings", exact: true }).click();
   await expect(page.getByRole("button", { name: "Add profile", exact: true })).toBeEnabled();
 }
@@ -502,9 +501,6 @@ async function geometry(locator: Locator) {
 }
 
 async function navigate(page: Page, name: string) {
-  const menu = page.locator(".mobile-dropdown-btn");
-  if ((await menu.isVisible()) && (await menu.getAttribute("aria-expanded")) !== "true")
-    await menu.click();
   await page.getByRole("tab", { name, exact: true }).click();
 }
 
@@ -763,7 +759,11 @@ for (const width of [390, 1280]) {
       ];
       await page.goto("/");
       await openSettings(page);
-      if (language === "ru") await page.locator(".locale button").click();
+      if (language === "ru") {
+        await openInterface(page);
+        await selectLanguage(page, "Русский");
+        await page.getByRole("tab", { name: "Профили", exact: true }).click();
+      }
       const ru = language === "ru";
       const profilesTab = page.getByRole("tab", { name: ru ? "Профили" : "Profiles", exact: true });
       const save = page.locator("#save-settings");

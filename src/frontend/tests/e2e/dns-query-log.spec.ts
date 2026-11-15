@@ -3,6 +3,7 @@ import type { AddressInfo } from "node:net";
 import { test as base, expect, type Page } from "@playwright/test";
 
 import type { DnsQuery } from "../../src/modules/settings/dns/data";
+import { openInterface, selectLanguage } from "./helpers/interface";
 
 const sample: DnsQuery[] = [
   {
@@ -159,8 +160,6 @@ async function setup(page: Page, dns: Backend) {
     await route.fulfill({ json: fixtures[path.replace(/\/$/, "")] ?? {} });
   });
   await page.goto("/");
-  const menu = page.getByRole("button", { name: "Open menu" });
-  if (await menu.isVisible()) await menu.click();
   await page.getByRole("tab", { name: "Settings" }).click();
   await page.getByRole("tab", { name: "DNS queries", exact: true }).click();
   const region = page.locator(".dns-query-log");
@@ -492,7 +491,9 @@ for (const width of [1280, 390]) {
     ]);
     await expect(region.getByRole("searchbox")).toHaveValue("example");
     expect(dns.state.snapshots).toBe(0);
-    await page.locator(".locale button").click();
+    await openInterface(page);
+    await selectLanguage(page, "Русский");
+    await page.getByRole("tab", { name: "DNS-запросы", exact: true }).click();
     const russianSort = region.getByRole("button", { name: "Время", exact: true });
     await expect(russianSort).toHaveAttribute("title", "Сначала новые");
     await russianSort.click();
@@ -629,7 +630,10 @@ for (const width of [1280, 390]) {
     for (let id = 70; id <= 75; id++)
       dns.emit({ ...sample[0], id, time_ms: id * 1000, domain: "host2.example" });
     await expect(domains.first()).toHaveText("host2.example");
-    await page.locator(".locale button").click();
+    expect(dns.state.connections).toBe(1);
+    await openInterface(page);
+    await selectLanguage(page, "Русский");
+    await page.getByRole("tab", { name: "DNS-запросы", exact: true }).click();
     await expect(region.getByRole("button", { name: "Запросы", exact: true })).toHaveAttribute(
       "title",
       "Сначала меньше запросов",
@@ -637,7 +641,7 @@ for (const width of [1280, 390]) {
     await region.getByRole("button", { name: "Время", exact: true }).click();
     await expect(region.locator(".count-sort-header")).toHaveAttribute("aria-sort", "none");
     await expect(region.locator(".time-sort-header")).toHaveAttribute("aria-sort", "descending");
-    expect(dns.state.connections).toBe(1);
+    await expect.poll(() => dns.state.connections).toBe(2);
   });
 }
 

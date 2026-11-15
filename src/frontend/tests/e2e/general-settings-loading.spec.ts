@@ -85,8 +85,6 @@ async function backend(page: Page) {
 }
 
 async function showPage(page: Page, name: "Groups" | "Settings") {
-  const menu = page.getByRole("button", { name: "Open menu", exact: true });
-  if (await menu.isVisible()) await menu.click();
   await page.getByRole("tab", { name, exact: true }).click();
 }
 

@@ -84,10 +84,6 @@ async function setup(page: Page, dnsUrl: string, language: "en" | "ru") {
     await route.fulfill({ json: fixtures[path] ?? {} });
   });
   await page.goto("/");
-  // The mobile menu toggle has a localized name; its existing stable class
-  // also works when this regression is run in Russian.
-  const menu = page.locator(".mobile-dropdown-btn");
-  if (await menu.isVisible()) await menu.click();
   await page
     .getByRole("tab", { name: language === "ru" ? "Настройки" : "Settings", exact: true })
     .click();
@@ -269,8 +265,6 @@ for (const width of [390, 1280]) {
       await expect(activeRow.locator(".context-add svg .horizontal")).toHaveCSS("width", "4px");
 
       async function switchSection(name: string) {
-        const menu = page.getByRole("button", { name: "Open menu", exact: true });
-        if (await menu.isVisible()) await menu.click();
         const [frames] = await Promise.all([
           page.evaluate(async () => {
             const frames: {

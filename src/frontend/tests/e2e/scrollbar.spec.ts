@@ -59,7 +59,6 @@ for (const viewport of [
       await page.goto("/");
       await expect(page.locator(".group-list.visible")).toBeVisible();
       if (tab !== "Groups") {
-        if (viewport.width < 700) await page.locator(".mobile-dropdown-btn").click();
         await page.getByRole("tab", { name: tab, exact: true }).click();
       }
       const content =

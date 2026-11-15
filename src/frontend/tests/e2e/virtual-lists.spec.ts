@@ -49,8 +49,6 @@ async function backend(page: Page, groups: Group[] = [], subscriptions: Subscrip
 }
 
 async function openTab(page: Page, name: string) {
-  const menu = page.locator(".mobile-dropdown-btn");
-  if (await menu.isVisible()) await menu.click();
   await page.getByRole("tab", { name, exact: true }).click();
 }
 

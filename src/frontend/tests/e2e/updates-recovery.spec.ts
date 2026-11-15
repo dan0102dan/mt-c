@@ -1,6 +1,7 @@
 import { expect, test, type Page } from "@playwright/test";
 
 import type { UpdateStatus } from "../../src/modules/updates/releases";
+import { openInterface } from "./helpers/interface";
 
 const job = (stage: UpdateStatus["stage"]): UpdateStatus => ({
   stage,
@@ -26,6 +27,8 @@ async function setup(page: Page) {
   await page.route("**/auth", (route) => route.fulfill({ json: { enabled: false } }));
   await page.route("**/groups?with_rules=true", (route) => route.fulfill({ json: { groups: [] } }));
   await page.route("**/interfaces", (route) => route.fulfill({ json: { interfaces: [] } }));
+  await page.route("**/profiles", (route) => route.fulfill({ json: { profiles: [] } }));
+  await page.route("**/subscriptions", (route) => route.fulfill({ json: { subscriptions: [] } }));
   await page.route("**/system/update", (route) => {
     state.infoReads++;
     if (state.failedInfoReads > 0) {
@@ -97,6 +100,7 @@ async function setup(page: Page) {
 }
 
 async function openPopup(page: Page) {
+  await openInterface(page);
   await page.getByRole("button", { name: /Software update:/ }).click();
   const popup = page.getByRole("dialog", { name: "Software update", exact: true });
   await expect(popup).toBeVisible();

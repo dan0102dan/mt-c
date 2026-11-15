@@ -22,6 +22,7 @@
     contextAction?: ContextAction;
     addLabel?: string;
     canSave: boolean;
+    showActions?: boolean;
     saveBusy?: boolean;
     canAdd?: boolean;
     controlsClass?: string;
@@ -46,6 +47,7 @@
     addLabel,
     actionsClass = "",
     canSave,
+    showActions = true,
     saveBusy = false,
     canAdd = true,
     controlsClass = "",
@@ -122,7 +124,7 @@
     </div>
   {/if}
 
-  <div class={`page-controls-actions ${actionsClass}`}>
+  <div class={`page-controls-actions ${actionsClass}`} hidden={!showActions}>
     <Tooltip value={saveLabel}>
       <Button
         onclick={onSave}
@@ -218,6 +220,9 @@
     display: flex;
     align-items: center;
     gap: 0.5rem;
+  }
+  .page-controls-actions[hidden] {
+    display: none;
   }
 
   .context-add {

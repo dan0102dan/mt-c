@@ -25,7 +25,7 @@
   import ScrollToTop from "../feedback/ScrollToTop.svelte";
   import SnowField from "../feedback/SnowField.svelte";
   import Toast from "../feedback/Toast.svelte";
-  import HeaderSettings from "./HeaderSettings.svelte";
+  import HeaderActions from "./HeaderActions.svelte";
 
   import {
     assertImportApplied,
@@ -66,7 +66,7 @@
   import { fetcher } from "../../utils/fetcher";
   import { HttpError } from "../../utils/http-error";
   import { isValidPriority } from "../../utils/priority";
-  import { LayoutList, Menu, RSS, Settings } from "../ui/icons";
+  import { LayoutList, RSS, Settings } from "../ui/icons";
   import { PAGE_CONTROLS_MOTION, type PageControlsMotion } from "./page-controls-motion";
 
   let { active = true }: { active?: boolean } = $props();
@@ -74,7 +74,6 @@
 
   const lastActiveTab = persistedState("active_tab", "groups");
   let active_tab = $state(lastActiveTab.current);
-  let isMenuOpen = $state(false);
   let isRenderCompleteGroups = $state(false);
   let isRenderCompleteSubscriptions = $state(false);
   let isRenderComplete = $derived(isRenderCompleteGroups && isRenderCompleteSubscriptions);
@@ -529,9 +528,6 @@
   };
   setContext(CONFIG_TRANSFER_CONTEXT, transferControls);
 
-  const toggleMenu = () => (isMenuOpen = !isMenuOpen);
-  const closeMenu = () => (isMenuOpen = false);
-
   function handleSearchShortcut(event: KeyboardEvent) {
     if (
       !active ||
@@ -599,44 +595,29 @@
 
 <main>
   <Tabs.Root bind:value={active_tab} class="app-tabs">
-    <nav>
+    <nav aria-label={t("Main navigation")}>
       <div class="nav-left">
-        <button
-          type="button"
-          class="mobile-dropdown-btn"
-          aria-label={isMenuOpen ? "Close menu" : "Open menu"}
-          aria-expanded={isMenuOpen}
-          onclick={toggleMenu}
-        >
-          <span class="menu-morph" class:open={isMenuOpen} aria-hidden="true">
-            <Menu size={24} />
-          </span>
-        </button>
-
-        <!-- Tabs container -->
-        <div class="tabs-panel" class:open={isMenuOpen}>
-          <Tabs.List>
-            <Tabs.Trigger value="groups" onclick={closeMenu}>
-              <span class="tab-icon"><LayoutList size={24} /></span>
+        <div class="tabs-panel">
+          <Tabs.List aria-label={t("Main navigation")}>
+            <Tabs.Trigger value="groups">
+              <span class="tab-icon" aria-hidden="true"><LayoutList size={24} /></span>
               {t("Groups")}
             </Tabs.Trigger>
 
-            <Tabs.Trigger value="subscriptions" onclick={closeMenu}>
-              <span class="tab-icon"><RSS size={24} strokeWidth={3} /></span>
+            <Tabs.Trigger value="subscriptions">
+              <span class="tab-icon" aria-hidden="true"><RSS size={24} strokeWidth={3} /></span>
               {t("Subscriptions")}
             </Tabs.Trigger>
 
-            <Tabs.Trigger value="settings" onclick={closeMenu}>
-              <span class="tab-icon"><Settings size={24} /></span>
+            <Tabs.Trigger value="settings">
+              <span class="tab-icon" aria-hidden="true"><Settings size={24} /></span>
               {t("Settings")}
             </Tabs.Trigger>
           </Tabs.List>
         </div>
       </div>
 
-      <div class="header-settings">
-        <HeaderSettings />
-      </div>
+      <HeaderActions />
     </nav>
 
     <article>
@@ -683,6 +664,7 @@
     display: flex;
     align-items: center;
     justify-content: space-between;
+    gap: var(--space-3);
     width: 100%;
     max-width: 1000px;
     position: relative;
@@ -691,15 +673,13 @@
   .nav-left {
     display: flex;
     align-items: center;
-  }
-
-  .mobile-dropdown-btn {
-    display: none;
+    min-width: 0;
+    flex: 1;
   }
 
   .tabs-panel {
     display: block;
-    z-index: 10;
+    min-width: 0;
   }
 
   .tabs-panel :global([data-tabs-list]) {
@@ -740,131 +720,39 @@
     color: var(--text);
   }
 
+  .tabs-panel :global([data-tabs-trigger]:focus-visible) {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+  }
+
   :global(.app-tab-content) {
     padding-top: 1rem;
     outline: none;
   }
 
   @media (max-width: 700px) {
-    .mobile-dropdown-btn {
-      display: inline-flex;
-      align-items: center;
-      justify-content: center;
-      padding: 0.5rem;
-      border: 0;
-      background: transparent;
-      color: var(--text);
-      cursor: pointer;
-      user-select: none;
-      -webkit-tap-highlight-color: transparent;
-    }
-
     .tabs-panel {
-      position: absolute;
-      top: 100%;
-      left: 0;
-      right: 0;
-      background: var(--bg-dark);
-      border-top: 1px solid var(--border-light);
-      border-bottom: 1px solid var(--border-light);
-      padding: 1rem 0.7rem;
-      display: flex;
-      flex-direction: column;
-      opacity: 0;
-      visibility: hidden;
-      pointer-events: none;
-      transition: none;
-    }
-
-    .tabs-panel.open {
-      opacity: 1;
-      visibility: visible;
-      pointer-events: auto;
-      transform: translateY(0);
-      transition:
-        opacity 160ms ease,
-        transform 160ms ease,
-        visibility 0s linear 0s;
-    }
-
-    @supports selector(:has(*)) {
-      @starting-style {
-        .tabs-panel.open {
-          transform: translateY(-10px);
-        }
-      }
+      width: 100%;
     }
 
     .tabs-panel :global([data-tabs-list]) {
-      flex-direction: column;
-      gap: 1.2rem;
-      align-items: flex-start;
+      width: 100%;
+      gap: var(--space-1);
     }
 
     .tabs-panel :global([data-tabs-trigger]) {
-      font-size: 1.5rem;
-      font-weight: 500;
-      border-bottom: none;
-      padding: 0;
-      width: 100%;
-      justify-content: flex-start;
-      gap: 0.8rem;
-      line-height: 1;
+      flex: 1 1 0;
+      min-width: 0;
+      flex-direction: column;
+      justify-content: center;
+      gap: 0.3rem;
+      padding: 0.5rem 0.1rem;
+      font-size: 0.85rem;
+      line-height: 1.3;
     }
-  }
-
-  .menu-morph {
-    --icon: 24px;
-    --dur-move: 170ms;
-    --dur-fade: 110ms;
-    --ease: cubic-bezier(0.2, 0.8, 0.2, 1);
-    --offset: calc(var(--icon) * 7 / 24);
-    --xscale: 1.08;
-
-    width: var(--icon);
-    height: var(--icon);
-    display: inline-block;
-  }
-
-  .menu-morph :global(svg) {
-    width: var(--icon);
-    height: var(--icon);
-    display: block;
-  }
-
-  .menu-morph :global(path) {
-    vector-effect: non-scaling-stroke;
-    transform-box: fill-box;
-    transform-origin: center;
-    will-change: transform, opacity;
-
-    transition-property: transform, opacity;
-    transition-duration: var(--dur-move), var(--dur-fade);
-    transition-timing-function: var(--ease), ease-out;
-  }
-
-  .menu-morph:not(.open) :global(path:nth-child(2)) {
-    transition-delay: 60ms, 0ms;
-  }
-
-  .menu-morph.open :global(path:nth-child(1)) {
-    transform: translateY(var(--offset)) rotate(45deg) scale(var(--xscale));
-  }
-
-  .menu-morph.open :global(path:nth-child(3)) {
-    transform: translateY(calc(var(--offset) * -1)) rotate(-45deg) scale(var(--xscale));
-  }
-
-  .menu-morph.open :global(path:nth-child(2)) {
-    opacity: 0;
-    transform: scaleX(0);
-    transition-delay: 0ms, 0ms;
-  }
-
-  @media (prefers-reduced-motion: reduce) {
-    .menu-morph :global(path),
-    .tabs-panel.open {
-      transition: none !important;
+    .tab-icon :global(svg) {
+      width: 20px;
+      height: 20px;
     }
   }
 </style>

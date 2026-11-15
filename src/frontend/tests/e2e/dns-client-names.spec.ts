@@ -122,8 +122,6 @@ async function setup(page: Page, dns: Backend) {
     await route.fulfill({ json: fixtures[path.replace(/\/$/, "")] ?? {} });
   });
   await page.goto("/");
-  const menu = page.getByRole("button", { name: "Open menu", exact: true });
-  if (await menu.isVisible()) await menu.click();
   await page.getByRole("tab", { name: "Settings", exact: true }).click();
   await page.getByRole("tab", { name: "DNS queries", exact: true }).click();
   const region = page.locator(".dns-query-log");

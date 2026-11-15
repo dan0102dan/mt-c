@@ -229,8 +229,6 @@ async function backend(page: Page) {
 }
 
 async function showPage(page: Page, name: "Groups" | "Subscriptions" | "Settings") {
-  const menu = page.getByRole("button", { name: "Open menu", exact: true });
-  if (await menu.isVisible()) await menu.click();
   await page.getByRole("tab", { name, exact: true }).click();
 }
 
@@ -563,8 +561,6 @@ for (const width of [1280, 390]) {
       const { state, complete } = await backend(page);
       state.holdApplying = true;
       await page.goto("/");
-      const menu = page.getByRole("button", { name: "Open menu", exact: true });
-      if (await menu.isVisible()) await menu.click();
       await page.getByRole("tab", { name: russian ? "Настройки" : "Settings", exact: true }).click();
       await page.getByRole("tab", { name: russian ? "Общие" : "General", exact: true }).click();
       await expect(page.locator("#general-additionalTTLSeconds")).toHaveValue("3600");
@@ -1090,7 +1086,6 @@ for (const russian of [false, true]) {
       await page.addInitScript(() => localStorage.setItem("locale", JSON.stringify({ value: "ru" })));
     const { state } = await backend(page);
     await page.goto("/");
-    await page.getByRole("button", { name: "Open menu", exact: true }).click();
     await page.getByRole("tab", { name: russian ? "Настройки" : "Settings", exact: true }).click();
     const tab = page.getByRole("tab", { name: russian ? "Общие" : "General", exact: true });
     await tab.click();
@@ -1306,7 +1301,6 @@ for (const russian of [false, true]) {
     // intentionally reuse the accepted snapshot and must not induce a read.
     state.operation = { id: "external", state: "applying", target_revision: revision() };
     await page.goto("/");
-    await page.getByRole("button", { name: "Open menu", exact: true }).click();
     await page.getByRole("tab", { name: russian ? "Настройки" : "Settings", exact: true }).click();
     await page.getByRole("tab", { name: russian ? "Общие" : "General", exact: true }).click();
     await expect(page.locator("#general-additionalTTLSeconds")).toHaveValue("3600");

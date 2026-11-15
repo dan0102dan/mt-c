@@ -10,6 +10,7 @@
   import Switch from "../../../components/ui/Switch.svelte";
   import Tooltip from "../../../components/ui/Tooltip.svelte";
   import VirtualList from "../../../components/ui/VirtualList.svelte";
+  import { showGroupPriority } from "../../../data/interface.svelte";
   import { t } from "../../../data/locale.svelte";
   import { GROUPS_STORE_CONTEXT, type GroupsStore } from "../groups.svelte";
   import GroupDuplicateMenu from "./GroupDuplicateMenu.svelte";
@@ -280,6 +281,7 @@
     <Collapsible.Root open={effectiveOpen} onOpenChange={toggleOpen}>
       <div
         class="group-header"
+        class:priority-visible={showGroupPriority.current}
         data-group-index={group_index}
         use:droppable={{
           data: { rule_id: "", rule_index: 0, group_id: group.id, group_index },
@@ -428,11 +430,13 @@
             </Collapsible.Trigger>
           </Tooltip>
         </div>
-        <EdgeNumberInput
-          title={t("Group priority")}
-          label={`${t("Group priority")}: ${group.name}`}
-          bind:value={group.priority}
-        />
+        {#if showGroupPriority.current}
+          <EdgeNumberInput
+            title={t("Group priority")}
+            label={`${t("Group priority")}: ${group.name}`}
+            bind:value={group.priority}
+          />
+        {/if}
       </div>
 
       <Collapsible.Content>
@@ -547,10 +551,14 @@
       display: flex;
       justify-content: space-between;
       align-items: center;
-      padding: 0.5rem 2rem 0.5rem 0.5rem;
+      padding: 0.5rem;
       border-radius: 0.5rem;
       background-color: var(--bg-light);
       position: relative;
+    }
+
+    &.priority-visible {
+      padding-right: 2rem;
     }
   }
 
@@ -805,7 +813,7 @@
       flex-direction: column;
       align-items: start;
       justify-content: center;
-      padding: 0.4rem 2rem 0.4rem 0.5rem;
+      padding: 0.4rem 0.5rem;
     }
 
     .group-left {

@@ -1,6 +1,7 @@
 import { expect, test, type Page } from "@playwright/test";
 
 import type { Profile } from "../../src/types";
+import { openInterface, selectLanguage } from "./helpers/interface";
 
 const keenetic = process.env.VITE_ENTWARE_KN === "1";
 type Settings = { enabled: boolean; policy_id: string; mode: "include" | "exclude" };
@@ -94,8 +95,6 @@ async function backend(page: Page, enabled = false) {
 }
 async function openSettings(page: Page) {
   await page.goto("/");
-  if ((page.viewportSize()?.width ?? 1280) <= 700)
-    await page.getByRole("button", { name: "Open menu", exact: true }).click();
   await page.getByRole("tab", { name: "Settings", exact: true }).click();
   await expect(page.getByRole("button", { name: "Add profile", exact: true })).toBeVisible();
 }
@@ -157,13 +156,17 @@ test.describe("Keenetic policy settings", { tag: "@entware_kn" }, () => {
         ),
       ).toBeVisible();
       await mode.click();
-      await page.locator(".locale button").click();
+      await openInterface(page);
+      await selectLanguage(page, "Русский");
+      await page.getByRole("tab", { name: "Keenetic", exact: true }).click();
       await expect(
         panel(page).getByText("Include: MT обрабатывает только устройства выбранной политики", {
           exact: true,
         }),
       ).toBeVisible();
-      await page.locator(".locale button").click();
+      await openInterface(page);
+      await selectLanguage(page, "English");
+      await page.getByRole("tab", { name: "Keenetic", exact: true }).click();
       expect(state.writes).toBe(0);
       await save(page).click();
       await expect(save(page)).toBeDisabled();

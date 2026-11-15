@@ -32,6 +32,7 @@
   import Switch from "../../../components/ui/Switch.svelte";
   import Tooltip from "../../../components/ui/Tooltip.svelte";
   import VirtualList from "../../../components/ui/VirtualList.svelte";
+  import { showSubscriptionPriority } from "../../../data/interface.svelte";
   import { t } from "../../../data/locale.svelte";
   import { SUBSCRIPTIONS_STORE_CONTEXT, type SubscriptionsStore } from "../subscriptions.svelte";
   import SubscriptionRuleRow from "./SubscriptionRuleRow.svelte";
@@ -172,7 +173,7 @@
     }}
   >
     <Collapsible.Root open={effectiveOpen} onOpenChange={toggleOpen}>
-      <div class="subscription-header">
+      <div class="subscription-header" class:priority-visible={showSubscriptionPriority.current}>
         <div class="subscription-left">
           <div class="subscription-grip" title={t("Drag Subscription")}>
             <Grip />
@@ -289,11 +290,13 @@
             </Tooltip>
           </div>
         </div>
-        <EdgeNumberInput
-          title={t("Subscription priority")}
-          label={`${t("Subscription priority")}: ${subscription.name}`}
-          bind:value={subscription.priority}
-        />
+        {#if showSubscriptionPriority.current}
+          <EdgeNumberInput
+            title={t("Subscription priority")}
+            label={`${t("Subscription priority")}: ${subscription.name}`}
+            bind:value={subscription.priority}
+          />
+        {/if}
       </div>
 
       <Collapsible.Content>
@@ -364,10 +367,14 @@
     justify-content: space-between;
     align-items: center;
     gap: 0.5rem;
-    padding: 0.5rem 2rem 0.5rem 0.5rem;
+    padding: 0.5rem;
     border-radius: 0.5rem;
     background-color: var(--bg-light);
     position: relative;
+  }
+
+  .subscription-header.priority-visible {
+    padding-right: 2rem;
   }
 
   .subscription-left {

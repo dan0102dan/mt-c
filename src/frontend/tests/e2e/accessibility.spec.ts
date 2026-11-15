@@ -125,7 +125,6 @@ for (const width of [390, 1280]) {
       );
     });
     test("adding a subscription focuses the required URL", async ({ page }) => {
-      if (width < 700) await page.locator(".mobile-dropdown-btn").click();
       await page.getByRole("tab", { name: "Subscriptions", exact: true }).click();
       await page.getByRole("button", { name: "Add Subscription", exact: true }).click();
       const url = page.getByRole("dialog").locator("#sub-url");

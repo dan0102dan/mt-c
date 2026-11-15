@@ -11,6 +11,7 @@
   import LogsView from "../logs/LogsView.svelte";
   import DnsQueryLog from "./dns/DnsQueryLog.svelte";
   import GeneralSettingsPanel from "./general/GeneralSettingsPanel.svelte";
+  import InterfaceSettingsPanel from "./InterfaceSettingsPanel.svelte";
   import ProfilesPanel from "./ProfilesPanel.svelte";
 
   import { TriangleAlert } from "../../components/ui/icons";
@@ -37,8 +38,10 @@
     lastSelected.current = selected;
   });
   const visibleSection = $derived(sections.find((section) => section.element.id === selected));
+  const localSettings = $derived(selected === "interface");
   const tabLabels = $derived<Record<string, string>>({
     general: t("General"),
+    interface: t("Interface"),
     profiles: t("Profiles"),
     keenetic: "Keenetic",
     dns: t("DNS queries"),
@@ -46,7 +49,8 @@
   });
   const tabSections = $derived([
     ...sections.filter((section) => section.element.id === "general"),
-    ...sections.filter((section) => section.element.id !== "general"),
+    ...sections.filter((section) => section.element.id === "interface"),
+    ...sections.filter((section) => !["general", "interface"].includes(section.element.id)),
   ]);
   const visibleControls = $derived(visibleSection?.controls());
   const dirty = $derived(sections.some((section) => section.controls().dirty));
@@ -71,7 +75,10 @@
   });
 
   const canSave = $derived(
-    !saving && !invalid && (transfer.pending() ? transfer.canSave("settings") : dirty),
+    !localSettings &&
+      !saving &&
+      !invalid &&
+      (transfer.pending() ? transfer.canSave("settings") : dirty),
   );
 
   async function saveAll() {
@@ -150,6 +157,7 @@
   <div class="settings-toolbar">
     <PageControls
       {canSave}
+      showActions={!localSettings}
       saveBusy={saving || (transfer.pending() && transfer.busy())}
       controlsClass="settings-controls"
       {active}
@@ -244,6 +252,9 @@
   </Tabs.Content>
   <Tabs.Content value="general" class="settings-content">
     <GeneralSettingsPanel active={active && selected === "general"} pageSaving={saving} />
+  </Tabs.Content>
+  <Tabs.Content value="interface" class="settings-content">
+    <InterfaceSettingsPanel active={active && selected === "interface"} />
   </Tabs.Content>
 </Tabs.Root>
 
