@@ -22,18 +22,13 @@ export function scrollToDocumentBoundary(edge: "start" | "end") {
     };
     motion = current;
     const options = { passive: true, signal: controller.signal };
-    // Wheel/touch scrolling already interrupts native smooth scrolling. A
-    // scripted scroll here can overwrite input the compositor has just applied.
-    window.addEventListener("wheel", current.finish, options);
-    window.addEventListener("touchstart", current.finish, options);
-    window.addEventListener(
-      "pointerdown",
-      (event) => {
-        if (event.pointerType === "touch") current.finish();
-        else current.cancel();
-      },
-      options,
-    );
+    // Stop our move before the browser applies this first scrolling input.
+    // A passive handler can run after the compositor has applied its delta.
+    // Never prevent the default action; cancellation removes these listeners.
+    const beforeScroll = { passive: false, signal: controller.signal };
+    window.addEventListener("wheel", current.cancel, beforeScroll);
+    window.addEventListener("touchstart", current.cancel, beforeScroll);
+    window.addEventListener("pointerdown", current.cancel, options);
     window.addEventListener(
       "keydown",
       (event) => {

@@ -133,6 +133,7 @@ async function interruptNextRuleStaging(page: Page, action: "close" | "edit") {
 
 test("100k native rule import keeps the editor buffer, limits preview DOM and imports edits in full", async ({
   page,
+  browserName,
 }, testInfo) => {
   test.setTimeout(120000);
   const { open, writes } = await editor(page);
@@ -182,6 +183,15 @@ test("100k native rule import keeps the editor buffer, limits preview DOM and im
     longTaskTotalMs: number | null;
   };
   type MetricsWindow = Window & { finishImportMetrics?: () => ApplyMetrics };
+  const profiler =
+    browserName === "chromium" && testInfo.project.use.headless !== false
+      ? await page.context().newCDPSession(page)
+      : undefined;
+  if (profiler) {
+    await profiler.send("Profiler.enable");
+    await profiler.send("Profiler.setSamplingInterval", { interval: 1000 });
+    await profiler.send("Profiler.start");
+  }
   await page.evaluate(() => {
     const started = performance.now();
     const gaps: number[] = [];
@@ -245,13 +255,107 @@ test("100k native rule import keeps the editor buffer, limits preview DOM and im
     delete state.finishImportMetrics;
     return result;
   });
+  const profileResult = profiler
+    ? await profiler.send("Profiler.stop").finally(() => profiler.detach())
+    : undefined;
+  const diagnosticMetrics = { ...metrics, cpuProfiling: Boolean(profiler) };
   await testInfo.attach("native-100k-apply-metrics.json", {
-    body: JSON.stringify(metrics, null, 2),
+    body: JSON.stringify(diagnosticMetrics, null, 2),
     contentType: "application/json",
   });
   // Record successful Apply separately from paste/edit and the full export.
-  // These figures diagnose stalls without a hardware-dependent CI threshold.
-  console.log("native-100k-apply-metrics", JSON.stringify(metrics));
+  // Profiling adds overhead; these figures have no hardware-dependent threshold.
+  console.log("native-100k-apply-metrics", JSON.stringify(diagnosticMetrics));
+  if (profileResult) {
+    const profile = profileResult.profile;
+    await testInfo.attach("native-100k-apply.cpuprofile", {
+      body: JSON.stringify(profile),
+      contentType: "application/json",
+    });
+    const nodes = new Map(profile.nodes.map((node) => [node.id, node]));
+    const parents = new Map<number, number>();
+    for (const node of profile.nodes)
+      for (const child of node.children ?? []) parents.set(child, node.id);
+    const frames = new Map<string, { functionName: string; url: string; line: number }>();
+    const frameKeys = new Map<number, string>();
+    for (const node of profile.nodes) {
+      const frame = {
+        functionName: node.callFrame.functionName || "(anonymous)",
+        url: node.callFrame.url.replace(/^https?:\/\/[^/]+/, ""),
+        line: node.callFrame.lineNumber + 1,
+      };
+      const key = JSON.stringify(frame);
+      frames.set(key, frame);
+      frameKeys.set(node.id, key);
+    }
+    const self = new Map<string, number>();
+    const appInclusive = new Map<string, number>();
+    const windows = new Map<number, { busyMs: number; self: Map<string, number> }>();
+    const totals = { idleMs: 0, gcMs: 0, programMs: 0 };
+    let sampledMs = 0;
+    for (const [index, id] of (profile.samples ?? []).entries()) {
+      const ms = (profile.timeDeltas?.[index] ?? 0) / 1000;
+      const start = sampledMs;
+      sampledMs += ms;
+      const key = frameKeys.get(id);
+      if (!key) continue;
+      self.set(key, (self.get(key) ?? 0) + ms);
+      const name = frames.get(key)!.functionName;
+      if (name === "(idle)") totals.idleMs += ms;
+      if (name === "(garbage collector)") totals.gcMs += ms;
+      if (name === "(program)") totals.programMs += ms;
+      const seen = new Set<string>();
+      let ancestor: number | undefined = id;
+      while (ancestor !== undefined) {
+        const ancestorKey = frameKeys.get(ancestor)!;
+        if (nodes.get(ancestor)?.callFrame.url.includes("/src/") && !seen.has(ancestorKey)) {
+          appInclusive.set(ancestorKey, (appInclusive.get(ancestorKey) ?? 0) + ms);
+          seen.add(ancestorKey);
+        }
+        ancestor = parents.get(ancestor);
+      }
+      // Split sample intervals at window boundaries; idle time is not busy time.
+      for (let cursor = start; cursor < sampledMs; ) {
+        const bucket = Math.floor(cursor / 50);
+        const end = Math.min(sampledMs, (bucket + 1) * 50);
+        const window = windows.get(bucket) ?? { busyMs: 0, self: new Map<string, number>() };
+        if (name !== "(idle)") {
+          window.busyMs += end - cursor;
+          window.self.set(key, (window.self.get(key) ?? 0) + end - cursor);
+        }
+        windows.set(bucket, window);
+        cursor = end;
+      }
+    }
+    const round = (ms: number) => Math.round(ms * 10) / 10;
+    const top = (times: Map<string, number>, limit: number) =>
+      [...times]
+        .sort((a, b) => b[1] - a[1])
+        .slice(0, limit)
+        .map(([key, ms]) => ({ ...frames.get(key)!, ms: round(ms) }));
+    console.log(
+      "native-100k-apply-cpu",
+      JSON.stringify({
+        samplingIntervalUs: 1000,
+        profilerAddsOverhead: true,
+        elapsedMs: round((profile.endTime - profile.startTime) / 1000),
+        sampledMs: round(sampledMs),
+        idleMs: round(totals.idleMs),
+        gcMs: round(totals.gcMs),
+        programMs: round(totals.programMs),
+        topSelf: top(self, 15),
+        topAppInclusive: top(appInclusive, 10),
+        busiest50msWindows: [...windows]
+          .sort((a, b) => b[1].busyMs - a[1].busyMs)
+          .slice(0, 3)
+          .map(([bucket, window]) => ({
+            startMs: bucket * 50,
+            busyMs: round(window.busyMs),
+            topSelf: top(window.self, 3),
+          })),
+      }),
+    );
+  }
   const downloading = page.waitForEvent("download");
   await page.getByRole("button", { name: "Export Config", exact: true }).click();
   const path = await (await downloading).path();
