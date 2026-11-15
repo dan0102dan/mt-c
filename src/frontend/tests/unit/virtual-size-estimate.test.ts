@@ -58,11 +58,13 @@ Deno.test("empty and invalid measurements cannot replace a valid estimate", () =
   assert.equal(estimate.forWidth(1280), 38);
 });
 
-Deno.test("subpixel measurement noise does not keep changing the whole collection estimate", () => {
-  const estimate = new SizeEstimate({ desktop: 35, mobile: 112 });
-  estimate.learn(1280, rows(38.01, 38.02, 38.03));
-  assert.equal(estimate.forWidth(1280), 38.02);
+Deno.test("a repeated fractional box size replaces even a very close estimate exactly", () => {
+  const estimate = new SizeEstimate({ desktop: 38, mobile: 112 });
+  estimate.learn(1280, rows(37.96875, 37.96875, 37.96875, 75.9375));
+  assert.equal(estimate.forWidth(1280), 37.96875);
 
-  estimate.learn(1280, rows(38.05, 38.06, 38.07));
-  assert.equal(estimate.forWidth(1280), 38.02);
+  // Different fractional boxes are individual measurements, not evidence for
+  // a new common size that should replace every offscreen row's estimate.
+  estimate.learn(1280, rows(37.984375, 38, 38.015625));
+  assert.equal(estimate.forWidth(1280), 37.96875);
 });

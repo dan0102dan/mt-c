@@ -457,23 +457,29 @@ for (const width of [1280, 390]) {
       page,
     }) => {
       await page.setViewportSize({ width, height: width === 390 ? 844 : 900 });
-      const groups = kind === "group" ? [group(0, 1000), group(1, 1000)] : [];
+      // Two panels can legitimately stay inside a retained virtual range.
+      // Separate the expanded panels far enough to require real eviction.
+      const counts = Array.from({ length: 64 }, (_, index) =>
+        index === 0 || index === 63 ? 1000 : 0,
+      );
+      const groups = kind === "group" ? counts.map((count, index) => group(index, count)) : [];
       const subscriptions =
-        kind === "subscription" ? [subscription(0, 1000), subscription(1, 1000)] : [];
+        kind === "subscription" ? counts.map((count, index) => subscription(index, count)) : [];
       const data = kind === "group" ? groups : subscriptions;
+      const last = data.at(-1)!;
       await backend(page, groups, subscriptions);
       await page.goto("/");
       if (kind === "subscription") await openTab(page, "Subscriptions");
       const panelSelector = kind === "group" ? ".group" : ".subscription-panel";
       const firstPanel = page.locator(`${panelSelector}[data-uuid="${data[0].id}"]`);
-      const secondPanel = page.locator(`${panelSelector}[data-uuid="${data[1].id}"]`);
+      const secondPanel = page.locator(`${panelSelector}[data-uuid="${last.id}"]`);
       const rows = kind === "group" ? ".rule" : ".subscription-rule";
       const firstRule = firstPanel.locator(
         kind === "group" ? `.rule[data-uuid="${data[0].rules[0].id}"]` : `${rows}[data-index="0"]`,
       );
       const lastRule = secondPanel.locator(
         kind === "group"
-          ? `.rule[data-uuid="${data[1].rules.at(-1)!.id}"]`
+          ? `.rule[data-uuid="${last.rules.at(-1)!.id}"]`
           : `${rows}[data-index="999"]`,
       );
       await firstPanel.locator("[data-collapsible-trigger]").click();

@@ -72,7 +72,9 @@ for (const width of [1280, 390]) {
         ["End", "Home"],
       ]) {
         await page.keyboard.press(down);
-        await expect.poll(async () => (await documentEdge(page)).bottom).toBeLessThan(1);
+        await expect
+          .poll(async () => (await documentEdge(page)).bottom, { message: `${down}: document end` })
+          .toBeLessThan(1);
         if (panels) {
           await expect(
             page.locator(`.group[data-uuid="${last.id}"] input.group-name`),
@@ -85,7 +87,9 @@ for (const width of [1280, 390]) {
         await page.waitForTimeout(250);
         expect((await documentEdge(page)).bottom).toBeLessThan(1);
         await page.keyboard.press(up);
-        await expect.poll(async () => (await documentEdge(page)).top).toBeLessThan(1);
+        await expect
+          .poll(async () => (await documentEdge(page)).top, { message: `${up}: document start` })
+          .toBeLessThan(1);
         await expect(page.locator("input.group-name").first()).toHaveValue(groups[0].name);
         await page.waitForTimeout(250);
         expect((await documentEdge(page)).top).toBeLessThan(1);
@@ -261,7 +265,9 @@ for (const panels of [true, false]) {
         };
       });
       await page.keyboard.press(shortcut);
-      await expect.poll(async () => (await documentEdge(page))[edge]).toBeLessThan(1);
+      await expect
+        .poll(async () => (await documentEdge(page))[edge], { message: `${shortcut}: ${edge}` })
+        .toBeLessThan(1);
       // Check through the following layout frames as well as the first arrival.
       await page.evaluate(
         () =>

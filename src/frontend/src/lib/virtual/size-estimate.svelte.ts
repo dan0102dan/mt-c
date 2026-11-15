@@ -15,30 +15,28 @@ export class SizeEstimate {
   }
 
   learn(width: number, measurements: readonly VirtualMeasurement[]) {
-    const sizes = measurements
-      .map(({ size }) => size)
-      .filter((size) => Number.isFinite(size) && size > 0)
-      .sort((a, b) => a - b);
-    if (sizes.length < 2) return;
-
     // A single wrapped row must not change the estimate for the whole list.
     // ResizeObserver reports the visible batch again after width/font changes,
     // so a new common size can replace the old one without resetting to a guess.
-    let start = 0;
-    let bestStart = 0;
-    let bestLength = 0;
-    for (let end = 0; end < sizes.length; end++) {
-      while (sizes[end] - sizes[start] > 0.1) start++;
-      const length = end - start + 1;
-      if (length > bestLength) {
-        bestStart = start;
-        bestLength = length;
+    // Use an actual repeated box size, including its fractional pixels. A
+    // tolerance/average can accumulate thousands of pixels over a large list.
+    const counts = new Map<number, number>();
+    let total = 0;
+    let commonSize = 0;
+    let commonCount = 0;
+    for (const { size } of measurements) {
+      if (!Number.isFinite(size) || size <= 0) continue;
+      total++;
+      const count = (counts.get(size) ?? 0) + 1;
+      counts.set(size, count);
+      if (count > commonCount) {
+        commonSize = size;
+        commonCount = count;
       }
     }
-    if (bestLength < 2 || bestLength < sizes.length * 0.75) return;
-    const size = sizes[bestStart + Math.floor(bestLength / 2)];
-    if (Math.abs(size - this.forWidth(width)) < 0.1) return;
-    if (width <= 700) this.#mobile = size;
-    else this.#desktop = size;
+    if (commonCount < 2 || commonCount < total * 0.75) return;
+    if (commonSize === this.forWidth(width)) return;
+    if (width <= 700) this.#mobile = commonSize;
+    else this.#desktop = commonSize;
   }
 }

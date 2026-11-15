@@ -22,9 +22,18 @@ export function scrollToDocumentBoundary(edge: "start" | "end") {
     };
     motion = current;
     const options = { passive: true, signal: controller.signal };
-    window.addEventListener("wheel", current.cancel, options);
-    window.addEventListener("touchstart", current.cancel, options);
-    window.addEventListener("pointerdown", current.cancel, options);
+    // Wheel/touch scrolling already interrupts native smooth scrolling. A
+    // scripted scroll here can overwrite input the compositor has just applied.
+    window.addEventListener("wheel", current.finish, options);
+    window.addEventListener("touchstart", current.finish, options);
+    window.addEventListener(
+      "pointerdown",
+      (event) => {
+        if (event.pointerType === "touch") current.finish();
+        else current.cancel();
+      },
+      options,
+    );
     window.addEventListener(
       "keydown",
       (event) => {

@@ -30,6 +30,8 @@ records the behavior to retain while replacing pagination and staged rendering.
 - Keep native scroll anchoring available on real rows; exclude only spacers.
   Learn common rule and collapsed-panel sizes from a consistent visible batch,
   while retaining individual measurements for wrapping or other exceptions.
+  Preserve fractional CSS pixels in both measurements and common estimates;
+  rounding each row makes the document height depend on the mounted range.
   Shared estimates survive panel unmounts and have separate mobile/desktop values.
   The collection owns cached rule measurements through a weak key; resizing
   invalidates incompatible geometry without retaining deleted collections.
