@@ -1,4 +1,4 @@
-import { expect, test, type Page } from "@playwright/test";
+import { expect, test, type Locator, type Page } from "@playwright/test";
 
 async function loadGroups(page: Page, manyPanels: boolean) {
   const groups = Array.from({ length: manyPanels ? 1000 : 1 }, (_, index) => ({
@@ -74,10 +74,33 @@ test("Back to top respects reduced motion", async ({ page }) => {
   await expect(button).toBeHidden();
 });
 
-test("manual wheel input stops an ongoing native Back to top animation", async ({ page }) => {
-  await loadGroups(page, true);
+async function settledScrollY(page: Page) {
+  return page.evaluate(
+    () =>
+      new Promise<number>((resolve, reject) => {
+        let last = scrollY;
+        let stable = 0;
+        let frame = 0;
+        const timeout = setTimeout(() => {
+          cancelAnimationFrame(frame);
+          reject(new Error("Wheel scrolling did not settle"));
+        }, 8000);
+        function sample() {
+          stable = Math.abs(scrollY - last) < 1 ? stable + 1 : 0;
+          last = scrollY;
+          if (stable < 12) frame = requestAnimationFrame(sample);
+          else {
+            clearTimeout(timeout);
+            resolve(scrollY);
+          }
+        }
+        frame = requestAnimationFrame(sample);
+      }),
+  );
+}
+
+async function measureWheelInterruption(page: Page, button: Locator) {
   await page.evaluate(() => window.scrollTo(0, document.documentElement.scrollHeight * 0.9));
-  const button = page.getByRole("button", { name: "Back to top", exact: true });
   await expect(button).toBeVisible();
   await page.mouse.move(600, 400);
   // Observe actual browser scroll events: Playwright's fake JS clock does not
@@ -109,25 +132,63 @@ test("manual wheel input stops an ongoing native Back to top animation", async (
   );
   await page.mouse.wheel(0, 800);
   const canceledAt = await wheelPosition;
-  await expect.poll(() => page.evaluate(() => scrollY)).toBeGreaterThan(canceledAt + 100);
-  const stopped = await page.evaluate(
-    () =>
-      new Promise<number>((resolve, reject) => {
-        let last = scrollY;
-        let stable = 0;
-        const timeout = setTimeout(() => reject(new Error("Wheel scrolling did not settle")), 8000);
-        function sample() {
-          stable = Math.abs(scrollY - last) < 1 ? stable + 1 : 0;
-          last = scrollY;
-          if (stable < 12) requestAnimationFrame(sample);
-          else {
-            clearTimeout(timeout);
-            resolve(scrollY);
-          }
-        }
-        requestAnimationFrame(sample);
-      }),
-  );
-  expect(stopped).toBeGreaterThan(canceledAt + 100);
+  const firstSettled = await settledScrollY(page);
+  await page.mouse.wheel(0, 800);
+  const nextSettled = await settledScrollY(page);
+  return {
+    during,
+    canceledAt,
+    firstSettled,
+    firstDelta: firstSettled - canceledAt,
+    nextSettled,
+    nextDelta: nextSettled - firstSettled,
+  };
+}
+
+test("manual wheel input stops an ongoing native Back to top animation", async ({ page }) => {
+  test.setTimeout(60000);
+  await loadGroups(page, true);
+  const height = await page.evaluate(() => document.documentElement.scrollHeight);
+  const button = page.getByRole("button", { name: "Back to top", exact: true });
+  const app = await measureWheelInterruption(page, button);
   await expect(button).toBeVisible();
+
+  // Chromium may consume the first wheel while activating a JS cancellation
+  // position. Compare against raw native scrolling on an equally tall document,
+  // then require the next trusted wheel to move both pages normally.
+  const reference = await page.context().newPage();
+  try {
+    const viewport = page.viewportSize();
+    if (viewport) await reference.setViewportSize(viewport);
+    await reference.setContent(`<!doctype html>
+      <style>
+        html { scrollbar-gutter: stable; }
+        body { margin: 0; height: ${height}px; }
+        button { position: fixed; right: 16px; bottom: 16px; }
+      </style>
+      <button type="button">Back to top</button>`);
+    await reference.getByRole("button", { name: "Back to top", exact: true }).evaluate((node) => {
+      node.addEventListener("click", () => {
+        window.addEventListener(
+          "wheel",
+          () => window.scrollTo({ top: window.scrollY, behavior: "instant" }),
+          { once: true, passive: false },
+        );
+        window.scrollTo({ top: 0, behavior: "smooth" });
+      });
+    });
+    const native = await measureWheelInterruption(
+      reference,
+      reference.getByRole("button", { name: "Back to top", exact: true }),
+    );
+    console.log(JSON.stringify({ nativeWheelInterruption: { control: native, app } }));
+
+    expect(native.firstSettled).toBeGreaterThanOrEqual(native.canceledAt - 1);
+    expect(app.firstSettled).toBeGreaterThanOrEqual(app.canceledAt - 1);
+    expect(Math.abs(app.firstDelta - native.firstDelta)).toBeLessThanOrEqual(1);
+    expect(native.nextDelta).toBeGreaterThan(100);
+    expect(app.nextDelta).toBeGreaterThan(100);
+  } finally {
+    await reference.close();
+  }
 });

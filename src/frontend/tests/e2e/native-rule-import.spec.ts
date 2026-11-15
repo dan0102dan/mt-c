@@ -133,7 +133,6 @@ async function interruptNextRuleStaging(page: Page, action: "close" | "edit") {
 
 test("100k native rule import keeps the editor buffer, limits preview DOM and imports edits in full", async ({
   page,
-  browserName,
 }, testInfo) => {
   test.setTimeout(120000);
   const { open, writes } = await editor(page);
@@ -170,6 +169,21 @@ test("100k native rule import keeps the editor buffer, limits preview DOM and im
   await expect(textarea).toHaveValue(/^edited\.item0\.example\.test/);
   await textarea.blur();
   await expect(preview).toBeVisible();
+  await textarea.evaluate((node: HTMLTextAreaElement) => {
+    const value = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!;
+    node.dataset.connectedClears = "0";
+    Object.defineProperty(node, "value", {
+      configurable: true,
+      get: () => value.get!.call(node),
+      set: (next: string) => {
+        // Closing must remove the native editor before clearing its bulk
+        // buffer. Replacing 100k live lines also rebuilds native text layout.
+        if (!next && node.isConnected)
+          node.dataset.connectedClears = String(Number(node.dataset.connectedClears) + 1);
+        value.set!.call(node, next);
+      },
+    });
+  });
   type ApplyMetrics = {
     elapsedMs: number;
     frameCount: number;
@@ -183,15 +197,8 @@ test("100k native rule import keeps the editor buffer, limits preview DOM and im
     longTaskTotalMs: number | null;
   };
   type MetricsWindow = Window & { finishImportMetrics?: () => ApplyMetrics };
-  const profiler =
-    browserName === "chromium" && testInfo.project.use.headless !== false
-      ? await page.context().newCDPSession(page)
-      : undefined;
-  if (profiler) {
-    await profiler.send("Profiler.enable");
-    await profiler.send("Profiler.setSamplingInterval", { interval: 1000 });
-    await profiler.send("Profiler.start");
-  }
+  const submitBox = await dialog.getByRole("button", { name: "Import", exact: true }).boundingBox();
+  expect(submitBox).not.toBeNull();
   await page.evaluate(() => {
     const started = performance.now();
     const gaps: number[] = [];
@@ -245,117 +252,35 @@ test("100k native rule import keeps the editor buffer, limits preview DOM and im
       };
     };
   });
-  await dialog.getByRole("button", { name: "Import", exact: true }).click();
-  await expect(dialog).toBeHidden();
-  await expect(page.locator("#save-changes")).toBeEnabled();
-  await expect(page.locator(".rule").first()).toBeVisible();
+  await page.mouse.click(submitBox!.x + submitBox!.width / 2, submitBox!.y + submitBox!.height / 2);
+  // Polling locator assertions adds accessibility-snapshot work over the still
+  // mounted 100k-line textarea. Keep test-runner diagnostics outside this interval.
+  await page.waitForFunction(() => {
+    const save = document.querySelector<HTMLButtonElement>("#save-changes");
+    return Boolean(
+      !document.querySelector("[data-dialog-content]") &&
+      save &&
+      !save.disabled &&
+      document.querySelector(".group .rule"),
+    );
+  });
   const metrics = await page.evaluate(() => {
     const state = window as MetricsWindow;
     const result = state.finishImportMetrics!();
     delete state.finishImportMetrics;
     return result;
   });
-  const profileResult = profiler
-    ? await profiler.send("Profiler.stop").finally(() => profiler.detach())
-    : undefined;
-  const diagnosticMetrics = { ...metrics, cpuProfiling: Boolean(profiler) };
+  await expect(dialog).toBeHidden();
+  expect(await originalEditor!.evaluate((node) => node.dataset.connectedClears)).toBe("0");
+  await expect(page.locator("#save-changes")).toBeEnabled();
+  await expect(page.locator(".rule").first()).toBeVisible();
   await testInfo.attach("native-100k-apply-metrics.json", {
-    body: JSON.stringify(diagnosticMetrics, null, 2),
+    body: JSON.stringify(metrics, null, 2),
     contentType: "application/json",
   });
   // Record successful Apply separately from paste/edit and the full export.
-  // Profiling adds overhead; these figures have no hardware-dependent threshold.
-  console.log("native-100k-apply-metrics", JSON.stringify(diagnosticMetrics));
-  if (profileResult) {
-    const profile = profileResult.profile;
-    await testInfo.attach("native-100k-apply.cpuprofile", {
-      body: JSON.stringify(profile),
-      contentType: "application/json",
-    });
-    const nodes = new Map(profile.nodes.map((node) => [node.id, node]));
-    const parents = new Map<number, number>();
-    for (const node of profile.nodes)
-      for (const child of node.children ?? []) parents.set(child, node.id);
-    const frames = new Map<string, { functionName: string; url: string; line: number }>();
-    const frameKeys = new Map<number, string>();
-    for (const node of profile.nodes) {
-      const frame = {
-        functionName: node.callFrame.functionName || "(anonymous)",
-        url: node.callFrame.url.replace(/^https?:\/\/[^/]+/, ""),
-        line: node.callFrame.lineNumber + 1,
-      };
-      const key = JSON.stringify(frame);
-      frames.set(key, frame);
-      frameKeys.set(node.id, key);
-    }
-    const self = new Map<string, number>();
-    const appInclusive = new Map<string, number>();
-    const windows = new Map<number, { busyMs: number; self: Map<string, number> }>();
-    const totals = { idleMs: 0, gcMs: 0, programMs: 0 };
-    let sampledMs = 0;
-    for (const [index, id] of (profile.samples ?? []).entries()) {
-      const ms = (profile.timeDeltas?.[index] ?? 0) / 1000;
-      const start = sampledMs;
-      sampledMs += ms;
-      const key = frameKeys.get(id);
-      if (!key) continue;
-      self.set(key, (self.get(key) ?? 0) + ms);
-      const name = frames.get(key)!.functionName;
-      if (name === "(idle)") totals.idleMs += ms;
-      if (name === "(garbage collector)") totals.gcMs += ms;
-      if (name === "(program)") totals.programMs += ms;
-      const seen = new Set<string>();
-      let ancestor: number | undefined = id;
-      while (ancestor !== undefined) {
-        const ancestorKey = frameKeys.get(ancestor)!;
-        if (nodes.get(ancestor)?.callFrame.url.includes("/src/") && !seen.has(ancestorKey)) {
-          appInclusive.set(ancestorKey, (appInclusive.get(ancestorKey) ?? 0) + ms);
-          seen.add(ancestorKey);
-        }
-        ancestor = parents.get(ancestor);
-      }
-      // Split sample intervals at window boundaries; idle time is not busy time.
-      for (let cursor = start; cursor < sampledMs; ) {
-        const bucket = Math.floor(cursor / 50);
-        const end = Math.min(sampledMs, (bucket + 1) * 50);
-        const window = windows.get(bucket) ?? { busyMs: 0, self: new Map<string, number>() };
-        if (name !== "(idle)") {
-          window.busyMs += end - cursor;
-          window.self.set(key, (window.self.get(key) ?? 0) + end - cursor);
-        }
-        windows.set(bucket, window);
-        cursor = end;
-      }
-    }
-    const round = (ms: number) => Math.round(ms * 10) / 10;
-    const top = (times: Map<string, number>, limit: number) =>
-      [...times]
-        .sort((a, b) => b[1] - a[1])
-        .slice(0, limit)
-        .map(([key, ms]) => ({ ...frames.get(key)!, ms: round(ms) }));
-    console.log(
-      "native-100k-apply-cpu",
-      JSON.stringify({
-        samplingIntervalUs: 1000,
-        profilerAddsOverhead: true,
-        elapsedMs: round((profile.endTime - profile.startTime) / 1000),
-        sampledMs: round(sampledMs),
-        idleMs: round(totals.idleMs),
-        gcMs: round(totals.gcMs),
-        programMs: round(totals.programMs),
-        topSelf: top(self, 15),
-        topAppInclusive: top(appInclusive, 10),
-        busiest50msWindows: [...windows]
-          .sort((a, b) => b[1].busyMs - a[1].busyMs)
-          .slice(0, 3)
-          .map(([bucket, window]) => ({
-            startMs: bucket * 50,
-            busyMs: round(window.busyMs),
-            topSelf: top(window.self, 3),
-          })),
-      }),
-    );
-  }
+  // These diagnostics have no hardware-dependent pass/fail threshold.
+  console.log("native-100k-apply-metrics", JSON.stringify(metrics));
   const downloading = page.waitForEvent("download");
   await page.getByRole("button", { name: "Export Config", exact: true }).click();
   const path = await (await downloading).path();
@@ -405,6 +330,31 @@ test("changing the type while editing invalidates a cached native preview", asyn
   await expect(dialog).toBeHidden();
   await expect(page.locator(".rule")).toHaveCount(2);
   await expect(page.locator(".rule").first()).toContainText("Domain");
+});
+
+test("reopening during the dialog exit starts a fresh editor without a late reset", async ({
+  page,
+}) => {
+  const { open, writes } = await editor(page);
+  const dialog = await open();
+  const textarea = dialog.locator("textarea");
+  await textarea.fill("old.example.test");
+  const oldEditor = await textarea.elementHandle();
+  await page.evaluate(() => {
+    // Keep both events in one browser task, before Svelte can finish the exit.
+    document.querySelector<HTMLButtonElement>("[data-dialog-close]")!.click();
+    document.querySelector<HTMLButtonElement>('[data-value="Import Rule List"] button')!.click();
+  });
+  await expect(dialog).toBeVisible();
+  await expect(textarea).toHaveValue("");
+  expect(await oldEditor!.evaluate((node) => node.isConnected)).toBe(false);
+  await textarea.fill("new.example.test");
+  await textarea.blur();
+  await expect(dialog.locator(".count-val")).toHaveText("1");
+  await dialog.getByRole("button", { name: "Import", exact: true }).click();
+  await expect(dialog).toBeHidden();
+  await expect(page.locator(".pattern-input")).toHaveValue("new.example.test");
+  expect(writes).toEqual([]);
 });
 
 test("a failed native bulk apply retains its parsed input for retry", async ({ page }) => {

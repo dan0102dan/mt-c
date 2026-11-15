@@ -34,6 +34,7 @@
   let editorFocused = $state(false);
   let bulkPastePending = $state(false);
   let textAreaRef = $state<HTMLTextAreaElement | null>(null);
+  let clearEditorPending = $state(false);
   let editorHeight = $state(200);
   let editorMinHeight = $state(200);
   let editorMaxHeight = $state(500);
@@ -94,13 +95,13 @@
   }
 
   function scheduleEditorResize(force = false) {
-    if (!textAreaRef || resizeFrame) return;
+    if (!open || clearEditorPending || !textAreaRef || resizeFrame) return;
     // Once bulk input fills the box, typing changes no dimensions. Reading
     // computed styles here would force native layout of the entire text.
     if (!force && isBulkText && editorHeight === editorMaxHeight) return;
     resizeFrame = requestAnimationFrame(() => {
       resizeFrame = 0;
-      if (!textAreaRef) return;
+      if (!open || clearEditorPending || !textAreaRef) return;
       if (!force && isBulkText && editorHeight === editorMaxHeight) return;
       const { minHeight, maxHeight } = getEditorHeightBounds();
       editorMinHeight = minHeight;
@@ -135,10 +136,19 @@
     if (!open)
       untrack(() => {
         invalidateParser();
-        // Clear after the dialog has unmounted, rather than rebuilding the
-        // native 100k-line renderer with an empty value during its close.
-        import_rules_text = "";
+        clearEditorPending = true;
+        cancelAnimationFrame(resizeFrame);
+        resizeFrame = 0;
+        clearTimeout(pasteTimer);
       });
+  });
+  $effect(() => {
+    // Bits UI retains the dialog during its outro. Wait for the actual editor
+    // teardown so clearing a large value cannot rebuild its native text layout.
+    if (clearEditorPending && !textAreaRef) {
+      import_rules_text = "";
+      clearEditorPending = false;
+    }
   });
   onDestroy(() => {
     applyController?.abort();
@@ -174,7 +184,7 @@
   }
 
   async function parseRules() {
-    if (!open || !import_rules_text.trim() || isParsing) return;
+    if (!open || clearEditorPending || !import_rules_text.trim() || isParsing) return;
     const requestedVersion = version;
     isParsing = true;
     isEditing = false;
@@ -237,13 +247,15 @@
 
   function submit() {
     triedSubmit = true;
-    if (isApplying || group_index === null || !import_rules_text.trim()) return;
+    if (clearEditorPending || isApplying || group_index === null || !import_rules_text.trim())
+      return;
     submitRequested = true;
     if (!isParsing) void parseRules();
   }
 
   function close() {
     invalidateParser();
+    clearEditorPending = true;
     clearTimeout(pasteTimer);
     submitRequested = false;
     previewLines = [];
@@ -318,25 +330,28 @@
       class:bulk={isBulkText}
       style={`--editor-height: ${editorHeight}px; --editor-min-height: ${editorMinHeight}px; --editor-max-height: ${editorMaxHeight}px`}
     >
-      <!-- Keep the native editor and its text buffer when showing a preview. -->
-      <textarea
-        bind:this={textAreaRef}
-        bind:value={import_rules_text}
-        aria-hidden={!isEditing && !isParsing && !editorFocused}
-        tabindex={isEditing ? 0 : -1}
-        spellcheck={false}
-        autocapitalize="off"
-        {...{ autocorrect: "off" }}
-        autocomplete="off"
-        writingsuggestions="false"
-        wrap="off"
-        oninput={handleInput}
-        placeholder={t("Insert a list of IPs or domains, one per line")}
-        class:invalid={triedSubmit && isEmpty}
-        onfocus={() => (editorFocused = true)}
-        onpaste={onPaste}
-        onblur={onBlur}
-      ></textarea>
+      <!-- Preview retains this native buffer. A rapid reopen removes the closing
+           editor first, then mounts a fresh empty one after bind:this is cleared. -->
+      {#if !open || !clearEditorPending}
+        <textarea
+          bind:this={textAreaRef}
+          bind:value={import_rules_text}
+          aria-hidden={!isEditing && !isParsing && !editorFocused}
+          tabindex={isEditing ? 0 : -1}
+          spellcheck={false}
+          autocapitalize="off"
+          {...{ autocorrect: "off" }}
+          autocomplete="off"
+          writingsuggestions="false"
+          wrap="off"
+          oninput={handleInput}
+          placeholder={t("Insert a list of IPs or domains, one per line")}
+          class:invalid={triedSubmit && isEmpty}
+          onfocus={() => (editorFocused = true)}
+          onpaste={onPaste}
+          onblur={onBlur}
+        ></textarea>
+      {/if}
       <div class="editor-focus-ring" aria-hidden="true"></div>
       {#if isParsing}
         <div class="parsing-overlay">

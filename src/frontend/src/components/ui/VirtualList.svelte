@@ -391,7 +391,8 @@
   {#each entries as entry (entry.key)}
     {#if entry.gap > 0}<div
         class="virtual-spacer"
-        style:height={`${entry.gap}px`}
+        style:height={`${Math.floor(entry.gap)}px`}
+        style:padding-bottom={`${entry.gap % 1}px`}
         aria-hidden="true"
       ></div>{/if}
     <div
@@ -408,7 +409,8 @@
   {/each}
   {#if tail > 0}<div
       class="virtual-spacer"
-      style:height={`${tail}px`}
+      style:height={`${Math.floor(tail)}px`}
+      style:padding-bottom={`${tail % 1}px`}
       aria-hidden="true"
     ></div>{/if}
 </div>
@@ -422,6 +424,9 @@
     min-width: 0;
   }
   .virtual-spacer {
+    /* Huge CSS lengths lose fractional pixels to float precision. Keep the
+       fraction in a small padding length, added by the browser's box layout. */
+    box-sizing: content-box;
     pointer-events: none;
     overflow-anchor: none;
   }

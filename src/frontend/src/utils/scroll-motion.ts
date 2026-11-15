@@ -22,9 +22,10 @@ export function scrollToDocumentBoundary(edge: "start" | "end") {
     };
     motion = current;
     const options = { passive: true, signal: controller.signal };
-    // Stop our move before the browser applies this first scrolling input.
-    // A passive handler can run after the compositor has applied its delta.
-    // Never prevent the default action; cancellation removes these listeners.
+    // Cancel without preventing the browser's default action. Chromium may
+    // clear the first wheel delta when activating the JS-set scroll position:
+    // https://chromium.googlesource.com/chromium/src/+/main/cc/animation/keyframe_effect.h
+    // Do not replay deltas; cancellation removes our input listeners.
     const beforeScroll = { passive: false, signal: controller.signal };
     window.addEventListener("wheel", current.cancel, beforeScroll);
     window.addEventListener("touchstart", current.cancel, beforeScroll);

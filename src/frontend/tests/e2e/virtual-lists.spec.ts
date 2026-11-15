@@ -101,6 +101,99 @@ for (const width of [1280, 390]) {
     expect(result.groups[0].rules.at(-1)!.rule).toBe(data.rules.at(-1)!.rule);
   });
 
+  test(`100k fractional-height rules keep document height across virtual ranges at ${width}px`, async ({
+    page,
+  }) => {
+    test.setTimeout(120000);
+    await page.setViewportSize({ width, height: width === 390 ? 844 : 900 });
+    await backend(page, [group(0, 100000)]);
+    await page.goto("/");
+    const panel = page.locator(".group").first();
+    await panel.locator("[data-collapsible-trigger]").click();
+    const first = panel.locator(".rule").first();
+    await expect(first).toBeVisible();
+    await page.evaluate(async () => {
+      await document.fonts.ready;
+      (document.activeElement as HTMLElement | null)?.blur();
+    });
+    // Exercise fractional geometry without depending on a particular font's
+    // intrinsic row size. The small minimum only adds empty space to each row.
+    const rowHeight = await first.evaluate(
+      (node) => Math.ceil(node.getBoundingClientRect().height) + 0.375,
+    );
+    await page.addStyleTag({ content: `.group .rule { min-height: ${rowHeight}px; }` });
+
+    async function settledGeometry() {
+      return page.evaluate(
+        () =>
+          new Promise<{
+            documentHeight: number;
+            listHeight: number;
+            mounted: number;
+            first: number;
+            last: number;
+            rowHeight: number;
+          }>((resolve, reject) => {
+            let previous = "";
+            let stable = 0;
+            let frame = 0;
+            const timeout = setTimeout(() => {
+              cancelAnimationFrame(frame);
+              reject(new Error("Fractional virtual geometry did not settle"));
+            }, 8000);
+            function sample() {
+              const rule = document.querySelector(".group .rule");
+              const list = rule?.closest("[data-virtual-index]")?.parentElement;
+              const items = list?.querySelectorAll<HTMLElement>(":scope > [data-virtual-index]");
+              if (!list || !items?.length) {
+                frame = requestAnimationFrame(sample);
+                return;
+              }
+              const result = {
+                documentHeight: document.documentElement.scrollHeight,
+                listHeight: list.scrollHeight,
+                mounted: items.length,
+                first: Number(items[0].dataset.virtualIndex),
+                last: Number(items[items.length - 1].dataset.virtualIndex),
+                rowHeight: items[0].getBoundingClientRect().height,
+              };
+              const signature = JSON.stringify(result);
+              stable = signature === previous ? stable + 1 : 0;
+              previous = signature;
+              if (stable < 6) frame = requestAnimationFrame(sample);
+              else {
+                clearTimeout(timeout);
+                resolve(result);
+              }
+            }
+            frame = requestAnimationFrame(sample);
+          }),
+      );
+    }
+
+    const initial = await settledGeometry();
+    expect(initial.rowHeight).toBe(rowHeight);
+    const mountedCounts = new Set([initial.mounted]);
+    for (const fraction of [0.01, 0.17, 0.53, 0.91, 1, 0.5, 0]) {
+      await page.evaluate(
+        (fraction) =>
+          window.scrollTo({
+            top: (document.documentElement.scrollHeight - innerHeight) * fraction,
+            behavior: "instant",
+          }),
+        fraction,
+      );
+      const current = await settledGeometry();
+      const context = JSON.stringify({ fraction, initial, current });
+      expect(current.documentHeight, context).toBe(initial.documentHeight);
+      expect(current.listHeight, context).toBe(initial.listHeight);
+      expect(current.mounted).toBeGreaterThan(0);
+      expect(current.mounted).toBeLessThan(250);
+      mountedCounts.add(current.mounted);
+    }
+    expect(mountedCounts.size).toBeGreaterThan(1);
+  });
+
   test(`import stages 100k rules with bounded panel DOM and complete export at ${width}px`, async ({
     page,
   }) => {

@@ -26,12 +26,15 @@ records the behavior to retain while replacing pagination and staged rendering.
   implement easing, replay the destination each frame or write scroll offsets
   from ResizeObserver: those writes interrupt the browser's animation. Manual
   input cancels an initiated move. Editable fields, selections, menus and dialogs
-  keep their native keyboard behavior.
+  keep their native keyboard behavior. Do not prevent or replay wheel deltas to
+  override the browser's native handoff from a cancelled animation.
 - Keep native scroll anchoring available on real rows; exclude only spacers.
   Learn common rule and collapsed-panel sizes from a consistent visible batch,
   while retaining individual measurements for wrapping or other exceptions.
   Preserve fractional CSS pixels in both measurements and common estimates;
   rounding each row makes the document height depend on the mounted range.
+  Very tall spacers keep their fractional part separate from their whole-pixel
+  height so CSS length precision does not change the sum as rows mount.
   Shared estimates survive panel unmounts and have separate mobile/desktop values.
   The collection owns cached rule measurements through a weak key; resizing
   invalidates incompatible geometry without retaining deleted collections.
@@ -106,6 +109,9 @@ records the behavior to retain while replacing pagination and staged rendering.
 - Preview and edit modes retain one textarea and its native editing buffer.
   Technical text has spellcheck, correction and writing suggestions disabled.
   Resizing reads only enough lines to reach the editor's maximum height.
+  Closing clears the bulk text only after the textarea leaves the DOM, including
+  a dialog outro. Reopening during that outro starts a fresh editor without a
+  delayed reset of the new input.
 - Type or text changes invalidate cached results, including while editing.
   Cancel, close and destruction terminate obsolete work. Apply awaits one
   atomic store commit; cancellation and errors keep the previous draft intact
