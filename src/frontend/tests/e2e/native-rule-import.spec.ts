@@ -338,13 +338,22 @@ test("reopening during the dialog exit starts a fresh editor without a late rese
   const { open, writes } = await editor(page);
   const dialog = await open();
   const textarea = dialog.locator("textarea");
+  await expect(dialog).toHaveCSS("opacity", "1");
   await textarea.fill("old.example.test");
   const oldEditor = await textarea.elementHandle();
-  await page.evaluate(() => {
-    // Keep both events in one browser task, before Svelte can finish the exit.
+  const closing = await page.evaluate(async () => {
+    const dialog = document.querySelector("[data-dialog-content]")!;
     document.querySelector<HTMLButtonElement>("[data-dialog-close]")!.click();
+    // Flush the controlled closed state before reopening during the outro.
+    // Two synchronous clicks collapse false -> true in Svelte's batch and do
+    // not represent a second input event reaching the closing dialog.
+    await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+    const closing = { connected: dialog.isConnected, state: dialog.getAttribute("data-state") };
     document.querySelector<HTMLButtonElement>('[data-value="Import Rule List"] button')!.click();
+    return closing;
   });
+  expect(closing).toEqual({ connected: true, state: "closed" });
+  await expect(dialog).toHaveAttribute("data-state", "open");
   await expect(dialog).toBeVisible();
   await expect(textarea).toHaveValue("");
   expect(await oldEditor!.evaluate((node) => node.isConnected)).toBe(false);
