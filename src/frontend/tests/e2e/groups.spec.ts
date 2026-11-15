@@ -102,7 +102,7 @@ test.describe("Groups Management", () => {
     expect(saveRequestReceived).toBe(true);
 
     // Wait for toast or success indication
-    await expect(page.getByText("Saved")).toBeVisible();
+    await expect(page.locator(".toast").getByText("Saved", { exact: true })).toBeVisible();
     expect(saveRequestReceived).toBe(true);
   });
 
@@ -222,7 +222,7 @@ test.describe("Groups Management", () => {
     await expect(groupsPage.saveButton).not.toHaveClass(/inactive/);
     await groupsPage.save();
 
-    await expect(page.getByText("Saved")).toBeVisible();
+    await expect(page.locator(".toast").getByText("Saved", { exact: true })).toBeVisible();
     expect(savedRuleNames).toEqual(expect.arrayContaining(["Rule A", "Rule B", "Rule C"]));
   });
 

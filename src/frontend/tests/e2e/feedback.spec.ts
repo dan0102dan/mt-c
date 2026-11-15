@@ -29,8 +29,7 @@ test.describe("Feedback Components", () => {
 
     await groupsPage.save();
 
-    // Use text locator which is more robust
-    const toast = page.getByText("Saved");
+    const toast = page.locator(".toast").getByText("Saved", { exact: true });
     await expect(toast).toBeVisible();
   });
 

@@ -97,7 +97,7 @@ test.describe("Subscriptions", () => {
     await expect(saveButton).not.toHaveClass(/inactive/);
     await saveButton.click();
 
-    await expect(page.getByText("Saved")).toBeVisible();
+    await expect(page.locator(".toast").getByText("Saved", { exact: true })).toBeVisible();
     expect(state.savedBody?.subscriptions[0].url).toBe("https://new.example/list.txt");
   });
 
