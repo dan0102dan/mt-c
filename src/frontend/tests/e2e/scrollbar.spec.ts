@@ -1,19 +1,31 @@
 import { expect, test, type Page } from "@playwright/test";
 
-async function expectTrackBelowHeader(page: Page, content: string) {
+async function expectNativeScrolling(page: Page) {
+  await expect(page.locator(".overlay-scrollbar")).toHaveCount(0);
+  const styles = await page.evaluate(() => {
+    const root = document.documentElement;
+    const style = getComputedStyle(root);
+    return {
+      overflow: style.overflowY,
+      scrollbar: style.scrollbarWidth,
+      webkitScrollbar: getComputedStyle(root, "::-webkit-scrollbar").display,
+    };
+  });
+  expect(styles.overflow).not.toBe("hidden");
+  expect(styles.scrollbar).not.toBe("none");
+  expect(styles.webkitScrollbar).not.toBe("none");
+}
+
+async function expectDocumentEdge(page: Page, edge: "start" | "end") {
   await expect
     .poll(() =>
-      page.evaluate((selector) => {
-        const track = document.querySelector<HTMLElement>(".overlay-scrollbar")!;
-        const header = document.querySelector<HTMLElement>(
-          '.app-tab-content[data-state="active"] .settings-toolbar, .app-tab-content[data-state="active"] .page-controls',
-        )!;
-        const target = document.querySelector<HTMLElement>(selector)!;
-        return Math.abs(
-          track.getBoundingClientRect().top -
-            Math.max(8, header.getBoundingClientRect().bottom, target.getBoundingClientRect().top),
-        );
-      }, content),
+      page.evaluate(
+        (edge) =>
+          edge === "start"
+            ? scrollY
+            : document.documentElement.scrollHeight - innerHeight - scrollY,
+        edge,
+      ),
     )
     .toBeLessThan(1);
 }
@@ -23,7 +35,9 @@ for (const viewport of [
   { width: 390, height: 844 },
 ]) {
   for (const tab of ["Groups", "Subscriptions", "Settings"]) {
-    test(`${tab}: scrollbar excludes header at ${viewport.width}px`, async ({ page }) => {
+    test(`${tab}: native document scrolling retains the sticky toolbar at ${viewport.width}px`, async ({
+      page,
+    }) => {
       await page.setViewportSize(viewport);
       await page.route("**/api/v1/**", (route) => {
         const path = new URL(route.request().url()).pathname.split("/").pop();
@@ -69,42 +83,79 @@ for (const viewport of [
             ? ".subscription-list"
             : '.settings-page .settings-content[data-state="active"]';
       await expect(page.locator(content)).toBeVisible();
-      await expectTrackBelowHeader(page, content);
-      await page.evaluate(() => window.scrollTo(0, 300));
-      await expectTrackBelowHeader(page, content);
+      await expectNativeScrolling(page);
+      const toolbar = page.locator(
+        tab === "Settings"
+          ? ".settings-toolbar"
+          : '.app-tab-content[data-state="active"] .page-controls',
+      );
+      await page.mouse.move(viewport.width / 2, viewport.height / 2);
+      await page.mouse.wheel(0, 500);
+      await expect.poll(() => page.evaluate(() => scrollY)).toBeGreaterThan(100);
+      const toolbarAfter = await toolbar.boundingBox();
+      expect(toolbarAfter).not.toBeNull();
+      expect(Math.abs(toolbarAfter!.y)).toBeLessThan(1);
+
+      // The browser owns document-edge keys as well as wheel input. A virtual
+      // range change must not leave the last panel beyond the requested edge.
+      await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
+      await page.keyboard.press("End");
+      await expectDocumentEdge(page, "end");
+      await page.keyboard.press("Home");
+      await expectDocumentEdge(page, "start");
+
       if (viewport.width < 700 && tab !== "Settings") {
         const search = page.locator('[data-tabs-content][data-state="active"] [data-page-search]');
         await search.focus();
-        await expectTrackBelowHeader(page, content);
+        await expectNativeScrolling(page);
         await search.blur();
       }
+      if (tab === "Groups") {
+        const list = page.locator(content);
+        const before = await list.boundingBox();
+        expect(before).not.toBeNull();
+        async function expectUnshiftedContent() {
+          await expect
+            .poll(async () => {
+              const box = await list.boundingBox();
+              return box
+                ? Math.max(Math.abs(box.x - before!.x), Math.abs(box.width - before!.width))
+                : Infinity;
+            })
+            .toBeLessThan(1);
+        }
+        const route = page.locator(".group-header [data-select-trigger]").first();
+        await route.click();
+        await expect(page.getByRole("listbox")).toBeVisible();
+        await expectUnshiftedContent();
+        await page.keyboard.press("Escape");
+        await expect(page.getByRole("listbox")).toHaveCount(0);
+        await expect(route).toBeFocused();
+        await expectUnshiftedContent();
+
+        const info = page.getByRole("button", { name: "About", exact: true });
+        await info.click();
+        const dialog = page.getByRole("dialog", { name: "About", exact: true });
+        await expect(dialog).toBeVisible();
+        await expectUnshiftedContent();
+        await page.keyboard.press("Escape");
+        await expect(dialog).toBeHidden();
+        await expectUnshiftedContent();
+        await expectNativeScrolling(page);
+      }
       if (tab === "Settings") {
-        // A short subtab must not keep the hidden profiles panel as its target.
+        // A short subtab releases the scroll offset, without reclaiming the
+        // scrollbar gutter and shifting the toolbar's controls sideways.
+        const before = await toolbar.boundingBox();
         await page.getByRole("tab", { name: "DNS queries", exact: true }).click();
-        await expect(page.locator(".overlay-scrollbar")).toHaveClass(/is-hidden/);
+        await expectDocumentEdge(page, "start");
+        await expectNativeScrolling(page);
+        const after = await toolbar.boundingBox();
+        expect(Math.abs(after!.width - before!.width)).toBeLessThan(1);
         await page.getByRole("tab", { name: "Profiles", exact: true }).click();
         await expect(page.locator(content)).toBeVisible();
-        await expectTrackBelowHeader(page, content);
+        await expectNativeScrolling(page);
       }
-      // The shortened track must still allow dragging to both document edges.
-      await page.evaluate(() => window.scrollTo(0, 500));
-      await expectTrackBelowHeader(page, content);
-      await expect(page.locator(".overlay-scrollbar")).toHaveClass(/is-visible/);
-      const box = (await page.locator(".overlay-scrollbar__thumb").boundingBox())!;
-      await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
-      await page.mouse.down();
-      await page.mouse.move(box.x + box.width / 2, -viewport.height * 10);
-      await expect.poll(() => page.evaluate(() => window.scrollY)).toBe(0);
-      await page.mouse.move(box.x + box.width / 2, viewport.height * 100);
-      await expect
-        .poll(() =>
-          page.evaluate(
-            () => document.documentElement.scrollHeight - window.innerHeight - window.scrollY,
-          ),
-        )
-        .toBeLessThan(2);
-      await page.mouse.up();
-      await expectTrackBelowHeader(page, content);
     });
   }
 }

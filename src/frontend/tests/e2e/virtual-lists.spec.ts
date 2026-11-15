@@ -21,6 +21,14 @@ const group = (index: number, count = 0): Group => ({
   })),
 });
 
+const subscription = (index: number, count = 0): Subscription => ({
+  ...group(index, count),
+  name: `Virtual subscription ${index + 1}`,
+  url: `https://example.test/list-${index}.txt`,
+  interval: 86400,
+  lastUpdate: 1,
+});
+
 async function backend(page: Page, groups: Group[] = [], subscriptions: Subscription[] = []) {
   const config = generalServerConfig();
   config.groups = groups;
@@ -442,3 +450,132 @@ test("drag source survives a document scroll and drops onto a formerly unmounted
   expect(result.groups[0].rules.at(-1)!.id).toBe(data.rules[0].id);
   expect(result.groups[0].rules[0].id).toBe(data.rules[1].id);
 });
+
+for (const width of [1280, 390]) {
+  for (const kind of ["group", "subscription"] as const) {
+    test(`expanded ${kind} rule lists retain their measured height after panel remounts at ${width}px`, async ({
+      page,
+    }) => {
+      await page.setViewportSize({ width, height: width === 390 ? 844 : 900 });
+      const groups = kind === "group" ? [group(0, 1000), group(1, 1000)] : [];
+      const subscriptions =
+        kind === "subscription" ? [subscription(0, 1000), subscription(1, 1000)] : [];
+      const data = kind === "group" ? groups : subscriptions;
+      await backend(page, groups, subscriptions);
+      await page.goto("/");
+      if (kind === "subscription") await openTab(page, "Subscriptions");
+      const panelSelector = kind === "group" ? ".group" : ".subscription-panel";
+      const firstPanel = page.locator(`${panelSelector}[data-uuid="${data[0].id}"]`);
+      const secondPanel = page.locator(`${panelSelector}[data-uuid="${data[1].id}"]`);
+      const rows = kind === "group" ? ".rule" : ".subscription-rule";
+      const firstRule = firstPanel.locator(
+        kind === "group" ? `.rule[data-uuid="${data[0].rules[0].id}"]` : `${rows}[data-index="0"]`,
+      );
+      const lastRule = secondPanel.locator(
+        kind === "group"
+          ? `.rule[data-uuid="${data[1].rules.at(-1)!.id}"]`
+          : `${rows}[data-index="999"]`,
+      );
+      await firstPanel.locator("[data-collapsible-trigger]").click();
+      await expect(firstRule).toBeVisible();
+      await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
+      await page.evaluate(() => window.scrollTo(0, document.documentElement.scrollHeight));
+      await expect(secondPanel).toBeVisible();
+      await secondPanel.locator("[data-collapsible-trigger]").click();
+      await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
+      await page.evaluate(() => window.scrollTo(0, document.documentElement.scrollHeight));
+      await expect(lastRule).toBeInViewport();
+      await expect(firstPanel).toHaveCount(0);
+
+      async function settledHeight() {
+        return page.evaluate(
+          () =>
+            new Promise<number>((resolve, reject) => {
+              let last = document.documentElement.scrollHeight;
+              let stable = 0;
+              const timeout = setTimeout(
+                () => reject(new Error("Virtual heights did not settle")),
+                8000,
+              );
+              function sample() {
+                const height = document.documentElement.scrollHeight;
+                stable = height === last ? stable + 1 : 0;
+                last = height;
+                if (stable < 6) requestAnimationFrame(sample);
+                else {
+                  clearTimeout(timeout);
+                  resolve(height);
+                }
+              }
+              requestAnimationFrame(sample);
+            }),
+        );
+      }
+
+      const height = await settledHeight();
+      for (let round = 0; round < 2; round++) {
+        await page.evaluate(() => window.scrollTo(0, 0));
+        await expect(firstRule).toBeInViewport();
+        await expect(secondPanel).toHaveCount(0);
+        expect(Math.abs((await settledHeight()) - height)).toBeLessThan(1);
+        await page.evaluate(() => window.scrollTo(0, document.documentElement.scrollHeight));
+        await expect(lastRule).toBeInViewport();
+        await expect(firstPanel).toHaveCount(0);
+        expect(Math.abs((await settledHeight()) - height)).toBeLessThan(1);
+        await expect.poll(() => page.locator(rows).count()).toBeLessThan(250);
+      }
+    });
+
+    test(`${kind} rules expand and collapse without height animation at ${width}px`, async ({
+      page,
+    }) => {
+      await page.setViewportSize({ width, height: width === 390 ? 844 : 900 });
+      await page.emulateMedia({ reducedMotion: "no-preference" });
+      await backend(
+        page,
+        kind === "group" ? [group(0, 12)] : [],
+        kind === "subscription" ? [subscription(0, 12)] : [],
+      );
+      await page.goto("/");
+      if (kind === "subscription") await openTab(page, "Subscriptions");
+      const panelSelector = kind === "group" ? ".group" : ".subscription-panel";
+      const rowSelector = kind === "group" ? ".rule" : ".subscription-rule";
+      const trigger = page.locator(`${panelSelector} [data-collapsible-trigger]`);
+      await expect(trigger).toHaveAttribute("aria-expanded", "false");
+      for (const expanded of [true, false, true, false]) {
+        const result = await trigger.evaluate(
+          async (button, { panelSelector, rowSelector }) => {
+            (button as HTMLButtonElement).click();
+            // Observe the first rendered frame, before a slide transition
+            // could complete. Closing must already have unmounted rule nodes.
+            await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+            const panel = button.closest(panelSelector)!;
+            const animations = panel.getAnimations({ subtree: true }).filter((animation) => {
+              if (!(animation.effect instanceof KeyframeEffect)) return false;
+              return animation.effect
+                .getKeyframes()
+                .some(
+                  (frame) =>
+                    "height" in frame || "maxHeight" in frame || "gridTemplateRows" in frame,
+                );
+            });
+            return {
+              expanded: button.getAttribute("aria-expanded"),
+              controlledContentExists: Boolean(
+                document.getElementById(button.getAttribute("aria-controls") ?? ""),
+              ),
+              rows: panel.querySelectorAll(rowSelector).length,
+              heightAnimations: animations.length,
+            };
+          },
+          { panelSelector, rowSelector },
+        );
+        expect(result.expanded).toBe(String(expanded));
+        expect(result.controlledContentExists).toBe(true);
+        expect(result.heightAnimations).toBe(0);
+        if (expanded) expect(result.rows).toBeGreaterThan(0);
+        else expect(result.rows).toBe(0);
+      }
+    });
+  }
+}

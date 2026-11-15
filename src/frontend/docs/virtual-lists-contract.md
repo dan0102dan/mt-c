@@ -14,18 +14,28 @@ records the behavior to retain while replacing pagination and staged rendering.
 - At 700px and below both row types become stacked cards. Their heights can
   differ from desktop and change with wrapping. Resize and font loading must
   update measurements rather than leaving gaps or overlapping rows.
-- Use the document scroll, retaining the sticky toolbar. Virtual spacers do not
+- Use native document scrolling and its scrollbar, retaining the sticky toolbar
+  and a stable scrollbar gutter. Virtual spacers do not
   clip menus, introduce stacking contexts above portals or cover neighboring
   panels. Popup hit testing must succeed where a popup overlaps another row.
 - Back to top reaches document offset zero even while virtual measurements
   change. Repeated clicks work; wheel, touch, pointer and navigation keys cancel
   the animation. Reduced motion jumps directly to the top.
-- Ctrl/Cmd+Up/Down and Home/End reach the document edge in one action. Retain
-  that edge while nested virtual measurements settle, suppressing competing
-  anchor corrections. Share easing with Back to top, with a soft start and stop
-  and a short duration based on distance (200–480 ms). Reduced motion jumps
-  directly to the edge. Manual input cancels this intent. Editable fields,
-  selections, menus and dialogs keep their native keyboard behavior.
+- Home/End keep their native browser behavior. Ctrl/Cmd+Up/Down and Back to top
+  use one native smooth scroll, or an instant scroll with reduced motion. Do not
+  implement easing, replay the destination each frame or write scroll offsets
+  from ResizeObserver: those writes interrupt the browser's animation. Manual
+  input cancels an initiated move. Editable fields, selections, menus and dialogs
+  keep their native keyboard behavior.
+- Keep native scroll anchoring available on real rows; exclude only spacers.
+  Learn common rule and collapsed-panel sizes from a consistent visible batch,
+  while retaining individual measurements for wrapping or other exceptions.
+  Shared estimates survive panel unmounts and have separate mobile/desktop values.
+  The collection owns cached rule measurements through a weak key; resizing
+  invalidates incompatible geometry without retaining deleted collections.
+- Functional panel estimates track every panel's open state and rule count,
+  including offscreen panels. Changing one panel must not clear unrelated
+  measurements. Updating a numeric estimate preserves already measured rows.
 - A tooltip or open popup must never remain orphaned when its trigger unmounts.
   Escape closes a popup and restores its trigger when that trigger remains
   mounted. Focused editors and active drag sources need stable ownership.
@@ -35,13 +45,9 @@ records the behavior to retain while replacing pagination and staged rendering.
   Panel components retain their logical keys because they own editor state.
 - Share document viewport scheduling across lists. Repeated scroll/resize
   notifications with unchanged ranges or sizes must not rebuild the layout.
-  Scrollbar geometry reads precede writes and run at most once per frame.
-- Read scrollbar geometry in the shared frame before virtual ranges commit.
-  Programmatic scrolling and its new range belong to the same frame. Restore
-  normal overscan before finishing an edge jump so final measurements settle
-  while the requested edge is still retained.
-- An already-open panel remounted by scrolling does not replay its expand
-  transition. Closed panels retain their accessibility relationships without
+  Viewport reads precede virtual range commits; the browser owns scrolling.
+- Group and subscription rules expand and collapse immediately, with no height
+  or opacity transition. Closed panels retain their accessibility relationships without
   measuring or mounting offscreen rule content.
 - Local popup and preview scrolling uses the same VirtualList with its own
   scroll element. It must not move the document, clip portals or grow mounted
