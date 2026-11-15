@@ -9,6 +9,7 @@
   import VirtualList from "../../../components/ui/VirtualList.svelte";
   import { t } from "../../../data/locale.svelte";
 
+  import { Dots } from "../../../components/ui/icons";
   import { RULE_TYPES, type Rule } from "../../../types";
   import { toast } from "../../../utils/events";
   import {
@@ -395,7 +396,7 @@
           </VirtualList>
           {#if totalLines > previewLines.length}
             <div class="line-row ellipsis-row">
-              <span class="line-text">...</span>
+              <Dots size={24} />
             </div>
           {/if}
         </div>
@@ -520,6 +521,7 @@
 
   .results-view.has-more {
     padding-bottom: 0;
+    border-bottom: 0;
   }
 
   .line-row {
@@ -552,14 +554,11 @@
   }
 
   .ellipsis-row {
-    height: 3rem;
-    min-height: 3rem;
     box-sizing: border-box;
     border-top: 1px solid var(--bg-light-extra);
-    text-align: center;
+    border-bottom: 1px solid transparent;
+    justify-content: center;
     color: var(--text-2);
-    font-size: 1.5rem;
-    line-height: 1;
     cursor: pointer;
     user-select: none;
     transition:

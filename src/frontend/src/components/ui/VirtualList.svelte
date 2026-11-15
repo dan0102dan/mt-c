@@ -143,6 +143,10 @@
     version++;
     if (ready) updateRange(listViewport(), true);
   }
+  // An expanded panel can remount at the document end. Reserve its measured
+  // rule height in the initial DOM: an empty first layout temporarily clamps
+  // Safari's scroll offset before the normal reactive rebuild runs.
+  untrack(rebuild);
   $effect(() => {
     count;
     revision;

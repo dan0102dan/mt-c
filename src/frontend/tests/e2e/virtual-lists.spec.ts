@@ -70,6 +70,63 @@ async function exported(page: Page) {
 }
 
 for (const width of [1280, 390]) {
+  for (const kind of ["groups", "subscriptions"] as const) {
+    test(`one boundary request reaches the last row across remounted expanded ${kind} at ${width}px`, async ({
+      page,
+    }) => {
+      test.setTimeout(60000);
+      await page.setViewportSize({ width, height: 844 });
+      const groups = Array.from({ length: kind === "groups" ? 64 : 0 }, (_, index) =>
+        group(index, index === 0 || index === 63 ? 1000 : 0),
+      );
+      const subscriptions = Array.from({ length: kind === "subscriptions" ? 64 : 0 }, (_, index) =>
+        subscription(index, index === 0 || index === 63 ? 1000 : 0),
+      );
+      const items = kind === "groups" ? groups : subscriptions;
+      await backend(page, groups, subscriptions);
+      await page.goto("/");
+      if (kind === "subscriptions") await openTab(page, "Subscriptions");
+      const panel = kind === "groups" ? ".group" : ".subscription-panel";
+      const row = kind === "groups" ? ".rule" : ".subscription-rule";
+      const first = page.locator(`${panel}[data-uuid="${items[0].id}"]`);
+      const last = page.locator(`${panel}[data-uuid="${items[63].id}"]`);
+      const lastRule = last.locator(`${row}[data-index="999"]`);
+      await first.locator("[data-collapsible-trigger]").click();
+      await expect(first.locator(row).first()).toBeVisible();
+      await page.evaluate(() => window.scrollTo(0, document.documentElement.scrollHeight));
+      await last.locator("[data-collapsible-trigger]").click();
+      await page.evaluate(() => {
+        (document.activeElement as HTMLElement | null)?.blur();
+        window.scrollTo(0, document.documentElement.scrollHeight);
+      });
+      await expect(lastRule).toBeInViewport();
+      for (const reducedMotion of ["no-preference", "reduce"] as const) {
+        await page.emulateMedia({ reducedMotion });
+        for (const modifier of ["Meta", "Control"]) {
+          await page.keyboard.press(`${modifier}+ArrowUp`);
+          await expect.poll(() => page.evaluate(() => scrollY)).toBeLessThan(1);
+          await expect(first.locator(row).first()).toBeInViewport();
+          await page.keyboard.press(`${modifier}+ArrowDown`);
+          await expect
+            .poll(() =>
+              page.evaluate(() => document.documentElement.scrollHeight - innerHeight - scrollY),
+            )
+            .toBeLessThan(1);
+          await expect(lastRule).toBeInViewport();
+          // Check the settled destination, including the nested list's next measurements.
+          await page.waitForTimeout(250);
+          expect(
+            await page.evaluate(
+              () => document.documentElement.scrollHeight - innerHeight - scrollY,
+            ),
+          ).toBeLessThan(1);
+        }
+      }
+    });
+  }
+}
+
+for (const width of [1280, 390]) {
   test(`100k group keeps bounded rows and edits through document scrolling at ${width}px`, async ({
     page,
   }) => {

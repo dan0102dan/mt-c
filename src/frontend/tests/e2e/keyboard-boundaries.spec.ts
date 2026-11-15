@@ -194,6 +194,36 @@ test("manual wheel input releases a boundary jump while virtual heights settle",
   expect((await documentEdge(page)).bottom).toBeGreaterThan(200);
 });
 
+test("wheel input after scrollend cancels the pending edge check", async ({ page }) => {
+  await loadLargeList(page, true);
+  await page.evaluate(
+    () =>
+      new Promise<void>((resolve) => {
+        window.dispatchEvent(
+          new KeyboardEvent("keydown", {
+            key: "ArrowDown",
+            metaKey: true,
+            bubbles: true,
+            cancelable: true,
+          }),
+        );
+        // The boundary controller queues its layout check first. Simulate the
+        // user's next wheel before that check can reclaim the requested edge.
+        function onEnd(event: Event) {
+          if (event.target !== document) return;
+          document.removeEventListener("scrollend", onEnd);
+          window.dispatchEvent(new WheelEvent("wheel", { deltaY: -1100 }));
+          window.scrollBy(0, -1100);
+          resolve();
+        }
+        document.addEventListener("scrollend", onEnd);
+      }),
+  );
+  await expect.poll(async () => (await documentEdge(page)).bottom).toBeGreaterThan(200);
+  await page.waitForTimeout(400);
+  expect((await documentEdge(page)).bottom).toBeGreaterThan(200);
+});
+
 test("boundary shortcuts leave the priority popover buttons in control", async ({ page }) => {
   await loadLargeList(page, true);
   await page.locator(".priority-trigger").first().click();

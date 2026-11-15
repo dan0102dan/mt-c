@@ -10,6 +10,7 @@ export type VirtualViewport = {
 
 type Subscriber = (viewport: VirtualViewport) => void;
 const subscribers = new Set<Subscriber>();
+const reads = new Set<() => void>();
 let frame = 0;
 let interactionPending = false;
 let previousTop = 0;
@@ -33,9 +34,12 @@ export function virtualViewport(): VirtualViewport {
  * ranges. Interaction changes refresh pins; ordinary scrolls reuse them. */
 export function requestVirtualFrame(interaction = false) {
   interactionPending ||= interaction;
-  if (frame || !subscribers.size) return;
+  if (frame || (!subscribers.size && !reads.size)) return;
   frame = requestAnimationFrame((now) => {
     frame = 0;
+    const pendingReads = [...reads];
+    reads.clear();
+    for (const read of pendingReads) read();
     const next = virtualViewport();
     const distance = next.scrollTop - previousTop;
     next.velocity = Math.abs(distance) / Math.max(16, now - previousTime);
@@ -46,6 +50,12 @@ export function requestVirtualFrame(interaction = false) {
     previousTime = now;
     for (const subscriber of subscribers) subscriber(next);
   });
+}
+
+/** Batch overlay geometry with the lists, before their DOM range commits. */
+export function requestViewportRead(read: () => void) {
+  reads.add(read);
+  requestVirtualFrame();
 }
 
 const onScroll = () => requestVirtualFrame();
@@ -85,8 +95,10 @@ export function subscribeVirtualViewport(subscriber: Subscriber): () => void {
     subscribers.delete(subscriber);
     if (subscribers.size || !listening) return;
     listening = false;
-    cancelAnimationFrame(frame);
-    frame = 0;
+    if (!reads.size) {
+      cancelAnimationFrame(frame);
+      frame = 0;
+    }
     interactionPending = false;
     dragSource = undefined;
     window.removeEventListener("scroll", onScroll);

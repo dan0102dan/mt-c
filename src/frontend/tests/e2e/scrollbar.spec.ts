@@ -1,19 +1,17 @@
 import { expect, test, type Page } from "@playwright/test";
 
-async function expectNativeScrolling(page: Page) {
-  await expect(page.locator(".overlay-scrollbar")).toHaveCount(0);
+async function expectDocumentScrolling(page: Page) {
+  await expect(page.locator(".overlay-scrollbar")).toHaveCount(1);
   const styles = await page.evaluate(() => {
     const root = document.documentElement;
     const style = getComputedStyle(root);
     return {
       overflow: style.overflowY,
-      scrollbar: style.scrollbarWidth,
-      webkitScrollbar: getComputedStyle(root, "::-webkit-scrollbar").display,
+      documentScrolls: document.scrollingElement === root,
     };
   });
   expect(styles.overflow).not.toBe("hidden");
-  expect(styles.scrollbar).not.toBe("none");
-  expect(styles.webkitScrollbar).not.toBe("none");
+  expect(styles.documentScrolls).toBe(true);
 }
 
 async function expectDocumentEdge(page: Page, edge: "start" | "end") {
@@ -35,7 +33,7 @@ for (const viewport of [
   { width: 390, height: 844 },
 ]) {
   for (const tab of ["Groups", "Subscriptions", "Settings"]) {
-    test(`${tab}: native document scrolling retains the sticky toolbar at ${viewport.width}px`, async ({
+    test(`${tab}: document scrolling and the original scrollbar retain the sticky toolbar at ${viewport.width}px`, async ({
       page,
     }) => {
       await page.setViewportSize(viewport);
@@ -83,7 +81,7 @@ for (const viewport of [
             ? ".subscription-list"
             : '.settings-page .settings-content[data-state="active"]';
       await expect(page.locator(content)).toBeVisible();
-      await expectNativeScrolling(page);
+      await expectDocumentScrolling(page);
       const toolbar = page.locator(
         tab === "Settings"
           ? ".settings-toolbar"
@@ -107,7 +105,7 @@ for (const viewport of [
       if (viewport.width < 700 && tab !== "Settings") {
         const search = page.locator('[data-tabs-content][data-state="active"] [data-page-search]');
         await search.focus();
-        await expectNativeScrolling(page);
+        await expectDocumentScrolling(page);
         await search.blur();
       }
       if (tab === "Groups") {
@@ -141,7 +139,7 @@ for (const viewport of [
         await page.keyboard.press("Escape");
         await expect(dialog).toBeHidden();
         await expectUnshiftedContent();
-        await expectNativeScrolling(page);
+        await expectDocumentScrolling(page);
       }
       if (tab === "Settings") {
         // A short subtab releases the scroll offset, without reclaiming the
@@ -149,13 +147,36 @@ for (const viewport of [
         const before = await toolbar.boundingBox();
         await page.getByRole("tab", { name: "DNS queries", exact: true }).click();
         await expectDocumentEdge(page, "start");
-        await expectNativeScrolling(page);
+        await expectDocumentScrolling(page);
         const after = await toolbar.boundingBox();
         expect(Math.abs(after!.width - before!.width)).toBeLessThan(1);
         await page.getByRole("tab", { name: "Profiles", exact: true }).click();
         await expect(page.locator(content)).toBeVisible();
-        await expectNativeScrolling(page);
+        await expectDocumentScrolling(page);
       }
+      // Retain the original shortened track and its pointer capture: dragging
+      // outside the viewport still reaches both ends of the document.
+      await page.evaluate(() => window.scrollTo(0, 500));
+      const track = page.locator(".overlay-scrollbar");
+      await expect(track).toHaveClass(/is-visible/);
+      await expect
+        .poll(async () => {
+          const trackBox = await track.boundingBox();
+          const toolbarBox = await toolbar.boundingBox();
+          const contentBox = await page.locator(content).boundingBox();
+          return trackBox && toolbarBox && contentBox
+            ? Math.abs(trackBox.y - Math.max(8, toolbarBox.y + toolbarBox.height, contentBox.y))
+            : Infinity;
+        })
+        .toBeLessThan(1);
+      const thumb = (await page.locator(".overlay-scrollbar__thumb").boundingBox())!;
+      await page.mouse.move(thumb.x + thumb.width / 2, thumb.y + thumb.height / 2);
+      await page.mouse.down();
+      await page.mouse.move(thumb.x + thumb.width / 2, -viewport.height * 10);
+      await expectDocumentEdge(page, "start");
+      await page.mouse.move(thumb.x + thumb.width / 2, viewport.height * 100);
+      await expectDocumentEdge(page, "end");
+      await page.mouse.up();
     });
   }
 }

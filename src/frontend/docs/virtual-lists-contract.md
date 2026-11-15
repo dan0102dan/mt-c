@@ -14,17 +14,24 @@ records the behavior to retain while replacing pagination and staged rendering.
 - At 700px and below both row types become stacked cards. Their heights can
   differ from desktop and change with wrapping. Resize and font loading must
   update measurements rather than leaving gaps or overlapping rows.
-- Use native document scrolling and its scrollbar, retaining the sticky toolbar
-  and a stable scrollbar gutter. Virtual spacers do not
+- Use native document scrolling with the original overlay scrollbar restored
+  from before `a139e6d`, retaining its header bounds, appearance, auto-hide and
+  pointer capture. Wheel and keyboard scrolling remain browser-owned; only an
+  explicit scrollbar drag/click writes the document position. The overlay does
+  not reserve a page gutter or shift content when a dialog opens. Virtual spacers do not
   clip menus, introduce stacking contexts above portals or cover neighboring
   panels. Popup hit testing must succeed where a popup overlaps another row.
 - Back to top reaches document offset zero even while virtual measurements
   change. Repeated clicks work; wheel, touch, pointer and navigation keys cancel
   the animation. Reduced motion jumps directly to the top.
 - Home/End keep their native browser behavior. Ctrl/Cmd+Up/Down and Back to top
-  use one native smooth scroll, or an instant scroll with reduced motion. Do not
-  implement easing, replay the destination each frame or write scroll offsets
-  from ResizeObserver: those writes interrupt the browser's animation. Manual
+  initiate a native smooth scroll, or an instant scroll with reduced motion.
+  After scrollend and the destination panel's layout frames, check the requested
+  edge again: remounting an expanded panel can change the document height or
+  clamp Safari's original target. Continue natively only if that edge was lost;
+  release the request on arrival or cancellation. Do not implement easing,
+  replay the destination each frame or write scroll offsets from ResizeObserver:
+  those writes interrupt the browser's animation. Manual
   input cancels an initiated move. Editable fields, selections, menus and dialogs
   keep their native keyboard behavior. Do not prevent or replay wheel deltas to
   override the browser's native handoff from a cancelled animation.
