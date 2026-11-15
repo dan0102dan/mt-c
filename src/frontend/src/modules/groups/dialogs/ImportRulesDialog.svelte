@@ -14,10 +14,9 @@
   import {
     boundedRuleListLines,
     type ParsedRuleLine,
-    type RuleListJob,
-    type RuleListResponse,
     type RuleListType,
   } from "../rule-list-parser";
+  import { RuleListParserClient } from "../rule-list-parser-client";
 
   type Props = {
     open?: boolean;
@@ -48,67 +47,28 @@
   const MIN_EDITOR_HEIGHT = 200;
   const ABSOLUTE_MIN_EDITOR_HEIGHT = 120;
   const DESKTOP_MAX_EDITOR_HEIGHT = 500;
-  const ROWS_LIMIT = 500;
   const RULE_TYPE_SELECT = [{ value: "auto", label: "Auto" }, ...RULE_TYPES];
   const isEmpty = $derived(!import_rules_text.trim());
   const isBulkText = $derived(bulkPastePending || import_rules_text.length >= 65536);
 
   let resizeFrame = 0;
   let pasteTimer: ReturnType<typeof setTimeout> | undefined;
-  let worker: Worker | undefined;
+  const parser = new RuleListParserClient(
+    () => new Worker(new URL("../rule-list-parser.worker.ts", import.meta.url), { type: "module" }),
+  );
   let version = 0;
   let parsedVersion = -1;
-  let nextRequest = 0;
   let submitRequested = false;
   let applyController: AbortController | undefined;
-  const pending = new Map<
-    number,
-    { resolve: (response: RuleListResponse) => void; reject: (error: Error) => void }
-  >();
-
-  function disposeParser(
-    error: Error = new DOMException("Rule list parsing cancelled", "AbortError"),
-  ) {
-    worker?.terminate();
-    worker = undefined;
-    for (const request of pending.values()) request.reject(error);
-    pending.clear();
-  }
 
   function invalidateParser() {
     version++;
     parsedVersion = -1;
-    disposeParser();
+    parser.dispose();
     applyController?.abort();
     applyController = undefined;
     isApplying = false;
     isParsing = false;
-  }
-
-  function requestParser(job: RuleListJob): Promise<RuleListResponse> {
-    if (!worker) {
-      worker = new Worker(new URL("../rule-list-parser.worker.ts", import.meta.url), {
-        type: "module",
-      });
-      worker.onmessage = (event: MessageEvent<RuleListResponse>) => {
-        const response = event.data;
-        const request = pending.get(response.id);
-        if (!request) return;
-        pending.delete(response.id);
-        if (response.type === "error") request.reject(new Error(response.message));
-        else request.resolve(response);
-      };
-      worker.onerror = (event) => {
-        event.preventDefault();
-        disposeParser(new Error(event.message || "Rule list parsing failed"));
-      };
-    }
-    const id = ++nextRequest;
-    const parser = worker;
-    return new Promise((resolve, reject) => {
-      pending.set(id, { resolve, reject });
-      parser.postMessage({ ...job, id });
-    });
   }
 
   function getEditorHeightBounds() {
@@ -182,7 +142,7 @@
   });
   onDestroy(() => {
     applyController?.abort();
-    disposeParser();
+    parser.dispose();
     cancelAnimationFrame(resizeFrame);
     clearTimeout(pasteTimer);
   });
@@ -221,7 +181,7 @@
     let applying = false;
     try {
       if (parsedVersion !== requestedVersion) {
-        const response = await requestParser({
+        const response = await parser.request({
           type: "parse",
           version: requestedVersion,
           text: import_rules_text,
@@ -234,7 +194,7 @@
         parsedVersion = requestedVersion;
       }
       if (submitRequested) {
-        const response = await requestParser({ type: "apply", version: requestedVersion });
+        const response = await parser.request({ type: "apply", version: requestedVersion });
         if (!open || requestedVersion !== version || response.type !== "rules") return;
         if (response.rules.length && group_index !== null) {
           applying = true;
@@ -252,6 +212,7 @@
       if (requestedVersion !== version || (error instanceof Error && error.name === "AbortError"))
         return;
       if (!applying) {
+        parsedVersion = -1;
         console.error("Rule list parsing failed", error);
         toast.error(t("Failed to import rules"));
         isEditing = true;
@@ -384,7 +345,7 @@
       {:else if !isEditing}
         <div
           class="results-view"
-          class:has-more={totalLines > ROWS_LIMIT}
+          class:has-more={totalLines > previewLines.length}
           bind:this={previewScroller}
           onclick={switchToEdit}
           onkeydown={(e) => e.key === "Enter" && switchToEdit()}
@@ -417,7 +378,7 @@
               </div>
             {/snippet}
           </VirtualList>
-          {#if totalLines > ROWS_LIMIT}
+          {#if totalLines > previewLines.length}
             <div class="line-row ellipsis-row">
               <span class="line-text">...</span>
             </div>

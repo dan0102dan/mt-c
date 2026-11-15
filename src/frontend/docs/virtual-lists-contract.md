@@ -85,6 +85,8 @@ records the behavior to retain while replacing pagination and staged rendering.
 - Build detached change tracking, validation and duplicate indexes in bounded
   pieces that yield to browser tasks, including inside one large rule array.
   Preparation must not publish partial drafts or invalidate background loads.
+  Reuse the preparation's own detached nodes instead of cloning them again;
+  saved baselines and caller-owned snapshots must remain separate.
 - Validate every prepared store and the current editor snapshot before committing
   the transaction synchronously. Reject stale preparation without losing edits.
   Imported drafts remain reversible and Save retains its existing API contract.
@@ -93,7 +95,14 @@ records the behavior to retain while replacing pagination and staged rendering.
 
 - Parsing, type detection, statistics, deduplication and ID generation run in
   a cancellable worker session. The complete rule list stays there until Apply;
-  the preview retains its existing first-500-lines limit and continuation marker.
+  the preview is limited to the first 500 lines and 32 Ki UTF-16 text units,
+  retaining a continuation marker and the full original editor buffer.
+- Apply pulls one bounded worker message at a time (up to 256 fragments and
+  32 Ki UTF-16 text units). Assemble a private result array without repeated
+  concatenation, and publish it only after every ordered chunk is complete.
+  Cancellation discards the partial result; late replies from a terminated
+  session cannot affect a later import. Parser failure invalidates the preview
+  cache so retry reparses the retained input in a new worker.
 - Preview and edit modes retain one textarea and its native editing buffer.
   Technical text has spellcheck, correction and writing suggestions disabled.
   Resizing reads only enough lines to reach the editor's maximum height.
