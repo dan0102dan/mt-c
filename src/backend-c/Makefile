@@ -83,6 +83,7 @@ CORE_SRCS := \
     src/core/lifecycle.c \
     src/logging/log.c \
     src/platform/loop.c \
+    src/platform/tproxy.c \
     src/dns/wire.c \
     src/dns/query_log.c \
     src/interfaces/dns_clients.c \
@@ -108,7 +109,7 @@ CORE_SRCS := \
 CONFIG_SRCS := \
     src/config/duration.c \
     src/config/id.c \
-    src/config/models.c src/config/profiles.c \
+    src/config/models.c src/config/profiles.c src/config/adaptive.c \
     src/config/yaml_scalar.c \
     src/config/yaml_load.c \
     src/config/yaml_save.c \
@@ -129,6 +130,7 @@ NETFILTER_SRCS := \
     src/netfilter/port_remap.c \
     src/netfilter/cleaner.c \
     src/netfilter/committer.c \
+    src/netfilter/tproxy_routes.c \
     src/netfilter/ruleset.c \
     src/netlink/rtnl.c \
     src/netlink/watcher.c
@@ -145,6 +147,7 @@ API_SRCS := \
     src/api/groups.c \
     src/api/system.c src/api/profiles_api.c \
     src/api/settings.c \
+    src/api/adaptive.c \
     src/platform/dns_clients_service.c src/platform/dns_openwrt.c \
     src/update/release.c src/platform/update.c \
     src/api/staticfiles.c \
@@ -285,6 +288,18 @@ $(BUILDDIR)/tests/support/%.o: tests/unit/%.c
 $(BUILDDIR)/tests/%: tests/unit/%.c $(LIB_OBJS) $(TEST_SUPPORT_OBJS)
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -Itests/vendor -Itests/unit $(LDFLAGS) -o $@ $< $(LIB_OBJS) $(TEST_SUPPORT_OBJS) $(LDLIBS) $(DEP_LIBS)
+
+$(BUILDDIR)/tests/test_tproxy: tests/unit/test_tproxy.c src/platform/tproxy.c $(LIB_OBJS) $(TEST_SUPPORT_OBJS)
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) -Itests/vendor -Itests/unit $(LDFLAGS) -o $@ $< $(filter-out $(BUILDDIR)/src/platform/tproxy.o,$(LIB_OBJS)) $(TEST_SUPPORT_OBJS) $(LDLIBS) $(DEP_LIBS)
+
+$(BUILDDIR)/tests/test_tproxy_routes: tests/unit/test_tproxy_routes.c src/netfilter/tproxy_routes.c $(LIB_OBJS) $(TEST_SUPPORT_OBJS)
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) -Itests/vendor -Itests/unit $(LDFLAGS) -o $@ $< $(filter-out $(BUILDDIR)/src/netfilter/tproxy_routes.o,$(LIB_OBJS)) $(TEST_SUPPORT_OBJS) $(LDLIBS) $(DEP_LIBS)
+
+$(BUILDDIR)/tests/test_adaptive: tests/unit/test_adaptive.c src/api/adaptive.c $(LIB_OBJS) $(TEST_SUPPORT_OBJS)
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) -Itests/vendor -Itests/unit $(LDFLAGS) -o $@ $< $(filter-out $(BUILDDIR)/src/api/adaptive.o,$(LIB_OBJS)) $(TEST_SUPPORT_OBJS) $(LDLIBS) $(DEP_LIBS)
 
 # Exercise production dispatch/lifetime code without exposing test-only APIs.
 $(BUILDDIR)/tests/test_dns_pipeline: tests/unit/test_dns_pipeline.c $(MAIN_SRC) $(LIB_OBJS) $(TEST_SUPPORT_OBJS)

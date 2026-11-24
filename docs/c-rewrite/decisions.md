@@ -4588,3 +4588,68 @@ notifications still acknowledge immediately, and an older daemon's notification
 response cannot be mistaken for readiness. Backend
 tests use real HTTP/event-loop code with modeled RCI and kernel transports;
 they do not replace physical-router validation.
+
+## D-96 — Opt-in adaptive TCP routing with TPROXY (2026-11-24)
+
+Add a separate `app.adaptiveRouting` configuration section and settings tab.
+It is disabled by default and is omitted from YAML/JSON serialization when
+absent in an old configuration. Existing fields, defaults, group/subscription
+priority rules and portable collection-import contracts remain unchanged.
+The new section owns its strings and ingress list through default/clone/clear;
+unrelated General settings changes preserve it.
+
+The first version handles only new TCP/80 and TCP/443 flows from explicit
+LAN interfaces. It excludes router-local/private/non-unicast destinations,
+preexisting foreign packet/connection marks and traffic outside the Keenetic
+policy scope. Explicit groups/subscriptions win before adaptive decisions.
+No OUTPUT interception or UDP/QUIC blocking is introduced.
+
+An event-loop TCP relay accepts the original client connection through
+IP_TRANSPARENT, tries the router's normal unmarked route, and tries one
+selected interface if the connect attempt fails. It never replays application
+bytes. A complete, bounded and inspected TLS ClientHello may be replayed once
+before any server bytes; following records are held, early-data ClientHellos
+and opaque/oversized data disable this replay. Any server response, including
+an alert, ends retries. A first TCP/80 response or plausible TLS ServerHello
+header permits learning, which means transport progress rather than proof of
+certificate validity, successful HTTP status or page availability.
+
+The RAM-only cache is keyed by address family, exact destination IP and TCP
+port. Separate expiring direct/alternate ipsets let subsequent new connections
+bypass the relay. Owned connection marks pin existing proxied or alternate
+flows, preventing learning or a new manual rule from changing them midstream.
+There is no promotion to domains/subnets, indefinite successful-cache refresh,
+or universal retry for already forwarded cached flows. Defaults are 600 seconds,
+2048 cache entries and 128 active relays, with bounded configurable maxima.
+
+The kernel owner allocates dedicated marks/tables, installs local delivery
+and alternate routing with a terminal blackhole, and stages scoped INPUT,
+FORWARD and NAT rules. Activation binds the listener before interception;
+teardown removes interception before closing it. A failed teardown retains
+the listener and owned kernel state for a retry. Local address and interface
+events reconcile exclusions/routes. Firmware firewall rebuilds recreate the
+owned graph while retaining active-flow pinning and learned sets. Learning
+skips a busy netfilter mutex rather than waiting for a firewall rebuild.
+
+GET/PUT `/api/v1/adaptive` and DELETE `/api/v1/adaptive/cache` use the existing
+HTTP authorization. PUT is a strict complete settings replacement and is
+rejected while General settings are busy. An unsupported optional runtime
+keeps the daemon's DNS/routing and diagnostic settings API running. Activation
+failure attempts rollback and returns the actual active state. Persistence
+failure after successful apply returns `applied: true`; an identical retry
+does not restart healthy flows. Changing adaptive settings closes its proxied
+flows and clears its cache, without restarting DNS. Cache deletion keeps
+current flows. Device configuration export includes the optional section;
+portable group/subscription import continues to preserve device settings.
+The collection-import `system/config/apply` endpoint rejects adding, changing
+or removing this section with HTTP 409 and directs callers to `/api/v1/adaptive`;
+unchanged snapshots remain valid. This prevents persisting a different desired
+configuration without coordinating the relay runtime. Startup and SIGHUP use
+the adaptive controller to apply the file's section.
+
+OpenWrt package dependencies include `iptables-mod-tproxy`; Entware support
+depends on the target firmware. Tests cover transport, strict configuration,
+failure/rollback/persistence paths, authorization, generated rules and cache
+lifetime. A separate CI namespace test exercises real legacy/nft forwarding
+for IPv4/IPv6, including a full TLS handshake across first-flow learning.
+Physical Keenetic policy/acceleration behavior still requires device testing.

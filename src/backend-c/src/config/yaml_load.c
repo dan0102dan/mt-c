@@ -342,6 +342,50 @@ static mt_err_t load_addr_port(yaml_document_t *doc, node_t *n, char **addr,
     return MT_OK;
 }
 
+static mt_err_t load_adaptive(yaml_document_t *doc, node_t *node,
+                               mt_adaptive_config_t *config)
+{
+    if (!node) { return MT_OK; }
+    if (node->type != YAML_MAPPING_NODE) { return MT_ERR_INVAL; }
+    static const char *const keys[] = {"enabled", "interface", "ingressInterfaces",
+        "connectTimeoutMs", "tlsTimeoutMs", "idleTimeoutMs", "ttlSeconds", "maxConnections", "maxEntries"};
+    unsigned seen = 0;
+    for (yaml_node_pair_t *pair = node->data.mapping.pairs.start; pair < node->data.mapping.pairs.top; pair++) {
+        node_t *key = node_of(doc, pair->key), *value = node_of(doc, pair->value);
+        if (!key || key->type != YAML_SCALAR_NODE || !value || node_is_null(value)) { return MT_ERR_INVAL; }
+        size_t i = 0;
+        while (i < sizeof(keys) / sizeof(keys[0]) && strcmp(scalar_text(key), keys[i])) { i++; }
+        if (i == sizeof(keys) / sizeof(keys[0]) || (seen & (1u << i))) { return MT_ERR_INVAL; }
+        seen |= 1u << i;
+    }
+    mt_adaptive_config_t next;
+    mt_err_t err = mt_adaptive_config_clone(&next, config);
+    if (err != MT_OK) { return err; }
+    next.present = true;
+    get_bool(map_get(doc, node, "enabled"), &next.enabled, &err);
+    if (err == MT_OK) { get_string(map_get(doc, node, "interface"), &next.interface, &err); }
+    if (err == MT_OK) {
+        get_string_list(doc, map_get(doc, node, "ingressInterfaces"),
+                        &next.ingress_interfaces, &next.n_ingress, &err);
+    }
+    uint32_t *numbers[] = {&next.connect_timeout_ms, &next.tls_timeout_ms, &next.idle_timeout_ms,
+        &next.ttl_seconds, &next.max_connections, &next.max_entries};
+    for (size_t i = 0; err == MT_OK && i < sizeof(numbers) / sizeof(numbers[0]); i++) {
+        node_t *value = map_get(doc, node, keys[i + 3]);
+        if (!value) { continue; }
+        if (value->type != YAML_SCALAR_NODE || !scalar_is_plain(value) ||
+            mt_yaml_resolve_plain(scalar_text(value)).kind != MT_SCALAR_INT) { err = MT_ERR_INVAL; break; }
+        uint64_t parsed = 0;
+        if (get_uint64(value, UINT32_MAX, &parsed, &err) == GET_OK) { *numbers[i] = (uint32_t)parsed; }
+    }
+    if (err == MT_OK && !mt_adaptive_config_valid(&next)) { err = MT_ERR_INVAL; }
+    if (err == MT_OK) {
+        mt_adaptive_config_clear(config);
+        *config = next;
+    } else { mt_adaptive_config_clear(&next); }
+    return err;
+}
+
 static mt_err_t load_app(yaml_document_t *doc, node_t *app,
                          mt_app_config_t *c)
 {
@@ -349,6 +393,8 @@ static mt_err_t load_app(yaml_document_t *doc, node_t *app,
     if (app->type != YAML_MAPPING_NODE) {
         return MT_ERR_INVAL;
     }
+    err = load_adaptive(doc, map_get(doc, app, "adaptiveRouting"), &c->adaptive);
+    if (err != MT_OK) { return err; }
 
 #ifdef MT_ENTWARE_KN
     node_t *kp = map_get(doc, app, "keeneticPolicy");

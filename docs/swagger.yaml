@@ -1,4 +1,76 @@
 definitions:
+  types.AdaptiveSettings:
+    type: object
+    additionalProperties: false
+    required: [enabled, interface, ingressInterfaces, connectTimeoutMs, tlsTimeoutMs, idleTimeoutMs, ttlSeconds, maxConnections, maxEntries]
+    properties:
+      enabled: {type: boolean, default: false}
+      interface:
+        type: string
+        maxLength: 15
+        description: Alternate Linux interface; required and must exist when enabled. Not a routing profile.
+        example: vpn0
+      ingressInterfaces:
+        type: array
+        maxItems: 16
+        uniqueItems: true
+        items: {type: string, minLength: 1, maxLength: 15}
+        description: Explicit LAN ingress interfaces; at least one when enabled, distinct from the alternate interface.
+      connectTimeoutMs: {type: integer, minimum: 100, maximum: 60000, default: 2000}
+      tlsTimeoutMs: {type: integer, minimum: 100, maximum: 60000, default: 3000}
+      idleTimeoutMs: {type: integer, minimum: 1000, maximum: 3600000, default: 300000}
+      ttlSeconds: {type: integer, minimum: 30, maximum: 86400, default: 600}
+      maxConnections: {type: integer, minimum: 1, maximum: 1024, default: 128}
+      maxEntries: {type: integer, minimum: 1, maximum: 65536, default: 2048}
+  types.AdaptiveState:
+    type: object
+    required: [settings, active, error, interfaces, entries, stats]
+    properties:
+      settings: {$ref: '#/definitions/types.AdaptiveSettings'}
+      active:
+        type: boolean
+        description: Listener and kernel interception were activated; not a guarantee of Internet reachability.
+      error: {type: string, x-nullable: true}
+      code:
+        type: string
+        enum: [INVALID_SETTINGS, SETTINGS_BUSY, TPROXY_UNAVAILABLE, PERSISTENCE_FAILED, CACHE_UNAVAILABLE]
+      applied:
+        type: boolean
+        description: True on persistence failure when the returned settings are already applied. Retry the same settings to save without restarting flows.
+      interfaces:
+        type: array
+        items:
+          type: object
+          required: [id, name]
+          properties:
+            id: {type: string}
+            name: {type: string}
+      entries:
+        type: array
+        items:
+          type: object
+          required: [address, family, port, alternate, expiresInSeconds]
+          properties:
+            address: {type: string}
+            family: {type: integer, enum: [4, 6]}
+            port: {type: integer, enum: [80, 443]}
+            alternate: {type: boolean}
+            expiresInSeconds: {type: integer, minimum: 0}
+      stats:
+        type: object
+        description: Relay counters only; connections following learned kernel routes do not increase these counters.
+        required: [active, accepted, directSuccess, alternateSuccess, failures, overLimit]
+        properties:
+          active: {type: integer, minimum: 0}
+          accepted: {type: integer, format: int64, minimum: 0}
+          directSuccess: {type: integer, format: int64, minimum: 0}
+          alternateSuccess: {type: integer, format: int64, minimum: 0}
+          failures: {type: integer, format: int64, minimum: 0}
+          overLimit:
+            type: integer
+            format: int64
+            minimum: 0
+            description: Admission pauses at the connection limit, not an exact count of rejected clients.
   types.ErrorRes:
     properties:
       error:
@@ -355,6 +427,77 @@ info:
   title: MagiTrickle API
   version: "0.1"
 paths:
+  /api/v1/adaptive:
+    get:
+      summary: Read adaptive TCP routing settings and runtime state
+      description: >-
+        Authenticated, no-store response. The optional mode handles new TCP/80
+        and TCP/443 flows from selected LAN interfaces. Learning records path
+        progress, not certificate validity or successful page delivery.
+      tags: [adaptive]
+      produces: [application/json]
+      responses:
+        '200':
+          description: Current settings, runtime status, interface inventory and transient route cache
+          schema: {$ref: '#/definitions/types.AdaptiveState'}
+        '401': {description: WebUI authentication required when enabled}
+        '503': {description: Cannot read runtime state}
+    put:
+      summary: Apply and persist the complete adaptive TCP settings
+      description: >-
+        Same-origin JSON; at most 8192 bytes. Unknown, missing, duplicate or
+        invalid fields return 400. Existing manual routing and Keenetic policy
+        scope retain precedence. Changing settings closes active relay flows
+        and clears transient entries, without restarting DNS. Activation
+        failure attempts to restore previous settings and returns actual
+        runtime status. A persistence failure after application returns
+        applied=true; retrying identical settings does not restart a healthy
+        runtime. A saved enabled but inactive configuration can be resubmitted
+        to retry activation. General settings operations take precedence.
+      tags: [adaptive]
+      consumes: [application/json]
+      produces: [application/json]
+      parameters:
+      - in: body
+        name: json
+        required: true
+        schema:
+          type: object
+          additionalProperties: false
+          required: [settings]
+          properties:
+            settings: {$ref: '#/definitions/types.AdaptiveSettings'}
+      responses:
+        '200':
+          description: Settings applied and saved
+          schema: {$ref: '#/definitions/types.AdaptiveState'}
+        '400':
+          description: INVALID_SETTINGS
+          schema: {$ref: '#/definitions/types.AdaptiveState'}
+        '401': {description: WebUI authentication required when enabled}
+        '409':
+          description: SETTINGS_BUSY
+          schema: {$ref: '#/definitions/types.AdaptiveState'}
+        '500':
+          description: PERSISTENCE_FAILED; applied=true and current settings returned
+          schema: {$ref: '#/definitions/types.AdaptiveState'}
+        '503':
+          description: TPROXY_UNAVAILABLE, or cannot read runtime state
+          schema: {$ref: '#/definitions/types.AdaptiveState'}
+  /api/v1/adaptive/cache:
+    delete:
+      summary: Clear transient adaptive route decisions
+      description: Authenticated, no-store response. Current relay flows and their connection pinning remain intact.
+      tags: [adaptive]
+      produces: [application/json]
+      responses:
+        '200':
+          description: Cache cleared
+          schema: {$ref: '#/definitions/types.AdaptiveState'}
+        '401': {description: WebUI authentication required when enabled}
+        '503':
+          description: CACHE_UNAVAILABLE, or cannot read runtime state
+          schema: {$ref: '#/definitions/types.AdaptiveState'}
   /api/v1/groups:
     get:
       description: Возвращает список групп

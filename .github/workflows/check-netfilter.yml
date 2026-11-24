@@ -62,3 +62,50 @@ jobs:
           name: netfilter-recovery-legacy-nft
           path: src/backend-c/recovery-*.log
           retention-days: 7
+
+  tproxy:
+    name: Adaptive TPROXY (legacy + nft, IPv4 + IPv6)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install build and namespace-test dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libyaml-dev libpcre2-dev libmnl-dev libcjson-dev libcurl4-openssl-dev iptables ipset iproute2 util-linux openssl
+      - name: Build production daemon and kernel route tests
+        working-directory: src/backend-c
+        run: make CFLAGS_EXTRA=-Werror all build/host/tests/test_tproxy_routes
+      - name: Real transparent forwarding and route learning
+        run: |
+          set -euo pipefail
+          failed=0
+          daemon="$PWD/src/backend-c/build/host/magitrickled-c"
+          for frontend in legacy nft; do
+            sudo update-alternatives --set iptables "/usr/sbin/iptables-$frontend"
+            sudo update-alternatives --set ip6tables "/usr/sbin/ip6tables-$frontend"
+            if ! sudo env MT_TEST_TPROXY_NETNS=1 unshare --net \
+                timeout 90s src/backend-c/build/host/tests/test_tproxy_routes -v \
+                > "tproxy-routes-$frontend.log" 2>&1; then
+              failed=1
+            fi
+            cat "tproxy-routes-$frontend.log"
+            for family in 4 6; do
+              echo "::group::TPROXY iptables-$frontend IPv$family"
+              if ! sudo unshare --net timeout 90s python3 tools/tests/tproxy_kernel.py \
+                  --daemon "$daemon" --family "$family" \
+                  > "tproxy-flow-$frontend-ipv$family.log" 2>&1; then
+                failed=1
+              fi
+              cat "tproxy-flow-$frontend-ipv$family.log"
+              echo '::endgroup::'
+            done
+          done
+          exit "$failed"
+      - name: Preserve kernel test logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: adaptive-tproxy-kernel
+          path: tproxy-*.log
+          retention-days: 7

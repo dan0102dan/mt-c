@@ -550,6 +550,93 @@ TEST config_apply_checks_field_names_not_a_magic_field_count(void) {
     harness_stop(h); PASS();
 }
 
+TEST config_apply_rejects_new_adaptive_settings_without_mutation(void) {
+    harness_t *h = harness_start(true); ASSERT(h);
+    cJSON *snapshot = NULL, *response = NULL;
+    ASSERT_EQ(200, do_request("GET", "/api/v1/system/config/snapshot", NULL, &snapshot));
+    cJSON *app = cJSON_GetObjectItemCaseSensitive(cJSON_GetObjectItemCaseSensitive(snapshot, "config"), "app");
+    ASSERT(!cJSON_GetObjectItemCaseSensitive(app, "adaptiveRouting"));
+    cJSON *adaptive = cJSON_Parse(
+        "{\"enabled\":false,\"interface\":\"\",\"ingressInterfaces\":[],"
+        "\"connectTimeoutMs\":2000,\"tlsTimeoutMs\":3000,\"idleTimeoutMs\":300000,"
+        "\"ttlSeconds\":600,\"maxConnections\":128,\"maxEntries\":2048}");
+    ASSERT(adaptive);
+    ASSERT(cJSON_AddItemToObject(app, "adaptiveRouting", adaptive));
+    ASSERT(cJSON_ReplaceItemInObjectCaseSensitive(app, "logLevel", cJSON_CreateString("debug")));
+    char *payload = cJSON_PrintUnformatted(snapshot); ASSERT(payload);
+    ASSERT_EQ(409, do_request("POST", "/api/v1/system/config/apply", payload, &response));
+    const cJSON *error = cJSON_GetObjectItemCaseSensitive(response, "error");
+    ASSERT(cJSON_IsString(error)); ASSERT(strstr(error->valuestring, "/api/v1/adaptive"));
+    ASSERT_FALSE(h->cfg.app.adaptive.present);
+    ASSERT_STR_EQ("info", h->cfg.app.log_level);
+    FILE *file = fopen(h->config_path, "rb"); ASSERT(file);
+    ASSERT_EQ(EOF, fgetc(file)); fclose(file);
+    free(payload); cJSON_Delete(response); cJSON_Delete(snapshot);
+    harness_stop(h); PASS();
+}
+
+TEST config_apply_preserves_adaptive_while_committing_collections(void) {
+    harness_t *h = harness_start(true); ASSERT(h);
+    mt_adaptive_config_t *adaptive = &h->cfg.app.adaptive;
+    adaptive->enabled = adaptive->present = true;
+    ASSERT_EQ(MT_OK, mt_strset(&adaptive->interface, "vpn0"));
+    adaptive->ingress_interfaces = calloc(1, sizeof(*adaptive->ingress_interfaces));
+    ASSERT(adaptive->ingress_interfaces);
+    adaptive->ingress_interfaces[0] = strdup("br-lan"); ASSERT(adaptive->ingress_interfaces[0]);
+    adaptive->n_ingress = 1;
+    mt_adaptive_config_t expected = {0};
+    ASSERT_EQ(MT_OK, mt_adaptive_config_clone(&expected, adaptive));
+    mt_group_t *group = mt_group_new(); ASSERT(group);
+    ASSERT_EQ(MT_OK, mt_id_parse("aabbcc01", &group->id));
+    ASSERT_EQ(MT_OK, mt_strset(&group->name, "Original collection"));
+    ASSERT_EQ(MT_OK, mt_strset(&group->iface, "vpn0"));
+    ASSERT_EQ(MT_OK, mt_app_add_group(h->app, group));
+    ASSERT_EQ(200, do_request("POST", "/api/v1/system/config/save", NULL, NULL));
+    cJSON *snapshot = NULL;
+    ASSERT_EQ(200, do_request("GET", "/api/v1/system/config/snapshot", NULL, &snapshot));
+    cJSON *config = cJSON_GetObjectItemCaseSensitive(snapshot, "config");
+    cJSON *app = cJSON_GetObjectItemCaseSensitive(config, "app");
+    cJSON *stored = cJSON_GetObjectItemCaseSensitive(app, "adaptiveRouting"); ASSERT(stored);
+    cJSON *incoming_group = cJSON_GetArrayItem(cJSON_GetObjectItemCaseSensitive(config, "groups"), 0);
+    ASSERT(incoming_group);
+    ASSERT(cJSON_ReplaceItemInObjectCaseSensitive(incoming_group, "name", cJSON_CreateString("Imported collection")));
+
+    /* A changed section and its omission would both desynchronize the live
+     * controller. Neither may commit the accompanying collection edit. */
+    cJSON_SetNumberValue(cJSON_GetObjectItemCaseSensitive(stored, "ttlSeconds"), 601);
+    for (unsigned attempt = 0; attempt < 2; attempt++) {
+        if (attempt) { ASSERT(cJSON_DetachItemFromObjectCaseSensitive(app, "adaptiveRouting") == stored); }
+        char *payload = cJSON_PrintUnformatted(snapshot); ASSERT(payload);
+        cJSON *response = NULL;
+        ASSERT_EQ(409, do_request("POST", "/api/v1/system/config/apply", payload, &response));
+        const cJSON *error = cJSON_GetObjectItemCaseSensitive(response, "error");
+        ASSERT(cJSON_IsString(error)); ASSERT(strstr(error->valuestring, "/api/v1/adaptive"));
+        ASSERT(mt_adaptive_config_equal(&expected, &h->cfg.app.adaptive));
+        ASSERT_STR_EQ("Original collection", h->cfg.groups[0]->name);
+        free(payload); cJSON_Delete(response);
+    }
+    mt_config_t disk = {0};
+    ASSERT_EQ(MT_OK, mt_config_init_defaults(&disk));
+    ASSERT_EQ(MT_OK, mt_config_load_file(&disk, h->config_path));
+    ASSERT(mt_adaptive_config_equal(&expected, &disk.app.adaptive));
+    ASSERT_STR_EQ("Original collection", disk.groups[0]->name);
+    mt_config_clear(&disk);
+
+    cJSON_SetNumberValue(cJSON_GetObjectItemCaseSensitive(stored, "ttlSeconds"), 600);
+    ASSERT(cJSON_AddItemToObject(app, "adaptiveRouting", stored));
+    char *payload = cJSON_PrintUnformatted(snapshot); ASSERT(payload);
+    ASSERT_EQ(200, do_request("POST", "/api/v1/system/config/apply", payload, NULL));
+    free(payload);
+    ASSERT(mt_adaptive_config_equal(&expected, &h->cfg.app.adaptive));
+    ASSERT_STR_EQ("Imported collection", h->cfg.groups[0]->name);
+    ASSERT_EQ(MT_OK, mt_config_init_defaults(&disk));
+    ASSERT_EQ(MT_OK, mt_config_load_file(&disk, h->config_path));
+    ASSERT(mt_adaptive_config_equal(&expected, &disk.app.adaptive));
+    ASSERT_STR_EQ("Imported collection", disk.groups[0]->name);
+    mt_config_clear(&disk); mt_adaptive_config_clear(&expected);
+    cJSON_Delete(snapshot); harness_stop(h); PASS();
+}
+
 TEST config_snapshot_roundtrips_full_uint64_without_rounding(void) {
     harness_t *h = harness_start(true);
     ASSERT(h != NULL);
@@ -668,6 +755,8 @@ int main(int argc, char **argv) {
     RUN_TEST(config_apply_rejects_stale_preview_and_commits_valid_settings);
     RUN_TEST(config_apply_save_failure_restores_subscription_exceptions);
     RUN_TEST(config_apply_checks_field_names_not_a_magic_field_count);
+    RUN_TEST(config_apply_rejects_new_adaptive_settings_without_mutation);
+    RUN_TEST(config_apply_preserves_adaptive_while_committing_collections);
     RUN_TEST(config_snapshot_roundtrips_full_uint64_without_rounding);
     RUN_TEST(save_config_noop_without_path);
     RUN_TEST(netfilterd_hook_ok_and_bad_json);

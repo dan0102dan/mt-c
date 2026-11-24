@@ -14,9 +14,10 @@ import {
   isValidPriority,
   withPriorityDefault,
 } from "../src/utils/priority.ts";
+import { registerMockAdaptiveRoutes } from "./adaptive-mock.ts";
 import { registerMockDnsRoutes } from "./dns-mock.ts";
-import { registerMockLogRoutes } from "./logs-mock.ts";
 import { registerMockPolicyRoutes } from "./keenetic-policy-mock.ts";
+import { registerMockLogRoutes } from "./logs-mock.ts";
 import { registerMockSettingsRoutes } from "./settings-mock.ts";
 import { registerMockUpdateRoutes } from "./update-mock.ts";
 
@@ -97,6 +98,7 @@ app.use(`${API_BASE}/*`, async (c, next) => {
 });
 
 registerMockDnsRoutes(app);
+registerMockAdaptiveRoutes(app);
 
 app.get(`${API_BASE}/auth`, async (c) => {
   return c.json({ enabled: mockAuthEnabled() }, 200);

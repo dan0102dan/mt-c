@@ -39,6 +39,7 @@
 #include "magitrickle/ruleset.h"
 #include "magitrickle/yamlio.h"
 #include "magitrickle/sub_fetch.h"
+#include "magitrickle/tproxy_routes.h"
 
 typedef struct mt_app mt_app_t;
 
@@ -304,6 +305,20 @@ typedef struct mt_iface_info {
  * -DMT_ENTWARE_KN, which enables the Keenetic virtual-interface list --
  * see app.c). Caller frees *out. */
 mt_err_t mt_app_list_interfaces(const mt_app_t *app, mt_iface_info_t **out, size_t *out_n);
+/* Interface inventory for explicit adaptive ingress selection. No global
+ * show-all preference is changed; callers still exclude loopback in the UI. */
+mt_err_t mt_app_list_all_interfaces(const mt_app_t *app, mt_iface_info_t **out, size_t *out_n);
+
+/* Adaptive TCP layer is opt-in and independent of user-defined groups.
+ * Bind the transparent listener before start; stop successfully before
+ * closing it. A stop failure retains the owned state for a cleanup retry. */
+mt_err_t mt_app_tproxy_start(mt_app_t *app, const mt_tproxy_route_config_t *config);
+mt_err_t mt_app_tproxy_stop(mt_app_t *app);
+mt_err_t mt_app_tproxy_learn(mt_app_t *app, int family, const uint8_t *address,
+                             uint16_t port, bool alternate);
+uint32_t mt_app_tproxy_mark(const mt_app_t *app, bool alternate);
+mt_err_t mt_app_tproxy_snapshot(mt_app_t *app, mt_tproxy_route_entry_t **out, size_t *count);
+mt_err_t mt_app_tproxy_clear(mt_app_t *app);
 
 /* Exposed for unit tests only (see test_system.c): true iff `name` is on
  * the platform's ignored-interfaces list (see app.c) -- always false

@@ -32,12 +32,28 @@ void mt_rtnl_close(mt_rtnl_t *r);
  * rule to delete doesn't exist (matches Go's unix.ENOENT swallow). */
 mt_err_t mt_rtnl_rule_add(mt_rtnl_t *r, int family, uint32_t mark, uint32_t table);
 mt_err_t mt_rtnl_rule_del(mt_rtnl_t *r, int family, uint32_t mark, uint32_t table);
+/* Exact full-mask rules at an explicit RPDB priority for owned transparent
+ * routes. Existing callers above retain the kernel-selected legacy priority.
+ * Ensure does not delete or move other rules; delete is idempotent. */
+mt_err_t mt_rtnl_rule_add_at(mt_rtnl_t *r, int family, uint32_t mark,
+                            uint32_t table, uint32_t priority);
+mt_err_t mt_rtnl_rule_del_at(mt_rtnl_t *r, int family, uint32_t mark,
+                            uint32_t table, uint32_t priority);
+mt_err_t mt_rtnl_rule_ensure_at(mt_rtnl_t *r, int family, uint32_t mark,
+                               uint32_t table, uint32_t priority);
 
 /* Default route (dst 0/0) in `table`, type blackhole, given priority.
  * MT_OK if "already exists" (add) / "no such process" (del) -- matches
  * Go's EEXIST/ESRCH swallows in insertIPRoute/deleteIPRoute. */
 mt_err_t mt_rtnl_route_add_blackhole(mt_rtnl_t *r, int family, uint32_t table, uint32_t priority);
 mt_err_t mt_rtnl_route_del_blackhole(mt_rtnl_t *r, int family, uint32_t table, uint32_t priority);
+
+/* TPROXY local-delivery default route in an exclusively allocated table.
+ * Add is exclusive: a conflicting existing route is never overwritten. */
+mt_err_t mt_rtnl_route_add_local(mt_rtnl_t *r, int family, uint32_t table,
+                                 uint32_t priority, int ifindex);
+mt_err_t mt_rtnl_route_del_local(mt_rtnl_t *r, int family, uint32_t table,
+                                 uint32_t priority, int ifindex);
 
 /* Default route (dst 0/0) in `table` via oif (+ optional gateway),
  * priority. gw may be NULL/gw_len 0 for a device-only (point-to-point
