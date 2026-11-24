@@ -48,16 +48,17 @@ mt_err_t mt_adaptive_config_parse(const cJSON *json, mt_adaptive_config_t *out)
     memset(out, 0, sizeof(*out));
     static const char *const keys[] = {"enabled", "interface", "ingressInterfaces",
         "connectTimeoutMs", "tlsTimeoutMs", "idleTimeoutMs", "ttlSeconds", "maxConnections", "maxEntries"};
-    if (!cJSON_IsObject(json)) { return MT_ERR_INVAL; }
+    if (!json || !cJSON_IsObject(json)) { return MT_ERR_INVAL; }
     const cJSON *values[sizeof(keys) / sizeof(keys[0])] = {0};
     const cJSON *item;
     cJSON_ArrayForEach(item, json) {
         size_t i = 0;
-        while (i < sizeof(keys) / sizeof(keys[0]) && (!item->string || strcmp(item->string, keys[i]))) { i++; }
+        while (i < sizeof(keys) / sizeof(keys[0]) && (!item->string || strcmp(item->string, keys[i]) != 0)) { i++; }
         if (i == sizeof(keys) / sizeof(keys[0]) || values[i]) { return MT_ERR_INVAL; }
         values[i] = item;
     }
-    if (!cJSON_IsBool(values[0]) || !cJSON_IsString(values[1]) || !cJSON_IsArray(values[2]) ||
+    if (!values[0] || !values[1] || !values[2] ||
+        !cJSON_IsBool(values[0]) || !cJSON_IsString(values[1]) || !cJSON_IsArray(values[2]) ||
         cJSON_GetArraySize(values[2]) > 16) { return MT_ERR_INVAL; }
     mt_err_t err = mt_adaptive_config_defaults(out);
     if (err != MT_OK) { return err; }
@@ -80,7 +81,7 @@ mt_err_t mt_adaptive_config_parse(const cJSON *json, mt_adaptive_config_t *out)
         &out->ttl_seconds, &out->max_connections, &out->max_entries};
     for (size_t i = 0; i < sizeof(numbers) / sizeof(numbers[0]); i++) {
         const cJSON *value = values[i + 3];
-        if (!cJSON_IsNumber(value) || !isfinite(value->valuedouble) || value->valuedouble < 0 ||
+        if (!value || !cJSON_IsNumber(value) || !isfinite(value->valuedouble) || value->valuedouble < 0 ||
             value->valuedouble > UINT32_MAX || (double)(uint32_t)value->valuedouble != value->valuedouble) {
             err = MT_ERR_INVAL; goto fail;
         }
@@ -352,7 +353,7 @@ static void put_settings(mt_http_req_t *req, mt_http_res_t *res, void *ctx)
     }
     const char *site = mt_http_req_header(req, "Sec-Fetch-Site");
     const char *type = mt_http_req_header(req, "Content-Type");
-    if ((site && !strcmp(site, "cross-site")) || !type || strncmp(type, "application/json", 16) ||
+    if ((site && strcmp(site, "cross-site") == 0) || !type || strncmp(type, "application/json", 16) != 0 ||
         (type[16] && type[16] != ';')) {
         response(service, res, 400, "INVALID_SETTINGS", "Expected a same-origin JSON request", false); return;
     }
@@ -361,7 +362,7 @@ static void put_settings(mt_http_req_t *req, mt_http_res_t *res, void *ctx)
     cJSON *json = len <= 8192 ? mt_json_parse_document((const char *)body, len) : NULL;
     mt_adaptive_config_t candidate = {0};
     mt_err_t err = MT_ERR_INVAL;
-    if (cJSON_IsObject(json) && cJSON_GetArraySize(json) == 1) {
+    if (json && cJSON_IsObject(json) && cJSON_GetArraySize(json) == 1) {
         err = mt_adaptive_config_parse(cJSON_GetObjectItemCaseSensitive(json, "settings"), &candidate);
     }
     cJSON_Delete(json);

@@ -6,15 +6,64 @@
 #include <assert.h>
 #include <ifaddrs.h>
 #include <netinet/in.h>
+#include <stdlib.h>
+#include <string.h>
 #include <sys/stat.h>
 #include <unistd.h>
 static int test_addresses(struct ifaddrs **out);
 static void test_free_addresses(struct ifaddrs *addresses);
+static void *test_calloc(size_t count, size_t size);
+static char *test_strdup(const char *value);
+static void test_free(void *pointer);
 #define getifaddrs test_addresses
 #define freeifaddrs test_free_addresses
+#define calloc test_calloc
+#define strdup test_strdup
+#define free test_free
 #include "../../src/netfilter/tproxy_routes.c"
 #undef getifaddrs
 #undef freeifaddrs
+#undef calloc
+#undef strdup
+#undef free
+
+/* Constructor fault injection stays within this translation unit; the normal
+ * fake transports and other library allocations are unaffected. */
+static struct {
+    bool enabled;
+    size_t calls, fail_at, live;
+    void *pointers[32];
+} allocations;
+static bool allocation_fails(void)
+{
+    return allocations.enabled && ++allocations.calls == allocations.fail_at;
+}
+static void *track_allocation(void *pointer)
+{
+    if (allocations.enabled && pointer) {
+        assert(allocations.live < sizeof(allocations.pointers) / sizeof(allocations.pointers[0]));
+        allocations.pointers[allocations.live++] = pointer;
+    }
+    return pointer;
+}
+static void *test_calloc(size_t count, size_t size)
+{
+    return allocation_fails() ? NULL : track_allocation(calloc(count, size));
+}
+static char *test_strdup(const char *value)
+{
+    return allocation_fails() ? NULL : track_allocation(strdup(value));
+}
+static void test_free(void *pointer)
+{
+    if (allocations.enabled && pointer) {
+        size_t i = 0;
+        while (i < allocations.live && allocations.pointers[i] != pointer) { i++; }
+        assert(i < allocations.live);
+        allocations.pointers[i] = allocations.pointers[--allocations.live];
+    }
+    free(pointer);
+}
 
 static struct sockaddr_in local4 = {.sin_family = AF_INET};
 static struct ifaddrs local_address = {.ifa_name = "br-lan", .ifa_addr = (struct sockaddr *)&local4};
@@ -91,6 +140,29 @@ static mt_err_t stage_commit(void)
     if (err != MT_OK) { fprintf(stderr, "prepare failed %s errno=%d\n", mt_err_str(err), errno); }
     for (size_t i = 0; i < 2 && err == MT_OK; i++) { err = mt_ipt_commit(fixture.ipt[i]); if (err != MT_OK) { fprintf(stderr,"commit family=%zu failed %s\n",i,mt_err_str(err)); } }
     return err;
+}
+TEST constructor_allocation_failures_release_partial_state(void)
+{
+    const char *ingress[] = {"br-lan", "br-guest"};
+    mt_tproxy_route_config_t c = {.interface = "vpn0", .ingress_interfaces = ingress,
+        .n_ingress = 2, .port = 18888, .ttl_seconds = 600, .max_entries = 3};
+    memset(&allocations, 0, sizeof(allocations));
+    allocations.enabled = true;
+    mt_tproxy_routes_t *r = mt_tproxy_routes_new(&c, &fixture.r->deps);
+    bool created = r != NULL;
+    size_t required = allocations.calls;
+    mt_tproxy_routes_free(r);
+    allocations.enabled = false;
+    ASSERT(created); ASSERT(required > 0); ASSERT_EQ(0u, allocations.live);
+    for (size_t fail = 1; fail <= required; fail++) {
+        memset(&allocations, 0, sizeof(allocations));
+        allocations.enabled = true; allocations.fail_at = fail;
+        r = mt_tproxy_routes_new(&c, &fixture.r->deps);
+        allocations.enabled = false;
+        ASSERT_EQ(NULL, r); ASSERT_EQ(0u, allocations.live);
+    }
+    memset(&allocations, 0, sizeof(allocations));
+    PASS();
 }
 TEST precedence_and_active_flow_pinning(void)
 {
@@ -298,6 +370,7 @@ TEST real_kernel_routes_and_teardown(void)
 SUITE(routes)
 {
     SET_SETUP(setup, NULL); SET_TEARDOWN(teardown, NULL);
+    RUN_TEST(constructor_allocation_failures_release_partial_state);
     RUN_TEST(precedence_and_active_flow_pinning); RUN_TEST(ingress_ports_input_nat_and_local_exclusions);
     RUN_TEST(address_change_refreshes_local_guards);
     RUN_TEST(learning_is_per_host_port_family_and_route); RUN_TEST(bounds_expiry_and_failed_learns);

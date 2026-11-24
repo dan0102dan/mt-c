@@ -129,6 +129,33 @@ static size_t hello_bytes(uint8_t *out, bool early_data, bool fragmented)
 static const uint8_t server_hello[] = {22,3,3,0,42,2,0,0,38};
 static const uint8_t application[] = {23,3,3,0,4,'P','O','S','T'};
 
+TEST socket_endpoints_require_complete_supported_addresses(void)
+{
+    struct sockaddr_storage sa = {0};
+    mt_tproxy_endpoint_t out;
+    ASSERT(!endpoint_from_sockaddr(&sa, 0, &out));
+    ASSERT(!endpoint_from_sockaddr(&sa, sizeof(sa), &out));
+    mt_tproxy_endpoint_t ipv4 = {.family = AF_INET, .addr = {203,0,113,10}, .port = 443};
+    socklen_t len = endpoint_to_sockaddr(&ipv4, &sa);
+    ASSERT(!endpoint_from_sockaddr(&sa, sizeof(sa.ss_family), &out));
+    ASSERT(!endpoint_from_sockaddr(&sa, len - 1, &out));
+    ASSERT(!endpoint_from_sockaddr(&sa, sizeof(sa) + 1, &out));
+    ASSERT(endpoint_from_sockaddr(&sa, len, &out));
+    ASSERT_EQ(AF_INET, out.family); ASSERT_EQ(443, out.port);
+    ASSERT_EQ(0, memcmp(ipv4.addr, out.addr, 4));
+    mt_tproxy_endpoint_t ipv6 = {.family = AF_INET6, .port = 80};
+    ASSERT_EQ(1, inet_pton(AF_INET6, "2001:db8::10", ipv6.addr));
+    len = endpoint_to_sockaddr(&ipv6, &sa);
+    ASSERT(!endpoint_from_sockaddr(&sa, len - 1, &out));
+    ASSERT(endpoint_from_sockaddr(&sa, len, &out));
+    ASSERT_EQ(AF_INET6, out.family); ASSERT_EQ(80, out.port);
+    ASSERT_EQ(0, memcmp(ipv6.addr, out.addr, 16));
+    ASSERT_EQ(1, inet_pton(AF_INET6, "::ffff:203.0.113.10", ipv6.addr));
+    len = endpoint_to_sockaddr(&ipv6, &sa);
+    ASSERT(!endpoint_from_sockaddr(&sa, len, &out));
+    PASS();
+}
+
 TEST client_hello_inspection_is_incremental_and_bounded(void)
 {
     for (unsigned fragmented = 0; fragmented < 2; fragmented++) {
@@ -394,6 +421,43 @@ static void watchdog(mt_loop_t *loop, void *userdata)
     bool *expired = userdata; *expired = true; mt_loop_stop(loop);
 }
 
+TEST destruction_releases_remaining_flows_after_out_of_order_removal(void)
+{
+    mt_loop_t *loop = NULL; ASSERT_EQ(MT_OK, mt_loop_create(&loop));
+    struct probe_ctx ctx = {0}; mt_tproxy_t *p = fixture_proxy(loop, &ctx);
+    p->config.idle_timeout_ms = 5;
+    int clients[4][2], servers[4][2]; tproxy_flow_t *flows[4];
+    for (size_t i = 0; i < 4; i++) {
+        ASSERT_EQ(0, make_pair(clients[i])); ASSERT_EQ(0, make_pair(servers[i]));
+        flows[i] = fixture_flow(p, clients[i][0], servers[i][0], false);
+        ASSERT(flow_update(flows[i]));
+        ASSERT(flows[i]->timer_id > 0);
+    }
+    flow_free(flows[1], false);
+    ASSERT_EQ(3u, p->stats.active);
+    ASSERT(p->flows == flows[3]); ASSERT(flows[2]->next == flows[0]);
+    ASSERT(flows[0]->prev == &flows[2]->next);
+    flow_free(flows[3], false);
+    ASSERT_EQ(2u, p->stats.active);
+    ASSERT(p->flows == flows[2]); ASSERT(flows[2]->prev == &p->flows);
+    mt_tproxy_destroy(p);
+    for (size_t i = 0; i < 4; i++) {
+        ASSERT_EQ(-1, fcntl(clients[i][0], F_GETFD)); ASSERT_EQ(EBADF, errno);
+        ASSERT_EQ(-1, fcntl(servers[i][0], F_GETFD)); ASSERT_EQ(EBADF, errno);
+        char byte;
+        ASSERT_EQ(0, recv(clients[i][1], &byte, 1, 0));
+        ASSERT_EQ(0, recv(servers[i][1], &byte, 1, 0));
+        close(clients[i][1]); close(servers[i][1]);
+    }
+    /* Run beyond the destroyed flows' deadlines: none of their old watches
+     * or timer callbacks may retain the released flow or proxy. */
+    bool expired = false;
+    ASSERT_EQ(MT_OK, mt_loop_add_timer(loop, 15, 0, watchdog, &expired, NULL));
+    ASSERT_EQ(MT_OK, mt_loop_run(loop)); ASSERT(expired);
+    mt_loop_destroy(loop);
+    PASS();
+}
+
 static int run_fallback(bool tls)
 {
     mt_loop_t *loop = NULL; ASSERT_EQ(MT_OK, mt_loop_create(&loop));
@@ -461,6 +525,7 @@ GREATEST_MAIN_DEFS();
 int main(int argc, char **argv)
 {
     GREATEST_MAIN_BEGIN();
+    RUN_TEST(socket_endpoints_require_complete_supported_addresses);
     RUN_TEST(client_hello_inspection_is_incremental_and_bounded);
     RUN_TEST(tls_holds_application_bytes_until_server_response);
     RUN_TEST(post_and_early_data_are_never_replayed);
@@ -472,6 +537,7 @@ int main(int argc, char **argv)
     RUN_TEST(authorization_and_failed_attempts_leave_no_flows);
     RUN_TEST(resource_failure_pauses_listener_and_destruction_cancels_retry);
     RUN_TEST(client_hangup_frees_blocked_flow_and_its_deadline);
+    RUN_TEST(destruction_releases_remaining_flows_after_out_of_order_removal);
     RUN_TEST(connect_failure_retries_without_breaking_client_socket);
     RUN_TEST(silent_tls_replays_only_client_hello_over_alternative);
     RUN_TEST(invalid_creation_and_mark_errors_are_reported);

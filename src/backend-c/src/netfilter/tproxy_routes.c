@@ -117,6 +117,8 @@ mt_tproxy_routes_t *mt_tproxy_routes_new(const mt_tproxy_route_config_t *c,
     r->port = c->port;
     r->ttl_seconds = c->ttl_seconds;
     r->max_entries = c->max_entries;
+    /* Count only copied names, so every allocation failure is destructible. */
+    r->n_ingress = 0;
     r->interface = strdup(c->interface);
     r->ingress = calloc(c->n_ingress, sizeof(*r->ingress));
     r->cache = calloc(c->max_entries, sizeof(*r->cache));
@@ -415,7 +417,7 @@ mt_err_t mt_tproxy_routes_repair(mt_tproxy_routes_t *r)
         if (actual.found) {
             if (actual.type != RTN_UNICAST || actual.multipath || actual.ifindex != state->route.ifindex ||
                 actual.gateway_len != state->route.gateway_len ||
-                memcmp(actual.gateway, state->route.gateway, actual.gateway_len)) { return MT_ERR_STATE; }
+                memcmp(actual.gateway, state->route.gateway, actual.gateway_len) != 0) { return MT_ERR_STATE; }
         } else {
             bool unavailable = false;
             err = mt_rtnl_route_replace_iface(r->deps.rtnl, family_id(f), r->alternate_mark, 10,
@@ -472,7 +474,7 @@ static mt_err_t reconcile_family(mt_tproxy_routes_t *r, size_t f)
     }
     bool changed = state->active != available || (available &&
         (state->route.ifindex != wanted.ifindex || state->route.gateway_len != wanted.gateway_len ||
-         memcmp(state->route.gateway, wanted.gateway, wanted.gateway_len)));
+         memcmp(state->route.gateway, wanted.gateway, wanted.gateway_len) != 0));
     state->active = available;
     state->route = available ? wanted : (mt_rtnl_default_route_t){0};
     if (changed && r->nl) { return clear_selected(r, true); }
@@ -611,7 +613,9 @@ void mt_tproxy_routes_free(mt_tproxy_routes_t *r)
      * freeing. Destructor performs no hidden kernel mutation. */
     mt_ipset_nl_free(r->nl);
     free(r->interface);
-    for (size_t i = 0; i < r->n_ingress; i++) { free(r->ingress[i]); }
+    if (r->ingress) {
+        for (size_t i = 0; i < r->n_ingress; i++) { free(r->ingress[i]); }
+    }
     free(r->ingress);
     free(r->cache);
     free(r);

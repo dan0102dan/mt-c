@@ -21,7 +21,9 @@ void mt_adaptive_config_clear(mt_adaptive_config_t *config)
 {
     if (!config) { return; }
     free(config->interface);
-    for (size_t i = 0; i < config->n_ingress; i++) { free(config->ingress_interfaces[i]); }
+    if (config->ingress_interfaces) {
+        for (size_t i = 0; i < config->n_ingress; i++) { free(config->ingress_interfaces[i]); }
+    }
     free(config->ingress_interfaces);
     memset(config, 0, sizeof(*config));
 }
@@ -86,12 +88,12 @@ bool mt_adaptive_config_valid(const mt_adaptive_config_t *config)
 bool mt_adaptive_config_equal(const mt_adaptive_config_t *a, const mt_adaptive_config_t *b)
 {
     if (a->enabled != b->enabled || a->n_ingress != b->n_ingress ||
-        strcmp(a->interface ? a->interface : "", b->interface ? b->interface : "") ||
+        strcmp(a->interface ? a->interface : "", b->interface ? b->interface : "") != 0 ||
         a->connect_timeout_ms != b->connect_timeout_ms || a->tls_timeout_ms != b->tls_timeout_ms ||
         a->idle_timeout_ms != b->idle_timeout_ms || a->ttl_seconds != b->ttl_seconds ||
         a->max_connections != b->max_connections || a->max_entries != b->max_entries) { return false; }
     for (size_t i = 0; i < a->n_ingress; i++) {
-        if (strcmp(a->ingress_interfaces[i], b->ingress_interfaces[i])) { return false; }
+        if (strcmp(a->ingress_interfaces[i], b->ingress_interfaces[i]) != 0) { return false; }
     }
     return true;
 }

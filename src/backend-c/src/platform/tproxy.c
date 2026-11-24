@@ -177,20 +177,24 @@ static hello_result_t inspect_hello(const uint8_t *bytes, size_t n, size_t *wire
     return HELLO_MORE;
 }
 
-static bool endpoint_from_sockaddr(const struct sockaddr_storage *sa,
+static bool endpoint_from_sockaddr(const struct sockaddr_storage *sa, socklen_t len,
                                    mt_tproxy_endpoint_t *out)
 {
     memset(out, 0, sizeof(*out));
-    out->family = sa->ss_family;
+    if (len < sizeof(sa->ss_family) || len > sizeof(*sa)) { return false; }
     if (sa->ss_family == AF_INET) {
+        if (len < sizeof(struct sockaddr_in)) { return false; }
         const struct sockaddr_in *s = (const struct sockaddr_in *)sa;
+        out->family = AF_INET;
         memcpy(out->addr, &s->sin_addr, 4);
         out->port = ntohs(s->sin_port);
         return true;
     }
     if (sa->ss_family == AF_INET6) {
+        if (len < sizeof(struct sockaddr_in6)) { return false; }
         const struct sockaddr_in6 *s = (const struct sockaddr_in6 *)sa;
         if (IN6_IS_ADDR_V4MAPPED(&s->sin6_addr)) { return false; }
+        out->family = AF_INET6;
         memcpy(out->addr, &s->sin6_addr, 16);
         out->port = ntohs(s->sin6_port);
         return true;
@@ -284,17 +288,24 @@ static void listener_backoff(mt_tproxy_t *p)
     }
 }
 
+/* The caller removes the flow from its owner before releasing its resources. */
+static void flow_release(tproxy_flow_t *f)
+{
+    mt_tproxy_t *p = f->proxy;
+    if (f->timer_id) { (void)mt_loop_del_timer(p->loop, f->timer_id); }
+    close_watched(p->loop, &f->client_fd, &f->client_watched);
+    close_watched(p->loop, &f->upstream_fd, &f->upstream_watched);
+    free(f);
+}
+
 static void flow_free(tproxy_flow_t *f, bool failed)
 {
     mt_tproxy_t *p = f->proxy;
     if (failed) { p->stats.failures++; }
-    if (f->timer_id) { (void)mt_loop_del_timer(p->loop, f->timer_id); }
-    close_watched(p->loop, &f->client_fd, &f->client_watched);
-    close_watched(p->loop, &f->upstream_fd, &f->upstream_watched);
     *f->prev = f->next;
     if (f->next) { f->next->prev = f->prev; }
     p->stats.active--;
-    free(f);
+    flow_release(f);
     (void)listeners_update(p);
 }
 
@@ -351,7 +362,7 @@ static bool retry_upstream(tproxy_flow_t *f)
      * application writes make can_retry() false, even if the peer stayed silent. */
     if (f->tls == TLS_HELLO) { f->to_server.off = 0; }
     f->sent_payload = false;
-    return start_upstream(f) == MT_OK;
+    return start_upstream(f) == MT_OK && f->upstream_fd >= 0;
 }
 
 static bool flow_deadline(tproxy_flow_t *f)
@@ -578,7 +589,7 @@ static void listener_event(mt_loop_t *loop, int fd, uint32_t events, void *ud)
     mt_tproxy_t *p = ud;
     for (unsigned i = 0; i < MT_TPROXY_ACCEPT_BATCH; i++) {
         if (p->stats.active >= p->config.max_connections) { (void)listeners_update(p); return; }
-        struct sockaddr_storage peer, destination;
+        struct sockaddr_storage peer = {0}, destination = {0};
         socklen_t peer_len = sizeof(peer), destination_len = sizeof(destination);
         int client = accept4(fd, (struct sockaddr *)&peer, &peer_len, SOCK_NONBLOCK | SOCK_CLOEXEC);
         if (client < 0) {
@@ -588,7 +599,8 @@ static void listener_event(mt_loop_t *loop, int fd, uint32_t events, void *ud)
         }
         mt_tproxy_endpoint_t cep, dep;
         if (getsockname(client, (struct sockaddr *)&destination, &destination_len) != 0 ||
-            !endpoint_from_sockaddr(&peer, &cep) || !endpoint_from_sockaddr(&destination, &dep) ||
+            !endpoint_from_sockaddr(&peer, peer_len, &cep) ||
+            !endpoint_from_sockaddr(&destination, destination_len, &dep) ||
             cep.family != dep.family) {
             close(client); p->stats.failures++; continue;
         }
@@ -615,7 +627,8 @@ static mt_err_t bind_listener(mt_tproxy_t *p, int family, int *out)
     }
     if (!p->config.port) {
         len = sizeof(sa);
-        if (getsockname(fd, (struct sockaddr *)&sa, &len) != 0 || !endpoint_from_sockaddr(&sa, &endpoint)) {
+        if (getsockname(fd, (struct sockaddr *)&sa, &len) != 0 ||
+            !endpoint_from_sockaddr(&sa, len, &endpoint)) {
             close(fd); return MT_ERR_IO;
         }
         p->config.port = endpoint.port;
@@ -651,7 +664,12 @@ void mt_tproxy_destroy(mt_tproxy_t *p)
     if (p->listener_retry_id) { (void)mt_loop_del_timer(p->loop, p->listener_retry_id); }
     close_watched(p->loop, &p->listener4, &p->listener4_watched);
     close_watched(p->loop, &p->listener6, &p->listener6_watched);
-    while (p->flows) { flow_free(p->flows, false); }
+    while (p->flows) {
+        tproxy_flow_t *f = p->flows;
+        p->flows = f->next;
+        if (p->flows) { p->flows->prev = &p->flows; }
+        flow_release(f);
+    }
     free(p);
 }
 

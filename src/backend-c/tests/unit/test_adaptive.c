@@ -310,6 +310,16 @@ TEST listener_authorization_excludes_direct_and_private_targets(void)
  * has a fresh listener, while the controller and its live flows survive. */
 static void stop_http(mt_loop_t *loop, void *ctx) { (void)ctx; mt_loop_stop(loop); }
 static bool require_auth(void *ctx) { (void)ctx; return true; }
+struct request_context { mt_loop_t *loop; bool auth; };
+static void http_sent(void *ctx, bool sent)
+{ (void)sent; mt_loop_stop(((struct request_context *)ctx)->loop); }
+static bool http_middleware(mt_http_req_t *req, mt_http_res_t *res, void *ctx)
+{
+    struct request_context *request = ctx;
+    mt_http_res_on_sent(res, http_sent, request);
+    mt_auth_ctx_t auth = {.enabled = require_auth};
+    return !request->auth || mt_auth_middleware(req, res, &auth);
+}
 static int http_request(mt_adaptive_service_t *service, const char *method,
                           const char *path, const char *body, bool auth, cJSON **out)
 {
@@ -320,8 +330,8 @@ static int http_request(mt_adaptive_service_t *service, const char *method,
     if (mt_loop_create(&loop) != MT_OK || mt_httpd_create(loop, &http) != MT_OK ||
         mt_adaptive_register_routes(http, service) != MT_OK ||
         mt_httpd_listen_tcp(http, "127.0.0.1", 0) != MT_OK) { goto done; }
-    mt_auth_ctx_t auth_ctx = {.enabled = require_auth};
-    if (auth) { mt_httpd_set_middleware(http, mt_auth_middleware, &auth_ctx); }
+    struct request_context context = {.loop = loop, .auth = auth};
+    mt_httpd_set_middleware(http, http_middleware, &context);
     fd = socket(AF_INET, SOCK_STREAM, 0);
     if (fd < 0) { goto done; }
     struct sockaddr_in address = {.sin_family = AF_INET,
@@ -341,7 +351,7 @@ static int http_request(mt_adaptive_service_t *service, const char *method,
         if (chunk <= 0) { goto done; }
         sent += (size_t)chunk;
     }
-    if (mt_loop_add_timer(loop, 25, 0, stop_http, NULL, &timer) != MT_OK ||
+    if (mt_loop_add_timer(loop, 2000, 0, stop_http, NULL, &timer) != MT_OK ||
         mt_loop_run(loop) != MT_OK) { goto done; }
     size_t used = 0;
     while (used < sizeof(received) - 1) {

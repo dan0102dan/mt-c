@@ -354,7 +354,7 @@ static mt_err_t load_adaptive(yaml_document_t *doc, node_t *node,
         node_t *key = node_of(doc, pair->key), *value = node_of(doc, pair->value);
         if (!key || key->type != YAML_SCALAR_NODE || !value || node_is_null(value)) { return MT_ERR_INVAL; }
         size_t i = 0;
-        while (i < sizeof(keys) / sizeof(keys[0]) && strcmp(scalar_text(key), keys[i])) { i++; }
+        while (i < sizeof(keys) / sizeof(keys[0]) && strcmp(scalar_text(key), keys[i]) != 0) { i++; }
         if (i == sizeof(keys) / sizeof(keys[0]) || (seen & (1u << i))) { return MT_ERR_INVAL; }
         seen |= 1u << i;
     }
