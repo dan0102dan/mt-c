@@ -4681,7 +4681,10 @@ explicit byte order, bounded CIDs, varints and coalesced-packet traversal.
 
 The relay may repeat at most 16 KiB/16 Initial-only datagrams on one alternate
 path, before any server datagram, provided every packet has the same version
-and CIDs and no token. Mixed Initial/0-RTT, other packet types, malformed or
+and CIDs and no token. A completely zero suffix after the final complete
+long-header packet is accepted as datagram padding for interoperability with
+real aioquic Initial flights; zeros never hide a later nonzero packet or opaque
+tail. Mixed Initial/0-RTT, other packet types, malformed or
 opaque input, changed IDs, token-bearing Initials, queue loss and any server
 response permanently disallow retry. Timer expiry drains already queued
 responses; every retry cause also peeks past pending socket errors before

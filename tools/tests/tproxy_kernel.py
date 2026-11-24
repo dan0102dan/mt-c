@@ -534,9 +534,15 @@ subscriptions: []
         print("--- daemon log ---", file=sys.stderr)
         if self.log.exists():
             print(self.log.read_text()[-18000:], file=sys.stderr)
+        print("--- adaptive API snapshot ---", file=sys.stderr)
+        try:
+            print(json.dumps(self.api(), indent=2), file=sys.stderr)
+        except Exception as error:
+            print(f"Adaptive API unavailable: {error}", file=sys.stderr)
         for args in ([f"{self.tool}-save"], ["ip", self.ip_family, "rule", "show"],
                      ["ip", self.ip_family, "route", "show", "table", "all"], ["ipset", "list"]):
             result = command(args, check=False)
+            print(f"--- {' '.join(args)} (exit {result.returncode}) ---", file=sys.stderr)
             print(result.stdout[-18000:] + result.stderr, file=sys.stderr)
 
     def close(self):

@@ -212,7 +212,9 @@ static mt_err_t real_create_portset(mt_ipset_nl_t *self, const char *name, int f
         ipset_flags(IPSET_CMD_CREATE) | NLM_F_EXCL, ++r->seq);
     mnl_attr_put_strz(h, IPSET_ATTR_SETNAME, name);
     mnl_attr_put_strz(h, IPSET_ATTR_TYPENAME, with_ip2 ? "hash:ip,port,ip" : "hash:ip,port");
-    mnl_attr_put_u8(h, IPSET_ATTR_REVISION, 0);
+    /* Both tuple types use revision 1 as their oldest userspace-supported
+     * revision. Kernels also accept 0, but ipset 7.19 cannot list/save it. */
+    mnl_attr_put_u8(h, IPSET_ATTR_REVISION, 1);
     mnl_attr_put_u8(h, IPSET_ATTR_FAMILY, (uint8_t)family);
     struct nlattr *data = mnl_attr_nest_start(h, IPSET_ATTR_DATA);
     mnl_attr_put_u32(h, IPSET_ATTR_TIMEOUT | NLA_F_NET_BYTEORDER, htonl(default_timeout));

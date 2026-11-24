@@ -40,6 +40,16 @@ bool mt_quic_parse(const uint8_t *bytes, size_t length, mt_quic_datagram_t *out)
     bool initial_only = length >= 1200;
     size_t offset = 0;
     while (offset < length) {
+        /* Some implementations pad the UDP datagram after its final complete
+         * long-header packet rather than extending that packet's protected
+         * payload. Accept only an entirely zero suffix; never skip zeros to
+         * find another packet, which could conceal coalesced early data. */
+        if (out->count && bytes[offset] == 0) {
+            for (size_t i = offset; i < length; i++) {
+                if (bytes[i] != 0) { goto invalid; }
+            }
+            break;
+        }
         if (out->count == MT_QUIC_MAX_PACKETS) { goto invalid; }
         mt_quic_packet_t *packet = &out->packets[out->count];
         packet->offset = offset;

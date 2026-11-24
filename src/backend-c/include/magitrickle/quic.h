@@ -34,7 +34,8 @@ typedef struct mt_quic_packet {
 typedef struct mt_quic_datagram {
     size_t count;
     /* All packets are supported, token-free Initial packets with consistent
-     * visible CIDs/version; first DCID >=8 bytes and whole UDP payload >=1200.
+     * visible CIDs/version, optionally followed by all-zero datagram padding;
+     * first DCID >=8 bytes and whole UDP payload >=1200.
      * Transport must also correlate IDs between successive datagrams. */
     bool initial_only;
     mt_quic_packet_t packets[MT_QUIC_MAX_PACKETS];
@@ -42,6 +43,7 @@ typedef struct mt_quic_datagram {
 
 /* False for incomplete/unknown framing or too many packets; clears *out on
  * failure, never exposes a successfully parsed prefix as a safe datagram.
+ * An entirely zero tail after complete long-header packets is padding only.
  * Short-header descriptors consume the remainder; their CID length depends
  * on the connection context, so only offset/length/type are reported. */
 bool mt_quic_parse(const uint8_t *bytes, size_t length, mt_quic_datagram_t *out);

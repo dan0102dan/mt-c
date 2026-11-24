@@ -173,6 +173,40 @@ TEST descriptor_budget_and_short_packet_sample(void)
     PASS();
 }
 
+TEST datagram_padding_cannot_hide_another_packet(void)
+{
+    uint8_t bytes[1200]; mt_quic_datagram_t parsed;
+    for (unsigned v2 = 0; v2 < 2; v2++) {
+        uint32_t version = v2 ? MT_QUIC_VERSION_2 : MT_QUIC_VERSION_1;
+        /* Real aioquic Initial flights include a partial final packet and
+         * zero datagram padding outside its protected Length. */
+        memset(bytes, 0, sizeof(bytes));
+        packet(bytes, version, v2, true, false, 357);
+        ASSERT(mt_quic_parse(bytes, sizeof(bytes), &parsed));
+        ASSERT(parsed.initial_only); ASSERT_EQ(1u, parsed.count);
+        ASSERT_EQ(357u, parsed.packets[0].length);
+        ASSERT(mt_quic_parse(bytes, 1199, &parsed)); ASSERT_FALSE(parsed.initial_only);
+        bytes[1199] = 1;
+        ASSERT_FALSE(mt_quic_parse(bytes, sizeof(bytes), &parsed));
+        ASSERT_EQ(0u, parsed.count); ASSERT_FALSE(parsed.initial_only);
+        bytes[1199] = 0;
+        packet(bytes + 367, version, v2 + 1, false, false, 100);
+        ASSERT_FALSE(mt_quic_parse(bytes, sizeof(bytes), &parsed));
+        ASSERT_EQ(0u, parsed.count); /* Do not skip padding between packets. */
+        memset(bytes + 357, 0, sizeof(bytes) - 357);
+        packet(bytes + 357, version, v2 + 1, false, false, 100);
+        ASSERT(mt_quic_parse(bytes, sizeof(bytes), &parsed));
+        ASSERT_EQ(2u, parsed.count); ASSERT_EQ(MT_QUIC_ZERO_RTT, parsed.packets[1].type);
+        ASSERT_FALSE(parsed.initial_only);
+        memset(bytes + 357, 0, sizeof(bytes) - 357);
+        packet(bytes, version, v2, true, true, 357);
+        ASSERT(mt_quic_parse(bytes, sizeof(bytes), &parsed)); ASSERT_FALSE(parsed.initial_only);
+    }
+    memset(bytes, 0, sizeof(bytes));
+    ASSERT_FALSE(mt_quic_parse(bytes, sizeof(bytes), &parsed));
+    PASS();
+}
+
 GREATEST_MAIN_DEFS();
 int main(int argc, char **argv)
 {
@@ -184,5 +218,6 @@ int main(int argc, char **argv)
     RUN_TEST(retry_and_version_negotiation_are_not_replayable);
     RUN_TEST(unknown_versions_and_invalid_lengths_are_not_prefix_successes);
     RUN_TEST(descriptor_budget_and_short_packet_sample);
+    RUN_TEST(datagram_padding_cannot_hide_another_packet);
     GREATEST_MAIN_END();
 }

@@ -106,7 +106,9 @@ TEST exact_set_types_have_exclusive_creation_and_bounds(void)
         const struct nlmsghdr *h = (const struct nlmsghdr *)wire.bytes;
         ASSERT_EQ(IPSET_CMD_CREATE, h->nlmsg_type & 0xffu); ASSERT(h->nlmsg_flags & NLM_F_EXCL);
         ASSERT_EQ(6u, mnl_attr_get_u8(attribute(IPSET_ATTR_PROTOCOL)));
-        ASSERT_EQ(0u, mnl_attr_get_u8(attribute(IPSET_ATTR_REVISION)));
+        /* Revision 0 works in the kernel but breaks ipset list/save. Both
+         * tuple types must remain readable by the userspace type handlers. */
+        ASSERT_EQ(1u, mnl_attr_get_u8(attribute(IPSET_ATTR_REVISION)));
         ASSERT_EQ(family, mnl_attr_get_u8(attribute(IPSET_ATTR_FAMILY)));
         ASSERT_STR_EQ(pair ? "hash:ip,port,ip" : "hash:ip,port", mnl_attr_get_str(attribute(IPSET_ATTR_TYPENAME)));
         const struct nlattr *data = attribute(IPSET_ATTR_DATA);
