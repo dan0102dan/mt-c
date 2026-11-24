@@ -1,6 +1,7 @@
 import { expect, test, type Page } from "@playwright/test";
 
 import type { Profile } from "../../src/types";
+import { adaptiveStatus } from "../mocks/adaptive-settings";
 
 const keenetic = process.env.VITE_ENTWARE_KN === "1";
 type Settings = { enabled: boolean; policy_id: string; mode: "include" | "exclude" };
@@ -86,6 +87,11 @@ async function backend(page: Page, enabled = false) {
     }
     if (path === "/system/interfaces") {
       await route.fulfill({ json: { interfaces: [{ id: "blackhole" }, { id: "tun0" }] } });
+      return;
+    }
+    if (path === "/adaptive") {
+      expect(req.method()).toBe("GET");
+      await route.fulfill({ json: adaptiveStatus() });
       return;
     }
     await route.fulfill({ json: { version: "test" } });
@@ -394,7 +400,16 @@ test.describe("Shared settings toolbar", { tag: "@entware_kn" }, () => {
     const profilesTab = page.getByRole("tab", { name: "Profiles", exact: true });
     await profilesTab.focus();
     await profilesTab.press("ArrowRight");
-    await expect(page.getByRole("tab", { name: "Keenetic", exact: true })).toBeFocused();
+    const adaptiveTab = page.getByRole("tab", { name: "Adaptive routing", exact: true });
+    await expect(adaptiveTab).toBeFocused();
+    await expect(adaptiveTab).toHaveAttribute("aria-selected", "true");
+    await expect(
+      page.getByRole("switch", { name: "Enable adaptive routing", exact: true }),
+    ).toBeVisible();
+    await adaptiveTab.press("ArrowRight");
+    const keeneticTab = page.getByRole("tab", { name: "Keenetic", exact: true });
+    await expect(keeneticTab).toBeFocused();
+    await expect(keeneticTab).toHaveAttribute("aria-selected", "true");
     const toggle = panel(page).getByRole("switch", {
       name: "Use policy based filter",
       exact: true,
