@@ -83,7 +83,7 @@ def prepare(sdk, log, env):
             raise ValueError(f"refusing to clean a non-root feed checkout: {feed}")
         run(["git", "clean", "-fd"], top, log, env)
     run(["./scripts/feeds", "install", "libyaml", "pcre2", "libmnl", "libcurl", "libubus", "libubox", "rpcd-mod-luci",
-         "iptables-nft", "iptables-mod-conntrack-extra", "iptables-mod-tproxy", "kmod-ipt-nat", "kmod-ipt-ipset", "ip6tables-nft", "libatomic"], sdk, log, env)
+         "iptables-nft", "iptables-mod-conntrack-extra", "iptables-mod-tproxy", "iptables-mod-socket", "kmod-ipt-nat", "kmod-ipt-ipset", "ip6tables-nft", "libatomic"], sdk, log, env)
     run(["make", "defconfig"], sdk, log, env)
     run(["make", "-j2", "package/libubox/compile", "package/ubus/compile", "package/yaml/compile", "package/pcre2/compile",
          "package/libmnl/compile", "package/curl/compile", "package/libcjson/compile", "V=s"], sdk, log, env)

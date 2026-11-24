@@ -115,11 +115,13 @@ typedef struct mt_profile {
     size_t n_interfaces;
 } mt_profile_t;
 
-/* Opt-in TCP web routing. Learned destinations are bounded runtime state,
+/* Opt-in TCP/QUIC routing. Learned destinations are bounded runtime state,
  * never user rules and never serialized into the configuration. */
 typedef struct mt_adaptive_config {
     bool enabled;
     bool present; /* preserve omission in legacy configuration files */
+    bool tcp_all_ports; /* absent/false keeps the original TCP 80/443 scope */
+    bool quic_enabled;  /* UDP/443 is a separate, explicit opt-in */
     char *interface;
     char **ingress_interfaces;
     size_t n_ingress;

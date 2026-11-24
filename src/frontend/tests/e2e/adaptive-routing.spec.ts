@@ -137,7 +137,12 @@ test("adaptive routing loads lazily, validates LAN scope and saves the retained 
   expect(state.reads).toBe(0);
   await page.getByRole("tab", { name: "Adaptive routing", exact: true }).click();
   const scope = page.locator("#adaptive");
-  await expect(scope.getByRole("switch")).toBeVisible();
+  const enabled = scope.getByRole("switch", { name: "Enable adaptive routing", exact: true });
+  const allTcp = scope.getByRole("switch", { name: "Include all TCP ports", exact: true });
+  const quic = scope.getByRole("switch", { name: "Include QUIC on UDP port 443", exact: true });
+  await expect(enabled).toBeVisible();
+  await expect(allTcp).not.toBeChecked();
+  await expect(quic).not.toBeChecked();
   expect(state.reads).toBe(1);
   const save = page.locator("#save-settings");
   await expect(save).toBeDisabled();
@@ -149,6 +154,8 @@ test("adaptive routing loads lazily, validates LAN scope and saves the retained 
   await expect(save).toBeDisabled();
   await choose(page, "Alternate interface", "wg0");
   await choose(page, "Add client LAN interface", "br-lan");
+  await allTcp.click();
+  await quic.click();
   const timeout = page.getByRole("textbox", { name: "Connection timeout, ms", exact: true });
   await timeout.fill("99");
   await expect(timeout).toHaveAttribute("aria-invalid", "true");
@@ -159,7 +166,9 @@ test("adaptive routing loads lazily, validates LAN scope and saves the retained 
   await showPage(page, "Groups");
   await openAdaptive(page);
   await expect(timeout).toHaveValue("2500");
-  await expect(scope.getByRole("switch")).toBeChecked();
+  await expect(enabled).toBeChecked();
+  await expect(allTcp).toBeChecked();
+  await expect(quic).toBeChecked();
   await expect(
     scope.getByRole("button", { name: "Remove client interface br-lan", exact: true }),
   ).toBeVisible();
@@ -173,7 +182,9 @@ test("adaptive routing loads lazily, validates LAN scope and saves the retained 
   try {
     await save.click();
     await expect.poll(() => state.writes.length).toBe(1);
-    await expect(scope.getByRole("switch")).toBeDisabled();
+    await expect(enabled).toBeDisabled();
+    await expect(allTcp).toBeDisabled();
+    await expect(quic).toBeDisabled();
     await expect(scope.locator(".runtime-status")).toHaveText("Disabled");
     await expect(
       page.getByRole("dialog", { name: "Apply general settings?", exact: true }),
@@ -181,6 +192,8 @@ test("adaptive routing loads lazily, validates LAN scope and saves the retained 
     expect(state.writes[0]).toEqual({
       ...adaptiveStatus().settings,
       enabled: true,
+      tcpAllPorts: true,
+      quicEnabled: true,
       interface: "wg0",
       ingressInterfaces: ["br-lan"],
       connectTimeoutMs: 2500,
@@ -276,6 +289,8 @@ test("saved settings can retry activation explicitly without unsaved changes", a
   state.snapshot.settings = {
     ...state.snapshot.settings,
     enabled: true,
+    tcpAllPorts: true,
+    quicEnabled: true,
     interface: "wg0",
     ingressInterfaces: ["br-lan"],
   };
@@ -298,19 +313,49 @@ test("manual status refresh and clearing learned routes preserve unsaved setting
   state.snapshot.settings = {
     ...state.snapshot.settings,
     enabled: true,
+    tcpAllPorts: true,
+    quicEnabled: true,
     interface: "wg0",
     ingressInterfaces: ["br-lan"],
   };
   state.snapshot.active = true;
   state.snapshot.entries = [
-    { address: "203.0.113.8", family: 4, port: 443, alternate: true, expiresInSeconds: 540 },
-    { address: "2001:db8::8", family: 6, port: 80, alternate: false, expiresInSeconds: 220 },
+    {
+      address: "203.0.113.8",
+      family: 4,
+      protocol: "tcp",
+      port: 443,
+      alternate: true,
+      expiresInSeconds: 540,
+    },
+    {
+      address: "203.0.113.8",
+      family: 4,
+      protocol: "udp",
+      port: 443,
+      alternate: false,
+      expiresInSeconds: 220,
+    },
+    {
+      address: "2001:db8::8",
+      family: 6,
+      protocol: "tcp",
+      port: 8443,
+      alternate: false,
+      expiresInSeconds: 220,
+    },
   ];
   await page.goto("/");
   await openAdaptive(page);
   const timeout = page.getByRole("textbox", { name: "Connection timeout, ms", exact: true });
   await timeout.fill("4000");
-  await expect(page.getByRole("cell", { name: "[2001:db8::8]:80", exact: true })).toBeVisible();
+  await expect(page.getByRole("cell", { name: "[2001:db8::8]:8443", exact: true })).toBeVisible();
+  await expect(page.getByRole("cell", { name: "203.0.113.8:443", exact: true })).toHaveCount(2);
+  const quicRow = page.getByRole("row").filter({
+    has: page.getByRole("cell", { name: "QUIC (UDP)", exact: true }),
+  });
+  await expect(quicRow.getByRole("cell", { name: "Default route", exact: true })).toBeVisible();
+  await expect(page.locator("#adaptive tbody tr")).toHaveCount(3);
   state.snapshot.entries[0].expiresInSeconds = 410;
   await page.getByRole("button", { name: "Refresh adaptive routing", exact: true }).click();
   await expect(page.getByRole("cell", { name: "410 sec", exact: true })).toBeVisible();
@@ -344,6 +389,8 @@ for (const width of [1280, 390]) {
     state.snapshot.settings = {
       ...state.snapshot.settings,
       enabled: true,
+      tcpAllPorts: true,
+      quicEnabled: true,
       interface: "tun-missing",
       ingressInterfaces: ["br-lan", "br-old"],
     };
@@ -351,6 +398,7 @@ for (const width of [1280, 390]) {
     state.snapshot.entries = Array.from({ length: 54 }, (_, i) => ({
       address: `2001:db8:abcd:abcd:abcd:abcd:abcd:${(i + 1).toString(16)}`,
       family: 6,
+      protocol: i % 2 ? "tcp" : "udp",
       port: 443,
       alternate: true,
       expiresInSeconds: 300 + i,
@@ -358,6 +406,12 @@ for (const width of [1280, 390]) {
     await page.goto("/");
     await showPage(page, "Настройки");
     await page.getByRole("tab", { name: "Автомаршрутизация", exact: true }).click();
+    await expect(
+      page.getByRole("switch", { name: "Обрабатывать все TCP-порты", exact: true }),
+    ).toBeChecked();
+    await expect(
+      page.getByRole("switch", { name: "Обрабатывать QUIC на UDP-порту 443", exact: true }),
+    ).toBeChecked();
     await expect(
       page.getByRole("button", { name: "Резервный интерфейс", exact: true }),
     ).toContainText("tun-missing");

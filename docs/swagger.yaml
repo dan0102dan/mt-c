@@ -3,8 +3,20 @@ definitions:
     type: object
     additionalProperties: false
     required: [enabled, interface, ingressInterfaces, connectTimeoutMs, tlsTimeoutMs, idleTimeoutMs, ttlSeconds, maxConnections, maxEntries]
+    description: >-
+      Complete replacement of the original nine settings, with two optional
+      scope flags. Missing tcpAllPorts or quicEnabled defaults to false;
+      responses always include both. Existing web-only settings retain their scope.
     properties:
       enabled: {type: boolean, default: false}
+      tcpAllPorts:
+        type: boolean
+        default: false
+        description: Intercept TCP ports 1–65535. Additional ports support connect-stage fallback; TLS ClientHello retry remains limited to TCP/443.
+      quicEnabled:
+        type: boolean
+        default: false
+        description: Intercept UDP/443 with bounded QUIC v1/v2 Initial-only fallback before any server reply. Other UDP ports are untouched; opaque UDP/443 is relayed on one path without retry or learning.
       interface:
         type: string
         maxLength: 15
@@ -16,11 +28,21 @@ definitions:
         uniqueItems: true
         items: {type: string, minLength: 1, maxLength: 15}
         description: Explicit LAN ingress interfaces; at least one when enabled, distinct from the alternate interface.
-      connectTimeoutMs: {type: integer, minimum: 100, maximum: 60000, default: 2000}
+      connectTimeoutMs:
+        type: integer
+        minimum: 100
+        maximum: 60000
+        default: 2000
+        description: TCP connect budget per attempt and initial QUIC direct-path response budget, in milliseconds.
       tlsTimeoutMs: {type: integer, minimum: 100, maximum: 60000, default: 3000}
       idleTimeoutMs: {type: integer, minimum: 1000, maximum: 3600000, default: 300000}
       ttlSeconds: {type: integer, minimum: 30, maximum: 86400, default: 600}
-      maxConnections: {type: integer, minimum: 1, maximum: 1024, default: 128}
+      maxConnections:
+        type: integer
+        minimum: 1
+        maximum: 1024
+        default: 128
+        description: Shared active relay limit across TCP connections and UDP flows.
       maxEntries: {type: integer, minimum: 1, maximum: 65536, default: 2048}
   types.AdaptiveState:
     type: object
@@ -49,16 +71,21 @@ definitions:
         type: array
         items:
           type: object
-          required: [address, family, port, alternate, expiresInSeconds]
+          required: [address, family, protocol, port, alternate, expiresInSeconds]
           properties:
             address: {type: string}
             family: {type: integer, enum: [4, 6]}
-            port: {type: integer, enum: [80, 443]}
+            protocol: {type: string, enum: [tcp, udp]}
+            port:
+              type: integer
+              minimum: 1
+              maximum: 65535
+              description: TCP destination port, or 443 for UDP. Protocol is part of the cache key.
             alternate: {type: boolean}
             expiresInSeconds: {type: integer, minimum: 0}
       stats:
         type: object
-        description: Relay counters only; connections following learned kernel routes do not increase these counters.
+        description: Aggregated TCP and UDP relay counters only; connections following learned kernel routes do not increase these counters. Success records observed transport progress, not certificate validation or completed page loading.
         required: [active, accepted, directSuccess, alternateSuccess, failures, overLimit]
         properties:
           active: {type: integer, minimum: 0}

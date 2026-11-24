@@ -11,6 +11,7 @@ typedef struct fake_entry {
     uint8_t cidr;
     bool has_timeout;
     uint32_t timeout;
+    mt_ipset_port_key_t port_key;
 } fake_entry_t;
 
 typedef struct fake_set {
@@ -18,6 +19,8 @@ typedef struct fake_set {
     bool exists;
     fake_entry_t *entries;
     size_t n, cap;
+    bool portset, with_ip2;
+    uint32_t max_entries;
 } fake_set_t;
 
 struct mt_fake_ipset_nl {
@@ -189,6 +192,73 @@ static mt_err_t fake_del(mt_ipset_nl_t *self, const char *name, const uint8_t *i
     return MT_OK;
 }
 
+static mt_err_t fake_create_portset(mt_ipset_nl_t *self, const char *name, int family,
+                                     bool with_ip2, uint32_t default_timeout, uint32_t max_entries)
+{
+    mt_fake_ipset_nl_t *f = (mt_fake_ipset_nl_t *)self;
+    (void)family;
+    fake_ipset_call_t call = {.kind = FAKE_IPSET_CALL_CREATE_PORTSET, .has_timeout = true,
+        .timeout = default_timeout, .max_entries = max_entries, .with_ip2 = with_ip2};
+    snprintf(call.name, sizeof(call.name), "%s", name); log_call(f, &call);
+    mt_err_t forced;
+    if (consume_failure(f, call.kind, &forced)) { return forced; }
+    fake_set_t *s = find_or_create_set(f, name);
+    if (!s) { return MT_ERR_NOMEM; }
+    if (s->exists) { return MT_ERR_EXIST; }
+    s->exists = true; s->portset = true; s->with_ip2 = with_ip2;
+    s->max_entries = max_entries; s->n = 0;
+    return MT_OK;
+}
+
+static bool same_port_key(const mt_ipset_port_key_t *a, const mt_ipset_port_key_t *b)
+{
+    return a->iplen == b->iplen && a->protocol == b->protocol && a->port == b->port &&
+        a->has_ip2 == b->has_ip2 && memcmp(a->ip, b->ip, a->iplen) == 0 &&
+        (!a->has_ip2 || memcmp(a->ip2, b->ip2, a->iplen) == 0);
+}
+
+static mt_err_t fake_port_entry(mt_ipset_nl_t *self, const char *name,
+                                 const mt_ipset_port_key_t *key, uint32_t timeout, bool add)
+{
+    mt_fake_ipset_nl_t *f = (mt_fake_ipset_nl_t *)self;
+    fake_ipset_call_t call = {.kind = add ? FAKE_IPSET_CALL_ADD_PORT : FAKE_IPSET_CALL_DEL_PORT,
+        .port_key = *key, .has_timeout = add, .timeout = timeout, .replace = add};
+    snprintf(call.name, sizeof(call.name), "%s", name); log_call(f, &call);
+    mt_err_t forced;
+    if (consume_failure(f, call.kind, &forced)) { return forced; }
+    fake_set_t *s = find_set(f, name);
+    if (!s || !s->exists) { return MT_ERR_NOENT; }
+    if (!s->portset || s->with_ip2 != key->has_ip2) { return MT_ERR_INVAL; }
+    for (size_t i = 0; i < s->n; i++) {
+        if (!same_port_key(&s->entries[i].port_key, key)) { continue; }
+        if (add) { s->entries[i].timeout = timeout; }
+        else { s->entries[i] = s->entries[--s->n]; }
+        return MT_OK;
+    }
+    if (!add) { return MT_OK; }
+    if (s->n == s->max_entries) { return MT_ERR_LIMIT; }
+    if (s->n == s->cap) {
+        size_t cap = s->cap ? s->cap * 2 : 8;
+        fake_entry_t *entries = realloc(s->entries, cap * sizeof(*entries));
+        if (!entries) { return MT_ERR_NOMEM; }
+        s->entries = entries; s->cap = cap;
+    }
+    s->entries[s->n++] = (fake_entry_t){.port_key = *key, .has_timeout = true, .timeout = timeout};
+    return MT_OK;
+}
+
+static mt_err_t fake_add_port(mt_ipset_nl_t *self, const char *name,
+                              const mt_ipset_port_key_t *key, uint32_t timeout)
+{
+    return fake_port_entry(self, name, key, timeout, true);
+}
+
+static mt_err_t fake_del_port(mt_ipset_nl_t *self, const char *name,
+                              const mt_ipset_port_key_t *key)
+{
+    return fake_port_entry(self, name, key, 0, false);
+}
+
 static mt_err_t fake_list4(mt_ipset_nl_t *self, const char *name, mt_ipset_entry4_t **out,
                            size_t *out_n) {
     mt_fake_ipset_nl_t *f = (mt_fake_ipset_nl_t *)self;
@@ -270,6 +340,9 @@ static const mt_ipset_nl_ops_t k_fake_ops = {
     .list4 = fake_list4,
     .list6 = fake_list6,
     .destroy_self = fake_destroy_self,
+    .create_portset = fake_create_portset,
+    .add_port = fake_add_port,
+    .del_port = fake_del_port,
 };
 
 mt_fake_ipset_nl_t *mt_fake_ipset_nl_new(void) {

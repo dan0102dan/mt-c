@@ -4653,3 +4653,82 @@ failure/rollback/persistence paths, authorization, generated rules and cache
 lifetime. A separate CI namespace test exercises real legacy/nft forwarding
 for IPv4/IPv6, including a full TLS handshake across first-flow learning.
 Physical Keenetic policy/acceleration behavior still requires device testing.
+
+## D-97 — Optional all-port TCP and bounded QUIC routing (2026-11-24)
+
+Extend D-96 with independent `tcpAllPorts` and `quicEnabled` flags. Both
+are false by default, including an existing enabled adaptive section that
+omits them. The HTTP replacement still requires its original nine settings;
+the two new optional boolean fields default to false when omitted, and GET
+always emits them. YAML rejects invalid types/duplicates and preserves old
+absent-section serialization. Equality, cloning, General settings and portable
+collection-import guards account for the added flags.
+
+`tcpAllPorts` extends interception to TCP destination ports 1–65535. Extra ports
+use connect-stage fallback and first-response learning; the existing bounded
+TLS ClientHello retry remains exclusive to TCP/443. TCP and UDP listeners bind
+loopback explicitly and TPROXY uses `--on-ip`, so directly contacting a router
+listener cannot become a public-destination connection when all ports are
+allowed. Do not rely on accepted SO_MARK inheritance: tcp_fwmark_accept is
+normally disabled, and inheriting the local-delivery mark could loop replies.
+
+`quicEnabled` adds an in-process UDP/443 relay using the existing event loop.
+It retains datagram boundaries and two connected sockets per flow, including
+a transparent socket for original-address replies and established TPROXY
+lookup. QUIC/TLS stays end to end. There is no runtime QUIC/crypto dependency
+or external daemon; a small pure framing parser recognizes v1 and v2 with
+explicit byte order, bounded CIDs, varints and coalesced-packet traversal.
+
+The relay may repeat at most 16 KiB/16 Initial-only datagrams on one alternate
+path, before any server datagram, provided every packet has the same version
+and CIDs and no token. Mixed Initial/0-RTT, other packet types, malformed or
+opaque input, changed IDs, token-bearing Initials, queue loss and any server
+response permanently disallow retry. Timer expiry drains already queued
+responses; every retry cause also peeks past pending socket errors before
+closing the direct socket. This is structural inspection, not authenticated
+QUIC parsing or an endpoint migration implementation. RFC 9000 restricts
+migration during handshake and permits discarding changed-address initial
+traffic; a direct-path server might already have state. Therefore no universal
+QUIC fallback guarantee is made. Unknown UDP/443 is passed once on its current
+path, and other UDP ports are outside interception.
+
+UDP learning requires a CID/version-correlated server response, a subsequently
+sent client Handshake, then another matching server Handshake or short header.
+Retry/Version Negotiation or a single response is insufficient. This indicates
+observed transport progress, not successful TLS authentication or HTTP status.
+Success counters aggregate TCP and UDP with that meaning. maxConnections is
+shared across both transports. UDP pending queues and replay storage are bounded;
+idle flows expire, and all state is RAM-only.
+
+The cache key adds protocol to family/address/port. Either extension uses
+`hash:ip,port` sets; with both flags off, the original per-port `hash:net` sets
+and prerequisites remain. QUIC additionally owns bounded `hash:ip,port,ip`
+active-flow entries matched with `-m socket --transparent` before manual/cache
+routing for established flows. New flows still respect manual and policy
+priority. These entries pin the existing relay even after learned-cache clear,
+conntrack deletion or QUIC CID rotation, preserving its upstream source port.
+The pin check precedes the generic REPLY exclusion, with equally scoped INPUT
+acceptance, because a server reply may recreate conntrack in reverse orientation.
+They have no expiring timeout: the owner closes the transparent socket first,
+then retires a generation-tagged fixed slot; cleanup under nf_mu deletes the
+kernel entry. A stale entry is inert without its transparent socket. Storage
+is bounded by maxConnections, avoids 64-bit atomic requirements on MIPS, and
+refuses new pins if safe cleanup fails. Tuple encoding uses explicit network
+byte order and only UDP/443, rather than unbounded per-flow iptables rules.
+
+Activation opens both required listeners before rules, and teardown removes
+interception before closing sockets. Failure rolls back to the previous
+configuration, retaining listeners when kernel teardown fails. New OpenWrt
+packages include iptables-mod-socket alongside iptables-mod-tproxy; Entware
+availability still depends on firmware modules. The settings UI exposes both
+flags, protocol-separated learned entries and aggregate statistics without
+changing existing save/retry semantics.
+
+Unit/fault tests cover parsing, original destinations, real loopback UDP,
+timeouts, reply/retry races, bounded queues/pins, protocol separation, wire
+encoding, shared admission and rollback. Add a parser fuzz target and a real
+QUIC/HTTP3 namespace fixture with test-only aioquic==1.9.1. The CI matrix runs
+legacy/nft × IPv4/IPv6 and covers direct/fallback/kernel bypass, certificates,
+Retry, genuine 0-RTT, CID rotation and stable source ports after cache/conntrack
+clear. Full device policy, flow offload and MTU behavior remain physical-router
+validation tasks; no throughput or memory-performance claim is made.

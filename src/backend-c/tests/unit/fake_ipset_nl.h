@@ -17,6 +17,9 @@ typedef enum fake_ipset_call_kind {
     FAKE_IPSET_CALL_ADD,
     FAKE_IPSET_CALL_DEL,
     FAKE_IPSET_CALL_LIST,
+    FAKE_IPSET_CALL_CREATE_PORTSET,
+    FAKE_IPSET_CALL_ADD_PORT,
+    FAKE_IPSET_CALL_DEL_PORT,
 } fake_ipset_call_kind_t;
 
 typedef struct fake_ipset_call {
@@ -28,6 +31,9 @@ typedef struct fake_ipset_call {
     bool has_timeout;
     uint32_t timeout;
     bool replace;
+    mt_ipset_port_key_t port_key;
+    uint32_t max_entries;
+    bool with_ip2;
 } fake_ipset_call_t;
 
 typedef struct mt_fake_ipset_nl mt_fake_ipset_nl_t;

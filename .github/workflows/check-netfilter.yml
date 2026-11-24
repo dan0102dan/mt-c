@@ -72,7 +72,11 @@ jobs:
       - name: Install build and namespace-test dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y libyaml-dev libpcre2-dev libmnl-dev libcjson-dev libcurl4-openssl-dev iptables ipset iproute2 util-linux openssl
+          sudo apt-get install -y libyaml-dev libpcre2-dev libmnl-dev libcjson-dev libcurl4-openssl-dev iptables ipset iproute2 util-linux openssl conntrack python3-venv
+      - name: Install test-only HTTP/3 implementation
+        run: |
+          python3 -m venv "$RUNNER_TEMP/tproxy-quic-venv"
+          "$RUNNER_TEMP/tproxy-quic-venv/bin/python" -m pip install 'aioquic==1.9.1'
       - name: Build production daemon and kernel route tests
         working-directory: src/backend-c
         run: make CFLAGS_EXTRA=-Werror all build/host/tests/test_tproxy_routes
@@ -98,6 +102,12 @@ jobs:
                 failed=1
               fi
               cat "tproxy-flow-$frontend-ipv$family.log"
+              if ! sudo unshare --net timeout 150s "$RUNNER_TEMP/tproxy-quic-venv/bin/python" \
+                  tools/tests/tproxy_quic_kernel.py --daemon "$daemon" --family "$family" \
+                  > "tproxy-quic-$frontend-ipv$family.log" 2>&1; then
+                failed=1
+              fi
+              cat "tproxy-quic-$frontend-ipv$family.log"
               echo '::endgroup::'
             done
           done

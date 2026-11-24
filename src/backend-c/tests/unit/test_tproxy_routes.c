@@ -89,17 +89,12 @@ static struct {
     mt_kn_policy_scope_t policy;
 #endif
 } fixture;
-static void setup(void *unused)
+static void fixture_routes_new(bool all_tcp, bool quic)
 {
-    (void)unused; memset(&fixture, 0, sizeof(fixture)); local_last_octet = 254;
-    for (size_t i = 0; i < 2; i++) {
-        fixture.fake[i] = mt_fake_ipt_new(i ? MT_IPT_PROTO_IPV6 : MT_IPT_PROTO_IPV4); assert(fixture.fake[i]);
-        fixture.ipt[i] = mt_ipt_new(mt_fake_ipt_as_executable(fixture.fake[i])); assert(fixture.ipt[i]);
-    }
-    assert(mt_netfilter_register_base_chains(fixture.ipt[0], fixture.ipt[1]) == MT_OK);
     const char *ingress[] = {"br-lan", "br-guest"};
     mt_tproxy_route_config_t c = {.interface = "vpn0", .ingress_interfaces = ingress,
-        .n_ingress = 2, .port = 18888, .ttl_seconds = 600, .max_entries = 3};
+        .n_ingress = 2, .port = 18888, .ttl_seconds = 600, .max_entries = 3,
+        .tcp_all_ports = all_tcp, .udp_port = quic ? 18889 : 0, .max_connections = quic ? 2u : 0u};
     mt_tproxy_route_deps_t d = {.ipt4 = fixture.ipt[0], .ipt6 = fixture.ipt[1],
         .rtnl = (mt_rtnl_t *)&fixture, .chain_prefix = "TST_", .ipset_prefix = "tst_", .start_idx = 1000,
 #ifdef MT_ENTWARE_KN
@@ -111,12 +106,38 @@ static void setup(void *unused)
     assert(make_names(fixture.r) == MT_OK);
     fixture.sets = mt_fake_ipset_nl_new(); assert(fixture.sets);
     fixture.r->nl = mt_fake_ipset_nl_as_transport(fixture.sets);
-    for (size_t s = 0; s < TP_SETS; s++) {
+    size_t count = fixture.r->tuple_sets ? 2u : TP_SETS;
+    for (size_t s = 0; s < count; s++) {
         for (size_t i = 0; i < 2; i++) {
-            assert(fixture.r->nl->ops->create(fixture.r->nl, fixture.r->sets[s][i], family_id(i), 600) == MT_OK);
+            mt_err_t err = fixture.r->tuple_sets ? fixture.r->nl->ops->create_portset(fixture.r->nl,
+                fixture.r->sets[s][i], family_id(i), false, 600, 3) :
+                fixture.r->nl->ops->create(fixture.r->nl, fixture.r->sets[s][i], family_id(i), 600);
+            assert(err == MT_OK);
             fixture.r->set_created[s][i] = true;
         }
     }
+    if (quic) {
+        for (size_t i = 0; i < 2; i++) {
+            assert(fixture.r->nl->ops->create_portset(fixture.r->nl, fixture.r->flow_sets[i],
+                family_id(i), true, 0, fixture.r->pin_capacity) == MT_OK);
+            fixture.r->flow_set_created[i] = true;
+        }
+    }
+}
+static void setup(void *unused)
+{
+    (void)unused; memset(&fixture, 0, sizeof(fixture)); local_last_octet = 254;
+    for (size_t i = 0; i < 2; i++) {
+        fixture.fake[i] = mt_fake_ipt_new(i ? MT_IPT_PROTO_IPV6 : MT_IPT_PROTO_IPV4); assert(fixture.fake[i]);
+        fixture.ipt[i] = mt_ipt_new(mt_fake_ipt_as_executable(fixture.fake[i])); assert(fixture.ipt[i]);
+    }
+    assert(mt_netfilter_register_base_chains(fixture.ipt[0], fixture.ipt[1]) == MT_OK);
+    fixture_routes_new(false, false);
+}
+static void extensions(bool all_tcp, bool quic)
+{
+    mt_tproxy_routes_free(fixture.r);
+    fixture_routes_new(all_tcp, quic);
 }
 static void teardown(void *unused)
 {
@@ -146,22 +167,27 @@ TEST constructor_allocation_failures_release_partial_state(void)
     const char *ingress[] = {"br-lan", "br-guest"};
     mt_tproxy_route_config_t c = {.interface = "vpn0", .ingress_interfaces = ingress,
         .n_ingress = 2, .port = 18888, .ttl_seconds = 600, .max_entries = 3};
-    memset(&allocations, 0, sizeof(allocations));
-    allocations.enabled = true;
-    mt_tproxy_routes_t *r = mt_tproxy_routes_new(&c, &fixture.r->deps);
-    bool created = r != NULL;
-    size_t required = allocations.calls;
-    mt_tproxy_routes_free(r);
-    allocations.enabled = false;
-    ASSERT(created); ASSERT(required > 0); ASSERT_EQ(0u, allocations.live);
-    for (size_t fail = 1; fail <= required; fail++) {
+    for (unsigned quic = 0; quic < 2; quic++) {
+        c.udp_port = quic ? 18889 : 0; c.max_connections = quic ? 2u : 0u;
         memset(&allocations, 0, sizeof(allocations));
-        allocations.enabled = true; allocations.fail_at = fail;
-        r = mt_tproxy_routes_new(&c, &fixture.r->deps);
+        allocations.enabled = true;
+        mt_tproxy_routes_t *r = mt_tproxy_routes_new(&c, &fixture.r->deps);
+        bool created = r != NULL;
+        size_t required = allocations.calls;
+        mt_tproxy_routes_free(r);
         allocations.enabled = false;
-        ASSERT_EQ(NULL, r); ASSERT_EQ(0u, allocations.live);
+        ASSERT(created); ASSERT(required > 0); ASSERT_EQ(0u, allocations.live);
+        for (size_t fail = 1; fail <= required; fail++) {
+            memset(&allocations, 0, sizeof(allocations));
+            allocations.enabled = true; allocations.fail_at = fail;
+            r = mt_tproxy_routes_new(&c, &fixture.r->deps);
+            allocations.enabled = false;
+            ASSERT_EQ(NULL, r); ASSERT_EQ(0u, allocations.live);
+        }
     }
     memset(&allocations, 0, sizeof(allocations));
+    c.max_connections = 0;
+    ASSERT_EQ(NULL, mt_tproxy_routes_new(&c, &fixture.r->deps));
     PASS();
 }
 TEST precedence_and_active_flow_pinning(void)
@@ -198,7 +224,9 @@ TEST ingress_ports_input_nat_and_local_exclusions(void)
     ASSERT_EQ(MT_OK, stage_commit());
     for (size_t i = 0; i < 2; i++) {
         ASSERT_FALSE(mt_fake_ipt_chain_exists(fixture.fake[i], "mangle", "OUTPUT"));
-        ASSERT(contains(i, "mangle", fixture.r->chains[TP_PROXY], "-j TPROXY --on-port 18888 --tproxy-mark 1000"));
+        ASSERT(contains(i, "mangle", fixture.r->chains[TP_PROXY], "-j TPROXY --on-port 18888"));
+        ASSERT(contains(i, "mangle", fixture.r->chains[TP_PROXY],
+            i ? "--on-ip ::1 --tproxy-mark 1000" : "--on-ip 127.0.0.1 --tproxy-mark 1000"));
         ASSERT(contains(i, "mangle", fixture.r->chains[TP_ROUTE], "-p tcp --dport 80 -m set"));
         ASSERT(contains(i, "mangle", fixture.r->chains[TP_ROUTE], "-p tcp --dport 443 -m set"));
         ASSERT_FALSE(contains(i, "mangle", fixture.r->chains[TP_ROUTE], "-p udp"));
@@ -223,9 +251,9 @@ TEST learning_is_per_host_port_family_and_route(void)
     const uint8_t ip[] = {203, 0, 113, 10};
     const uint8_t ip6[] = {0x20, 1, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1};
     fixture.r->family[0].active = fixture.r->family[1].active = true;
-    ASSERT_EQ(MT_OK, mt_tproxy_routes_learn(fixture.r, AF_INET, ip, 443, true));
-    ASSERT_EQ(MT_OK, mt_tproxy_routes_learn(fixture.r, AF_INET, ip, 80, false));
-    ASSERT_EQ(MT_OK, mt_tproxy_routes_learn(fixture.r, AF_INET6, ip6, 443, true));
+    ASSERT_EQ(MT_OK, mt_tproxy_routes_learn(fixture.r, AF_INET, IPPROTO_TCP, ip, 443, true));
+    ASSERT_EQ(MT_OK, mt_tproxy_routes_learn(fixture.r, AF_INET, IPPROTO_TCP, ip, 80, false));
+    ASSERT_EQ(MT_OK, mt_tproxy_routes_learn(fixture.r, AF_INET6, IPPROTO_TCP, ip6, 443, true));
     ASSERT_EQ(1u, mt_fake_ipset_nl_entry_count(fixture.sets, fixture.r->sets[3][0]));
     ASSERT_EQ(1u, mt_fake_ipset_nl_entry_count(fixture.sets, fixture.r->sets[0][0]));
     ASSERT_EQ(1u, mt_fake_ipset_nl_entry_count(fixture.sets, fixture.r->sets[3][1]));
@@ -236,7 +264,7 @@ TEST learning_is_per_host_port_family_and_route(void)
     ASSERT_EQ(MT_OK, mt_tproxy_routes_snapshot(fixture.r, &out, &n)); ASSERT_EQ(3u, n);
     for (size_t i = 0; i < n; i++) { ASSERT(out[i].expires_in_seconds > 0 && out[i].expires_in_seconds <= 600); }
     free(out);
-    ASSERT_EQ(MT_OK, mt_tproxy_routes_learn(fixture.r, AF_INET, ip, 443, false));
+    ASSERT_EQ(MT_OK, mt_tproxy_routes_learn(fixture.r, AF_INET, IPPROTO_TCP, ip, 443, false));
     ASSERT_EQ(0u, mt_fake_ipset_nl_entry_count(fixture.sets, fixture.r->sets[3][0]));
     ASSERT_EQ(1u, mt_fake_ipset_nl_entry_count(fixture.sets, fixture.r->sets[1][0])); ASSERT_EQ(3u, fixture.r->n_cache);
     PASS();
@@ -261,7 +289,7 @@ TEST address_change_refreshes_local_guards(void)
 TEST bounds_expiry_and_failed_learns(void)
 {
     uint8_t ip[] = {203, 0, 113, 1};
-    for (uint8_t i = 1; i <= 4; i++) { ip[3] = i; ASSERT_EQ(MT_OK, mt_tproxy_routes_learn(fixture.r, AF_INET, ip, 443, false)); }
+    for (uint8_t i = 1; i <= 4; i++) { ip[3] = i; ASSERT_EQ(MT_OK, mt_tproxy_routes_learn(fixture.r, AF_INET, IPPROTO_TCP, ip, 443, false)); }
     ASSERT_EQ(3u, fixture.r->n_cache); ASSERT_EQ(3u, mt_fake_ipset_nl_entry_count(fixture.sets, fixture.r->sets[1][0]));
     fixture.r->cache[0].expires = 1;
     mt_tproxy_route_entry_t *out = NULL; size_t n = 0;
@@ -269,8 +297,8 @@ TEST bounds_expiry_and_failed_learns(void)
     ASSERT_EQ(MT_OK, mt_tproxy_routes_clear(fixture.r)); ASSERT_EQ(0u, fixture.r->n_cache);
     ASSERT_EQ(0u, mt_fake_ipset_nl_entry_count(fixture.sets, fixture.r->sets[1][0]));
     mt_fake_ipset_nl_fail_next(fixture.sets, FAKE_IPSET_CALL_ADD, MT_ERR_SYS);
-    ASSERT_EQ(MT_ERR_SYS, mt_tproxy_routes_learn(fixture.r, AF_INET, ip, 443, false)); ASSERT_EQ(0u, fixture.r->n_cache);
-    ASSERT_EQ(MT_ERR_AGAIN, mt_tproxy_routes_learn(fixture.r, AF_INET, ip, 443, true)); ASSERT_EQ(0u, fixture.r->n_cache);
+    ASSERT_EQ(MT_ERR_SYS, mt_tproxy_routes_learn(fixture.r, AF_INET, IPPROTO_TCP, ip, 443, false)); ASSERT_EQ(0u, fixture.r->n_cache);
+    ASSERT_EQ(MT_ERR_AGAIN, mt_tproxy_routes_learn(fixture.r, AF_INET, IPPROTO_TCP, ip, 443, true)); ASSERT_EQ(0u, fixture.r->n_cache);
     PASS();
 }
 TEST reject_private_invalid_families_and_nonweb(void)
@@ -278,12 +306,178 @@ TEST reject_private_invalid_families_and_nonweb(void)
     const uint8_t private4[] = {192, 168, 1, 1}, loop4[] = {127, 0, 0, 1};
     const uint8_t public4[] = {203, 0, 113, 9}, multicast4[] = {239, 1, 2, 3};
     const uint8_t local6[] = {0xfe, 0x80, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1};
-    ASSERT_EQ(MT_ERR_INVAL, mt_tproxy_routes_learn(fixture.r, AF_INET, private4, 443, false));
-    ASSERT_EQ(MT_ERR_INVAL, mt_tproxy_routes_learn(fixture.r, AF_INET, loop4, 80, false));
-    ASSERT_EQ(MT_ERR_INVAL, mt_tproxy_routes_learn(fixture.r, AF_INET, multicast4, 80, false));
-    ASSERT_EQ(MT_ERR_INVAL, mt_tproxy_routes_learn(fixture.r, AF_INET6, local6, 443, false));
-    ASSERT_EQ(MT_ERR_INVAL, mt_tproxy_routes_learn(fixture.r, AF_INET, public4, 22, false));
-    ASSERT_EQ(MT_ERR_INVAL, mt_tproxy_routes_learn(fixture.r, AF_UNSPEC, public4, 80, false)); ASSERT_EQ(0u, fixture.r->n_cache);
+    ASSERT_EQ(MT_ERR_INVAL, mt_tproxy_routes_learn(fixture.r, AF_INET, IPPROTO_TCP, private4, 443, false));
+    ASSERT_EQ(MT_ERR_INVAL, mt_tproxy_routes_learn(fixture.r, AF_INET, IPPROTO_TCP, loop4, 80, false));
+    ASSERT_EQ(MT_ERR_INVAL, mt_tproxy_routes_learn(fixture.r, AF_INET, IPPROTO_TCP, multicast4, 80, false));
+    ASSERT_EQ(MT_ERR_INVAL, mt_tproxy_routes_learn(fixture.r, AF_INET6, IPPROTO_TCP, local6, 443, false));
+    ASSERT_EQ(MT_ERR_INVAL, mt_tproxy_routes_learn(fixture.r, AF_INET, IPPROTO_TCP, public4, 22, false));
+    ASSERT_EQ(MT_ERR_INVAL, mt_tproxy_routes_learn(fixture.r, AF_UNSPEC, IPPROTO_TCP, public4, 80, false)); ASSERT_EQ(0u, fixture.r->n_cache);
+    PASS();
+}
+TEST all_tcp_ports_are_opt_in_and_exact(void)
+{
+    extensions(true, false);
+    ASSERT_EQ(MT_OK, stage_commit());
+    for (size_t i = 0; i < 2; i++) {
+        ASSERT(contains(i, "mangle", fixture.r->chains[TP_ROUTE], "-p tcp --dport 1:65535 -m set"));
+        ASSERT(contains(i, "mangle", fixture.r->chains[TP_ROUTE], "dst,dst -j RETURN"));
+        ASSERT(contains(i, "filter", fixture.r->chains[TP_INPUT], "-p tcp --dport 1:65535"));
+        ASSERT_FALSE(contains(i, "mangle", fixture.r->chains[TP_PROXY], "-p udp"));
+        ASSERT_FALSE(contains(i, "mangle", fixture.r->chains[TP_EARLY], "-m socket"));
+    }
+    const uint8_t ip[] = {203, 0, 113, 40};
+    ASSERT_EQ(MT_OK, mt_tproxy_routes_learn(fixture.r, AF_INET, IPPROTO_TCP, ip, 22, false));
+    ASSERT_EQ(MT_OK, mt_tproxy_routes_learn(fixture.r, AF_INET, IPPROTO_TCP, ip, 65535, false));
+    ASSERT_EQ(2u, mt_fake_ipset_nl_entry_count(fixture.sets, fixture.r->sets[0][0]));
+    ASSERT_EQ(MT_ERR_INVAL, mt_tproxy_routes_learn(fixture.r, AF_INET, IPPROTO_TCP, ip, 0, false));
+    ASSERT_EQ(MT_ERR_INVAL, mt_tproxy_routes_learn(fixture.r, AF_INET, IPPROTO_UDP, ip, 443, false));
+    ASSERT_EQ(MT_ERR_INVAL, mt_tproxy_routes_learn(fixture.r, AF_INET, IPPROTO_ICMP, ip, 443, false));
+    PASS();
+}
+
+TEST quic_scope_and_cache_do_not_overlap_tcp(void)
+{
+    extensions(false, true);
+    ASSERT_EQ(MT_OK, stage_commit());
+    for (size_t i = 0; i < 2; i++) {
+        ASSERT(contains(i, "mangle", fixture.r->chains[TP_PROXY], "-p udp -j TPROXY --on-port 18889"));
+        ASSERT(contains(i, "mangle", "PREROUTING", "-i br-lan -p udp --dport 443"));
+        ASSERT(contains(i, "mangle", fixture.r->chains[TP_ROUTE], "-p udp --dport 443 -m set"));
+        ASSERT_FALSE(contains(i, "mangle", fixture.r->chains[TP_ROUTE], "--dport 1:65535"));
+        ASSERT_FALSE(contains(i, "mangle", fixture.r->chains[TP_ROUTE], "-p udp --dport 53"));
+        ASSERT(contains(i, "filter", fixture.r->chains[TP_INPUT], "-p udp --dport 443 -m conntrack --ctdir ORIGINAL"));
+        ASSERT(contains(i, "filter", fixture.r->chains[TP_FORWARD], "-o vpn0 -p udp --dport 443"));
+        ASSERT(contains(i, "nat", fixture.r->chains[TP_NAT], "-p udp --dport 443 -m conntrack --ctdir ORIGINAL -m mark --mark 1001"));
+        ASSERT_FALSE(mt_fake_ipt_chain_exists(fixture.fake[i], "mangle", "OUTPUT"));
+        mt_ipt_rule_t *const *rules = NULL; size_t n = 0;
+        ASSERT(mt_fake_ipt_get_rules(fixture.fake[i], "mangle", fixture.r->chains[TP_EARLY], &rules, &n));
+        ASSERT(n >= 5); ASSERT(rule_has(rules[1], "--ctdir REPLY -j RETURN"));
+        ASSERT(rule_has(rules[0], fixture.r->flow_sets[i]));
+        ASSERT(rule_has(rules[0], "src,src,dst -m socket --transparent"));
+        ASSERT(rule_has(rules[2], "-m connmark --mark 1000"));
+    }
+    const uint8_t ip[] = {203, 0, 113, 41};
+    fixture.r->family[0].active = true;
+    ASSERT_EQ(MT_OK, mt_tproxy_routes_learn(fixture.r, AF_INET, IPPROTO_TCP, ip, 443, true));
+    ASSERT_EQ(MT_OK, mt_tproxy_routes_learn(fixture.r, AF_INET, IPPROTO_UDP, ip, 443, false));
+    ASSERT_EQ(2u, fixture.r->n_cache);
+    ASSERT_EQ(1u, mt_fake_ipset_nl_entry_count(fixture.sets, fixture.r->sets[0][0]));
+    ASSERT_EQ(1u, mt_fake_ipset_nl_entry_count(fixture.sets, fixture.r->sets[1][0]));
+    ASSERT_EQ(MT_OK, mt_tproxy_routes_learn(fixture.r, AF_INET, IPPROTO_UDP, ip, 443, true));
+    ASSERT_EQ(2u, mt_fake_ipset_nl_entry_count(fixture.sets, fixture.r->sets[1][0]));
+    ASSERT_EQ(0u, mt_fake_ipset_nl_entry_count(fixture.sets, fixture.r->sets[0][0]));
+    ASSERT_EQ(MT_ERR_INVAL, mt_tproxy_routes_learn(fixture.r, AF_INET, IPPROTO_TCP, ip, 22, false));
+    ASSERT_EQ(MT_ERR_INVAL, mt_tproxy_routes_learn(fixture.r, AF_INET, IPPROTO_UDP, ip, 80, false));
+    mt_tproxy_route_entry_t *entries = NULL; size_t count = 0;
+    ASSERT_EQ(MT_OK, mt_tproxy_routes_snapshot(fixture.r, &entries, &count)); ASSERT_EQ(2u, count);
+    ASSERT(entries[0].protocol != entries[1].protocol); free(entries);
+    ASSERT_EQ(MT_OK, clear_selected(fixture.r, true)); ASSERT_EQ(0u, fixture.r->n_cache);
+    ASSERT_EQ(0u, mt_fake_ipset_nl_entry_count(fixture.sets, fixture.r->sets[1][0]));
+    PASS();
+}
+
+TEST udp_reverse_conntrack_keeps_owned_relay_and_scoped_input(void)
+{
+    extensions(false, true);
+    ASSERT_EQ(MT_OK, stage_commit());
+    for (size_t f = 0; f < 2; f++) {
+        mt_ipt_rule_t *const *rules = NULL; size_t n = 0;
+        ASSERT(mt_fake_ipt_get_rules(fixture.fake[f], "mangle", fixture.r->chains[TP_EARLY], &rules, &n));
+        ASSERT(n >= 2);
+        /* A server reply can recreate conntrack first after expiry/deletion.
+         * The next client datagram is then REPLY, but the exact live tuple
+         * must reach its relay before the ordinary reply guard returns. */
+        ASSERT(rule_has(rules[0], "-p udp --dport 443 -m set --match-set"));
+        ASSERT(rule_has(rules[0], fixture.r->flow_sets[f]));
+        ASSERT(rule_has(rules[0], "src,src,dst -m socket --transparent"));
+        ASSERT(rule_has(rules[0], fixture.r->chains[TP_PROXY]));
+        ASSERT_FALSE(rule_has(rules[0], "--ctdir"));
+        ASSERT(rule_has(rules[1], "--ctdir REPLY -j RETURN"));
+
+        ASSERT(mt_fake_ipt_get_rules(fixture.fake[f], "filter", fixture.r->chains[TP_INPUT], &rules, &n));
+        size_t live_rules = 0;
+        for (size_t i = 0; i < n; i++) {
+            if (!rule_has(rules[i], "--ctdir")) {
+                live_rules++;
+                ASSERT(rule_has(rules[i], "-i br-lan ") || rule_has(rules[i], "-i br-guest "));
+                ASSERT(rule_has(rules[i], "-p udp --dport 443"));
+                ASSERT(rule_has(rules[i], "-m mark --mark 1000 -m connmark --mark 1000"));
+                ASSERT(rule_has(rules[i], fixture.r->flow_sets[f]));
+                ASSERT(rule_has(rules[i], "src,src,dst -m socket --transparent -j ACCEPT"));
+            } else {
+                ASSERT(rule_has(rules[i], "--ctdir ORIGINAL"));
+            }
+        }
+        ASSERT_EQ(fixture.r->n_ingress, live_rules);
+        ASSERT(contains(f, "filter", fixture.r->chains[TP_INPUT],
+            "-p udp --dport 443 -m conntrack --ctdir ORIGINAL"));
+        /* The exception belongs only to already owned UDP sockets. New-flow
+         * capture still rejects REPLY traffic before its learned-cache lookup. */
+        ASSERT(mt_fake_ipt_get_rules(fixture.fake[f], "mangle", fixture.r->chains[TP_ROUTE], &rules, &n));
+        ASSERT(n > 0); ASSERT(rule_has(rules[0], "--ctdir REPLY -j RETURN"));
+    }
+    PASS();
+}
+
+static mt_tproxy_udp_tuple_t udp_tuple(uint16_t source_port)
+{
+    return (mt_tproxy_udp_tuple_t){.family = AF_INET, .client_address = {192, 168, 1, 10},
+        .destination_address = {203, 0, 113, 50}, .client_port = source_port, .destination_port = 443};
+}
+
+TEST udp_pins_are_bounded_and_survive_learning_and_cache_clear(void)
+{
+    extensions(false, true);
+    mt_tproxy_udp_tuple_t one = udp_tuple(50000), two = udp_tuple(50001), three = udp_tuple(50002);
+    uint32_t first, second, third;
+    ASSERT_EQ(MT_OK, mt_tproxy_routes_pin_udp(fixture.r, &one, &first)); ASSERT(first != 0);
+    ASSERT_EQ(MT_ERR_EXIST, mt_tproxy_routes_pin_udp(fixture.r, &one, &third)); ASSERT_EQ(0u, third);
+    ASSERT_EQ(MT_OK, mt_tproxy_routes_pin_udp(fixture.r, &two, &second));
+    ASSERT_EQ(MT_ERR_LIMIT, mt_tproxy_routes_pin_udp(fixture.r, &three, &third)); ASSERT_EQ(0u, third);
+    ASSERT_EQ(2u, mt_fake_ipset_nl_entry_count(fixture.sets, fixture.r->flow_sets[0]));
+    size_t n;
+    const fake_ipset_call_t *calls = mt_fake_ipset_nl_calls(fixture.sets, &n);
+    ASSERT_EQ(FAKE_IPSET_CALL_ADD_PORT, calls[n - 1].kind); ASSERT_EQ(0u, calls[n - 1].timeout);
+    ASSERT(calls[n - 1].port_key.has_ip2); ASSERT_EQ(IPPROTO_UDP, calls[n - 1].port_key.protocol);
+    ASSERT_EQ(two.client_port, calls[n - 1].port_key.port);
+    ASSERT_EQ(0, memcmp(two.destination_address, calls[n - 1].port_key.ip2, 4));
+    ASSERT_EQ(MT_OK, mt_tproxy_routes_learn(fixture.r, AF_INET, IPPROTO_UDP, one.destination_address, 443, false));
+    ASSERT_EQ(MT_OK, mt_tproxy_routes_clear(fixture.r));
+    ASSERT_EQ(2u, mt_fake_ipset_nl_entry_count(fixture.sets, fixture.r->flow_sets[0]));
+    (void)mt_fake_ipset_nl_calls(fixture.sets, &n);
+    mt_tproxy_routes_unpin_udp(fixture.r, first);
+    size_t after; (void)mt_fake_ipset_nl_calls(fixture.sets, &after); ASSERT_EQ(n, after);
+    ASSERT_EQ(MT_OK, mt_tproxy_routes_pin_udp(fixture.r, &three, &third)); ASSERT(third != first);
+    mt_tproxy_routes_unpin_udp(fixture.r, first); /* stale token must not retire the replacement */
+    ASSERT_EQ(third, atomic_load(&fixture.r->pins[third & TP_PIN_INDEX_MASK].state));
+    mt_tproxy_routes_unpin_udp(fixture.r, second); mt_tproxy_routes_unpin_udp(fixture.r, third);
+    ASSERT_EQ(MT_OK, stage_commit());
+    ASSERT_EQ(0u, mt_fake_ipset_nl_entry_count(fixture.sets, fixture.r->flow_sets[0]));
+    mt_tproxy_routes_unpin_udp(NULL, first);
+    PASS();
+}
+
+TEST udp_pin_cleanup_failure_retains_bounded_retired_slot(void)
+{
+    extensions(true, true);
+    mt_tproxy_udp_tuple_t tuple = udp_tuple(51000);
+    uint32_t old, token;
+    ASSERT_EQ(MT_OK, mt_tproxy_routes_pin_udp(fixture.r, &tuple, &old));
+    mt_tproxy_routes_unpin_udp(fixture.r, old);
+    mt_fake_ipset_nl_fail_next(fixture.sets, FAKE_IPSET_CALL_DEL_PORT, MT_ERR_SYS);
+    ASSERT_EQ(MT_ERR_SYS, mt_tproxy_routes_pin_udp(fixture.r, &tuple, &token)); ASSERT_EQ(0u, token);
+    ASSERT_EQ(1u, mt_fake_ipset_nl_entry_count(fixture.sets, fixture.r->flow_sets[0]));
+    ASSERT(atomic_load(&fixture.r->pins[old & TP_PIN_INDEX_MASK].state) & TP_PIN_RETIRED);
+    mt_fake_ipset_nl_fail_next(fixture.sets, FAKE_IPSET_CALL_ADD_PORT, MT_ERR_SYS);
+    ASSERT_EQ(MT_ERR_SYS, mt_tproxy_routes_pin_udp(fixture.r, &tuple, &token)); ASSERT_EQ(0u, token);
+    ASSERT_EQ(0u, mt_fake_ipset_nl_entry_count(fixture.sets, fixture.r->flow_sets[0]));
+    ASSERT_EQ(MT_OK, mt_tproxy_routes_pin_udp(fixture.r, &tuple, &token));
+    ASSERT_EQ(MT_OK, stage_commit());
+    ASSERT_EQ(MT_OK, mt_tproxy_routes_disable(fixture.r));
+    for (size_t f = 0; f < 2; f++) {
+        ASSERT_FALSE(mt_fake_ipset_nl_set_exists(fixture.sets, fixture.r->flow_sets[f]));
+        ASSERT_FALSE(contains(f, "mangle", "PREROUTING", "-p udp --dport 443"));
+    }
     PASS();
 }
 TEST rebuild_preserves_cache_disable_preserves_foreign_rules(void)
@@ -291,7 +485,7 @@ TEST rebuild_preserves_cache_disable_preserves_foreign_rules(void)
     const char *foreign[] = {"-p", "icmp", "-j", "ACCEPT"};
     for (size_t i = 0; i < 2; i++) { ASSERT_EQ(MT_OK, mt_ipt_append(fixture.ipt[i], "mangle", "PREROUTING", foreign, 4)); }
     ASSERT_EQ(MT_OK, stage_commit());
-    const uint8_t ip[] = {203, 0, 113, 7}; ASSERT_EQ(MT_OK, mt_tproxy_routes_learn(fixture.r, AF_INET, ip, 80, false));
+    const uint8_t ip[] = {203, 0, 113, 7}; ASSERT_EQ(MT_OK, mt_tproxy_routes_learn(fixture.r, AF_INET, IPPROTO_TCP, ip, 80, false));
     for (size_t i = 0; i < 2; i++) { mt_fake_ipt_reset(fixture.fake[i]); mt_ipt_reset_staged(fixture.ipt[i]); }
     ASSERT_EQ(MT_OK, mt_netfilter_register_base_chains(fixture.ipt[0], fixture.ipt[1]));
     for (size_t i = 0; i < 2; i++) { ASSERT_EQ(MT_OK, mt_ipt_append(fixture.ipt[i], "mangle", "PREROUTING", foreign, 4)); }
@@ -356,7 +550,7 @@ TEST real_kernel_routes_and_teardown(void)
     ASSERT_EQ(MT_OK, mt_rtnl_route_del_local(rtnl, AF_INET, r->local_mark, 10, (int)if_nametoindex("lo")));
     ASSERT_EQ(MT_OK, mt_tproxy_routes_repair(r));
     ASSERT_EQ(MT_OK, mt_rtnl_get_default_route(rtnl, AF_INET, r->local_mark, 10, &route)); ASSERT(route.found && route.type == RTN_LOCAL);
-    const uint8_t destination[] = {203, 0, 113, 1}; ASSERT_EQ(MT_OK, mt_tproxy_routes_learn(r, AF_INET, destination, 443, true));
+    const uint8_t destination[] = {203, 0, 113, 1}; ASSERT_EQ(MT_OK, mt_tproxy_routes_learn(r, AF_INET, IPPROTO_TCP, destination, 443, true));
     ASSERT_EQ(0, system("ip link set tpvpn down")); ASSERT_EQ(MT_OK, mt_tproxy_routes_reconcile(r, "tpvpn"));
     ASSERT_EQ(MT_OK, mt_rtnl_get_default_route(rtnl, AF_INET, r->alternate_mark, 10, &route)); ASSERT_FALSE(route.found); ASSERT_EQ(0u, r->n_cache);
     uint32_t local = r->local_mark, alternate = r->alternate_mark;
@@ -375,6 +569,10 @@ SUITE(routes)
     RUN_TEST(address_change_refreshes_local_guards);
     RUN_TEST(learning_is_per_host_port_family_and_route); RUN_TEST(bounds_expiry_and_failed_learns);
     RUN_TEST(reject_private_invalid_families_and_nonweb); RUN_TEST(rebuild_preserves_cache_disable_preserves_foreign_rules);
+    RUN_TEST(all_tcp_ports_are_opt_in_and_exact); RUN_TEST(quic_scope_and_cache_do_not_overlap_tcp);
+    RUN_TEST(udp_reverse_conntrack_keeps_owned_relay_and_scoped_input);
+    RUN_TEST(udp_pins_are_bounded_and_survive_learning_and_cache_clear);
+    RUN_TEST(udp_pin_cleanup_failure_retains_bounded_retired_slot);
 #ifdef MT_ENTWARE_KN
     RUN_TEST(unknown_policy_stops_capture_before_mark_changes);
 #endif

@@ -314,8 +314,11 @@ mt_err_t mt_app_list_all_interfaces(const mt_app_t *app, mt_iface_info_t **out, 
  * closing it. A stop failure retains the owned state for a cleanup retry. */
 mt_err_t mt_app_tproxy_start(mt_app_t *app, const mt_tproxy_route_config_t *config);
 mt_err_t mt_app_tproxy_stop(mt_app_t *app);
-mt_err_t mt_app_tproxy_learn(mt_app_t *app, int family, const uint8_t *address,
+mt_err_t mt_app_tproxy_learn(mt_app_t *app, int family, uint8_t protocol, const uint8_t *address,
                              uint16_t port, bool alternate);
+mt_err_t mt_app_tproxy_pin_udp(mt_app_t *app, const mt_tproxy_udp_tuple_t *tuple,
+                               uint32_t *token);
+void mt_app_tproxy_unpin_udp(mt_app_t *app, uint32_t token);
 uint32_t mt_app_tproxy_mark(const mt_app_t *app, bool alternate);
 mt_err_t mt_app_tproxy_snapshot(mt_app_t *app, mt_tproxy_route_entry_t **out, size_t *count);
 mt_err_t mt_app_tproxy_clear(mt_app_t *app);

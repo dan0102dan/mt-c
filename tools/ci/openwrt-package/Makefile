@@ -24,7 +24,7 @@ define Package/mt-c
   TITLE:=DNS-based routing application
   URL:=https://github.com/dan0102dan/mt-c
   CONFLICTS:=magitrickle
-  DEPENDS:=+iptables-nft +iptables-mod-conntrack-extra +iptables-mod-tproxy +kmod-ipt-nat +kmod-ipt-ipset +ip6tables-nft +libatomic +libyaml +libpcre2 +libmnl +libcurl +libubus +libubox +rpcd-mod-luci
+  DEPENDS:=+iptables-nft +iptables-mod-conntrack-extra +iptables-mod-tproxy +iptables-mod-socket +kmod-ipt-nat +kmod-ipt-ipset +ip6tables-nft +libatomic +libyaml +libpcre2 +libmnl +libcurl +libubus +libubox +rpcd-mod-luci
 endef
 
 define Package/mt-c/description

@@ -4,6 +4,7 @@ import {
   adaptiveDefaults,
   adaptiveDraft,
   buildAdaptiveSettings,
+  readAdaptiveSettings,
   readAdaptiveStatus,
 } from "../../src/modules/settings/adaptive/data";
 import { HttpError } from "../../src/utils/http-error";
@@ -106,12 +107,62 @@ Deno.test("adaptive response validation rejects malformed and duplicate metadata
     readAdaptiveStatus({
       ...response,
       entries: [
-        { address: "203.0.113.2", family: 4, port: 22, alternate: true, expiresInSeconds: 20 },
+        {
+          address: "203.0.113.2",
+          family: 4,
+          protocol: "udp",
+          port: 53,
+          alternate: true,
+          expiresInSeconds: 20,
+        },
       ],
     }),
   );
   assert.throws(() =>
     readAdaptiveStatus({ ...response, settings: { ...response.settings, maxConnections: 1025 } }),
+  );
+});
+
+Deno.test("legacy adaptive responses keep both extra traffic scopes disabled", () => {
+  const { tcpAllPorts: _tcp, quicEnabled: _quic, ...legacy } = adaptiveDefaults;
+  assert.deepEqual(readAdaptiveSettings(legacy), adaptiveDefaults);
+  for (const value of [null, "true", 1]) {
+    assert.throws(() => readAdaptiveSettings({ ...legacy, tcpAllPorts: value }));
+    assert.throws(() => readAdaptiveSettings({ ...legacy, quicEnabled: value }));
+  }
+  const entry = {
+    address: "203.0.113.2",
+    family: 4,
+    port: 443,
+    alternate: false,
+    expiresInSeconds: 20,
+  };
+  const parsed = readAdaptiveStatus({ ...adaptiveStatus(), settings: legacy, entries: [entry] });
+  assert.equal(parsed.entries[0].protocol, "tcp");
+  assert.equal(parsed.settings.quicEnabled, false);
+});
+
+Deno.test("learned routes distinguish TCP and QUIC and validate all TCP port bounds", () => {
+  const entry = {
+    address: "203.0.113.2",
+    family: 4,
+    protocol: "tcp",
+    port: 443,
+    alternate: false,
+    expiresInSeconds: 20,
+  };
+  const entries = [
+    entry,
+    { ...entry, protocol: "udp", alternate: true },
+    { ...entry, port: 22 },
+    { ...entry, port: 65535 },
+  ];
+  assert.equal(readAdaptiveStatus({ ...adaptiveStatus(), entries }).entries.length, 4);
+  for (const port of [0, 65536, 1.5])
+    assert.throws(() => readAdaptiveStatus({ ...adaptiveStatus(), entries: [{ ...entry, port }] }));
+  assert.throws(() => readAdaptiveStatus({ ...adaptiveStatus(), entries: [entry, entry] }));
+  assert.throws(() =>
+    readAdaptiveStatus({ ...adaptiveStatus(), entries: [{ ...entry, protocol: "quic" }] }),
   );
 });
 
@@ -141,6 +192,8 @@ Deno.test("adaptive save confirms canonical settings and blocks duplicate reques
   withApi(async () => {
     const state = await loaded();
     enable(state);
+    state.draft.tcpAllPorts = true;
+    state.draft.quicEnabled = true;
     const gate = Promise.withResolvers<unknown>();
     let writes = 0;
     let sent: unknown;
@@ -160,8 +213,26 @@ Deno.test("adaptive save confirms canonical settings and blocks duplicate reques
     gate.resolve(confirmed);
     await saving;
     assert.equal(state.snapshot?.active, true);
+    assert.equal(state.snapshot?.settings.tcpAllPorts, true);
+    assert.equal(state.snapshot?.settings.quicEnabled, true);
     assert.equal(state.dirty, false);
     assert.equal(state.saving, false);
+  }),
+);
+
+Deno.test("an older acknowledgement cannot silently discard new traffic scopes", async () =>
+  withApi(async () => {
+    const state = await loaded();
+    enable(state);
+    state.draft.tcpAllPorts = true;
+    state.draft.quicEnabled = true;
+    const { tcpAllPorts: _tcp, quicEnabled: _quic, ...legacy } = state.built.settings!;
+    fetcher.put = <T>() =>
+      Promise.resolve({ ...adaptiveStatus(), settings: legacy, active: true } as T);
+    await assert.rejects(state.save());
+    assert.equal(state.draft.tcpAllPorts, true);
+    assert.equal(state.draft.quicEnabled, true);
+    assert.equal(state.dirty, true);
   }),
 );
 

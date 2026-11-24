@@ -84,6 +84,8 @@ CORE_SRCS := \
     src/logging/log.c \
     src/platform/loop.c \
     src/platform/tproxy.c \
+    src/platform/udp_tproxy.c \
+    src/transport/quic.c \
     src/dns/wire.c \
     src/dns/query_log.c \
     src/interfaces/dns_clients.c \
@@ -293,9 +295,17 @@ $(BUILDDIR)/tests/test_tproxy: tests/unit/test_tproxy.c src/platform/tproxy.c $(
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -Itests/vendor -Itests/unit $(LDFLAGS) -o $@ $< $(filter-out $(BUILDDIR)/src/platform/tproxy.o,$(LIB_OBJS)) $(TEST_SUPPORT_OBJS) $(LDLIBS) $(DEP_LIBS)
 
+$(BUILDDIR)/tests/test_udp_tproxy: tests/unit/test_udp_tproxy.c src/platform/udp_tproxy.c $(LIB_OBJS) $(TEST_SUPPORT_OBJS)
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) -Itests/vendor -Itests/unit $(LDFLAGS) -o $@ $< $(filter-out $(BUILDDIR)/src/platform/udp_tproxy.o,$(LIB_OBJS)) $(TEST_SUPPORT_OBJS) $(LDLIBS) $(DEP_LIBS)
+
 $(BUILDDIR)/tests/test_tproxy_routes: tests/unit/test_tproxy_routes.c src/netfilter/tproxy_routes.c $(LIB_OBJS) $(TEST_SUPPORT_OBJS)
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -Itests/vendor -Itests/unit $(LDFLAGS) -o $@ $< $(filter-out $(BUILDDIR)/src/netfilter/tproxy_routes.o,$(LIB_OBJS)) $(TEST_SUPPORT_OBJS) $(LDLIBS) $(DEP_LIBS)
+
+$(BUILDDIR)/tests/test_ipset_port: tests/unit/test_ipset_port.c src/netfilter/ipset_nl_real.c $(LIB_OBJS) $(TEST_SUPPORT_OBJS)
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) -Itests/vendor -Itests/unit $(LDFLAGS) -o $@ $< $(filter-out $(BUILDDIR)/src/netfilter/ipset_nl_real.o,$(LIB_OBJS)) $(TEST_SUPPORT_OBJS) $(LDLIBS) $(DEP_LIBS)
 
 $(BUILDDIR)/tests/test_adaptive: tests/unit/test_adaptive.c src/api/adaptive.c $(LIB_OBJS) $(TEST_SUPPORT_OBJS)
 	@mkdir -p $(dir $@)

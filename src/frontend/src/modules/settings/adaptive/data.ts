@@ -20,6 +20,8 @@ const bounded = (min: number, max: number) =>
 
 export const AdaptiveSettingsSchema = object({
   enabled: boolean(),
+  tcpAllPorts: optional(boolean(), false),
+  quicEnabled: optional(boolean(), false),
   interface: string(),
   ingressInterfaces: array(string()),
   connectTimeoutMs: bounded(100, 60000),
@@ -33,6 +35,8 @@ export type AdaptiveSettings = InferOutput<typeof AdaptiveSettingsSchema>;
 
 export const adaptiveDefaults: AdaptiveSettings = {
   enabled: false,
+  tcpAllPorts: false,
+  quicEnabled: false,
   interface: "",
   ingressInterfaces: [],
   connectTimeoutMs: 2000,
@@ -53,7 +57,8 @@ const AdaptiveStatusSchema = object({
     object({
       address: string(),
       family: picklist([4, 6]),
-      port: picklist([80, 443]),
+      protocol: optional(picklist(["tcp", "udp"]), "tcp"),
+      port: bounded(1, 65535),
       alternate: boolean(),
       expiresInSeconds: counter,
     }),
@@ -113,9 +118,17 @@ export function readAdaptiveStatus(value: unknown): AdaptiveStatus {
     !validScope(status.settings) ||
     status.interfaces.some((item) => !validInterface(item.id)) ||
     new Set(status.interfaces.map((item) => item.id)).size !== status.interfaces.length ||
-    status.entries.some((entry) => !entry.address || /[\s\x00-\x1f\x7f]/.test(entry.address)) ||
-    new Set(status.entries.map((entry) => `${entry.family}/${entry.address}/${entry.port}`))
-      .size !== status.entries.length
+    status.entries.some(
+      (entry) =>
+        !entry.address ||
+        /[\s\x00-\x1f\x7f]/.test(entry.address) ||
+        (entry.protocol === "udp" && entry.port !== 443),
+    ) ||
+    new Set(
+      status.entries.map(
+        (entry) => `${entry.protocol}/${entry.family}/${entry.address}/${entry.port}`,
+      ),
+    ).size !== status.entries.length
   )
     throw new Error("Invalid adaptive routing response");
   return status;

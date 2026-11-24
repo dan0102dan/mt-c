@@ -146,7 +146,7 @@
 >
   <SectionDescription>
     {t(
-      "Try the default route first and learn an alternate route when a web connection fails. Applies to TCP ports 80 and 443; QUIC and other UDP traffic are unchanged.",
+      "Try the default route first and learn an alternate route when a new connection cannot be established. TCP ports 80 and 443 are included by default; other TCP ports and QUIC can be enabled separately.",
     )}
   </SectionDescription>
   {#if !config.snapshot}
@@ -180,6 +180,25 @@
               </Button>
             {/if}
           </div>
+        </div>
+        <div class="scope-options">
+          <SwitchField
+            id="adaptive-all-tcp"
+            label={t("Include all TCP ports")}
+            bind:checked={config.draft.tcpAllPorts}
+            disabled={blocked}
+          />
+          <SwitchField
+            id="adaptive-quic"
+            label={t("Include QUIC on UDP port 443")}
+            bind:checked={config.draft.quicEnabled}
+            disabled={blocked}
+          />
+          <p class="scope-hint">
+            {t(
+              "TCP retries stop once application data is sent; the TLS ClientHello check applies only to port 443. QUIC can retry only the initial handshake before any server response or early application data. Other UDP ports are unchanged.",
+            )}
+          </p>
         </div>
         <div class="fields">
           <FormField label={t("Alternate interface")} error={errorFor("interface")}>
@@ -234,7 +253,14 @@
         <div class="fields timing-fields">
           {#each [{ key: "connectTimeoutMs", label: "Connection timeout, ms" }, { key: "tlsTimeoutMs", label: "TLS response timeout, ms" }, { key: "ttlSeconds", label: "Learning lifetime, seconds" }] as field (field.key)}
             {@const key = field.key as "connectTimeoutMs" | "tlsTimeoutMs" | "ttlSeconds"}
-            <FormField id={`adaptive-${key}`} label={t(field.label)} error={errorFor(key)}>
+            <FormField
+              id={`adaptive-${key}`}
+              label={t(field.label)}
+              error={errorFor(key)}
+              hint={key === "connectTimeoutMs"
+                ? t("Also limits the wait for the first QUIC response.")
+                : undefined}
+            >
               <input
                 id={`adaptive-${key}`}
                 class="form-control"
@@ -243,7 +269,11 @@
                 autocomplete="off"
                 bind:value={config.draft[key]}
                 aria-invalid={Boolean(settings.errors[key])}
-                aria-describedby={settings.errors[key] ? `adaptive-${key}-error` : undefined}
+                aria-describedby={settings.errors[key]
+                  ? `adaptive-${key}-error`
+                  : key === "connectTimeoutMs"
+                    ? `adaptive-${key}-hint`
+                    : undefined}
               />
             </FormField>
           {/each}
@@ -280,16 +310,17 @@
               <caption>{t("Remaining lifetime is shown at the last refresh.")}</caption>
               <thead
                 ><tr
-                  ><th scope="col">{t("Address")}</th><th scope="col">{t("Route")}</th><th
-                    scope="col">{t("Expires in")}</th
-                  ></tr
+                  ><th scope="col">{t("Address")}</th><th scope="col">{t("Protocol")}</th><th
+                    scope="col">{t("Route")}</th
+                  ><th scope="col">{t("Expires in")}</th></tr
                 ></thead
               >
               <tbody>
-                {#each visibleEntries as entry (`${entry.family}/${entry.address}/${entry.port}`)}
+                {#each visibleEntries as entry (`${entry.protocol}/${entry.family}/${entry.address}/${entry.port}`)}
                   <tr>
                     <td>{entry.family === 6 ? `[${entry.address}]` : entry.address}:{entry.port}</td
                     >
+                    <td>{entry.protocol === "udp" ? t("QUIC (UDP)") : t("TCP")}</td>
                     <td
                       >{entry.alternate
                         ? config.snapshot.settings.interface
@@ -360,6 +391,15 @@
     grid-template-columns: repeat(2, minmax(0, 1fr));
     gap: var(--space-5);
     align-items: start;
+  }
+  .scope-options {
+    margin-bottom: var(--space-5);
+  }
+  .scope-hint {
+    margin: var(--space-2) 0 0;
+    color: var(--text-2);
+    font-size: var(--text-caption);
+    line-height: var(--line-height-body);
   }
   .timing-fields {
     grid-template-columns: repeat(3, minmax(0, 1fr));

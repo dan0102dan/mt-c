@@ -310,7 +310,7 @@ ifeq ($(PLATFORM),entware)
 	echo "Depends: $$DEPS" >> $(IPK_CONTROL_DIR)/control
 endif
 ifeq ($(PLATFORM),openwrt)
-	echo "Depends: libc, iptables-nft, iptables-mod-conntrack-extra, iptables-mod-tproxy, kmod-ipt-nat, kmod-ipt-ipset, ip6tables-nft, $(DEPS_IPK), libcjson" >> $(IPK_CONTROL_DIR)/control
+	echo "Depends: libc, iptables-nft, iptables-mod-conntrack-extra, iptables-mod-tproxy, iptables-mod-socket, kmod-ipt-nat, kmod-ipt-ipset, ip6tables-nft, $(DEPS_IPK), libcjson" >> $(IPK_CONTROL_DIR)/control
 endif
 
 	tar -C "$(IPK_CONTROL_DIR)" -czvf "$(IPK_DIR)/control.tar.gz" --owner=0 --group=0 .
@@ -343,7 +343,7 @@ package_apk: prepare_files $(BUILD_KEY_APK_SEC)
 		-I "maintainer:$(PKG_MAINTAINER)" \
 		-I "url:$(PKG_URL)" \
 		-I "provider-priority:100" \
-		-I "depends:libc iptables-nft iptables-mod-conntrack-extra iptables-mod-tproxy kmod-ipt-nat kmod-ipt-ipset ip6tables-nft $(DEPS_APK) $(addprefix !,$(PKG_CONFLICTS))" \
+		-I "depends:libc iptables-nft iptables-mod-conntrack-extra iptables-mod-tproxy iptables-mod-socket kmod-ipt-nat kmod-ipt-ipset ip6tables-nft $(DEPS_APK) $(addprefix !,$(PKG_CONFLICTS))" \
 		-s "post-install:$(APK_DIR)/post-install.sh" \
 		-s "pre-deinstall:$(APK_DIR)/pre-deinstall.sh" \
 		-s "post-upgrade:$(APK_DIR)/post-upgrade.sh" \

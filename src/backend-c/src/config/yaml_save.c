@@ -345,6 +345,8 @@ static void emit_config(emitter_ctx_t *ctx, const mt_config_t *cfg, const char *
         emit_plain(ctx, "adaptiveRouting");
         map_start(ctx);
         emit_plain(ctx, "enabled"); emit_bool(ctx, adaptive->enabled);
+        emit_plain(ctx, "tcpAllPorts"); emit_bool(ctx, adaptive->tcp_all_ports);
+        emit_plain(ctx, "quicEnabled"); emit_bool(ctx, adaptive->quic_enabled);
         emit_plain(ctx, "interface"); emit_string(ctx, adaptive->interface);
         emit_plain(ctx, "ingressInterfaces"); seq_start(ctx, !adaptive->n_ingress);
         for (size_t i = 0; i < adaptive->n_ingress; i++) { emit_string(ctx, adaptive->ingress_interfaces[i]); }

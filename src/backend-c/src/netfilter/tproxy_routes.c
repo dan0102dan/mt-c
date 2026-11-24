@@ -1,4 +1,4 @@
-/* Owned kernel state for adaptive TCP routing; see tproxy_routes.h.
+/* Owned kernel state for adaptive TCP/QUIC routing; see tproxy_routes.h.
  * No shell commands or packet inspection live here. */
 #include "magitrickle/tproxy_routes.h"
 #include "magitrickle/ipset.h"
@@ -11,6 +11,7 @@
 #include <linux/rtnetlink.h>
 #include <net/if.h>
 #include <stdio.h>
+#include <stdatomic.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/socket.h>
@@ -24,6 +25,10 @@
  * exact owned marks are only assigned after the existing policy guards. */
 #define TP_LOCAL_RULE_PRIORITY 1u
 #define TP_ALTERNATE_RULE_PRIORITY 2u
+#define TP_PIN_INDEX_BITS 10u
+#define TP_PIN_INDEX_MASK UINT32_C(0x3ff)
+#define TP_PIN_GENERATION_MASK UINT32_C(0x1fffff)
+#define TP_PIN_RETIRED UINT32_C(0x80000000)
 static const uint16_t tp_ports[TP_PORTS] = {80, 443};
 enum { TP_EARLY, TP_ROUTE, TP_PROXY, TP_ALTERNATE, TP_INPUT, TP_FORWARD, TP_NAT };
 static const char *const tp_suffix[TP_CHAINS] = {"e", "r", "p", "a", "i", "f", "n"};
@@ -38,13 +43,20 @@ typedef struct tp_cache {
     mt_tproxy_route_entry_t entry;
     int64_t expires;
 } tp_cache_t;
+typedef struct tp_udp_pin {
+    /* Tuple is immutable while this token is live/retired. Only retirement
+     * is written without nf_mu; kernel deletion and slot reuse hold nf_mu. */
+    _Atomic uint32_t state;
+    mt_tproxy_udp_tuple_t tuple;
+} tp_udp_pin_t;
 
 struct mt_tproxy_routes {
     mt_tproxy_route_deps_t deps;
     char *interface;
     char **ingress;
     size_t n_ingress;
-    uint16_t port;
+    uint16_t port, udp_port;
+    bool tcp_all_ports, tuple_sets;
     uint32_t ttl_seconds, max_entries;
     uint32_t local_mark, alternate_mark;
     bool local_reserved, alternate_reserved, staged, enabled;
@@ -53,12 +65,18 @@ struct mt_tproxy_routes {
     char route_parent[64];
     char sets[TP_SETS][2][32];
     bool set_created[TP_SETS][2];
+    char flow_sets[2][32];
+    bool flow_set_created[2];
     mt_ipset_nl_t *nl;
     tp_family_t family[2];
     tp_cache_t *cache;
     size_t n_cache;
     uint64_t local_signature;
+    tp_udp_pin_t *pins;
+    uint32_t pin_capacity, next_pin_generation;
 };
+
+static mt_err_t cleanup_retired_pins(mt_tproxy_routes_t *r);
 
 static int64_t monotonic_seconds(void)
 {
@@ -92,6 +110,11 @@ static mt_err_t make_names(mt_tproxy_routes_t *r)
             if (n < 0 || (size_t)n >= sizeof(r->sets[s][f])) { return MT_ERR_INVAL; }
         }
     }
+    for (size_t f = 0; f < 2; f++) {
+        int n = snprintf(r->flow_sets[f], sizeof(r->flow_sets[f]), "%st%08x_u_%u",
+                         r->deps.ipset_prefix, r->local_mark, f ? 6u : 4u);
+        if (n < 0 || (size_t)n >= sizeof(r->flow_sets[f])) { return MT_ERR_INVAL; }
+    }
     return MT_OK;
 }
 
@@ -101,7 +124,8 @@ mt_tproxy_routes_t *mt_tproxy_routes_new(const mt_tproxy_route_config_t *c,
     if (!c || !deps || !deps->rtnl || (!deps->ipt4 && !deps->ipt6) ||
         !deps->chain_prefix || !deps->ipset_prefix || !valid_interface(c->interface) ||
         !c->ingress_interfaces || c->n_ingress == 0 || c->n_ingress > 16 ||
-        c->port == 0 || c->ttl_seconds == 0 || c->max_entries == 0 || c->max_entries > 65536) {
+        c->port == 0 || c->ttl_seconds == 0 || c->max_entries == 0 || c->max_entries > 65536 ||
+        (c->udp_port && (c->max_connections == 0 || c->max_connections > 1024))) {
         return NULL;
     }
     for (size_t i = 0; i < c->n_ingress; i++) {
@@ -115,6 +139,10 @@ mt_tproxy_routes_t *mt_tproxy_routes_new(const mt_tproxy_route_config_t *c,
     if (!r) { return NULL; }
     r->deps = *deps;
     r->port = c->port;
+    r->udp_port = c->udp_port;
+    r->tcp_all_ports = c->tcp_all_ports;
+    r->tuple_sets = c->tcp_all_ports || c->udp_port != 0;
+    r->pin_capacity = c->udp_port ? c->max_connections : 0;
     r->ttl_seconds = c->ttl_seconds;
     r->max_entries = c->max_entries;
     /* Count only copied names, so every allocation failure is destructible. */
@@ -122,7 +150,11 @@ mt_tproxy_routes_t *mt_tproxy_routes_new(const mt_tproxy_route_config_t *c,
     r->interface = strdup(c->interface);
     r->ingress = calloc(c->n_ingress, sizeof(*r->ingress));
     r->cache = calloc(c->max_entries, sizeof(*r->cache));
-    if (!r->interface || !r->ingress || !r->cache) { mt_tproxy_routes_free(r); return NULL; }
+    if (r->pin_capacity) { r->pins = calloc(r->pin_capacity, sizeof(*r->pins)); }
+    if (!r->interface || !r->ingress || !r->cache || (r->pin_capacity && !r->pins)) {
+        mt_tproxy_routes_free(r); return NULL;
+    }
+    for (uint32_t i = 0; i < r->pin_capacity; i++) { atomic_init(&r->pins[i].state, 0); }
     for (size_t i = 0; i < c->n_ingress; i++) {
         r->ingress[i] = strdup(c->ingress_interfaces[i]);
         if (!r->ingress[i]) { mt_tproxy_routes_free(r); return NULL; }
@@ -222,6 +254,35 @@ static const char *capture_parent(mt_tproxy_routes_t *r)
     return "PREROUTING";
 }
 
+static mt_err_t stage_capture(mt_tproxy_routes_t *r, size_t f, const char *protocol,
+                               const char *port, size_t legacy_port)
+{
+    mt_ipt_t *ipt = family_ipt(r, f);
+    const char *route = r->chains[TP_ROUTE];
+    const char *direct = r->sets[r->tuple_sets ? 0u : legacy_port][f];
+    const char *alternate = r->sets[r->tuple_sets ? 1u : legacy_port + TP_PORTS][f];
+    const char *fields = r->tuple_sets ? "dst,dst" : "dst";
+    TP_APPEND("mangle", route, "-p", protocol, "--dport", port,
+        "-m", "set", "--match-set", direct, fields, "-j", "RETURN");
+    TP_APPEND("mangle", route, "-p", protocol, "--dport", port,
+        "-m", "set", "--match-set", alternate, fields, "-j", r->chains[TP_ALTERNATE]);
+    TP_APPEND("mangle", route, "-p", protocol, "--dport", port, "-j", r->chains[TP_PROXY]);
+    return MT_OK;
+}
+
+static mt_err_t stage_filter_scope(mt_tproxy_routes_t *r, mt_ipt_t *ipt,
+                                    const char *ingress, const char *protocol, const char *port,
+                                    const char *local, const char *alternate)
+{
+    TP_APPEND("filter", r->chains[TP_INPUT], "-i", ingress, "-p", protocol, "--dport", port,
+        "-m", "conntrack", "--ctdir", "ORIGINAL", "-m", "mark", "--mark", local,
+        "-m", "connmark", "--mark", local, "-j", "ACCEPT");
+    TP_APPEND("filter", r->chains[TP_FORWARD], "-i", ingress, "-o", r->interface,
+        "-p", protocol, "--dport", port, "-m", "conntrack", "--ctdir", "ORIGINAL",
+        "-m", "mark", "--mark", alternate, "-m", "connmark", "--mark", alternate, "-j", "ACCEPT");
+    return MT_OK;
+}
+
 static mt_err_t stage_family(mt_tproxy_routes_t *r, size_t f)
 {
     mt_ipt_t *ipt = family_ipt(r, f);
@@ -235,13 +296,24 @@ static mt_err_t stage_family(mt_tproxy_routes_t *r, size_t f)
      * opt-in feature, before placing the narrowly scoped acceptance rules. */
     mt_err_t err = mt_ipt_register_chain_patch(ipt, "filter", "INPUT");
     if (err != MT_OK) { return err; }
-    char local[16], alternate[16], listen_port[8];
+    char local[16], alternate[16], listen_port[8], udp_port[8];
     snprintf(local, sizeof(local), "%u", r->local_mark);
     snprintf(alternate, sizeof(alternate), "%u", r->alternate_mark);
     snprintf(listen_port, sizeof(listen_port), "%u", (unsigned)r->port);
+    snprintf(udp_port, sizeof(udp_port), "%u", (unsigned)r->udp_port);
+    const char *listen_ip = f ? "::1" : "127.0.0.1";
     const char *early = r->chains[TP_EARLY], *route = r->chains[TP_ROUTE];
     const char *proxy = r->chains[TP_PROXY], *alt = r->chains[TP_ALTERNATE];
 
+    if (r->udp_port) {
+        /* A live owned tuple keeps its UDP relay even if the original
+         * conntrack entry expires. A transparent reply can recreate conntrack
+         * in the opposite direction before the next client packet, so this
+         * check must precede the generic REPLY exclusion. The socket predicate
+         * makes a retired pin harmless after its transparent socket closes. */
+        TP_APPEND("mangle", early, "-p", "udp", "--dport", "443", "-m", "set",
+            "--match-set", r->flow_sets[f], "src,src,dst", "-m", "socket", "--transparent", "-j", proxy);
+    }
     TP_APPEND("mangle", early, "-m", "conntrack", "--ctdir", "REPLY", "-j", "RETURN");
     TP_APPEND("mangle", early, "-m", "connmark", "--mark", local, "-j", proxy);
     TP_APPEND("mangle", early, "-m", "connmark", "--mark", alternate, "-j", "MARK", "--set-mark", alternate);
@@ -249,7 +321,12 @@ static mt_err_t stage_family(mt_tproxy_routes_t *r, size_t f)
 
     TP_APPEND("mangle", proxy, "-j", "MARK", "--set-mark", local);
     TP_APPEND("mangle", proxy, "-j", "CONNMARK", "--save-mark");
-    TP_APPEND("mangle", proxy, "-p", "tcp", "-j", "TPROXY", "--on-port", listen_port, "--tproxy-mark", local);
+    TP_APPEND("mangle", proxy, "-p", "tcp", "-j", "TPROXY", "--on-port", listen_port,
+        "--on-ip", listen_ip, "--tproxy-mark", local);
+    if (r->udp_port) {
+        TP_APPEND("mangle", proxy, "-p", "udp", "-j", "TPROXY", "--on-port", udp_port,
+            "--on-ip", listen_ip, "--tproxy-mark", local);
+    }
     TP_APPEND("mangle", alt, "-j", "MARK", "--set-mark", alternate);
     TP_APPEND("mangle", alt, "-j", "CONNMARK", "--save-mark");
     TP_APPEND("mangle", alt, "-j", "ACCEPT");
@@ -265,11 +342,19 @@ static mt_err_t stage_family(mt_tproxy_routes_t *r, size_t f)
     TP_APPEND("mangle", route, "-p", "tcp", "!", "--syn", "-j", "RETURN");
     err = local_guards(ipt, route, family_id(f));
     if (err != MT_OK) { return err; }
-    for (size_t p = 0; p < TP_PORTS; p++) {
-        char port[8]; snprintf(port, sizeof(port), "%u", (unsigned)tp_ports[p]);
-        TP_APPEND("mangle", route, "-p", "tcp", "--dport", port, "-m", "set", "--match-set", r->sets[p][f], "dst", "-j", "RETURN");
-        TP_APPEND("mangle", route, "-p", "tcp", "--dport", port, "-m", "set", "--match-set", r->sets[p + TP_PORTS][f], "dst", "-j", alt);
-        TP_APPEND("mangle", route, "-p", "tcp", "--dport", port, "-j", proxy);
+    if (r->tcp_all_ports) {
+        err = stage_capture(r, f, "tcp", "1:65535", 0);
+        if (err != MT_OK) { return err; }
+    } else {
+        for (size_t p = 0; p < TP_PORTS; p++) {
+            char port[8]; snprintf(port, sizeof(port), "%u", (unsigned)tp_ports[p]);
+            err = stage_capture(r, f, "tcp", port, p);
+            if (err != MT_OK) { return err; }
+        }
+    }
+    if (r->udp_port) {
+        err = stage_capture(r, f, "udp", "443", 0);
+        if (err != MT_OK) { return err; }
     }
     snprintf(r->route_parent, sizeof(r->route_parent), "%s", capture_parent(r));
     for (size_t i = 0; i < r->n_ingress; i++) {
@@ -279,18 +364,40 @@ static mt_err_t stage_family(mt_tproxy_routes_t *r, size_t f)
         const char *capture[] = {"-i", r->ingress[i], "-p", "tcp", "-j", route};
         err = mt_ipt_append_ordered(ipt, "mangle", r->route_parent, TP_ROUTE_PRIORITY, capture, 6);
         if (err != MT_OK) { return err; }
-        for (size_t p = 0; p < TP_PORTS; p++) {
-            char port[8]; snprintf(port, sizeof(port), "%u", (unsigned)tp_ports[p]);
-            TP_APPEND("filter", r->chains[TP_INPUT], "-i", r->ingress[i], "-p", "tcp", "--dport", port,
-                "-m", "conntrack", "--ctdir", "ORIGINAL", "-m", "mark", "--mark", local,
-                "-m", "connmark", "--mark", local, "-j", "ACCEPT");
-            TP_APPEND("filter", r->chains[TP_FORWARD], "-i", r->ingress[i], "-o", r->interface,
-                "-p", "tcp", "--dport", port, "-m", "conntrack", "--ctdir", "ORIGINAL",
-                "-m", "mark", "--mark", alternate, "-m", "connmark", "--mark", alternate, "-j", "ACCEPT");
+        if (r->udp_port) {
+            const char *udp_jump[] = {"-i", r->ingress[i], "-p", "udp", "--dport", "443", "-j", early};
+            err = mt_ipt_insert(ipt, "mangle", "PREROUTING", 1, udp_jump, 8);
+            if (err != MT_OK) { return err; }
+            const char *udp_capture[] = {"-i", r->ingress[i], "-p", "udp", "--dport", "443", "-j", route};
+            err = mt_ipt_append_ordered(ipt, "mangle", r->route_parent, TP_ROUTE_PRIORITY, udp_capture, 8);
+            if (err != MT_OK) { return err; }
+            /* The same owned tuple may now be conntrack REPLY. Accept it only
+             * with its live transparent socket and both local-delivery marks;
+             * the first packet still uses the ORIGINAL rule below. */
+            TP_APPEND("filter", r->chains[TP_INPUT], "-i", r->ingress[i], "-p", "udp", "--dport", "443",
+                "-m", "mark", "--mark", local, "-m", "connmark", "--mark", local,
+                "-m", "set", "--match-set", r->flow_sets[f], "src,src,dst",
+                "-m", "socket", "--transparent", "-j", "ACCEPT");
+            err = stage_filter_scope(r, ipt, r->ingress[i], "udp", "443", local, alternate);
+            if (err != MT_OK) { return err; }
+        }
+        if (r->tcp_all_ports) {
+            err = stage_filter_scope(r, ipt, r->ingress[i], "tcp", "1:65535", local, alternate);
+            if (err != MT_OK) { return err; }
+        } else {
+            for (size_t p = 0; p < TP_PORTS; p++) {
+                char port[8]; snprintf(port, sizeof(port), "%u", (unsigned)tp_ports[p]);
+                err = stage_filter_scope(r, ipt, r->ingress[i], "tcp", port, local, alternate);
+                if (err != MT_OK) { return err; }
+            }
         }
     }
     TP_APPEND("nat", r->chains[TP_NAT], "-o", r->interface, "-p", "tcp", "-m", "conntrack", "--ctdir", "ORIGINAL",
         "-m", "mark", "--mark", alternate, "-j", "MASQUERADE");
+    if (r->udp_port) {
+        TP_APPEND("nat", r->chains[TP_NAT], "-o", r->interface, "-p", "udp", "--dport", "443",
+            "-m", "conntrack", "--ctdir", "ORIGINAL", "-m", "mark", "--mark", alternate, "-j", "MASQUERADE");
+    }
     const char *input[] = {"-j", r->chains[TP_INPUT]};
     err = mt_ipt_insert(ipt, "filter", "INPUT", 1, input, 2);
     if (err != MT_OK) { return err; }
@@ -305,6 +412,8 @@ static mt_err_t stage_family(mt_tproxy_routes_t *r, size_t f)
 mt_err_t mt_tproxy_routes_prepare(mt_tproxy_routes_t *r)
 {
     if (!r || !r->enabled) { return MT_OK; }
+    mt_err_t cleanup = cleanup_retired_pins(r);
+    if (cleanup != MT_OK) { return cleanup; }
     mt_err_t e4 = stage_family(r, 0);
     mt_err_t e6 = stage_family(r, 1);
     if (e4 != MT_OK || e6 != MT_OK) { return e4 != MT_OK ? e4 : e6; }
@@ -326,6 +435,12 @@ static mt_err_t remove_family_chains(mt_tproxy_routes_t *r, size_t f)
         first_error(&err, mt_ipt_delete(ipt, "mangle", "PREROUTING", early, 6));
         const char *capture[] = {"-i", r->ingress[i], "-p", "tcp", "-j", r->chains[TP_ROUTE]};
         if (*r->route_parent) { first_error(&err, mt_ipt_delete(ipt, "mangle", r->route_parent, capture, 6)); }
+        if (r->udp_port) {
+            const char *udp_early[] = {"-i", r->ingress[i], "-p", "udp", "--dport", "443", "-j", r->chains[TP_EARLY]};
+            first_error(&err, mt_ipt_delete(ipt, "mangle", "PREROUTING", udp_early, 8));
+            const char *udp_capture[] = {"-i", r->ingress[i], "-p", "udp", "--dport", "443", "-j", r->chains[TP_ROUTE]};
+            if (*r->route_parent) { first_error(&err, mt_ipt_delete(ipt, "mangle", r->route_parent, udp_capture, 8)); }
+        }
     }
     const char *input[] = {"-j", r->chains[TP_INPUT]};
     mt_err_t input_err = mt_ipt_delete(ipt, "filter", "INPUT", input, 2);
@@ -348,6 +463,12 @@ static mt_err_t remove_family_chains(mt_tproxy_routes_t *r, size_t f)
 
 static mt_err_t remove_entry(mt_tproxy_routes_t *r, const mt_tproxy_route_entry_t *entry)
 {
+    if (r->tuple_sets) {
+        mt_ipset_port_key_t key = {.iplen = entry->family == AF_INET6 ? 16u : 4u,
+            .protocol = entry->protocol, .port = entry->port};
+        memcpy(key.ip, entry->address, key.iplen);
+        return r->nl->ops->del_port(r->nl, r->sets[entry->alternate ? 1u : 0u][entry->family == AF_INET6 ? 1u : 0u], &key);
+    }
     size_t p = entry->port == 443 ? 1u : 0u;
     size_t s = p + (entry->alternate ? TP_PORTS : 0u);
     size_t f = entry->family == AF_INET6 ? 1u : 0u;
@@ -484,6 +605,8 @@ static mt_err_t reconcile_family(mt_tproxy_routes_t *r, size_t f)
 mt_err_t mt_tproxy_routes_reconcile(mt_tproxy_routes_t *r, const char *interface_name)
 {
     if (!r || !r->enabled) { return MT_OK; }
+    mt_err_t cleanup = cleanup_retired_pins(r);
+    if (cleanup != MT_OK) { return cleanup; }
     mt_err_t e4 = MT_OK, e6 = MT_OK;
     if (!interface_name || !strcmp(interface_name, r->interface)) {
         e4 = reconcile_family(r, 0);
@@ -521,6 +644,9 @@ mt_err_t mt_tproxy_routes_enable(mt_tproxy_routes_t *r)
     if (err == MT_OK) {
         r->nl = mt_ipset_nl_real_new();
         if (!r->nl) { err = MT_ERR_SYS; }
+        else if (r->tuple_sets && (!r->nl->ops->create_portset || !r->nl->ops->add_port || !r->nl->ops->del_port)) {
+            err = MT_ERR_STATE;
+        }
     }
     for (size_t f = 0; f < 2 && err == MT_OK; f++) {
         if (!family_ipt(r, f)) { continue; }
@@ -534,10 +660,16 @@ mt_err_t mt_tproxy_routes_enable(mt_tproxy_routes_t *r)
             r->family[f].alternate_rule = err == MT_OK;
         }
         if (err == MT_OK) { err = reconcile_family(r, f); }
-        for (size_t s = 0; s < TP_SETS && err == MT_OK; s++) {
+        size_t count = r->tuple_sets ? 2u : TP_SETS;
+        for (size_t s = 0; s < count && err == MT_OK; s++) {
             /* Exclusive create, no pre-emptive destroy of a foreign set. */
-            err = r->nl->ops->create(r->nl, r->sets[s][f], family, r->ttl_seconds);
+            err = r->tuple_sets ? r->nl->ops->create_portset(r->nl, r->sets[s][f], family, false,
+                r->ttl_seconds, r->max_entries) : r->nl->ops->create(r->nl, r->sets[s][f], family, r->ttl_seconds);
             r->set_created[s][f] = err == MT_OK;
+        }
+        if (err == MT_OK && r->udp_port) {
+            err = r->nl->ops->create_portset(r->nl, r->flow_sets[f], family, true, 0, r->pin_capacity);
+            r->flow_set_created[f] = err == MT_OK;
         }
     }
     if (err == MT_OK) {
@@ -551,7 +683,7 @@ mt_err_t mt_tproxy_routes_enable(mt_tproxy_routes_t *r)
         if (rollback != MT_OK) { MT_ERROR("adaptive routing rollback failed: %s", mt_err_str(rollback)); }
         return err;
     }
-    MT_INFO("adaptive TCP routing enabled: interface=%s ingress=%zu local_mark=0x%x alternate_mark=0x%x",
+    MT_INFO("adaptive routing enabled: interface=%s ingress=%zu local_mark=0x%x alternate_mark=0x%x",
             r->interface, r->n_ingress, r->local_mark, r->alternate_mark);
     return MT_OK;
 }
@@ -597,6 +729,10 @@ mt_err_t mt_tproxy_routes_disable(mt_tproxy_routes_t *r)
             err = r->nl->ops->destroy(r->nl, r->sets[set][f]);
             first_error(&first, err); if (err == MT_OK) { r->set_created[set][f] = false; }
         }
+        if (r->flow_set_created[f]) {
+            err = r->nl->ops->destroy(r->nl, r->flow_sets[f]);
+            first_error(&first, err); if (err == MT_OK) { r->flow_set_created[f] = false; }
+        }
     }
     if (first == MT_OK) {
         if (r->local_reserved) { mt_rtnl_release_table(r->deps.rtnl, r->local_mark); r->local_reserved = false; }
@@ -618,6 +754,7 @@ void mt_tproxy_routes_free(mt_tproxy_routes_t *r)
     }
     free(r->ingress);
     free(r->cache);
+    free(r->pins);
     free(r);
 }
 
@@ -639,11 +776,13 @@ static bool valid_destination(int family, const uint8_t *a)
     return true;
 }
 
-mt_err_t mt_tproxy_routes_learn(mt_tproxy_routes_t *r, int family,
+mt_err_t mt_tproxy_routes_learn(mt_tproxy_routes_t *r, int family, uint8_t protocol,
                                 const uint8_t *address, uint16_t port, bool alternate)
 {
     if (!r || !r->enabled) { return MT_ERR_STATE; }
-    if (!valid_destination(family, address) || (port != 80 && port != 443)) { return MT_ERR_INVAL; }
+    bool allowed = protocol == IPPROTO_TCP ? port != 0 && (r->tcp_all_ports || port == 80 || port == 443) :
+        protocol == IPPROTO_UDP && r->udp_port != 0 && port == 443;
+    if (!valid_destination(family, address) || !allowed) { return MT_ERR_INVAL; }
     size_t f = family == AF_INET6 ? 1u : 0u;
     if (!family_ipt(r, f)) { return MT_ERR_INVAL; }
     if (alternate && !r->family[f].active) { return MT_ERR_AGAIN; }
@@ -659,7 +798,8 @@ mt_err_t mt_tproxy_routes_learn(mt_tproxy_routes_t *r, int family,
     size_t width = f ? 16u : 4u, index = r->n_cache;
     for (size_t i = 0; i < r->n_cache; i++) {
         const mt_tproxy_route_entry_t *e = &r->cache[i].entry;
-        if (e->family == family && e->port == port && !memcmp(e->address, address, width)) { index = i; break; }
+        if (e->family == family && e->protocol == protocol && e->port == port &&
+            memcmp(e->address, address, width) == 0) { index = i; break; }
     }
     if (index < r->n_cache && r->cache[index].entry.alternate != alternate) {
         mt_err_t err = remove_entry(r, &r->cache[index].entry);
@@ -677,16 +817,95 @@ mt_err_t mt_tproxy_routes_learn(mt_tproxy_routes_t *r, int family,
         r->cache[index] = r->cache[--r->n_cache];
         index = r->n_cache;
     }
-    size_t set = (port == 443 ? 1u : 0u) + (alternate ? TP_PORTS : 0u);
-    mt_err_t err = r->nl->ops->add(r->nl, r->sets[set][f], address,
-                                  f ? 16u : 4u, f ? 128u : 32u, true, r->ttl_seconds, true);
+    mt_err_t err;
+    if (r->tuple_sets) {
+        mt_ipset_port_key_t key = {.iplen = f ? 16u : 4u, .protocol = protocol, .port = port};
+        memcpy(key.ip, address, width);
+        err = r->nl->ops->add_port(r->nl, r->sets[alternate ? 1u : 0u][f], &key, r->ttl_seconds);
+    } else {
+        size_t set = (port == 443 ? 1u : 0u) + (alternate ? TP_PORTS : 0u);
+        err = r->nl->ops->add(r->nl, r->sets[set][f], address,
+                              f ? 16u : 4u, f ? 128u : 32u, true, r->ttl_seconds, true);
+    }
     if (err != MT_OK) { return err; }
     if (index == r->n_cache) { r->n_cache++; }
     tp_cache_t *entry = &r->cache[index];
-    *entry = (tp_cache_t){.entry = {.family = family, .port = port, .alternate = alternate},
+    *entry = (tp_cache_t){.entry = {.family = family, .protocol = protocol, .port = port, .alternate = alternate},
                           .expires = now + r->ttl_seconds};
     memcpy(entry->entry.address, address, width);
     return MT_OK;
+}
+
+static mt_ipset_port_key_t udp_pin_key(const mt_tproxy_udp_tuple_t *tuple)
+{
+    mt_ipset_port_key_t key = {.iplen = tuple->family == AF_INET6 ? 16u : 4u,
+        .protocol = IPPROTO_UDP, .port = tuple->client_port, .has_ip2 = true};
+    memcpy(key.ip, tuple->client_address, key.iplen);
+    memcpy(key.ip2, tuple->destination_address, key.iplen);
+    return key;
+}
+
+static mt_err_t cleanup_retired_pins(mt_tproxy_routes_t *r)
+{
+    mt_err_t first = MT_OK;
+    for (uint32_t i = 0; i < r->pin_capacity; i++) {
+        tp_udp_pin_t *pin = &r->pins[i];
+        uint32_t state = atomic_load_explicit(&pin->state, memory_order_acquire);
+        if (!(state & TP_PIN_RETIRED)) { continue; }
+        mt_ipset_port_key_t key = udp_pin_key(&pin->tuple);
+        size_t f = pin->tuple.family == AF_INET6 ? 1u : 0u;
+        mt_err_t err = r->nl->ops->del_port(r->nl, r->flow_sets[f], &key);
+        if (err == MT_OK) { atomic_store_explicit(&pin->state, 0, memory_order_release); }
+        else if (first == MT_OK) { first = err; }
+    }
+    return first;
+}
+
+mt_err_t mt_tproxy_routes_pin_udp(mt_tproxy_routes_t *r,
+                                  const mt_tproxy_udp_tuple_t *tuple, uint32_t *token)
+{
+    if (!token) { return MT_ERR_INVAL; }
+    *token = 0;
+    if (!r || !r->enabled || !r->udp_port) { return MT_ERR_STATE; }
+    if (!tuple || tuple->destination_port != 443 || !tuple->client_port ||
+        !valid_destination(tuple->family, tuple->destination_address)) { return MT_ERR_INVAL; }
+    size_t f = tuple->family == AF_INET6 ? 1u : 0u, width = f ? 16u : 4u;
+    if (!family_ipt(r, f)) { return MT_ERR_INVAL; }
+    mt_err_t err = cleanup_retired_pins(r);
+    if (err != MT_OK) { return err; }
+    uint32_t available = r->pin_capacity;
+    for (uint32_t i = 0; i < r->pin_capacity; i++) {
+        tp_udp_pin_t *pin = &r->pins[i];
+        uint32_t state = atomic_load_explicit(&pin->state, memory_order_acquire);
+        if (!state) { if (available == r->pin_capacity) { available = i; } continue; }
+        const mt_tproxy_udp_tuple_t *old = &pin->tuple;
+        if (old->family == tuple->family && old->client_port == tuple->client_port &&
+            old->destination_port == tuple->destination_port &&
+            memcmp(old->client_address, tuple->client_address, width) == 0 &&
+            memcmp(old->destination_address, tuple->destination_address, width) == 0) { return MT_ERR_EXIST; }
+    }
+    if (available == r->pin_capacity) { return MT_ERR_LIMIT; }
+    mt_ipset_port_key_t key = udp_pin_key(tuple);
+    err = r->nl->ops->add_port(r->nl, r->flow_sets[f], &key, 0);
+    if (err != MT_OK) { return err; }
+    uint32_t generation = (++r->next_pin_generation) & TP_PIN_GENERATION_MASK;
+    if (!generation) { generation = (++r->next_pin_generation) & TP_PIN_GENERATION_MASK; }
+    uint32_t identity = (generation << TP_PIN_INDEX_BITS) | available;
+    tp_udp_pin_t *pin = &r->pins[available];
+    pin->tuple = *tuple;
+    atomic_store_explicit(&pin->state, identity, memory_order_release);
+    *token = identity;
+    return MT_OK;
+}
+
+void mt_tproxy_routes_unpin_udp(mt_tproxy_routes_t *r, uint32_t token)
+{
+    if (!r || !token || (token & TP_PIN_RETIRED)) { return; }
+    uint32_t index = token & TP_PIN_INDEX_MASK;
+    if (index >= r->pin_capacity) { return; }
+    uint32_t expected = token;
+    (void)atomic_compare_exchange_strong_explicit(&r->pins[index].state, &expected,
+        token | TP_PIN_RETIRED, memory_order_release, memory_order_relaxed);
 }
 
 mt_err_t mt_tproxy_routes_clear(mt_tproxy_routes_t *r)

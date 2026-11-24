@@ -1297,7 +1297,7 @@ mt_err_t mt_app_tproxy_stop(mt_app_t *app)
     return err;
 }
 
-mt_err_t mt_app_tproxy_learn(mt_app_t *app, int family, const uint8_t *address,
+mt_err_t mt_app_tproxy_learn(mt_app_t *app, int family, uint8_t protocol, const uint8_t *address,
                              uint16_t port, bool alternate)
 {
     if (!app) { return MT_ERR_INVAL; }
@@ -1307,9 +1307,29 @@ mt_err_t mt_app_tproxy_learn(mt_app_t *app, int family, const uint8_t *address,
         int rc = pthread_mutex_trylock(&app->nf_mu);
         if (rc != 0) { return rc == EBUSY ? MT_ERR_AGAIN : MT_ERR_SYS; }
     }
-    mt_err_t err = mt_tproxy_routes_learn(app->tproxy_routes, family, address, port, alternate);
+    mt_err_t err = mt_tproxy_routes_learn(app->tproxy_routes, family, protocol, address, port, alternate);
     if (app->nf_mu_ready) { pthread_mutex_unlock(&app->nf_mu); }
     return err;
+}
+
+mt_err_t mt_app_tproxy_pin_udp(mt_app_t *app, const mt_tproxy_udp_tuple_t *tuple,
+                               uint32_t *token)
+{
+    if (!app || !token) { return MT_ERR_INVAL; }
+    *token = 0;
+    if (app->nf_mu_ready) {
+        int rc = pthread_mutex_trylock(&app->nf_mu);
+        if (rc != 0) { return rc == EBUSY ? MT_ERR_AGAIN : MT_ERR_SYS; }
+    }
+    mt_err_t err = mt_tproxy_routes_pin_udp(app->tproxy_routes, tuple, token);
+    if (app->nf_mu_ready) { pthread_mutex_unlock(&app->nf_mu); }
+    return err;
+}
+
+void mt_app_tproxy_unpin_udp(mt_app_t *app, uint32_t token)
+{
+    /* Only atomically retires a fixed slot; it never waits for firewall I/O. */
+    mt_tproxy_routes_unpin_udp(app ? app->tproxy_routes : NULL, token);
 }
 
 uint32_t mt_app_tproxy_mark(const mt_app_t *app, bool alternate)

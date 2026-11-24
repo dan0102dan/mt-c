@@ -87,7 +87,8 @@ bool mt_adaptive_config_valid(const mt_adaptive_config_t *config)
 
 bool mt_adaptive_config_equal(const mt_adaptive_config_t *a, const mt_adaptive_config_t *b)
 {
-    if (a->enabled != b->enabled || a->n_ingress != b->n_ingress ||
+    if (a->enabled != b->enabled || a->tcp_all_ports != b->tcp_all_ports ||
+        a->quic_enabled != b->quic_enabled || a->n_ingress != b->n_ingress ||
         strcmp(a->interface ? a->interface : "", b->interface ? b->interface : "") != 0 ||
         a->connect_timeout_ms != b->connect_timeout_ms || a->tls_timeout_ms != b->tls_timeout_ms ||
         a->idle_timeout_ms != b->idle_timeout_ms || a->ttl_seconds != b->ttl_seconds ||

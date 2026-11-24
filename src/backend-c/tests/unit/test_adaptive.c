@@ -5,9 +5,11 @@
 #include "magitrickle/auth.h"
 #include "magitrickle/tproxy.h"
 #include "magitrickle/tproxy_routes.h"
+#include "magitrickle/udp_tproxy.h"
 #include "magitrickle/yamlio.h"
 #include <stdlib.h>
 #include <string.h>
+#include <netinet/in.h>
 #include <sys/socket.h>
 #include <sys/time.h>
 #include <unistd.h>
@@ -16,6 +18,10 @@ static unsigned listeners, starts, stops;
 static unsigned fail_listener, fail_start, fail_stop;
 static bool kernel_active;
 static unsigned saves, clears, fail_save;
+static unsigned udp_listeners, fail_udp_listener;
+static uint32_t tcp_active, udp_active;
+static bool have_cache_entries;
+static mt_tproxy_route_config_t captured_routes;
 
 static mt_err_t fake_create(mt_loop_t *loop, const mt_tproxy_config_t *config,
                              const mt_tproxy_ops_t *ops, void *ctx, mt_tproxy_t **out)
@@ -30,10 +36,26 @@ static mt_err_t fake_create(mt_loop_t *loop, const mt_tproxy_config_t *config,
 }
 static void fake_destroy(mt_tproxy_t *proxy) { if (proxy) { listeners--; free(proxy); } }
 static uint16_t fake_port(const mt_tproxy_t *proxy) { (void)proxy; return 28080; }
-static void fake_stats(const mt_tproxy_t *proxy, mt_tproxy_stats_t *out) { (void)proxy; memset(out, 0, sizeof(*out)); }
+static void fake_stats(const mt_tproxy_t *proxy, mt_tproxy_stats_t *out)
+{ memset(out, 0, sizeof(*out)); if (proxy) { out->active = tcp_active; } }
+static mt_err_t fake_udp_create(mt_loop_t *loop, const mt_udp_tproxy_config_t *config,
+                                 const mt_udp_tproxy_ops_t *ops, void *ctx, mt_udp_tproxy_t **out)
+{
+    (void)loop; (void)config; (void)ops; (void)ctx;
+    *out = NULL;
+    if (fail_udp_listener) { fail_udp_listener--; return MT_ERR_IO; }
+    *out = (mt_udp_tproxy_t *)malloc(1);
+    if (!*out) { return MT_ERR_NOMEM; }
+    udp_listeners++; return MT_OK;
+}
+static void fake_udp_destroy(mt_udp_tproxy_t *proxy)
+{ if (proxy) { udp_listeners--; free(proxy); } }
+static uint16_t fake_udp_port(const mt_udp_tproxy_t *proxy) { return proxy ? 28443 : 0; }
+static void fake_udp_stats(const mt_udp_tproxy_t *proxy, mt_tproxy_stats_t *out)
+{ memset(out, 0, sizeof(*out)); if (proxy) { out->active = udp_active; } }
 static mt_err_t fake_start(mt_app_t *app, const mt_tproxy_route_config_t *config)
 {
-    (void)app; (void)config; starts++;
+    (void)app; captured_routes = *config; starts++;
     if (fail_start) { fail_start--; return MT_ERR_IO; }
     kernel_active = true; return MT_OK;
 }
@@ -46,7 +68,18 @@ static mt_err_t fake_stop(mt_app_t *app)
 static mt_err_t fake_interfaces(mt_app_t *app, mt_iface_info_t **out, size_t *count)
 { (void)app; *out = NULL; *count = 0; return MT_OK; }
 static mt_err_t fake_snapshot(mt_app_t *app, mt_tproxy_route_entry_t **out, size_t *count)
-{ (void)app; *out = NULL; *count = 0; return MT_OK; }
+{
+    (void)app; *out = NULL; *count = 0;
+    if (have_cache_entries) {
+        *out = calloc(2, sizeof(**out));
+        if (!*out) { return MT_ERR_NOMEM; }
+        (*out)[0] = (mt_tproxy_route_entry_t){.family = AF_INET, .protocol = IPPROTO_TCP,
+            .address = {203,0,113,1}, .port = 443, .expires_in_seconds = 600};
+        (*out)[1] = (*out)[0]; (*out)[1].protocol = IPPROTO_UDP; (*out)[1].alternate = true;
+        *count = 2;
+    }
+    return MT_OK;
+}
 static mt_err_t fake_clear(mt_app_t *app) { (void)app; clears++; return MT_OK; }
 static mt_err_t fake_save(mt_app_t *app, const char *path, const char *version)
 {
@@ -59,6 +92,10 @@ static mt_err_t fake_save(mt_app_t *app, const char *path, const char *version)
 #define mt_tproxy_destroy fake_destroy
 #define mt_tproxy_port fake_port
 #define mt_tproxy_stats fake_stats
+#define mt_udp_tproxy_create fake_udp_create
+#define mt_udp_tproxy_destroy fake_udp_destroy
+#define mt_udp_tproxy_port fake_udp_port
+#define mt_udp_tproxy_stats fake_udp_stats
 #define mt_app_tproxy_start fake_start
 #define mt_app_tproxy_stop fake_stop
 #define mt_app_list_all_interfaces fake_interfaces
@@ -70,6 +107,10 @@ static mt_err_t fake_save(mt_app_t *app, const char *path, const char *version)
 #undef mt_tproxy_destroy
 #undef mt_tproxy_port
 #undef mt_tproxy_stats
+#undef mt_udp_tproxy_create
+#undef mt_udp_tproxy_destroy
+#undef mt_udp_tproxy_port
+#undef mt_udp_tproxy_stats
 #undef mt_app_tproxy_start
 #undef mt_app_tproxy_stop
 #undef mt_app_list_all_interfaces
@@ -83,6 +124,10 @@ static void reset(void)
     fail_listener = fail_start = fail_stop = 0;
     kernel_active = false;
     saves = clears = fail_save = 0;
+    udp_listeners = fail_udp_listener = 0;
+    tcp_active = udp_active = 0;
+    have_cache_entries = false;
+    memset(&captured_routes, 0, sizeof(captured_routes));
 }
 
 static mt_err_t candidate(mt_adaptive_config_t *out)
@@ -105,6 +150,7 @@ TEST config_bounds_and_scope(void)
     mt_adaptive_config_t config;
     ASSERT_EQ(MT_OK, mt_adaptive_config_defaults(&config));
     ASSERT(mt_adaptive_config_valid(&config));
+    ASSERT_FALSE(config.tcp_all_ports); ASSERT_FALSE(config.quic_enabled);
     config.enabled = true;
     ASSERT_FALSE(mt_adaptive_config_valid(&config));
     mt_adaptive_config_clear(&config);
@@ -155,6 +201,29 @@ TEST json_strict_roundtrip(void)
     PASS();
 }
 
+TEST new_protocol_flags_roundtrip_and_legacy_json(void)
+{
+    mt_adaptive_config_t original, parsed;
+    ASSERT_EQ(MT_OK, candidate(&original));
+    original.tcp_all_ports = original.quic_enabled = true;
+    cJSON *json = mt_adaptive_config_json(&original);
+    ASSERT(json);
+    ASSERT_EQ(MT_OK, mt_adaptive_config_parse(json, &parsed));
+    ASSERT(mt_adaptive_config_equal(&original, &parsed)); mt_adaptive_config_clear(&parsed);
+    cJSON_DeleteItemFromObjectCaseSensitive(json, "tcpAllPorts");
+    cJSON_DeleteItemFromObjectCaseSensitive(json, "quicEnabled");
+    ASSERT_EQ(MT_OK, mt_adaptive_config_parse(json, &parsed));
+    ASSERT_FALSE(parsed.tcp_all_ports); ASSERT_FALSE(parsed.quic_enabled);
+    ASSERT_FALSE(mt_adaptive_config_equal(&original, &parsed)); mt_adaptive_config_clear(&parsed);
+    cJSON_AddNumberToObject(json, "quicEnabled", 1);
+    ASSERT_EQ(MT_ERR_INVAL, mt_adaptive_config_parse(json, &parsed));
+    cJSON_DeleteItemFromObjectCaseSensitive(json, "quicEnabled");
+    cJSON_AddNullToObject(json, "tcpAllPorts");
+    ASSERT_EQ(MT_ERR_INVAL, mt_adaptive_config_parse(json, &parsed));
+    cJSON_Delete(json); mt_adaptive_config_clear(&original);
+    PASS();
+}
+
 TEST yaml_legacy_omission_and_owned_clone(void)
 {
     mt_config_t config, loaded;
@@ -164,6 +233,7 @@ TEST yaml_legacy_omission_and_owned_clone(void)
     ASSERT_FALSE(strstr(text, "adaptiveRouting")); free(text);
     mt_adaptive_config_clear(&config.app.adaptive);
     ASSERT_EQ(MT_OK, candidate(&config.app.adaptive));
+    config.app.adaptive.tcp_all_ports = config.app.adaptive.quic_enabled = true;
     ASSERT_EQ(MT_OK, mt_config_save_buffer(&config, "0.99.0", &text, &length));
     ASSERT(strstr(text, "adaptiveRouting"));
     ASSERT_EQ(MT_OK, mt_config_init_defaults(&loaded));
@@ -189,6 +259,9 @@ TEST yaml_rejects_invalid_without_replacing_adaptive(void)
         "configVersion: '0.99.0'\napp: {adaptiveRouting: {tlsTimeoutMs: '1000'}}",
         "configVersion: '0.99.0'\napp: {adaptiveRouting: {enabled: false, mystery: 1}}",
         "configVersion: '0.99.0'\napp: {adaptiveRouting: {interface: 'br+'}}",
+        "configVersion: '0.99.0'\napp: {adaptiveRouting: {quicEnabled: null}}",
+        "configVersion: '0.99.0'\napp: {adaptiveRouting: {tcpAllPorts: 1}}",
+        "configVersion: '0.99.0'\napp: {adaptiveRouting: {quicEnabled: false, quicEnabled: true}}",
     };
     for (size_t i = 0; i < sizeof(inputs) / sizeof(inputs[0]); i++) {
         ASSERT_EQ(MT_ERR_INVAL, mt_config_load_buffer(&config, inputs[i], strlen(inputs[i])));
@@ -293,17 +366,82 @@ TEST unsupported_startup_keeps_settings_available(void)
 
 TEST listener_authorization_excludes_direct_and_private_targets(void)
 {
+    reset();
+    mt_adaptive_service_t service = {.runtime = {.max_connections = 3}};
     mt_tproxy_endpoint_t client = {.family = AF_INET, .port = 51000};
     mt_tproxy_endpoint_t destination = {.family = AF_INET, .port = 443};
     const char *denied[] = {"127.0.0.1", "192.168.1.1", "10.0.0.1", "172.16.0.1", "169.254.1.1", "224.0.0.1", "100.64.0.1"};
     for (size_t i = 0; i < sizeof(denied) / sizeof(denied[0]); i++) {
         ASSERT_EQ(1, inet_pton(AF_INET, denied[i], destination.addr));
-        ASSERT_FALSE(authorize(NULL, &client, &destination));
+        ASSERT_FALSE(authorize(&service, &client, &destination));
     }
     ASSERT_EQ(1, inet_pton(AF_INET, "203.0.113.1", destination.addr));
-    ASSERT(authorize(NULL, &client, &destination));
-    destination.port = 28080; ASSERT_FALSE(authorize(NULL, &client, &destination));
+    ASSERT(authorize(&service, &client, &destination));
+    ASSERT_FALSE(authorize_udp(&service, &client, &destination));
+    service.runtime.quic_enabled = true;
+    ASSERT(authorize_udp(&service, &client, &destination));
+    destination.port = 28080; ASSERT_FALSE(authorize(&service, &client, &destination));
+    service.runtime.tcp_all_ports = true;
+    ASSERT(authorize(&service, &client, &destination));
+    ASSERT_FALSE(authorize_udp(&service, &client, &destination));
+    ASSERT_EQ(1, inet_pton(AF_INET, "127.0.0.1", destination.addr));
+    ASSERT_FALSE(authorize(&service, &client, &destination));
+    ASSERT_EQ(1, inet_pton(AF_INET, "203.0.113.1", destination.addr));
+    destination.port = 0; ASSERT_FALSE(authorize(&service, &client, &destination));
+    destination.port = 443;
+    service.proxy = (mt_tproxy_t *)&service;
+    service.udp_proxy = (mt_udp_tproxy_t *)&service;
+    tcp_active = 1; udp_active = 2;
+    ASSERT_FALSE(authorize(&service, &client, &destination));
+    ASSERT_FALSE(authorize_udp(&service, &client, &destination));
+    udp_active = 1;
+    ASSERT(authorize(&service, &client, &destination));
+    ASSERT(authorize_udp(&service, &client, &destination));
+    reset();
     PASS();
+}
+
+TEST udp_activation_failure_rolls_back_and_cleanup_keeps_both_listeners(void)
+{
+    reset(); mt_config_t config; mt_adaptive_service_t *service;
+    ASSERT_EQ(MT_OK, mt_config_init_defaults(&config));
+    ASSERT_EQ(MT_OK, mt_adaptive_service_create(NULL, NULL, &config, NULL, NULL, &service));
+    mt_adaptive_config_t next; ASSERT_EQ(MT_OK, candidate(&next));
+    ASSERT_EQ(MT_OK, apply(service, &next));
+    ASSERT_EQ(1, listeners); ASSERT_EQ(0, udp_listeners);
+    next.quic_enabled = next.tcp_all_ports = true;
+    fail_udp_listener = 1;
+    ASSERT_EQ(MT_ERR_IO, apply(service, &next));
+    ASSERT(service->active); ASSERT(kernel_active);
+    ASSERT_FALSE(config.app.adaptive.quic_enabled);
+    ASSERT_FALSE(config.app.adaptive.tcp_all_ports);
+    ASSERT_EQ(1, listeners); ASSERT_EQ(0, udp_listeners);
+    ASSERT_EQ(MT_OK, apply(service, &next));
+    ASSERT_EQ(1, listeners); ASSERT_EQ(1, udp_listeners);
+    ASSERT_EQ(28443, captured_routes.udp_port); ASSERT(captured_routes.tcp_all_ports);
+    ASSERT_EQ(next.max_connections, captured_routes.max_connections);
+    mt_tproxy_t *tcp = service->proxy; mt_udp_tproxy_t *udp = service->udp_proxy;
+    unsigned previous_starts = starts;
+    ASSERT_EQ(MT_OK, apply(service, &next));
+    ASSERT(service->proxy == tcp); ASSERT(service->udp_proxy == udp);
+    ASSERT_EQ(previous_starts, starts);
+    have_cache_entries = true; tcp_active = 2; udp_active = 3;
+    cJSON *state = snapshot(service); ASSERT(state);
+    cJSON *entries = cJSON_GetObjectItemCaseSensitive(state, "entries");
+    ASSERT_EQ(2, cJSON_GetArraySize(entries));
+    ASSERT_STR_EQ("tcp", cJSON_GetObjectItemCaseSensitive(cJSON_GetArrayItem(entries, 0), "protocol")->valuestring);
+    ASSERT_STR_EQ("udp", cJSON_GetObjectItemCaseSensitive(cJSON_GetArrayItem(entries, 1), "protocol")->valuestring);
+    ASSERT_EQ(5, cJSON_GetObjectItemCaseSensitive(cJSON_GetObjectItemCaseSensitive(state, "stats"), "active")->valueint);
+    cJSON_Delete(state);
+    next.enabled = false; fail_stop = 1;
+    ASSERT_EQ(MT_ERR_IO, apply(service, &next));
+    ASSERT_EQ(1, listeners); ASSERT_EQ(1, udp_listeners);
+    ASSERT_FALSE(service->active);
+    ASSERT_EQ(MT_OK, apply(service, &next));
+    ASSERT_EQ(0, listeners); ASSERT_EQ(0, udp_listeners);
+    ASSERT_EQ(MT_OK, mt_adaptive_service_destroy(service));
+    mt_adaptive_config_clear(&next); mt_config_clear(&config);
+    reset(); PASS();
 }
 
 /* Run the real parser/router/serializer on the calling thread. Each request
@@ -430,6 +568,7 @@ int main(int argc, char **argv)
     GREATEST_MAIN_BEGIN();
     RUN_TEST(config_bounds_and_scope);
     RUN_TEST(json_strict_roundtrip);
+    RUN_TEST(new_protocol_flags_roundtrip_and_legacy_json);
     RUN_TEST(yaml_legacy_omission_and_owned_clone);
     RUN_TEST(yaml_rejects_invalid_without_replacing_adaptive);
     RUN_TEST(controller_enable_retry_and_disable);
@@ -437,6 +576,7 @@ int main(int argc, char **argv)
     RUN_TEST(cleanup_failure_keeps_listener_until_retry);
     RUN_TEST(unsupported_startup_keeps_settings_available);
     RUN_TEST(listener_authorization_excludes_direct_and_private_targets);
+    RUN_TEST(udp_activation_failure_rolls_back_and_cleanup_keeps_both_listeners);
     RUN_TEST(http_persistence_retry_keeps_runtime_and_validates_input);
     RUN_TEST(http_auth_blocks_reads_and_writes_before_mutation);
     GREATEST_MAIN_END();

@@ -129,8 +129,14 @@ def serve(args):
         listener.bind((bind_address, port))
         listener.listen(16)
         listeners.append(listener)
+    banner_listener = socket.socket(family, socket.SOCK_STREAM)
+    banner_listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    if family == socket.AF_INET6:
+        banner_listener.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 1)
+    banner_listener.bind((bind_address, 8443))
+    banner_listener.listen(16)
     datagrams = []
-    for number in range(11, 18):
+    for number in (() if args.no_udp else range(11, 18)):
         datagram = socket.socket(family, socket.SOCK_DGRAM)
         # A bound destination preserves the response source for conntrack;
         # wildcard sendto() could choose the namespace's gateway-facing IP.
@@ -147,16 +153,42 @@ def serve(args):
             message, peer = datagram.recvfrom(2048)
             datagram.sendto(json.dumps({"route": args.server, "message": message.decode()}).encode(), peer)
 
+    def banner_loop():
+        while True:
+            connection, peer = banner_listener.accept()
+            try:
+                connection.settimeout(3)
+                connection.sendall(b"SSH-2.0-local-fixture\r\n")
+                with connection.makefile("rb") as reader:
+                    request = reader.readline(128)
+                if request != b"probe\n":
+                    raise ValueError("unexpected banner probe")
+                connection.sendall(json.dumps({"route": args.server, "peer": peer[0],
+                                               "peer_port": peer[1]}).encode())
+            except (OSError, ValueError):
+                pass
+            finally:
+                connection.close()
+
     for listener, secure in zip(listeners, (False, True)):
         threading.Thread(target=accept_loop, args=(listener, secure), daemon=True).start()
     for datagram in datagrams:
         threading.Thread(target=udp_loop, args=(datagram,), daemon=True).start()
+    threading.Thread(target=banner_loop, daemon=True).start()
     Path(args.ready).write_text("ready")
     signal.pause()
 
 
 def client(args):
     family = socket.AF_INET if args.family == 4 else socket.AF_INET6
+    if args.mode == "banner":
+        with socket.create_connection((args.client, 8443), timeout=5) as connection:
+            with connection.makefile("rb") as reader:
+                if reader.readline() != b"SSH-2.0-local-fixture\r\n":
+                    raise AssertionError("server-first banner was changed")
+                connection.sendall(b"probe\n")
+                print(reader.read().decode())
+        return
     if args.mode == "udp":
         with socket.socket(family, socket.SOCK_DGRAM) as conn:
             conn.settimeout(5)
@@ -253,7 +285,8 @@ class Lab:
         proc = subprocess.Popen(["nsenter", "--target", str(self.namespaces[name].pid), "--net", "--",
                                  sys.executable, "-u", str(SCRIPT), "--server", name,
                                  "--family", str(self.args.family), "--cert", str(self.directory / "cert.pem"),
-                                 "--key", str(self.directory / "key.pem"), "--ready", str(ready)],
+                                 "--key", str(self.directory / "key.pem"), "--ready", str(ready),
+                                 *(["--no-udp"] if getattr(self.args, "no_udp", False) else [])],
                                 stdout=handle, stderr=subprocess.STDOUT)
         self.processes.append(proc)
         deadline = time.monotonic() + 5
@@ -291,8 +324,11 @@ class Lab:
             command([self.tool, "-A", "FORWARD", "-i", ingress, "-o", "wan0", "-j", "ACCEPT"])
         self.ns_command("direct", self.tool, "-A", "INPUT", "-d", endpoint(self.args.family, 12),
                         "-p", "tcp", "--dport", "80", "-j", "REJECT", "--reject-with", "tcp-reset")
+        self.ns_command("direct", self.tool, "-A", "INPUT", "-d", endpoint(self.args.family, 12),
+                        "-p", "tcp", "--dport", "8443", "-j", "REJECT", "--reject-with", "tcp-reset")
         command(["openssl", "req", "-x509", "-newkey", "rsa:2048", "-nodes", "-days", "1",
-                 "-subj", "/CN=tproxy.test", "-keyout", self.directory / "key.pem",
+                 "-subj", "/CN=tproxy.test", "-addext", "subjectAltName=DNS:tproxy.test",
+                 "-keyout", self.directory / "key.pem",
                  "-out", self.directory / "cert.pem"])
         self.start_server("direct"); self.start_server("alternate")
         self.start_daemon()
@@ -393,10 +429,11 @@ subscriptions: []
         assert replies and all(reply["route"] == expected for reply in replies), result
         assert len({reply["peer_port"] for reply in replies}) == 1, "existing stream changed upstream"
 
-    def expect_entry(self, destination, port, alternate):
+    def expect_entry(self, destination, port, alternate, protocol="tcp"):
         wanted = ipaddress.ip_address(endpoint(self.args.family, destination))
         entries = self.api()["entries"]
         assert any(ipaddress.ip_address(entry["address"]) == wanted and entry["port"] == port and
+                   entry.get("protocol", "tcp") == protocol and
                    entry["alternate"] == alternate for entry in entries), entries
 
     def test(self):
@@ -452,6 +489,23 @@ subscriptions: []
         assert sum(event.get("method") == "POST" for event in direct_events) == 1
         assert not any(event.get("method") == "POST" for event in alternate_events), "POST was replayed"
         print("PASS accepted HTTP POST is never repeated after silent close", flush=True)
+
+        # Old configurations keep non-web TCP ports on ordinary routing.
+        before = self.accepted()
+        self.request(12, mode="banner", failure=True)
+        assert self.accepted() == before, "all TCP ports were enabled implicitly"
+        settings = self.api()["settings"]
+        assert settings["tcpAllPorts"] is False and settings["quicEnabled"] is False, settings
+        settings["tcpAllPorts"] = True
+        assert self.api("PUT", {"settings": settings})["active"]
+        before = self.accepted()
+        assert self.request(12, mode="banner")["route"] == "alternate"
+        assert self.accepted() == before + 1
+        self.expect_entry(12, 8443, True)
+        before = self.accepted()
+        assert self.request(12, mode="banner")["route"] == "alternate"
+        assert self.accepted() == before, "learned non-web TCP flow was captured again"
+        print("PASS opt-in all-port TCP fallback with an unmodified server-first protocol", flush=True)
 
         cleared = self.api("DELETE", suffix="/cache")
         assert cleared["entries"] == [], cleared
@@ -526,8 +580,9 @@ def main():
     parser.add_argument("--cert", help=argparse.SUPPRESS)
     parser.add_argument("--key", help=argparse.SUPPRESS)
     parser.add_argument("--ready", help=argparse.SUPPRESS)
+    parser.add_argument("--no-udp", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--client", help=argparse.SUPPRESS)
-    parser.add_argument("--mode", choices=("plain", "tls", "udp", "post-error"), default="plain", help=argparse.SUPPRESS)
+    parser.add_argument("--mode", choices=("plain", "tls", "udp", "post-error", "banner"), default="plain", help=argparse.SUPPRESS)
     parser.add_argument("--requests", type=int, default=1, help=argparse.SUPPRESS)
     args = parser.parse_args()
     if args.server:

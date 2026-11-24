@@ -620,6 +620,10 @@ static mt_err_t bind_listener(mt_tproxy_t *p, int family, int *out)
         mt_err_t err = mt_err_from_errno(errno); close(fd); return err;
     }
     mt_tproxy_endpoint_t endpoint = {.family = family, .port = p->config.port};
+    /* --on-ip directs intercepted traffic here without changing its original
+     * destination. Public/local router addresses do not expose the listener. */
+    if (family == AF_INET) { endpoint.addr[0] = 127; endpoint.addr[3] = 1; }
+    else { endpoint.addr[15] = 1; }
     struct sockaddr_storage sa;
     socklen_t len = endpoint_to_sockaddr(&endpoint, &sa);
     if (bind(fd, (struct sockaddr *)&sa, len) != 0 || listen(fd, 128) != 0) {

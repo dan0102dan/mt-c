@@ -1,5 +1,5 @@
-/* Optional TCP learning routes. All mutation is serialized with the app's
- * netfilter owner. The transparent listener must exist before enable. */
+/* Optional TCP/QUIC learning routes. Kernel mutation is serialized with the
+ * app's netfilter owner. Transparent listeners must exist before enable. */
 #ifndef MAGITRICKLE_TPROXY_ROUTES_H
 #define MAGITRICKLE_TPROXY_ROUTES_H
 
@@ -18,18 +18,28 @@ typedef struct mt_tproxy_route_config {
     const char *interface;
     const char *const *ingress_interfaces;
     size_t n_ingress;
-    uint16_t port;
+    uint16_t port;              /* TCP listener bound to loopback */
+    bool tcp_all_ports;         /* false retains TCP 80/443 scope */
+    uint16_t udp_port;          /* zero disables UDP/443 interception */
+    uint32_t max_connections;   /* active UDP pin capacity; required for UDP */
     uint32_t ttl_seconds;
     uint32_t max_entries;
 } mt_tproxy_route_config_t;
 
 typedef struct mt_tproxy_route_entry {
     int family;
+    uint8_t protocol;          /* IPPROTO_TCP or IPPROTO_UDP */
     uint8_t address[16];
     uint16_t port;
     bool alternate;
     uint32_t expires_in_seconds;
 } mt_tproxy_route_entry_t;
+
+typedef struct mt_tproxy_udp_tuple {
+    int family;
+    uint8_t client_address[16], destination_address[16];
+    uint16_t client_port, destination_port; /* host byte order */
+} mt_tproxy_udp_tuple_t;
 
 typedef struct mt_tproxy_route_deps {
     mt_ipt_t *ipt4, *ipt6;
@@ -55,8 +65,14 @@ mt_err_t mt_tproxy_routes_prepare(mt_tproxy_routes_t *routes);
  * mutate the event-loop-owned learned cache. Caller holds netfilter lock. */
 mt_err_t mt_tproxy_routes_repair(mt_tproxy_routes_t *routes);
 mt_err_t mt_tproxy_routes_reconcile(mt_tproxy_routes_t *routes, const char *interface_name);
-mt_err_t mt_tproxy_routes_learn(mt_tproxy_routes_t *routes, int family,
+mt_err_t mt_tproxy_routes_learn(mt_tproxy_routes_t *routes, int family, uint8_t protocol,
                                 const uint8_t *address, uint16_t port, bool alternate);
+/* A successful pin returns a nonzero token. Close the connected transparent
+ * UDP socket before unpinning. Retirement is lock-free; kernel deletion is
+ * deferred until the next pin, prepare or reconciliation under the owner lock. */
+mt_err_t mt_tproxy_routes_pin_udp(mt_tproxy_routes_t *routes,
+                                  const mt_tproxy_udp_tuple_t *tuple, uint32_t *token);
+void mt_tproxy_routes_unpin_udp(mt_tproxy_routes_t *routes, uint32_t token);
 mt_err_t mt_tproxy_routes_clear(mt_tproxy_routes_t *routes);
 mt_err_t mt_tproxy_routes_snapshot(const mt_tproxy_routes_t *routes,
                                    mt_tproxy_route_entry_t **out, size_t *count);

@@ -158,7 +158,7 @@ fi
 done"""))
     SMOKE.run_package_command(serial, f"{manager} update", timeout=240)
     install = "opkg install" if manager == "opkg" else "apk add"
-    packages = "ip-full kmod-veth ipset uhttpd curl iptables-nft iptables-mod-conntrack-extra iptables-mod-tproxy kmod-ipt-nat kmod-ipt-ipset ip6tables-nft libatomic libyaml libpcre2 libmnl libcurl libubus libubox rpcd-mod-luci"
+    packages = "ip-full kmod-veth ipset uhttpd curl iptables-nft iptables-mod-conntrack-extra iptables-mod-tproxy iptables-mod-socket kmod-ipt-nat kmod-ipt-ipset ip6tables-nft libatomic libyaml libpcre2 libmnl libcurl libubus libubox rpcd-mod-luci"
     SMOKE.run_package_command(serial, f"{install} {packages}", timeout=600)
 
 

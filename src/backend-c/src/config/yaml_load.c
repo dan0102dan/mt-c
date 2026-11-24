@@ -348,7 +348,8 @@ static mt_err_t load_adaptive(yaml_document_t *doc, node_t *node,
     if (!node) { return MT_OK; }
     if (node->type != YAML_MAPPING_NODE) { return MT_ERR_INVAL; }
     static const char *const keys[] = {"enabled", "interface", "ingressInterfaces",
-        "connectTimeoutMs", "tlsTimeoutMs", "idleTimeoutMs", "ttlSeconds", "maxConnections", "maxEntries"};
+        "connectTimeoutMs", "tlsTimeoutMs", "idleTimeoutMs", "ttlSeconds", "maxConnections", "maxEntries",
+        "tcpAllPorts", "quicEnabled"};
     unsigned seen = 0;
     for (yaml_node_pair_t *pair = node->data.mapping.pairs.start; pair < node->data.mapping.pairs.top; pair++) {
         node_t *key = node_of(doc, pair->key), *value = node_of(doc, pair->value);
@@ -363,6 +364,8 @@ static mt_err_t load_adaptive(yaml_document_t *doc, node_t *node,
     if (err != MT_OK) { return err; }
     next.present = true;
     get_bool(map_get(doc, node, "enabled"), &next.enabled, &err);
+    if (err == MT_OK) { get_bool(map_get(doc, node, "tcpAllPorts"), &next.tcp_all_ports, &err); }
+    if (err == MT_OK) { get_bool(map_get(doc, node, "quicEnabled"), &next.quic_enabled, &err); }
     if (err == MT_OK) { get_string(map_get(doc, node, "interface"), &next.interface, &err); }
     if (err == MT_OK) {
         get_string_list(doc, map_get(doc, node, "ingressInterfaces"),
