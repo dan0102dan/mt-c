@@ -105,8 +105,17 @@ async function openAdaptive(page: Page) {
 }
 
 async function choose(page: Page, label: string, id: string) {
-  await page.getByRole("combobox", { name: label, exact: true }).click();
-  await page.getByRole("option", { name: new RegExp(`^${id}\\b`) }).click();
+  // The shared Select uses a native button to open its listbox.
+  const trigger = page.getByRole("button", { name: label, exact: true });
+  await expect(trigger).toHaveAttribute("aria-haspopup", "listbox");
+  await expect(trigger).toHaveAttribute("aria-expanded", "false");
+  await trigger.click();
+  await expect(trigger).toHaveAttribute("aria-expanded", "true");
+  await page
+    .getByRole("listbox", { name: label, exact: true })
+    .getByRole("option", { name: new RegExp(`^${id}\\b`) })
+    .click();
+  await expect(trigger).toHaveAttribute("aria-expanded", "false");
 }
 
 async function enable(page: Page) {
@@ -211,16 +220,20 @@ test("activation failure preserves the draft and never claims success", async ({
   await openAdaptive(page);
   await enable(page);
   await page.locator("#save-settings").click();
-  await expect(page.getByText("TPROXY support is unavailable", { exact: true })).toBeVisible();
+  await expect(
+    page.getByText("Request failed: TPROXY support is unavailable", { exact: true }),
+  ).toBeVisible();
   await expect(page.locator("#adaptive .runtime-status")).toHaveText("Disabled");
   await expect(
     page.getByRole("switch", { name: "Enable adaptive routing", exact: true }),
   ).toBeChecked();
   await expect(page.locator("#save-settings")).toBeEnabled();
   await page.getByRole("button", { name: "Settings need attention", exact: true }).click();
-  await expect(
-    page.getByRole("dialog", { name: "Settings need attention", exact: true }),
-  ).toContainText("The settings could not be applied. Your draft is preserved.");
+  const feedback = page.getByRole("dialog", { name: "Settings need attention", exact: true });
+  await expect(feedback).toContainText(
+    "The settings could not be applied. Your draft is preserved.",
+  );
+  await expect(feedback.getByText("TPROXY support is unavailable", { exact: true })).toBeVisible();
   await page.keyboard.press("Escape");
   state.putFailure = null;
   await page.locator("#save-settings").click();
@@ -346,7 +359,7 @@ for (const width of [1280, 390]) {
     await showPage(page, "Настройки");
     await page.getByRole("tab", { name: "Автомаршрутизация", exact: true }).click();
     await expect(
-      page.getByRole("combobox", { name: "Резервный интерфейс", exact: true }),
+      page.getByRole("button", { name: "Резервный интерфейс", exact: true }),
     ).toContainText("tun-missing");
     await expect(
       page.getByRole("button", { name: "Удалить локальный интерфейс br-old", exact: true }),
