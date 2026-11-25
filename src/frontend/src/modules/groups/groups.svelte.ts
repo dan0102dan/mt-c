@@ -140,12 +140,15 @@ export class GroupsStore {
   data = $derived.by(() => this.tracker.data);
   dataRevision = $state(0);
   valid_rules = $state(true);
-  #validatedRevision = -1;
+  #validatedRevision = $state(-1);
+  validationPending = $derived(this.#validatedRevision !== this.dataRevision);
   valid_priorities = $derived(this.data.every((group) => isValidPriority(group.priority)));
   hasValidationErrors = $derived(
     !this.valid_rules || !this.valid_priorities || this.data.some((group) => !group.name.trim()),
   );
-  canSave = $derived(this.hasUnsavedChanges && !this.hasValidationErrors && !this.saving);
+  canSave = $derived(
+    this.hasUnsavedChanges && !this.validationPending && !this.hasValidationErrors && !this.saving,
+  );
 
   *saveValidationTargets(): IterableIterator<SaveValidationTarget> {
     for (const group of this.data) {
@@ -850,8 +853,6 @@ export class GroupsStore {
     const revision = this.dataRevision;
     const budget = new CooperativeBudget();
     let valid = true;
-    // A pending scan must not allow saving an as-yet unvalidated edit.
-    this.valid_rules = false;
     try {
       for (const group of this.data) {
         for (const rule of group.rules) {
