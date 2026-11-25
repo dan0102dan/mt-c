@@ -1,5 +1,7 @@
 import { expect, test, type Page } from "@playwright/test";
 
+import { mockBackgroundApi } from "./fixtures/background-api";
+
 type Subscription = {
   id: string;
   name: string;
@@ -23,6 +25,7 @@ const makeSubscription = (id: string, url: string, name = `Subscription ${id}`):
 });
 
 async function setupSubscriptions(page: Page, data: Subscription[]) {
+  await mockBackgroundApi(page);
   let subscriptions = structuredClone(data);
   let savedBody: { subscriptions: Subscription[] } | null = null;
   let syncBody: { url?: string } | null = null;
@@ -102,7 +105,7 @@ test.describe("Subscriptions", () => {
   });
 
   test("prevents saving duplicate subscription URLs", async ({ page }) => {
-    await setupSubscriptions(page, [
+    const state = await setupSubscriptions(page, [
       makeSubscription("a1b2c3d4", "https://one.example/list.txt", "One"),
       makeSubscription("b1c2d3e4", "https://two.example/list.txt", "Two"),
     ]);
@@ -112,7 +115,11 @@ test.describe("Subscriptions", () => {
 
     await expect(urlInputs.first()).toHaveClass(/invalid/);
     await expect(page.locator(".url-error")).toHaveCount(0);
-    await expect(page.locator("#save-subscriptions")).toHaveClass(/inactive/);
+    const save = page.locator("#save-subscriptions");
+    await expect(save).toHaveAttribute("data-save-blocked");
+    await save.click();
+    await expect(urlInputs.first()).toBeFocused();
+    expect(state.savedBody).toBeNull();
   });
 
   test("syncs with the edited unsaved subscription URL", async ({ page }) => {

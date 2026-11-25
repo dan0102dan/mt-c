@@ -212,7 +212,9 @@
     controlsClass="group-controls"
     addLabel={t("Add Group")}
     hasUnsavedChanges={store.hasUnsavedChanges}
-    saveBusy={store.saving || (transfer.pending() && transfer.busy())}
+    saveBusy={store.saving ||
+      (store.hasUnsavedChanges && store.validationPending) ||
+      (transfer.pending() && transfer.busy())}
     canSave={transfer.pending() ? transfer.canSave("groups") : store.canSave}
     exportLabel={t("Export Config")}
     importLabel={t("Import Config")}
@@ -255,7 +257,12 @@
     bind:this={listElement}
     class:visible={store.dataLoaded}
     oninput={store.markDataRevision}
-    onchange={store.markDataRevision}
+    onchange={(event) => {
+      // Text edits already validated on input. Their blur-time change occurs
+      // between pointerdown and click on Save.
+      if (!(event.target instanceof HTMLInputElement && event.target.type === "text"))
+        store.markDataRevision();
+    }}
   >
     <VirtualList
       bind:this={groupList}

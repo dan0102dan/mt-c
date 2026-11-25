@@ -236,7 +236,6 @@
           class:invalid={patternInvalid}
           aria-invalid={patternInvalid}
           oninput={patternValidation}
-          onfocusout={patternValidation}
         />
         {#if hasPatternSearchHighlight && patternHighlightParts}
           <div class="search-highlight-overlay" aria-hidden="true">
