@@ -1,6 +1,10 @@
 #!/usr/bin/env python3
 """Guard the tests -> SDK builds -> emulator CI contract from regressions."""
+import os
 from pathlib import Path
+import subprocess
+import tempfile
+import textwrap
 import unittest
 
 ROOT = Path(__file__).resolve().parents[3]
@@ -102,6 +106,59 @@ class TestCIOrchestration(unittest.TestCase):
         self.assertIn("inputs.release_tag", ci)
         self.assertIn("gh release upload", build)
         self.assertIn("github.event.release.tag_name || inputs.release_tag", build)
+
+
+    def test_release_upload_retries_only_http_server_errors(self):
+        step = workflow("build.yml").split(
+            "      - name: Upload package assets to release\n", 1
+        )[1].split("\n      - name:", 1)[0]
+        script = textwrap.dedent(step.split("        run: |\n", 1)[1])
+        for error, failures, package, status, attempts, delays in (
+            ("HTTP 502: Error creating policy", 1, "test package.apk", 0, 2, ["5"]),
+            ("HTTP 503: Service unavailable", 2, "test package.apk", 0, 3, ["5", "10"]),
+            ("HTTP 504: Gateway timeout", 3, "test package.apk", 17, 3, ["5", "10"]),
+            ("HTTP 403: Forbidden", 3, "test package.apk", 17, 1, []),
+            ("HTTP 404: Not Found", 3, "test package.apk", 17, 1, []),
+            ("", 0, "test package.apk", 0, 1, []),
+            ("", 0, "", 0, 0, []),
+        ):
+            with self.subTest(error=error, failures=failures, package=package):
+                with tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    (root / "gh").write_text('''#!/usr/bin/env bash
+printf '%s\\n' "$#" "$@" >> "$TRACE"
+n=$(grep -c '^7$' "$TRACE")
+if [ "$n" -le "$FAILURES" ]; then
+    printf '%s\\n' "$ERROR" >&2
+    exit 17
+fi
+''')
+                    (root / "sleep").write_text('''#!/usr/bin/env bash
+printf '%s\\n' "$1" >> "$DELAYS"
+''')
+                    for command in ("gh", "sleep"):
+                        (root / command).chmod(0o755)
+                    trace, delay_log = root / "trace", root / "delays"
+                    trace.touch()
+                    delay_log.touch()
+                    env = {
+                        **os.environ, "PATH": f'{root}:{os.environ["PATH"]}',
+                        "TRACE": str(trace), "DELAYS": str(delay_log),
+                        "ERROR": error, "FAILURES": str(failures),
+                        "PACKAGE_1": package, "RELEASE_TAG": "0.8.7.3",
+                        "GITHUB_REPOSITORY": "owner/repo",
+                    }
+                    result = subprocess.run(
+                        ["bash", "-e", "-c", script], env=env,
+                        capture_output=True, text=True, timeout=10,
+                    )
+                    self.assertEqual(result.returncode, status, result.stderr)
+                    self.assertEqual(
+                        trace.read_text().splitlines(),
+                        ["7", "release", "upload", "0.8.7.3", package,
+                         "--repo", "owner/repo", "--clobber"] * attempts,
+                    )
+                    self.assertEqual(delay_log.read_text().splitlines(), delays)
 
 
 if __name__ == "__main__":

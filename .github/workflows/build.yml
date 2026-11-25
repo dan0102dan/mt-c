@@ -1052,8 +1052,21 @@ jobs:
         run: |
           for package in "$PACKAGE_1"; do
             if [ -n "$package" ]; then
-              gh release upload "$RELEASE_TAG" "$package" \
-                --repo "$GITHUB_REPOSITORY" \
-                --clobber
+              for attempt in 1 2 3; do
+                if output=$(gh release upload "$RELEASE_TAG" "$package" \
+                  --repo "$GITHUB_REPOSITORY" \
+                  --clobber 2>&1); then
+                  printf '%s\n' "$output"
+                  break
+                else
+                  status=$?
+                fi
+                printf '%s\n' "$output" >&2
+                if [ "$attempt" -eq 3 ] || ! grep -Eq '(^|[[:space:]])HTTP 5[0-9]{2}([:[:space:]]|$)' <<< "$output"; then
+                  exit "$status"
+                fi
+                printf 'Release upload failed (attempt %s/3); retrying.\n' "$attempt" >&2
+                sleep "$((attempt * 5))"
+              done
             fi
           done
