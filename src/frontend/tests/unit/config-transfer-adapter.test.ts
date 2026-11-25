@@ -33,6 +33,27 @@ Deno.test("applied import verification rejects missing or different profiles", (
   }
 });
 
+Deno.test("import saves and confirms groups without blank editor rows", () => {
+  const original = server();
+  const expected = snapshotFromServer(original);
+  expected.groups = [
+    {
+      id: "12345678",
+      name: "Group",
+      interface: "wg0",
+      priority: 300,
+      enable: true,
+      rules: [{ id: "aabbccdd", name: "", rule: " ", type: "namespace", enable: true }],
+    },
+  ];
+  const actual = configForApply(original, expected);
+  assert.deepEqual(actual.groups[0].rules, []);
+  assert.equal(expected.groups[0].rules.length, 1);
+  assert.doesNotThrow(() => assertImportApplied(expected, actual));
+  actual.groups[0].rules = expected.groups[0].rules;
+  assert.throws(() => assertImportApplied(expected, actual), /not confirmed/);
+});
+
 Deno.test("applied import verification ignores caches and equivalent profile defaults", () => {
   const original = server();
   const expected = snapshotFromServer(original);

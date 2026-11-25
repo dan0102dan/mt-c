@@ -31,6 +31,7 @@
     actionsClass?: string;
     onAdd?: () => void;
     onSave: () => void;
+    onSaveBlocked?: () => void;
     saveButtonId?: string;
     saveLabel: string;
     saveDescriptionId?: string;
@@ -61,13 +62,21 @@
     onExport,
     onImport,
     onSave,
+    onSaveBlocked,
     saveButtonId,
     saveLabel,
     saveDescriptionId,
   }: Props = $props();
 
   const saveBlocked = $derived(hasUnsavedChanges && !canSave && !saveBusy);
+  const canShowSaveError = $derived(saveBlocked && Boolean(onSaveBlocked));
   const blockedLabel = $derived(t("Can’t save changes yet"));
+
+  function handleSave() {
+    if (saveBusy) return;
+    if (canSave) onSave();
+    else if (canShowSaveError) onSaveBlocked?.();
+  }
   const motion = getContext<PageControlsMotion | undefined>(PAGE_CONTROLS_MOTION);
   const hasAdd = $derived(Boolean(contextAction || (onAdd && addLabel)));
   const targetIconMode = $derived(contextAction?.icon ?? "add");
@@ -130,7 +139,7 @@
   <div class={`page-controls-actions ${actionsClass}`}>
     <Tooltip value={saveBlocked ? blockedLabel : saveLabel}>
       <Button
-        onclick={onSave}
+        onclick={handleSave}
         id={saveButtonId}
         aria-label={saveLabel}
         aria-description={saveBlocked && !saveDescriptionId ? blockedLabel : undefined}
@@ -138,8 +147,8 @@
         aria-busy={saveBusy}
         data-save-blocked={saveBlocked || undefined}
         class="accent"
-        inactive={!canSave && !saveBusy}
-        disabled={!canSave || saveBusy}
+        inactive={!canSave && !saveBusy && !canShowSaveError}
+        disabled={saveBusy || (!canSave && !canShowSaveError)}
       >
         <Save size={22} />
       </Button>

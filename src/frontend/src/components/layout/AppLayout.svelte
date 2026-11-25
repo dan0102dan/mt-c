@@ -11,7 +11,7 @@
     stageProfileImport,
   } from "../../data/profiles.svelte";
   import ConfigTransferDialog from "../../modules/config-transfer/ConfigTransferDialog.svelte";
-  import type { GroupsStore } from "../../modules/groups/groups.svelte";
+  import { notifyGroupSave, type GroupsStore } from "../../modules/groups/groups.svelte";
   import GroupsView from "../../modules/groups/GroupsView.svelte";
   // import LogsPanel from "../../modules/logs/LogsPanel.svelte";
   import SettingsPanel from "../../modules/settings/SettingsPanel.svelte";
@@ -60,6 +60,7 @@
     type Section,
     type Snapshot,
   } from "../../modules/config-transfer/model";
+  import { countBlankGroupRules } from "../../modules/groups/group-payload";
   import { cleanProfiles, profileError } from "../../modules/settings/profiles-data";
   import type { Subscription } from "../../types";
   import { overlay, toast } from "../../utils/events";
@@ -415,6 +416,7 @@
     unconfirmedSave = undefined;
     subscriptionRuleBaseline = undefined;
     setImportPending(false);
+    if (persisted) notifyGroupSave(countBlankGroupRules(expected.groups));
   }
 
   async function saveConfigImport(section: ImportSaveSection) {
@@ -434,7 +436,6 @@
         }
         if (matches) {
           acceptImportSave(confirmed, unconfirmedSave.expected, unconfirmedSave.editor);
-          toast.success(t("Saved"));
           return;
         }
         if (confirmed.revision !== importBaseline.revision) {
@@ -466,7 +467,6 @@
       const confirmed = await fetchSnapshot();
       assertImportApplied(expected, confirmed.config);
       acceptImportSave(confirmed, expected, editor);
-      toast.success(t("Saved"));
     } catch (error) {
       if (error instanceof HttpError && error.status === 409)
         failure = t(

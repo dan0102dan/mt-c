@@ -21,7 +21,7 @@
 
 <script lang="ts">
   import { Collapsible } from "bits-ui";
-  import { getContext } from "svelte";
+  import { getContext, onMount, tick } from "svelte";
 
   import Button from "../../../components/ui/Button.svelte";
   import DropdownMenu from "../../../components/ui/DropdownMenu.svelte";
@@ -72,6 +72,22 @@
     minute: "2-digit",
     second: "2-digit",
     hour12: false,
+  });
+
+  let ruleList = $state<VirtualList>();
+  onMount(() => {
+    const id = store.data[subscription_index].id;
+    store.ruleScrollers.set(id, async (ruleId) => {
+      await tick();
+      const index =
+        searchActive && visibleRuleIndices
+          ? visibleRuleIndices.findIndex((i) => subscription.rules[i]?.id === ruleId)
+          : subscription.rules.findIndex((rule) => rule.id === ruleId);
+      if (index >= 0) await ruleList?.scrollToIndex(index, "center");
+    });
+    return () => {
+      store.ruleScrollers.delete(id);
+    };
   });
 
   let client_width = $state<number>(Infinity);
@@ -182,6 +198,7 @@
               type="text"
               placeholder={t("subscription name...")}
               class="subscription-name"
+              aria-invalid={!subscription.name.trim()}
               bind:value={subscription.name}
             />
             <div class="subscription-url">
@@ -192,6 +209,7 @@
                   type="url"
                   class="subscription-url-input"
                   class:invalid={Boolean(urlError)}
+                  aria-invalid={Boolean(urlError)}
                   bind:value={subscription.url}
                   placeholder="https://example.com/list.txt"
                   aria-label={t("URL")}
@@ -315,6 +333,7 @@
               <div class="subscription-rules">
                 {#if totalRulesCount > 0}
                   <VirtualList
+                    bind:this={ruleList}
                     recycle
                     count={totalRulesCount}
                     getKey={(index) => subscription.rules[originalRuleIndex(index)].id}

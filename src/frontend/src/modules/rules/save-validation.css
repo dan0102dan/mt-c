@@ -1,0 +1,29 @@
+:is(.group-list, .subscription-list) [data-save-error][aria-invalid="true"]:focus {
+  outline: none;
+  border-bottom-color: transparent;
+  background-image: linear-gradient(var(--red), var(--red));
+  background-repeat: no-repeat;
+  background-origin: border-box;
+  background-position: bottom;
+  background-size: 100% 1px;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  [data-save-error][aria-invalid="true"]:focus {
+    animation: save-error-underline 1.6s ease-in-out both;
+  }
+}
+
+@keyframes save-error-underline {
+  0%,
+  100% {
+    box-shadow:
+      inset 0 -1px 0 transparent,
+      inset 0 -8px 8px -6px transparent;
+  }
+  32% {
+    box-shadow:
+      inset 0 -1px 0 color-mix(in srgb, var(--red) 64%, transparent),
+      inset 0 -8px 8px -6px color-mix(in srgb, var(--red) 32%, transparent);
+  }
+}

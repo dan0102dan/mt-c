@@ -379,67 +379,150 @@ for (const width of [1280, 390]) {
   });
 }
 
-test("an invalid offscreen rule blocks Save until corrected through search", async ({ page }) => {
+test("repeated Add in a tall group keeps the visible header and pattern stationary", async ({
+  page,
+}) => {
+  const data = group(0, 72);
+  await backend(page, [data]);
+  await page.goto("/");
+  const panel = page.locator(".group").first();
+  await panel.locator("[data-collapsible-trigger]").click();
+  const pattern = panel.locator('.rule[data-index="0"] .pattern-input');
+  await expect(pattern).toBeInViewport();
+  const add = panel.locator('[data-value="Add Rule"] button');
+  const offsets = await page.evaluateHandle(() => {
+    const positions = [scrollY];
+    window.addEventListener("scroll", () => positions.push(scrollY));
+    return positions;
+  });
+  for (let i = 0; i < 3; i++) {
+    await add.click();
+    await expect(pattern).toBeFocused();
+    await page.keyboard.insertText(`added${i}.example`);
+  }
+  await add.dblclick();
+  await expect(pattern).toBeFocused();
+  await expect(pattern).toHaveValue("");
+  await expect(panel.locator('.rule[data-index="2"] .pattern-input')).toHaveValue("added2.example");
+  const positions = await offsets.jsonValue();
+  expect(Math.max(...positions) - Math.min(...positions)).toBeLessThanOrEqual(1);
+  await expect(panel.locator('.rule[data-index="5"] .pattern-input')).toHaveValue(
+    data.rules[0].rule,
+  );
+});
+
+test("only yellow Save pulses the group name with a single underline", async ({ page }) => {
+  await backend(page, [group(0)]);
+  await page.goto("/");
+  const name = page.locator(".group-name");
+  const save = page.locator("#save-changes");
+  await name.fill("");
+  await expect(name).toBeFocused();
+  await expect(name).toHaveCSS("animation-name", "none");
+  await expect(name).toHaveCSS("background-image", "none");
+
+  await save.click();
+  await expect(name).toBeFocused();
+  await expect(name).toHaveCSS("animation-name", "save-error-underline");
+  await expect(name).toHaveCSS("background-repeat", "no-repeat");
+  await expect(name).toHaveCSS("border-bottom-color", "rgba(0, 0, 0, 0)");
+  await expect(name).toHaveCSS("background-size", "100% 1px");
+  await expect(name).toHaveCSS("outline-style", "none");
+
+  await name.press("Tab");
+  await name.click();
+  await expect(name).toHaveCSS("animation-name", "none");
+  await expect(name).toHaveCSS("background-image", "none");
+  await save.click();
+  await expect(name).toHaveCSS("animation-name", "save-error-underline");
+  await name.fill("Corrected");
+  await expect(name).toHaveCSS("animation-name", "none");
+  await expect(name).toHaveCSS("background-image", "none");
+  await name.fill("");
+  await expect(name).toHaveCSS("animation-name", "none");
+});
+
+test("yellow Save cycles through invalid rules in collapsed groups outside the search results", async ({
+  page,
+}) => {
   const groups = Array.from({ length: 1000 }, (_, index) => group(index, 1));
-  const invalid = groups.at(-1)!.rules[0];
-  invalid.type = "subnet";
-  invalid.rule = "invalid-offscreen-subnet";
+  const invalidRules = groups.slice(-2).map(({ rules: [rule] }) => {
+    rule.type = "subnet";
+    rule.rule = "invalid-offscreen-subnet";
+    return rule;
+  });
   await backend(page, groups);
   await page.goto("/");
   await page.locator("input.group-name").first().fill("Dirty draft");
-  await expect(page.locator("#save-changes")).toBeDisabled();
   const search = page.locator(".group-controls-search .search-input");
-  await search.fill("invalid-offscreen-subnet");
-  const panel = page.locator(".group").first();
-  if (!(await panel.locator(".rule").first().isVisible()))
-    await panel.locator("[data-collapsible-trigger]").click();
-  const invalidInput = page.locator(`.rule[data-uuid="${invalid.id}"] .pattern input`);
-  await expect(invalidInput).toHaveAttribute("aria-invalid", "true");
-  await expect(invalidInput).toHaveClass(/invalid/);
-  await invalidInput.fill("192.0.2.0/24");
-  await expect(page.locator("#save-changes")).toBeEnabled();
+  await search.fill("Dirty draft");
+  await expect(page.locator(".group")).toHaveCount(1);
+  const save = page.locator("#save-changes");
+  await expect(save).toHaveAttribute("data-save-blocked");
+  await expect(save).toHaveAccessibleDescription("Can’t save changes yet");
+  let writes = 0;
+  page.on("request", (request) => {
+    if (request.method() === "PUT") writes++;
+  });
+
+  const [firstError, secondError] = invalidRules.map(({ id }) =>
+    page.locator(`.rule[data-uuid="${id}"] .pattern-input`),
+  );
+  await save.press("Enter");
+  await expect(firstError).toBeFocused();
+  await expect(firstError).toBeInViewport();
+  await expect(firstError).toHaveAttribute("aria-invalid", "true");
+  await expect(firstError).toHaveCSS("animation-name", "save-error-underline");
+  await expect(search).toHaveValue("Dirty draft");
+
+  await save.click();
+  await expect(secondError).toBeFocused();
+  await save.click();
+  await expect(firstError).toBeFocused();
+  await firstError.fill("192.0.2.0/24");
+  await save.click();
+  await expect(secondError).toBeFocused();
+  await secondError.fill("198.51.100.0/24");
+  await expect(save).not.toHaveAttribute("data-save-blocked");
+  await expect(save).toBeEnabled();
+  expect(writes).toBe(0);
 });
 
-test("subscription validity includes unmounted rules and can be corrected through search", async ({
+test("yellow Save focuses an invalid rule at the end of a large subscription on mobile", async ({
   page,
 }) => {
-  const subscription: Subscription = {
-    id: "aabbccdd",
-    name: "Validation list",
-    url: "https://example.test/list.txt",
-    interface: "blackhole",
-    enable: true,
-    priority: 100,
-    interval: 86400,
-    lastUpdate: 1,
-    rules: Array.from({ length: 100000 }, (_, index) => ({
-      id: id(index + 1),
-      rule: `item${index}.example.test`,
-      type: "namespace",
-      enable: true,
-    })),
-  };
-  subscription.rules.at(-1)!.type = "subnet";
-  subscription.rules.at(-1)!.rule = "invalid-offscreen-subnet";
-  await backend(page, [], [subscription]);
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  const sub = subscription(0, 100000);
+  sub.rules.at(-1)!.type = "subnet";
+  sub.rules.at(-1)!.rule = "invalid-offscreen-subnet";
+  await backend(page, [], [sub]);
   await page.goto("/");
   await openTab(page, "Subscriptions");
-  await page.locator(".subscription-url-input").fill("https://example.test/edited.txt");
-  await expect(page.locator("#save-subscriptions")).toBeDisabled();
-  await page
-    .locator(".subscription-controls-search .search-input")
-    .fill("invalid-offscreen-subnet");
-  const panel = page.locator(".subscription-panel").first();
-  if (!(await panel.locator(".subscription-rule").first().isVisible()))
-    await panel.locator("[data-collapsible-trigger]").click();
-  // Search is debounced and indexes the entire collection. Wait for the
-  // requested logical row before acting, rather than an arbitrary mounted row.
-  const invalidRow = panel.locator('.subscription-rule[data-index="99999"]');
+  const url = page.locator(".subscription-url-input");
+  await url.fill("invalid URL");
+  const save = page.locator("#save-subscriptions");
+  await expect(save).toHaveAttribute("data-save-blocked");
+  await save.click();
+  await expect(url).toBeFocused();
+  await expect(url).toHaveAttribute("aria-invalid", "true");
+  await url.fill("https://example.test/edited.txt");
+
+  const invalidRow = page.locator('.subscription-rule[data-index="99999"]');
+  const type = invalidRow.locator("[data-select-trigger]");
+  await expect(invalidRow).toHaveCount(0);
+  await save.click();
+  await expect(type).toBeFocused();
+  await expect(type).toBeInViewport();
+  await expect(type).toHaveAttribute("aria-invalid", "true");
+  await expect(type).toHaveCSS("background-size", "100% 1px");
+  await expect(type).toHaveCSS("animation-name", "none");
   await expect(invalidRow.locator(".pattern-value")).toHaveText("invalid-offscreen-subnet");
-  await expect(panel.locator(".subscription-rule")).toHaveCount(1);
-  await invalidRow.locator("[data-select-trigger]").click();
+  await expect.poll(() => page.locator(".subscription-rule").count()).toBeLessThan(250);
+  await type.click();
   await page.getByRole("option", { name: "Regex", exact: true }).click();
-  await expect(page.locator("#save-subscriptions")).toBeEnabled();
+  await expect(save).not.toHaveAttribute("data-save-blocked");
+  await expect(save).toBeEnabled();
 });
 
 test("resizing a scrolled list remeasures stacked rows without overlap", async ({ page }) => {

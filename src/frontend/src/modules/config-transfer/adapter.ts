@@ -8,6 +8,7 @@ import {
   type Subscription,
 } from "../../types";
 import { randomId } from "../../utils/defaults";
+import { groupForSave } from "../groups/group-payload";
 import { cleanProfiles } from "../settings/profiles-data";
 import {
   comparableItem,
@@ -406,7 +407,7 @@ export function configForApply(server: ServerConfig, target: Snapshot): ServerCo
   return {
     configVersion: server.configVersion,
     app: copy(applyWebSettings(server.app, target.settings)),
-    groups: copy(target.groups),
+    groups: copy(target.groups.map(groupForSave)),
     profiles: copy(target.profiles),
     subscriptions: target.subscriptions.map((s) => {
       const old = previous.get(s.id);
@@ -447,6 +448,7 @@ export function assertImportApplied(expected: Snapshot, actual: ServerConfig): v
       ),
     };
   }
-  if (fingerprint(comparable(expected)) !== fingerprint(comparable(snapshotFromServer(actual))))
+  const submitted = { ...expected, groups: expected.groups.map(groupForSave) };
+  if (fingerprint(comparable(submitted)) !== fingerprint(comparable(snapshotFromServer(actual))))
     throw new Error("Imported configuration was not confirmed by the server");
 }

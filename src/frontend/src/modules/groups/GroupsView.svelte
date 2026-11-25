@@ -23,6 +23,11 @@
   import { copyRulePatternsToClipboard } from "../../utils/copy-rule-patterns";
   import { toast } from "../../utils/events";
   import { CONFIG_TRANSFER_CONTEXT, type ConfigTransferControls } from "../config-transfer/context";
+  import {
+    focusSaveValidationField,
+    nextSaveValidationTarget,
+    type SaveValidationTarget,
+  } from "../rules/save-validation";
 
   type Props = {
     active?: boolean;
@@ -67,6 +72,46 @@
     if (index >= 0) await groupList?.scrollToIndex(index, "nearest");
     await tick();
   };
+
+  let listElement: HTMLDivElement;
+  let previousSaveError: SaveValidationTarget | undefined;
+  let revealingSaveError = false;
+
+  async function showNextSaveError() {
+    if (!active || revealingSaveError) return;
+    const target = nextSaveValidationTarget(store.saveValidationTargets(), previousSaveError);
+    if (!target) return;
+
+    revealingSaveError = true;
+    try {
+      if (store.searchActive) {
+        if (target.field === "rule") store.forceVisibleRule(target.panelId, target.ruleId);
+        else store.forceVisibleGroup(target.panelId);
+        store.performSearch();
+        // An index rebuild can outlast the jump to the virtual row.
+        if (store.searchPending) store.searchValue = "";
+      }
+      if (target.field === "rule") store.open_state[target.panelId] = true;
+      await store.ensureGroupVisible?.(target.panelId);
+      if (!active) return;
+      if (target.field === "rule") {
+        await store.ruleScrollers.get(target.panelId)?.(target.ruleId);
+      }
+      if (!active) return;
+
+      const panel = listElement.querySelector(`.group[data-uuid="${CSS.escape(target.panelId)}"]`);
+      const selector =
+        target.field === "rule"
+          ? `.rule[data-uuid="${CSS.escape(target.ruleId)}"] .pattern-input`
+          : target.field === "priority"
+            ? ".priority-trigger"
+            : ".group-name";
+      focusSaveValidationField(panel?.querySelector<HTMLElement>(selector));
+      previousSaveError = target;
+    } finally {
+      revealingSaveError = false;
+    }
+  }
 
   let selectedIds = $state<string[]>([]);
   let selectedItems = $derived(store.data.filter((item) => selectedIds.includes(item.id)));
@@ -174,7 +219,11 @@
     onAdd={() => store.addGroup()}
     onExport={() => void transfer.exportConfig()}
     onImport={(event) => void transfer.importConfig(event)}
-    onSave={() => store.saveChanges()}
+    onSave={() => {
+      previousSaveError = undefined;
+      return store.saveChanges();
+    }}
+    onSaveBlocked={store.hasValidationErrors ? showNextSaveError : undefined}
     saveButtonId="save-changes"
     saveLabel={t("Save Changes")}
   >
@@ -203,6 +252,7 @@
 
   <div
     class="group-list"
+    bind:this={listElement}
     class:visible={store.dataLoaded}
     oninput={store.markDataRevision}
     onchange={store.markDataRevision}

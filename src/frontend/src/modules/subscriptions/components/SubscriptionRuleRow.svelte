@@ -8,7 +8,6 @@
   import { SUBSCRIPTIONS_STORE_CONTEXT, type SubscriptionsStore } from "../subscriptions.svelte";
 
   import { RULE_TYPES, type SubscriptionRule } from "../../../types";
-  import { VALIDATOP_MAP } from "../../../utils/rule-validators";
   import { subscriptionRulePattern } from "../../../utils/subscription-pattern";
 
   type Props = {
@@ -26,20 +25,7 @@
 
   const pattern = $derived(subscriptionRulePattern(rule.rule, rule.type));
 
-  function isPatternInvalid() {
-    // Imported wildcard source is validated by the backend; the old UI
-    // validator deliberately does not allow every supported imported glob.
-    const typedWildcard =
-      rule.type === "wildcard" &&
-      (rule.rule.startsWith("DOMAIN-KEYWORD,") || rule.rule.startsWith("DOMAIN-WILDCARD,"));
-    return (
-      pattern.length === 0 ||
-      (!typedWildcard &&
-        !store.isSavedRegexRule(store.data[subscription_index].id, rule) &&
-        VALIDATOP_MAP[rule.type] &&
-        !VALIDATOP_MAP[rule.type](pattern))
-    );
-  }
+  const patternInvalid = $derived(!store.isRuleValid(store.data[subscription_index].id, rule));
 
   async function handleTypeChange(value: string) {
     rule.type = value;
@@ -52,6 +38,7 @@
 <div
   class="subscription-rule"
   data-index={rule_index}
+  data-uuid={rule.id}
   data-subscription-index={subscription_index}
   {...rest}
 >
@@ -59,13 +46,18 @@
     <div class="subscription-rule-number">{rule_index + 1}</div>
     <div class="subscription-rule-pattern">
       <div class="label">{t("Pattern")}</div>
-      <div class="subscription-rule-value pattern-value" class:invalid={isPatternInvalid()}>
+      <div class="subscription-rule-value pattern-value" class:invalid={patternInvalid}>
         {pattern}
       </div>
     </div>
     <div class="subscription-rule-type">
       <div class="label">{t("Type")}</div>
-      <Select options={RULE_TYPES} bind:selected={rule.type} onValueChange={handleTypeChange} />
+      <Select
+        options={RULE_TYPES}
+        bind:selected={rule.type}
+        onValueChange={handleTypeChange}
+        invalid={patternInvalid}
+      />
     </div>
     <div class="subscription-rule-actions">
       <Tooltip value={t(rule.enable ? "Disable Rule" : "Enable Rule")}>

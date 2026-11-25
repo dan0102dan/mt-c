@@ -243,12 +243,12 @@ describe("GroupsStore mutations and validation", () => {
     assert.strictEqual(store.dataRevision, 1);
   });
 
-  it("addRuleToGroup prepends and marks rules invalid for empty fields", async () => {
+  it("addRuleToGroup prepends a blank placeholder without blocking Save", async () => {
     const store = createStore([makeGroup("g1", [makeRule("r1")])]);
 
     await store.addRuleToGroup(0, makeRule("r2", "", ""), false);
     assert.deepStrictEqual(ruleIds(store, 0), ["r2", "r1"]);
-    assert.strictEqual(store.valid_rules, false);
+    assert.strictEqual(store.valid_rules, true);
     assert.strictEqual(store.dataRevision, 1);
 
     await store.addRuleToGroup(99, makeRule("r3"), false);

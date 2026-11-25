@@ -102,8 +102,39 @@ test.describe("Groups Management", () => {
     expect(saveRequestReceived).toBe(true);
 
     // Wait for toast or success indication
-    await expect(page.getByText("Saved")).toBeVisible();
+    await expect(page.getByText("Saved", { exact: true })).toBeVisible();
     expect(saveRequestReceived).toBe(true);
+  });
+
+  test("Save skips blank rows and directs the user to a named rule missing its pattern", async ({
+    page,
+  }) => {
+    await groupsPage.createGroup();
+    await groupsPage.setGroupName(0, "Mixed rules");
+    await groupsPage.setRuleName(0, 0, "Keep me");
+    await groupsPage.addRuleToGroup(0);
+    await groupsPage.setRulePattern(0, 0, "   ");
+    const blank = (await groupsPage.getRule(0, 0)).locator(".pattern input");
+    const missing = (await groupsPage.getRule(0, 1)).locator(".pattern input");
+    await expect(blank).toHaveAttribute("aria-invalid", "false");
+    await expect(groupsPage.saveButton).toHaveAttribute("data-save-blocked");
+    await groupsPage.saveButton.click();
+    await expect(missing).toBeFocused();
+    await missing.fill("example.org");
+    await expect(groupsPage.saveButton).not.toHaveAttribute("data-save-blocked");
+
+    await page.route("**/groups?save=true", (route) =>
+      route.fulfill({ json: route.request().postDataJSON() }),
+    );
+    const request = page.waitForRequest("**/groups?save=true");
+    await groupsPage.save();
+    const { groups } = (await request).postDataJSON();
+    expect(groups[0].rules).toEqual([
+      expect.objectContaining({ name: "Keep me", rule: "example.org" }),
+    ]);
+    await expect(page.getByText("Saved. Empty rules removed: 1", { exact: true })).toBeVisible();
+    await expect(page.locator(".rule")).toHaveCount(1);
+    await expect(groupsPage.saveButton).toBeDisabled();
   });
 
   test("should enable save after switching rule type to IPv6 for IPv6 pattern", async ({
@@ -115,7 +146,7 @@ test.describe("Groups Management", () => {
     await groupsPage.setRuleName(0, 0, "IPv6 Rule");
     await groupsPage.setRulePattern(0, 0, "2001:db8::1");
 
-    await expect(groupsPage.saveButton).toHaveClass(/inactive/);
+    await expect(groupsPage.saveButton).toHaveAttribute("data-save-blocked");
 
     await groupsPage.setRuleType(0, 0, "IPv6 subnet");
 
