@@ -99,7 +99,7 @@ for (const width of [390, 1280]) {
       });
       await page.goto("/");
     });
-    test("new groups and rules focus the newly added item", async ({ page }) => {
+    test("Add focuses the new group name or rule pattern", async ({ page }) => {
       const groups = new GroupsPage(page);
       await groups.createGroup();
       const group = page.locator(".group-wrapper").first();
@@ -107,18 +107,18 @@ for (const width of [390, 1280]) {
       await page.keyboard.insertText("Required fields");
       await group.locator(".pattern input").fill("initial.example");
       await group.locator('[data-value="Collapse Group"] button').click();
-      for (const name of ["First new rule", "Second new rule"]) {
+      for (const pattern of ["first.example", "second.example"]) {
         if (width < 700) {
           await group.locator(".group-actions [data-dropdown-menu-trigger]").click();
           await page.getByRole("button", { name: "Add Rule", exact: true }).click();
         } else {
           await groups.addRuleToGroup(0);
         }
-        const input = group.locator('.rule[data-index="0"] .name input');
+        const input = group.locator('.rule[data-index="0"] .pattern input');
         await expect(input).toBeFocused();
         await expect(input).toBeInViewport();
-        await page.keyboard.insertText(name);
-        await expect(input).toHaveValue(name);
+        await page.keyboard.insertText(pattern);
+        await expect(input).toHaveValue(pattern);
       }
       await expect(group.locator('.rule[data-index="2"] .pattern input')).toHaveValue(
         "initial.example",

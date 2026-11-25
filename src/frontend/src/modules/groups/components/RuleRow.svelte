@@ -16,7 +16,6 @@
   import { Delete, Grip, TriangleAlert } from "../../../components/ui/icons";
   import { dnd_state, draggable, droppable } from "../../../lib/dnd";
   import { RULE_TYPES, type Rule } from "../../../types";
-  import { VALIDATOP_MAP } from "../../../utils/rule-validators";
 
   type Props = {
     rule: Rule;
@@ -45,11 +44,7 @@
     throw new Error("GroupsStore context is missing");
   }
 
-  const patternInvalid = $derived(
-    !rule.rule ||
-      (!store.isSavedRegexRule(group_id, rule) &&
-        Boolean(VALIDATOP_MAP[rule.type] && !VALIDATOP_MAP[rule.type](rule.rule))),
-  );
+  const patternInvalid = $derived(!store.isRuleValid(group_id, rule));
 
   function patternValidation() {
     store.markDataRevision();

@@ -14,6 +14,7 @@ import {
 } from "../../utils/priority";
 import { VALIDATOP_MAP } from "../../utils/rule-validators";
 import { subscriptionRulePattern } from "../../utils/subscription-pattern";
+import type { SaveValidationTarget } from "../rules/save-validation";
 import { buildSubscriptionUpdate, snapshotRules } from "./subscription-payload";
 
 export const SUBSCRIPTIONS_STORE_CONTEXT = Symbol("subscriptions-store");
@@ -76,6 +77,21 @@ type SubscriptionsStoreOptions = {
   isActive?: () => boolean;
 };
 
+function isSubscriptionRuleValid(rule: SubscriptionRule, savedRules?: readonly SubscriptionRule[]) {
+  const pattern = subscriptionRulePattern(rule.rule, rule.type);
+  // Imported wildcard syntax is validated by the backend.
+  const typedWildcard =
+    rule.type === "wildcard" &&
+    (rule.rule.startsWith("DOMAIN-KEYWORD,") || rule.rule.startsWith("DOMAIN-WILDCARD,"));
+  return (
+    pattern.length > 0 &&
+    (typedWildcard ||
+      isAcceptedRegex(rule, savedRules) ||
+      !VALIDATOP_MAP[rule.type] ||
+      VALIDATOP_MAP[rule.type](pattern))
+  );
+}
+
 export class SubscriptionsStore {
   onRenderComplete?: () => void;
   private isActive: () => boolean;
@@ -123,16 +139,30 @@ export class SubscriptionsStore {
     return errors;
   });
   valid_subscription_urls = $derived(this.subscriptionUrlErrors.size === 0);
-  canSave = $derived(
-    this.hasUnsavedChanges &&
-      this.data.every((subscription) => Boolean(subscription.name.trim())) &&
-      this.valid_rules &&
-      this.valid_priorities &&
-      this.valid_subscription_urls &&
-      !this.saving,
+  hasValidationErrors = $derived(
+    !this.valid_rules ||
+      !this.valid_priorities ||
+      !this.valid_subscription_urls ||
+      this.data.some((subscription) => !subscription.name.trim()),
   );
+  canSave = $derived(this.hasUnsavedChanges && !this.hasValidationErrors && !this.saving);
+
+  *saveValidationTargets(): IterableIterator<SaveValidationTarget> {
+    for (const subscription of this.data) {
+      const panelId = subscription.id;
+      if (!subscription.name.trim()) yield { panelId, field: "name" };
+      if (this.subscriptionUrlErrors.has(panelId)) yield { panelId, field: "url" };
+      if (!isValidPriority(subscription.priority)) yield { panelId, field: "priority" };
+      if (!this.valid_rules) {
+        for (const rule of subscription.rules) {
+          if (!this.isRuleValid(panelId, rule)) yield { panelId, field: "rule", ruleId: rule.id };
+        }
+      }
+    }
+  }
 
   open_state = $state<Record<string, boolean>>({});
+  ruleScrollers = new Map<string, (ruleId: string) => Promise<void>>();
 
   searchValue = $state("");
   visibleSubscriptions = $state<VisibleSubscription[]>([]);
@@ -329,18 +359,7 @@ export class SubscriptionsStore {
     for (const sub of next) {
       for (let index = 0; index < sub.rules.length; index++) {
         const rule = sub.rules[index];
-        const pattern = subscriptionRulePattern(rule.rule, rule.type);
-        const typedWildcard =
-          rule.type === "wildcard" &&
-          (rule.rule.startsWith("DOMAIN-KEYWORD,") || rule.rule.startsWith("DOMAIN-WILDCARD,"));
-        if (
-          !pattern.length ||
-          (!typedWildcard &&
-            !isAcceptedRegex(rule, savedRules.get(sub.id)) &&
-            VALIDATOP_MAP[rule.type] &&
-            !VALIDATOP_MAP[rule.type](pattern))
-        )
-          validRules = false;
+        if (!isSubscriptionRuleValid(rule, savedRules.get(sub.id))) validRules = false;
         if (index % 256 === 0 && performance.now() >= deadline) await pause();
       }
     }
@@ -552,25 +571,13 @@ export class SubscriptionsStore {
     }
   }
 
-  isSavedRegexRule = (subscriptionId: string, rule: SubscriptionRule) =>
-    isAcceptedRegex(rule, this.#savedRules.get(subscriptionId));
+  isRuleValid = (subscriptionId: string, rule: SubscriptionRule) =>
+    isSubscriptionRuleValid(rule, this.#savedRules.get(subscriptionId));
 
   checkRulesValidityState = () => {
     this.#validatedRevision = this.dataRevision;
     this.valid_rules = this.data.every((subscription) =>
-      subscription.rules.every((rule) => {
-        const pattern = subscriptionRulePattern(rule.rule, rule.type);
-        const typedWildcard =
-          rule.type === "wildcard" &&
-          (rule.rule.startsWith("DOMAIN-KEYWORD,") || rule.rule.startsWith("DOMAIN-WILDCARD,"));
-        return (
-          pattern.length > 0 &&
-          (typedWildcard ||
-            this.isSavedRegexRule(subscription.id, rule) ||
-            !VALIDATOP_MAP[rule.type] ||
-            VALIDATOP_MAP[rule.type](pattern))
-        );
-      }),
+      subscription.rules.every((rule) => this.isRuleValid(subscription.id, rule)),
     );
   };
 

@@ -318,6 +318,7 @@
                 type="text"
                 placeholder={t("group name...")}
                 class="group-name"
+                aria-invalid={!group.name.trim()}
                 class:search-text-hidden={hasGroupNameSearchHighlight}
                 class:has-warning={hasDuplicateConflicts}
                 bind:value={group.name}

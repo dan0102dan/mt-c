@@ -13,7 +13,13 @@ import { fetcher } from "../../utils/fetcher";
 import { DEFAULT_GROUP_PRIORITY, isValidPriority, withPriorityDefault } from "../../utils/priority";
 import { type SortDirection, type SortField } from "../../utils/rule-sorter";
 import { VALIDATOP_MAP } from "../../utils/rule-validators";
-import { buildGroupUpdate, snapshotGroupRules } from "./group-payload";
+import type { SaveValidationTarget } from "../rules/save-validation";
+import {
+  buildGroupUpdate,
+  countBlankGroupRules,
+  isBlankGroupRule,
+  snapshotGroupRules,
+} from "./group-payload";
 import {
   cloneGroupsWithNewIds as cloneGroupsWithNewIdsData,
   cloneGroupWithNewIds as cloneGroupWithNewIdsData,
@@ -26,11 +32,26 @@ import { captureRuleMove } from "./rule-motion";
 
 export const GROUPS_STORE_CONTEXT = Symbol("groups-store");
 
+export function notifyGroupSave(removed: number, persisted = true) {
+  const summary = t("Empty rules removed: {count}").replace("{count}", String(removed));
+  if (persisted) toast.success(removed ? `${t("Saved")}. ${summary}` : t("Saved"));
+  else if (removed) toast.info(summary);
+}
+
 const SEARCH_DEBOUNCE_MS = 150 as const;
 const IMPORT_GROUPS_CLONE_CHUNK_SIZE = 20 as const;
 const IMPORT_GROUPS_INSERT_CHUNK_SIZE = 25 as const;
 export const RULE_SEARCH_MATCH_NAME = 1 << 0;
 export const RULE_SEARCH_MATCH_PATTERN = 1 << 1;
+
+function isGroupRuleValid(rule: Rule, savedRules?: readonly Rule[]) {
+  if (!rule.rule.trim()) return isBlankGroupRule(rule);
+  return (
+    isAcceptedRegex(rule, savedRules) ||
+    !VALIDATOP_MAP[rule.type] ||
+    VALIDATOP_MAP[rule.type](rule.rule)
+  );
+}
 
 const clamp = (value: number, min: number, max: number) => Math.max(min, Math.min(max, value));
 
@@ -121,13 +142,23 @@ export class GroupsStore {
   valid_rules = $state(true);
   #validatedRevision = -1;
   valid_priorities = $derived(this.data.every((group) => isValidPriority(group.priority)));
-  canSave = $derived(
-    this.hasUnsavedChanges &&
-      this.data.every((group) => Boolean(group.name.trim())) &&
-      this.valid_rules &&
-      this.valid_priorities &&
-      !this.saving,
+  hasValidationErrors = $derived(
+    !this.valid_rules || !this.valid_priorities || this.data.some((group) => !group.name.trim()),
   );
+  canSave = $derived(this.hasUnsavedChanges && !this.hasValidationErrors && !this.saving);
+
+  *saveValidationTargets(): IterableIterator<SaveValidationTarget> {
+    for (const group of this.data) {
+      if (!group.name.trim()) yield { panelId: group.id, field: "name" };
+      if (!isValidPriority(group.priority)) yield { panelId: group.id, field: "priority" };
+      if (!this.valid_rules) {
+        for (const rule of group.rules) {
+          if (!this.isRuleValid(group.id, rule))
+            yield { panelId: group.id, field: "rule", ruleId: rule.id };
+        }
+      }
+    }
+  }
 
   open_state = $state<Record<string, boolean>>({});
   panelState = $state<
@@ -385,13 +416,7 @@ export class GroupsStore {
     for (const group of next) {
       for (let index = 0; index < group.rules.length; index++) {
         const rule = group.rules[index];
-        if (
-          !rule.rule ||
-          (!isAcceptedRegex(rule, savedRules.get(group.id)) &&
-            VALIDATOP_MAP[rule.type] &&
-            !VALIDATOP_MAP[rule.type](rule.rule))
-        )
-          validRules = false;
+        if (!isGroupRuleValid(rule, savedRules.get(group.id))) validRules = false;
         if (index % 256 === 0 && performance.now() >= deadline) {
           await this.#yieldToMain();
           deadline = performance.now() + 4;
@@ -772,8 +797,10 @@ export class GroupsStore {
     this.#loadGeneration++;
     this.saving = true;
     overlay.show(t("saving changes..."));
+    let removed = 0;
     try {
       const rawData = $state.snapshot(this.data);
+      removed = countBlankGroupRules(rawData);
       const groups = rawData.map((group) =>
         buildGroupUpdate(group, this.#savedRules.get(group.id)),
       );
@@ -787,7 +814,7 @@ export class GroupsStore {
       this.tracker.reset(savedGroups);
       this.persistencePending = false;
       this.markDataRevision();
-      toast.success(t("Saved"));
+      notifyGroupSave(removed);
     } catch (error) {
       const applied = appliedGroups(error);
       if (applied) {
@@ -798,6 +825,7 @@ export class GroupsStore {
         this.tracker.reset(applied);
         this.persistencePending = true;
         this.markDataRevision();
+        notifyGroupSave(removed, false);
       }
       // Other failures retain both the local edits and the old baseline.
     } finally {
@@ -806,20 +834,14 @@ export class GroupsStore {
     }
   }
 
-  isSavedRegexRule = (groupId: string, rule: Rule) =>
-    isAcceptedRegex(rule, this.#savedRules.get(groupId));
+  isRuleValid = (groupId: string, rule: Rule) =>
+    isGroupRuleValid(rule, this.#savedRules.get(groupId));
 
   checkRulesValidityState = () => {
     this.#validationGeneration++;
     this.#validatedRevision = this.dataRevision;
     this.valid_rules = this.data.every((group) =>
-      group.rules.every(
-        (rule) =>
-          Boolean(rule.rule) &&
-          (this.isSavedRegexRule(group.id, rule) ||
-            !VALIDATOP_MAP[rule.type] ||
-            VALIDATOP_MAP[rule.type](rule.rule)),
-      ),
+      group.rules.every((rule) => this.isRuleValid(group.id, rule)),
     );
   };
 
@@ -833,12 +855,7 @@ export class GroupsStore {
     try {
       for (const group of this.data) {
         for (const rule of group.rules) {
-          if (
-            !rule.rule ||
-            (!this.isSavedRegexRule(group.id, rule) &&
-              VALIDATOP_MAP[rule.type] &&
-              !VALIDATOP_MAP[rule.type](rule.rule))
-          ) {
+          if (!this.isRuleValid(group.id, rule)) {
             valid = false;
             break;
           }
@@ -1240,7 +1257,7 @@ export class GroupsStore {
     if (!group) return;
     group.rules.unshift(rule);
     this.markDataRevision();
-    if (!rule.rule || !rule.name) {
+    if (!this.isRuleValid(group.id, rule)) {
       this.valid_rules = false;
     }
     if (this.searchActive) {
@@ -1249,15 +1266,16 @@ export class GroupsStore {
     if (!focus) return;
     this.open_state[group.id] = true;
     await tick();
-    await this.ensureGroupVisible?.(group.id);
-    await this.ruleScrollers.get(group.id)?.(rule.id);
-    await tick();
-    const el = document.querySelector(
-      `.rule[data-group-uuid="${group.id}"][data-uuid="${rule.id}"]`,
-    );
-    if (el) {
-      // Mounting a distant virtual row can take several frames. An explicit
-      // focus move or a newer Add action wins over this deferred autofocus.
+    const selector = `.rule[data-group-uuid="${group.id}"][data-uuid="${rule.id}"] input.pattern-input`;
+    let input = document.querySelector<HTMLInputElement>(selector);
+    if (!input) {
+      if (!this.ruleScrollers.has(group.id)) await this.ensureGroupVisible?.(group.id);
+      await this.ruleScrollers.get(group.id)?.(rule.id);
+      await tick();
+      input = document.querySelector<HTMLInputElement>(selector);
+    }
+    if (input) {
+      // A newer Add or an explicit focus move wins over deferred autofocus.
       if (
         focusGeneration === this.#focusGeneration &&
         (document.activeElement === origin ||
@@ -1265,9 +1283,9 @@ export class GroupsStore {
           document.activeElement === document.body ||
           !document.activeElement?.isConnected)
       ) {
-        el.querySelector<HTMLInputElement>("div.name input")?.focus();
+        input.focus({ preventScroll: true });
+        input.scrollIntoView({ block: "nearest", inline: "nearest" });
       }
-      el.querySelector<HTMLInputElement>("div.pattern input")?.classList.add("invalid");
       this.checkRulesValidityState();
     }
   }

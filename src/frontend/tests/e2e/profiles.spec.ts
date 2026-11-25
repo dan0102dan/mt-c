@@ -733,11 +733,16 @@ for (const language of ["en", "ru"]) {
           await expect(button).not.toHaveAttribute("data-save-blocked");
           await expect(button).not.toHaveClass(/inactive/);
         } else {
-          await expect(button).toBeDisabled();
+          if (section.id === "save-settings") {
+            await expect(button).toBeDisabled();
+            await expect(button).toHaveClass(/inactive/);
+          } else {
+            await expect(button).toBeEnabled();
+            await expect(button).toHaveAccessibleDescription(blockedLabel);
+          }
           await expect(button).toHaveAttribute("data-save-blocked");
           await expect(button).toHaveCSS("animation-play-state", "running", { pseudo: "before" });
           await expect(button).toHaveCSS("opacity", "1", { pseudo: "before" });
-          await expect(button).toHaveClass(/inactive/);
         }
       }
       await tooltip.hover();

@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { getContext, onDestroy, onMount, setContext } from "svelte";
+  import { getContext, onDestroy, onMount, setContext, tick } from "svelte";
 
   import BulkActions from "../../components/bulk/BulkActions.svelte";
   import SelectionFrame from "../../components/bulk/SelectionFrame.svelte";
@@ -21,6 +21,11 @@
   import { droppable } from "../../lib/dnd";
   import { copyRulePatternsToClipboard } from "../../utils/copy-rule-patterns";
   import { CONFIG_TRANSFER_CONTEXT, type ConfigTransferControls } from "../config-transfer/context";
+  import {
+    focusSaveValidationField,
+    nextSaveValidationTarget,
+    type SaveValidationTarget,
+  } from "../rules/save-validation";
 
   type Props = {
     active?: boolean;
@@ -80,6 +85,51 @@
       (store.open_state[sub.id] && rules ? 32 + rules * ruleEstimate : 0)
     );
   }
+  let listElement: HTMLDivElement;
+  let previousSaveError: SaveValidationTarget | undefined;
+  let revealingSaveError = false;
+
+  async function showNextSaveError() {
+    if (!active || revealingSaveError) return;
+    const target = nextSaveValidationTarget(store.saveValidationTargets(), previousSaveError);
+    if (!target) return;
+
+    revealingSaveError = true;
+    try {
+      if (store.searchActive) {
+        if (target.field === "rule") store.forceVisibleRule(target.panelId, target.ruleId);
+        else store.forceVisibleGroup(target.panelId);
+        store.performSearch();
+      }
+      if (target.field === "rule") store.open_state[target.panelId] = true;
+      await tick();
+      const index = store.data.findIndex((subscription) => subscription.id === target.panelId);
+      const position = visibleIndices?.indexOf(index) ?? index;
+      await list?.scrollToIndex(position, "nearest");
+      if (!active) return;
+      if (target.field === "rule") {
+        await store.ruleScrollers.get(target.panelId)?.(target.ruleId);
+      }
+      if (!active) return;
+
+      const panel = listElement.querySelector(
+        `.subscription-panel[data-uuid="${CSS.escape(target.panelId)}"]`,
+      );
+      const selector =
+        target.field === "rule"
+          ? `.subscription-rule[data-uuid="${CSS.escape(target.ruleId)}"] [data-select-trigger]`
+          : target.field === "priority"
+            ? ".priority-trigger"
+            : target.field === "url"
+              ? ".subscription-url-input"
+              : ".subscription-name";
+      focusSaveValidationField(panel?.querySelector<HTMLElement>(selector));
+      previousSaveError = target;
+    } finally {
+      revealingSaveError = false;
+    }
+  }
+
   let selectedItems = $derived(store.data.filter((item) => selectedIds.includes(item.id)));
   function toggleSelection(id: string) {
     selectedIds = selectedIds.includes(id)
@@ -133,7 +183,11 @@
     onExport={() => void transfer.exportConfig()}
     onImport={(event) => void transfer.importConfig(event)}
     onAdd={() => (addSubscriptionModal = true)}
-    onSave={() => store.saveChanges()}
+    onSave={() => {
+      previousSaveError = undefined;
+      return store.saveChanges();
+    }}
+    onSaveBlocked={store.hasValidationErrors ? showNextSaveError : undefined}
     saveButtonId="save-subscriptions"
     saveLabel={t("Save Changes")}
   >
@@ -166,6 +220,7 @@
 
   <div
     class="subscription-list"
+    bind:this={listElement}
     class:visible={store.dataLoaded}
     style={store.dataLoaded ? "" : "display: none;"}
     oninput={store.markDataRevision}

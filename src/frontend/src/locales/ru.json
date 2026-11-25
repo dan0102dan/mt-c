@@ -102,6 +102,7 @@
   "Import": "Импортировать",
   "saving changes...": "сохранение изменений...",
   "Saved": "Сохранено",
+  "Empty rules removed: {count}": "Удалено пустых правил: {count}",
   "Imported rules: ": "Импортировано правил: ",
   "Request failed": "Не удалось выполнить запрос",
   "Drag Rule": "Перетащить правило",

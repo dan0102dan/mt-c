@@ -54,7 +54,13 @@
       if (!open) restoreDraft();
     }}
   >
-    <Popover.Trigger bind:ref={trigger} class="priority-trigger" aria-label={label} title={label}>
+    <Popover.Trigger
+      bind:ref={trigger}
+      class="priority-trigger"
+      aria-label={label}
+      aria-invalid={!isValidPriority(value)}
+      title={label}
+    >
       <span class="priority-value">{Number.isFinite(value) ? value : "—"}</span>
     </Popover.Trigger>
     <Popover.Portal>

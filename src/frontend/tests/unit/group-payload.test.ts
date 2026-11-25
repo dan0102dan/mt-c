@@ -60,3 +60,28 @@ Deno.test("group priority updates preserve profiles and allow switching to a dir
   assert(!("profile" in direct));
   assert.deepEqual(direct.ruleChanges, []);
 });
+
+Deno.test("blank drafts are omitted before choosing a patch or a full replacement", () => {
+  const group = large();
+  group.rules = group.rules.slice(0, 2);
+  const baseline = snapshotGroupRules([group]).get(group.id)!;
+  const blank = { ...group.rules[0], id: "cccccccc", name: " ", rule: "  " };
+  group.rules.unshift(blank);
+  group.rules[1].enable = false;
+  const patch = buildGroupUpdate(group, baseline);
+  assert("ruleChanges" in patch);
+  assert.deepEqual(
+    patch.ruleChanges.map((change) => change.id),
+    [baseline[0].id],
+  );
+
+  group.rules[1].rule = "";
+  const replacement = buildGroupUpdate(group, baseline);
+  assert("rules" in replacement);
+  assert.deepEqual(replacement.rules, [baseline[1]]);
+  group.rules = [blank];
+  const created = buildGroupUpdate(group, undefined);
+  assert("rules" in created);
+  assert.deepEqual(created.rules, []);
+  assert.deepEqual(group.rules, [blank]);
+});

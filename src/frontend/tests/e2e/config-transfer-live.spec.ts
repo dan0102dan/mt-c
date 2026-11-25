@@ -469,6 +469,22 @@ test("profile dependencies import with groups and Replace cannot remove a used p
   expect((await backend.snapshot()).config.profiles).toEqual([profile()]);
 });
 
+test("import save reports blank rules removed from the submitted groups", async ({
+  page,
+  backend,
+}) => {
+  await page.goto("/");
+  const dialog = await upload(page, { groups: [{ ...group, profile: undefined }] });
+  await dialog.getByRole("button", { name: "Import", exact: true }).click();
+  await expect(dialog).toHaveCount(0);
+  const addRule = page.locator('.group-header [data-value="Add Rule"] button');
+  await addRule.click();
+  await addRule.click();
+  await saveImported(page);
+  await expect(page.getByText("Saved. Empty rules removed: 2", { exact: true })).toBeVisible();
+  expect((await backend.snapshot()).config.groups[0].rules).toEqual(group.rules);
+});
+
 test("unfinished profile can be exported and reopened without blocking unrelated valid groups", async ({
   page,
   backend,
@@ -1007,8 +1023,15 @@ for (const source of ["Groups", "Subscriptions"] as const) {
         return;
       }
       if (source === "Subscriptions" && choice === "Create a copy") {
-        await expect(activeSave(page)).toBeDisabled();
-        await page.locator(".subscription-url-input").nth(1).fill("https://example.org/copied");
+        const button = activeSave(page);
+        const urls = page.getByRole("textbox", { name: "URL", exact: true });
+        await expect(button).toHaveAttribute("data-save-blocked");
+        await button.click();
+        await expect(urls.first()).toBeFocused();
+        await button.click();
+        await expect(urls.nth(1)).toBeFocused();
+        expect(backend.writes).toEqual([]);
+        await urls.nth(1).fill("https://example.org/copied");
       }
       await saveImported(page);
       const saved = (await backend.snapshot()).config;

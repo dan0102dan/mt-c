@@ -13,6 +13,7 @@
     trigger?: Snippet;
     triggerClass?: string;
     disabled?: boolean;
+    invalid?: boolean;
     compact?: boolean;
     bounded?: boolean;
     missingLabel?: string;
@@ -27,6 +28,7 @@
     trigger,
     triggerClass,
     disabled = false,
+    invalid,
     compact = false,
     bounded = false,
     missingLabel,
@@ -64,7 +66,7 @@
     bind:value={selected}
     bind:open
   >
-    <Select.Trigger aria-label={ariaLabel} class={triggerClass}>
+    <Select.Trigger aria-label={ariaLabel} aria-invalid={invalid} class={triggerClass}>
       {#if trigger}
         {@render trigger()}
       {:else}
