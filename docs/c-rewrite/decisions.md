@@ -4588,3 +4588,150 @@ notifications still acknowledge immediately, and an older daemon's notification
 response cannot be mistaken for readiness. Backend
 tests use real HTTP/event-loop code with modeled RCI and kernel transports;
 they do not replace physical-router validation.
+
+## D-96 — Opt-in adaptive TCP routing with TPROXY (2026-11-24)
+
+Add a separate `app.adaptiveRouting` configuration section and settings tab.
+It is disabled by default and is omitted from YAML/JSON serialization when
+absent in an old configuration. Existing fields, defaults, group/subscription
+priority rules and portable collection-import contracts remain unchanged.
+The new section owns its strings and ingress list through default/clone/clear;
+unrelated General settings changes preserve it.
+
+The first version handles only new TCP/80 and TCP/443 flows from explicit
+LAN interfaces. It excludes router-local/private/non-unicast destinations,
+preexisting foreign packet/connection marks and traffic outside the Keenetic
+policy scope. Explicit groups/subscriptions win before adaptive decisions.
+No OUTPUT interception or UDP/QUIC blocking is introduced.
+
+An event-loop TCP relay accepts the original client connection through
+IP_TRANSPARENT, tries the router's normal unmarked route, and tries one
+selected interface if the connect attempt fails. It never replays application
+bytes. A complete, bounded and inspected TLS ClientHello may be replayed once
+before any server bytes; following records are held, early-data ClientHellos
+and opaque/oversized data disable this replay. Any server response, including
+an alert, ends retries. A first TCP/80 response or plausible TLS ServerHello
+header permits learning, which means transport progress rather than proof of
+certificate validity, successful HTTP status or page availability.
+
+The RAM-only cache is keyed by address family, exact destination IP and TCP
+port. Separate expiring direct/alternate ipsets let subsequent new connections
+bypass the relay. Owned connection marks pin existing proxied or alternate
+flows, preventing learning or a new manual rule from changing them midstream.
+There is no promotion to domains/subnets, indefinite successful-cache refresh,
+or universal retry for already forwarded cached flows. Defaults are 600 seconds,
+2048 cache entries and 128 active relays, with bounded configurable maxima.
+
+The kernel owner allocates dedicated marks/tables, installs local delivery
+and alternate routing with a terminal blackhole, and stages scoped INPUT,
+FORWARD and NAT rules. Activation binds the listener before interception;
+teardown removes interception before closing it. A failed teardown retains
+the listener and owned kernel state for a retry. Local address and interface
+events reconcile exclusions/routes. Firmware firewall rebuilds recreate the
+owned graph while retaining active-flow pinning and learned sets. Learning
+skips a busy netfilter mutex rather than waiting for a firewall rebuild.
+
+GET/PUT `/api/v1/adaptive` and DELETE `/api/v1/adaptive/cache` use the existing
+HTTP authorization. PUT is a strict complete settings replacement and is
+rejected while General settings are busy. An unsupported optional runtime
+keeps the daemon's DNS/routing and diagnostic settings API running. Activation
+failure attempts rollback and returns the actual active state. Persistence
+failure after successful apply returns `applied: true`; an identical retry
+does not restart healthy flows. Changing adaptive settings closes its proxied
+flows and clears its cache, without restarting DNS. Cache deletion keeps
+current flows. Device configuration export includes the optional section;
+portable group/subscription import continues to preserve device settings.
+The collection-import `system/config/apply` endpoint rejects adding, changing
+or removing this section with HTTP 409 and directs callers to `/api/v1/adaptive`;
+unchanged snapshots remain valid. This prevents persisting a different desired
+configuration without coordinating the relay runtime. Startup and SIGHUP use
+the adaptive controller to apply the file's section.
+
+OpenWrt package dependencies include `iptables-mod-tproxy`; Entware support
+depends on the target firmware. Tests cover transport, strict configuration,
+failure/rollback/persistence paths, authorization, generated rules and cache
+lifetime. A separate CI namespace test exercises real legacy/nft forwarding
+for IPv4/IPv6, including a full TLS handshake across first-flow learning.
+Physical Keenetic policy/acceleration behavior still requires device testing.
+
+## D-97 — Optional all-port TCP and bounded QUIC routing (2026-11-24)
+
+Extend D-96 with independent `tcpAllPorts` and `quicEnabled` flags. Both
+are false by default, including an existing enabled adaptive section that
+omits them. The HTTP replacement still requires its original nine settings;
+the two new optional boolean fields default to false when omitted, and GET
+always emits them. YAML rejects invalid types/duplicates and preserves old
+absent-section serialization. Equality, cloning, General settings and portable
+collection-import guards account for the added flags.
+
+`tcpAllPorts` extends interception to TCP destination ports 1–65535. Extra ports
+use connect-stage fallback and first-response learning; the existing bounded
+TLS ClientHello retry remains exclusive to TCP/443. TCP and UDP listeners bind
+loopback explicitly and TPROXY uses `--on-ip`, so directly contacting a router
+listener cannot become a public-destination connection when all ports are
+allowed. Do not rely on accepted SO_MARK inheritance: tcp_fwmark_accept is
+normally disabled, and inheriting the local-delivery mark could loop replies.
+
+`quicEnabled` adds an in-process UDP/443 relay using the existing event loop.
+It retains datagram boundaries and two connected sockets per flow, including
+a transparent socket for original-address replies and established TPROXY
+lookup. QUIC/TLS stays end to end. There is no runtime QUIC/crypto dependency
+or external daemon; a small pure framing parser recognizes v1 and v2 with
+explicit byte order, bounded CIDs, varints and coalesced-packet traversal.
+
+The relay may repeat at most 16 KiB/16 Initial-only datagrams on one alternate
+path, before any server datagram, provided every packet has the same version
+and CIDs and no token. A completely zero suffix after the final complete
+long-header packet is accepted as datagram padding for interoperability with
+real aioquic Initial flights; zeros never hide a later nonzero packet or opaque
+tail. Mixed Initial/0-RTT, other packet types, malformed or
+opaque input, changed IDs, token-bearing Initials, queue loss and any server
+response permanently disallow retry. Timer expiry drains already queued
+responses; every retry cause also peeks past pending socket errors before
+closing the direct socket. This is structural inspection, not authenticated
+QUIC parsing or an endpoint migration implementation. RFC 9000 restricts
+migration during handshake and permits discarding changed-address initial
+traffic; a direct-path server might already have state. Therefore no universal
+QUIC fallback guarantee is made. Unknown UDP/443 is passed once on its current
+path, and other UDP ports are outside interception.
+
+UDP learning requires a CID/version-correlated server response, a subsequently
+sent client Handshake, then another matching server Handshake or short header.
+Retry/Version Negotiation or a single response is insufficient. This indicates
+observed transport progress, not successful TLS authentication or HTTP status.
+Success counters aggregate TCP and UDP with that meaning. maxConnections is
+shared across both transports. UDP pending queues and replay storage are bounded;
+idle flows expire, and all state is RAM-only.
+
+The cache key adds protocol to family/address/port. Either extension uses
+`hash:ip,port` sets; with both flags off, the original per-port `hash:net` sets
+and prerequisites remain. QUIC additionally owns bounded `hash:ip,port,ip`
+active-flow entries matched with `-m socket --transparent` before manual/cache
+routing for established flows. New flows still respect manual and policy
+priority. These entries pin the existing relay even after learned-cache clear,
+conntrack deletion or QUIC CID rotation, preserving its upstream source port.
+The pin check precedes the generic REPLY exclusion, with equally scoped INPUT
+acceptance, because a server reply may recreate conntrack in reverse orientation.
+They have no expiring timeout: the owner closes the transparent socket first,
+then retires a generation-tagged fixed slot; cleanup under nf_mu deletes the
+kernel entry. A stale entry is inert without its transparent socket. Storage
+is bounded by maxConnections, avoids 64-bit atomic requirements on MIPS, and
+refuses new pins if safe cleanup fails. Tuple encoding uses explicit network
+byte order and only UDP/443, rather than unbounded per-flow iptables rules.
+
+Activation opens both required listeners before rules, and teardown removes
+interception before closing sockets. Failure rolls back to the previous
+configuration, retaining listeners when kernel teardown fails. New OpenWrt
+packages include iptables-mod-socket alongside iptables-mod-tproxy; Entware
+availability still depends on firmware modules. The settings UI exposes both
+flags, protocol-separated learned entries and aggregate statistics without
+changing existing save/retry semantics.
+
+Unit/fault tests cover parsing, original destinations, real loopback UDP,
+timeouts, reply/retry races, bounded queues/pins, protocol separation, wire
+encoding, shared admission and rollback. Add a parser fuzz target and a real
+QUIC/HTTP3 namespace fixture with test-only aioquic==1.9.1. The CI matrix runs
+legacy/nft × IPv4/IPv6 and covers direct/fallback/kernel bypass, certificates,
+Retry, genuine 0-RTT, CID rotation and stable source ports after cache/conntrack
+clear. Full device policy, flow offload and MTU behavior remain physical-router
+validation tasks; no throughput or memory-performance claim is made.

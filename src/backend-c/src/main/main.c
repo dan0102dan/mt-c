@@ -28,6 +28,7 @@
 #include <time.h>
 
 #include "magitrickle/app.h"
+#include "magitrickle/adaptive.h"
 #ifdef MT_ENTWARE_KN
 #include "magitrickle/dns_keenetic_hook.h"
 #include "magitrickle/keenetic_policy_api.h"
@@ -71,6 +72,7 @@
 struct bound_ports { uint16_t http, dns; };
 
 struct daemon {
+    mt_adaptive_service_t *adaptive;
 #ifdef MT_ENTWARE_KN
     mt_kn_policy_service_t *policy_service;
     mt_kn_ifstate_t *interface_states;
@@ -160,7 +162,10 @@ static mt_err_t daemon_teardown(struct daemon *d)
         (void)mt_loop_del_timer(d->loop, d->route_reconcile_timer);
         d->route_reconcile_timer = 0;
     }
-    first = mt_app_suspend(d->app);
+    first = mt_adaptive_service_destroy(d->adaptive);
+    d->adaptive = NULL;
+    mt_err_t suspend_error = mt_app_suspend(d->app);
+    if (first == MT_OK) { first = suspend_error; }
     mt_app_destroy(d->app);
     d->app = NULL;
 #ifdef MT_ENTWARE_KN
@@ -211,6 +216,7 @@ static mt_ruleset_t *find_ruleset(struct daemon *d, mt_id_t id)
 static void reload_config(struct daemon *d)
 {
     mt_err_t err = mt_app_reload_config(d->app, d->config_path);
+    if (err == MT_OK) { err = mt_adaptive_service_reload(d->adaptive); }
     mt_httpd_revalidate_streams(d->http_tcp);
     if (d->proxy) {
         mt_dnsproxy_set_disable_flags(d->proxy,
@@ -573,6 +579,8 @@ static mt_err_t daemon_open_web(struct daemon *d, const mt_app_config_t *app,
     if (err != MT_OK) { return err; }
     mt_groups_register_routes(http, &d->groups_ctx);
     mt_system_register_routes(http, &d->system_ctx);
+    err = mt_adaptive_register_routes(http, d->adaptive);
+    if (err != MT_OK) { mt_httpd_destroy(http); return err; }
 #ifdef MT_ENTWARE_KN
     err = mt_kn_policy_register_routes(http, d->policy_service);
     if (err != MT_OK) { mt_httpd_destroy(http); return err; }
@@ -874,6 +882,11 @@ static mt_err_t daemon_start(struct daemon *d, mt_config_t *cfg, const char *con
      * enable+sync, while the initial set was already brought up above. */
     mt_app_set_running(d->app, true);
 
+    /* This optional service binds before exposing TPROXY rules. Unsupported
+     * kernels keep normal DNS/routing and a diagnostic settings endpoint. */
+    err = mt_adaptive_service_create(d->loop, d->app, cfg, settings, config_path, &d->adaptive);
+    if (err != MT_OK) { return err; }
+
     /* Signals were blocked above; worker threads inherit that mask. */
     if (mt_sub_fetcher_create(d->loop, &d->fetcher) != MT_OK) {
         MT_ERROR("failed to create subscription fetch workers");
@@ -930,6 +943,8 @@ static mt_err_t daemon_start(struct daemon *d, mt_config_t *cfg, const char *con
     }
     mt_groups_register_routes(d->http_unix, &d->groups_ctx);
     mt_system_register_routes(d->http_unix, &d->system_ctx);
+    err = mt_adaptive_register_routes(d->http_unix, d->adaptive);
+    if (err != MT_OK) { return err; }
 #ifdef MT_ENTWARE_KN
     if (mt_kn_policy_register_routes(d->http_unix, d->policy_service) != MT_OK) {
         MT_ERROR("failed to register Keenetic policy routes");

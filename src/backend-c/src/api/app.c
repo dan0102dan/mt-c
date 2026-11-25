@@ -69,6 +69,7 @@ struct mt_app {
     size_t cap_sub_rulesets;
 
     mt_port_remap_t *port_remap; /* borrowed, nullable (main() owns it) */
+    mt_tproxy_routes_t *tproxy_routes; /* owned; optional adaptive TCP state */
 
     /* Netfilter committer (nfcommit.h) and the mutex serializing its
      * rebuilds against this thread's own netfilter mutation. Both are
@@ -289,7 +290,7 @@ mt_err_t mt_app_suspend(mt_app_t *app) {
     if (!app) { return MT_OK; }
     mt_app_stop_netfilter_committer(app);
     app->running = false;
-    mt_err_t first = MT_OK;
+    mt_err_t first = mt_app_tproxy_stop(app);
     for (size_t i = 0; i < app->n_rulesets; i++) {
         mt_err_t err = mt_ruleset_disable(app->rulesets[i]);
         if (first == MT_OK) { first = err; }
@@ -306,6 +307,12 @@ void mt_app_destroy(mt_app_t *app) {
     /* Nothing below is safe while a rebuild can still be reading the
      * ruleset registry. */
     mt_app_stop_netfilter_committer(app);
+    mt_err_t tproxy_cleanup = mt_app_tproxy_stop(app);
+    if (tproxy_cleanup != MT_OK) {
+        MT_ERROR("failed to remove adaptive routes during shutdown: %s", mt_err_str(tproxy_cleanup));
+        mt_tproxy_routes_free(app->tproxy_routes);
+        app->tproxy_routes = NULL;
+    }
     for (size_t i = 0; i < app->n_rulesets; i++) {
         mt_ruleset_disable(app->rulesets[i]);
         mt_ruleset_free(app->rulesets[i]);
@@ -1189,14 +1196,17 @@ static bool iface_is_ignored(const char *name) {
 
 bool mt_iface_is_ignored_for_test(const char *name) { return iface_is_ignored(name); }
 
-mt_err_t mt_app_list_interfaces(const mt_app_t *app, mt_iface_info_t **out, size_t *out_n) {
+static mt_err_t list_interfaces(const mt_app_t *app, bool show_all,
+                                 mt_iface_info_t **out, size_t *out_n) {
+#ifndef MT_ENTWARE_KN
+    (void)app;
+#endif
     *out = NULL;
     *out_n = 0;
 
     struct ifaddrs *ifap;
     if (getifaddrs(&ifap) != 0) { return mt_err_from_errno(errno); }
 
-    bool show_all = app->cfg->app.show_all_interfaces;
     size_t cap = 0;
     size_t n = 0;
     mt_iface_info_t *arr = NULL;
@@ -1242,6 +1252,108 @@ mt_err_t mt_app_list_interfaces(const mt_app_t *app, mt_iface_info_t **out, size
     *out = arr;
     *out_n = n;
     return MT_OK;
+}
+
+mt_err_t mt_app_list_interfaces(const mt_app_t *app, mt_iface_info_t **out, size_t *out_n)
+{
+    return list_interfaces(app, app->cfg->app.show_all_interfaces, out, out_n);
+}
+
+mt_err_t mt_app_list_all_interfaces(const mt_app_t *app, mt_iface_info_t **out, size_t *out_n)
+{
+    return list_interfaces(app, true, out, out_n);
+}
+
+mt_err_t mt_app_tproxy_start(mt_app_t *app, const mt_tproxy_route_config_t *config)
+{
+    if (!app || !config) { return MT_ERR_INVAL; }
+    app_nf_enter(app);
+    if (app->tproxy_routes) { app_nf_leave(app); return MT_ERR_STATE; }
+    mt_tproxy_route_deps_t deps = {.ipt4 = app->ipt4, .ipt6 = app->ipt6,
+        .rtnl = app->rtnl, .chain_prefix = app->chain_prefix,
+        .ipset_prefix = app->ipset_prefix, .start_idx = app->start_idx,
+#ifdef MT_ENTWARE_KN
+        .policy = &app->policy_scope, .interface_states = app->interface_states,
+#endif
+    };
+    app->tproxy_routes = mt_tproxy_routes_new(config, &deps);
+    mt_err_t err = app->tproxy_routes ? mt_tproxy_routes_enable(app->tproxy_routes) : MT_ERR_INVAL;
+    if (err != MT_OK && app->tproxy_routes) {
+        mt_err_t cleanup = mt_tproxy_routes_disable(app->tproxy_routes);
+        if (cleanup == MT_OK) { mt_tproxy_routes_free(app->tproxy_routes); app->tproxy_routes = NULL; }
+        else { MT_ERROR("adaptive routing cleanup requires retry: %s", mt_err_str(cleanup)); }
+    }
+    app_nf_leave(app);
+    return err;
+}
+
+mt_err_t mt_app_tproxy_stop(mt_app_t *app)
+{
+    if (!app) { return MT_OK; }
+    app_nf_enter(app);
+    mt_err_t err = mt_tproxy_routes_disable(app->tproxy_routes);
+    if (err == MT_OK) { mt_tproxy_routes_free(app->tproxy_routes); app->tproxy_routes = NULL; }
+    app_nf_leave(app);
+    return err;
+}
+
+mt_err_t mt_app_tproxy_learn(mt_app_t *app, int family, uint8_t protocol, const uint8_t *address,
+                             uint16_t port, bool alternate)
+{
+    if (!app) { return MT_ERR_INVAL; }
+    /* Learning may be skipped during a firmware rebuild; the current relay
+     * already has a working upstream and must never wait for iptables I/O. */
+    if (app->nf_mu_ready) {
+        int rc = pthread_mutex_trylock(&app->nf_mu);
+        if (rc != 0) { return rc == EBUSY ? MT_ERR_AGAIN : MT_ERR_SYS; }
+    }
+    mt_err_t err = mt_tproxy_routes_learn(app->tproxy_routes, family, protocol, address, port, alternate);
+    if (app->nf_mu_ready) { pthread_mutex_unlock(&app->nf_mu); }
+    return err;
+}
+
+mt_err_t mt_app_tproxy_pin_udp(mt_app_t *app, const mt_tproxy_udp_tuple_t *tuple,
+                               uint32_t *token)
+{
+    if (!app || !token) { return MT_ERR_INVAL; }
+    *token = 0;
+    if (app->nf_mu_ready) {
+        int rc = pthread_mutex_trylock(&app->nf_mu);
+        if (rc != 0) { return rc == EBUSY ? MT_ERR_AGAIN : MT_ERR_SYS; }
+    }
+    mt_err_t err = mt_tproxy_routes_pin_udp(app->tproxy_routes, tuple, token);
+    if (app->nf_mu_ready) { pthread_mutex_unlock(&app->nf_mu); }
+    return err;
+}
+
+void mt_app_tproxy_unpin_udp(mt_app_t *app, uint32_t token)
+{
+    /* Only atomically retires a fixed slot; it never waits for firewall I/O. */
+    mt_tproxy_routes_unpin_udp(app ? app->tproxy_routes : NULL, token);
+}
+
+uint32_t mt_app_tproxy_mark(const mt_app_t *app, bool alternate)
+{
+    return mt_tproxy_routes_mark(app ? app->tproxy_routes : NULL, alternate);
+}
+
+mt_err_t mt_app_tproxy_snapshot(mt_app_t *app, mt_tproxy_route_entry_t **out, size_t *count)
+{
+    /* Cache ownership is event-loop-only; the firewall worker only stages
+     * immutable names/configuration, so this read needs no worker lock. */
+    return mt_tproxy_routes_snapshot(app ? app->tproxy_routes : NULL, out, count);
+}
+
+mt_err_t mt_app_tproxy_clear(mt_app_t *app)
+{
+    if (!app) { return MT_ERR_INVAL; }
+    if (app->nf_mu_ready) {
+        int rc = pthread_mutex_trylock(&app->nf_mu);
+        if (rc != 0) { return rc == EBUSY ? MT_ERR_AGAIN : MT_ERR_SYS; }
+    }
+    mt_err_t err = mt_tproxy_routes_clear(app->tproxy_routes);
+    if (app->nf_mu_ready) { pthread_mutex_unlock(&app->nf_mu); }
+    return err;
 }
 
 /* ---- config save / iptables commit -------------------------------------------- */
@@ -1471,6 +1583,8 @@ void mt_app_set_port_remap(mt_app_t *app, mt_port_remap_t *remap) {
 /* One pass of the rebuild, with the netfilter lock already held. */
 static mt_err_t rebuild_netfilter_locked(mt_app_t *app, mt_cancel_t *cancel) {
     if (mt_cancel_raised(cancel)) { return MT_ERR_CANCELED; }
+    mt_err_t err = mt_tproxy_routes_repair(app->tproxy_routes);
+    if (err != MT_OK) { return err; }
 
     /* Rebuild the complete desired graph in memory, not in the kernel.
      * An eager cleanup used to remove working chains in a separate commit;
@@ -1479,7 +1593,7 @@ static mt_err_t rebuild_netfilter_locked(mt_app_t *app, mt_cancel_t *cancel) {
      * with their replacements at the final per-table COMMIT instead. */
     mt_ipt_reset_staged(app->ipt4);
     mt_ipt_reset_staged(app->ipt6);
-    mt_err_t err = mt_netfilter_register_base_chains(app->ipt4, app->ipt6);
+    err = mt_netfilter_register_base_chains(app->ipt4, app->ipt6);
     if (err != MT_OK) { return err; }
 
 #ifdef MT_ENTWARE_KN
@@ -1499,6 +1613,8 @@ static mt_err_t rebuild_netfilter_locked(mt_app_t *app, mt_cancel_t *cancel) {
         err = mt_ruleset_prepare_iptables(app->sub_rulesets[i]);
         if (err != MT_OK) { return err; }
     }
+    err = mt_tproxy_routes_prepare(app->tproxy_routes);
+    if (err != MT_OK) { return err; }
 
     if (mt_cancel_raised(cancel)) { return MT_ERR_CANCELED; }
 
@@ -1751,6 +1867,8 @@ static mt_err_t reconcile_routes(mt_app_t *app, const char *interface_name, bool
             }
         }
     }
+    mt_err_t tproxy_err = mt_tproxy_routes_reconcile(app->tproxy_routes, interface_name);
+    if (result == MT_OK) { result = tproxy_err; }
     if (app->nf_mu_ready) { pthread_mutex_unlock(&app->nf_mu); }
     return result;
 }
@@ -1764,6 +1882,7 @@ mt_err_t mt_app_reconcile_routes(mt_app_t *app, const char *interface_name)
 void mt_app_set_interface_states(mt_app_t *app, const mt_kn_ifstate_t *state)
 {
     app->interface_states = state;
+    mt_tproxy_routes_set_interface_states(app->tproxy_routes, state);
     for (size_t i = 0; i < app->n_rulesets; i++) { mt_ruleset_set_interface_states(app->rulesets[i], state); }
     for (size_t i = 0; i < app->n_sub_rulesets; i++) { mt_ruleset_set_interface_states(app->sub_rulesets[i], state); }
 }

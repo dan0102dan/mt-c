@@ -115,8 +115,34 @@ typedef struct mt_profile {
     size_t n_interfaces;
 } mt_profile_t;
 
+/* Opt-in TCP/QUIC routing. Learned destinations are bounded runtime state,
+ * never user rules and never serialized into the configuration. */
+typedef struct mt_adaptive_config {
+    bool enabled;
+    bool present; /* preserve omission in legacy configuration files */
+    bool tcp_all_ports; /* absent/false keeps the original TCP 80/443 scope */
+    bool quic_enabled;  /* UDP/443 is a separate, explicit opt-in */
+    char *interface;
+    char **ingress_interfaces;
+    size_t n_ingress;
+    uint32_t connect_timeout_ms;
+    uint32_t tls_timeout_ms;
+    uint32_t idle_timeout_ms;
+    uint32_t ttl_seconds;
+    uint32_t max_connections;
+    uint32_t max_entries;
+} mt_adaptive_config_t;
+
+mt_err_t mt_adaptive_config_defaults(mt_adaptive_config_t *config);
+void mt_adaptive_config_clear(mt_adaptive_config_t *config);
+mt_err_t mt_adaptive_config_clone(mt_adaptive_config_t *out, const mt_adaptive_config_t *source);
+bool mt_adaptive_config_valid(const mt_adaptive_config_t *config);
+bool mt_adaptive_config_equal(const mt_adaptive_config_t *a, const mt_adaptive_config_t *b);
+bool mt_adaptive_interface_valid(const char *name);
+
 /* AppConfig with the exact defaults from Go constant.DefaultAppConfig. */
 typedef struct mt_app_config {
+    mt_adaptive_config_t adaptive;
 #ifdef MT_ENTWARE_KN
     mt_kn_policy_config_t keenetic_policy;
 #endif

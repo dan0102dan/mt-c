@@ -57,6 +57,16 @@ typedef struct mt_ipset_entry6 {
 
 typedef struct mt_ipset_nl mt_ipset_nl_t;
 
+/* Exact transport tuple for optional adaptive routes. Addresses are network
+ * byte order; port is host byte order; protocol is IPPROTO_TCP/IPPROTO_UDP.
+ * The optional second IP makes the key suitable for an owned UDP flow pin. */
+typedef struct mt_ipset_port_key {
+    uint8_t ip[16], ip2[16];
+    uint8_t iplen, protocol;
+    uint16_t port;
+    bool has_ip2;
+} mt_ipset_port_key_t;
+
 typedef struct mt_ipset_nl_ops {
     /* family: AF_INET or AF_INET6. default_timeout: set-level default
      * (300s, matching Go's ipsetCreate). */
@@ -82,6 +92,15 @@ typedef struct mt_ipset_nl_ops {
     mt_err_t (*list6)(mt_ipset_nl_t *self, const char *name, mt_ipset_entry6_t **out,
                       size_t *out_n);
     void (*destroy_self)(mt_ipset_nl_t *self);
+    /* Separate operations preserve the legacy hash:net wire format above.
+     * Creates hash:ip,port or hash:ip,port,ip exclusively. Zero timeout pins
+     * an entry until explicit deletion; max_entries is a kernel bound. */
+    mt_err_t (*create_portset)(mt_ipset_nl_t *self, const char *name, int family,
+                               bool with_ip2, uint32_t default_timeout, uint32_t max_entries);
+    mt_err_t (*add_port)(mt_ipset_nl_t *self, const char *name,
+                         const mt_ipset_port_key_t *key, uint32_t timeout);
+    mt_err_t (*del_port)(mt_ipset_nl_t *self, const char *name,
+                         const mt_ipset_port_key_t *key);
 } mt_ipset_nl_ops_t;
 
 struct mt_ipset_nl {

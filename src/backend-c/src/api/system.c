@@ -290,8 +290,22 @@ static void handle_config_apply(mt_http_req_t *req, mt_http_res_t *res, void *ud
         mt_http_res_write_error(res, 500, "failed to snapshot current state"); return;
     }
     const cJSON *previous_app = cJSON_GetObjectItemCaseSensitive(previous, "app");
-    if (!settings_fields_supported(previous_app,
-            cJSON_GetObjectItemCaseSensitive(config, "app"))) {
+    const cJSON *requested_app = cJSON_GetObjectItemCaseSensitive(config, "app");
+    const cJSON *previous_adaptive = cJSON_GetObjectItemCaseSensitive(previous_app, "adaptiveRouting");
+    const cJSON *requested_adaptive = cJSON_GetObjectItemCaseSensitive(requested_app, "adaptiveRouting");
+    /* This importer owns collections, not the adaptive listener lifecycle.
+     * Preserve that section exactly so a successful import cannot publish
+     * settings which the independently running controller has never applied. */
+    if ((previous_adaptive || requested_adaptive) &&
+        (!previous_adaptive || !requested_adaptive ||
+         !cJSON_Compare(previous_adaptive, requested_adaptive, true))) {
+        cJSON_Delete(previous);
+        cJSON_Delete(request);
+        mt_http_res_write_error(res, 409,
+            "Change adaptive routing through /api/v1/adaptive; configuration imports must preserve it");
+        return;
+    }
+    if (!settings_fields_supported(previous_app, requested_app)) {
         cJSON_Delete(previous);
         cJSON_Delete(request);
         mt_http_res_write_error(res, 409, "unsupported application configuration fields");

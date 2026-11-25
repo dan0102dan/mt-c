@@ -334,7 +334,8 @@ mt_err_t mt_app_config_init_defaults(mt_app_config_t *c)
     c->show_all_interfaces = false;
 
     mt_err_t err;
-    if ((err = mt_strset(&c->http_web.host.address, "[::]")) != MT_OK ||
+    if ((err = mt_adaptive_config_defaults(&c->adaptive)) != MT_OK ||
+        (err = mt_strset(&c->http_web.host.address, "[::]")) != MT_OK ||
         (err = mt_strset(&c->http_web.skin, "default")) != MT_OK ||
         (err = mt_strset(&c->dns_proxy.host.address, "[::]")) != MT_OK ||
         (err = mt_strset(&c->dns_proxy.upstream.address, "127.0.0.1")) !=
@@ -363,6 +364,7 @@ mt_err_t mt_app_config_init_defaults(mt_app_config_t *c)
 
 void mt_app_config_clear(mt_app_config_t *c)
 {
+    mt_adaptive_config_clear(&c->adaptive);
     free(c->http_web.host.address);
     free(c->http_web.skin);
     free(c->dns_proxy.host.address);
@@ -380,6 +382,7 @@ void mt_app_config_clear(mt_app_config_t *c)
 mt_err_t mt_app_config_clone(mt_app_config_t *dst, const mt_app_config_t *src)
 {
     *dst = *src;
+    memset(&dst->adaptive, 0, sizeof(dst->adaptive));
     dst->http_web.host.address = NULL;
     dst->http_web.skin = NULL;
     dst->dns_proxy.host.address = NULL;
@@ -390,7 +393,8 @@ mt_err_t mt_app_config_clone(mt_app_config_t *dst, const mt_app_config_t *src)
     dst->link = NULL;
     dst->n_link = 0;
     mt_err_t err;
-    if ((err = mt_strset(&dst->http_web.host.address, src->http_web.host.address)) != MT_OK ||
+    if ((err = mt_adaptive_config_clone(&dst->adaptive, &src->adaptive)) != MT_OK ||
+        (err = mt_strset(&dst->http_web.host.address, src->http_web.host.address)) != MT_OK ||
         (err = mt_strset(&dst->http_web.skin, src->http_web.skin)) != MT_OK ||
         (err = mt_strset(&dst->dns_proxy.host.address, src->dns_proxy.host.address)) != MT_OK ||
         (err = mt_strset(&dst->dns_proxy.upstream.address, src->dns_proxy.upstream.address)) != MT_OK ||

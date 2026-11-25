@@ -152,6 +152,38 @@ mt_err_t mt_rtnl_rule_del(mt_rtnl_t *r, int family, uint32_t mark, uint32_t tabl
     return mt_err_from_errno(code);
 }
 
+static mt_err_t rule_at(mt_rtnl_t *r, int family, uint32_t mark, uint32_t table,
+                        uint32_t priority, bool add)
+{
+    if (!r || (family != AF_INET && family != AF_INET6)) { return MT_ERR_INVAL; }
+    uint8_t buf[MT_RTNL_REQBUF] = {0};
+    uint16_t flags = NLM_F_REQUEST | NLM_F_ACK;
+    if (add) { flags |= NLM_F_CREATE | NLM_F_EXCL; }
+    struct nlmsghdr *h = put_rule_header(buf, add ? RTM_NEWRULE : RTM_DELRULE,
+                                        flags, ++r->seq, family, table);
+    mnl_attr_put_u32(h, FRA_FWMARK, mark);
+    mnl_attr_put_u32(h, FRA_FWMASK, UINT32_MAX);
+    mnl_attr_put_u32(h, FRA_PRIORITY, priority);
+    if (table >= 256) { mnl_attr_put_u32(h, FRA_TABLE, table); }
+    int code = 0;
+    mt_err_t err = nl_execute(r, h, &code, NULL, NULL);
+    if (err != MT_OK) { return err; }
+    if (!code || (!add && (code == ENOENT || code == ESRCH))) { return MT_OK; }
+    return mt_err_from_errno(code);
+}
+
+mt_err_t mt_rtnl_rule_add_at(mt_rtnl_t *r, int family, uint32_t mark,
+                            uint32_t table, uint32_t priority)
+{
+    return rule_at(r, family, mark, table, priority, true);
+}
+
+mt_err_t mt_rtnl_rule_del_at(mt_rtnl_t *r, int family, uint32_t mark,
+                            uint32_t table, uint32_t priority)
+{
+    return rule_at(r, family, mark, table, priority, false);
+}
+
 /* ---- routes --------------------------------------------------------------- */
 
 static struct nlmsghdr *put_route_header(uint8_t *buf, uint16_t type, uint16_t flags, uint32_t seq,
@@ -200,6 +232,41 @@ mt_err_t mt_rtnl_route_del_blackhole(mt_rtnl_t *r, int family, uint32_t table, u
     if (err != MT_OK) { return err; }
     if (code == 0 || code == ESRCH) { return MT_OK; }
     return mt_err_from_errno(code);
+}
+
+static mt_err_t route_local(mt_rtnl_t *r, bool add, int family, uint32_t table,
+                             uint32_t priority, int ifindex)
+{
+    if (!r || ifindex <= 0 || (family != AF_INET && family != AF_INET6)) {
+        return MT_ERR_INVAL;
+    }
+    uint8_t buf[MT_RTNL_REQBUF] = {0};
+    uint16_t flags = NLM_F_REQUEST | NLM_F_ACK;
+    if (add) { flags |= NLM_F_CREATE | NLM_F_EXCL; }
+    struct nlmsghdr *nlh = put_route_header(buf, add ? RTM_NEWROUTE : RTM_DELROUTE,
+        flags, ++r->seq, family, table, RTN_LOCAL);
+    struct rtmsg *rtm = mnl_nlmsg_get_payload(nlh);
+    rtm->rtm_scope = RT_SCOPE_HOST;
+    if (table >= 256) { mnl_attr_put_u32(nlh, RTA_TABLE, table); }
+    mnl_attr_put_u32(nlh, RTA_PRIORITY, priority);
+    mnl_attr_put_u32(nlh, RTA_OIF, (uint32_t)ifindex);
+    int code = 0;
+    mt_err_t err = nl_execute(r, nlh, &code, NULL, NULL);
+    if (err != MT_OK) { return err; }
+    if (code == 0 || (!add && code == ESRCH)) { return MT_OK; }
+    return mt_err_from_errno(code);
+}
+
+mt_err_t mt_rtnl_route_add_local(mt_rtnl_t *r, int family, uint32_t table,
+                                 uint32_t priority, int ifindex)
+{
+    return route_local(r, true, family, table, priority, ifindex);
+}
+
+mt_err_t mt_rtnl_route_del_local(mt_rtnl_t *r, int family, uint32_t table,
+                                 uint32_t priority, int ifindex)
+{
+    return route_local(r, false, family, table, priority, ifindex);
 }
 
 mt_err_t mt_rtnl_route_add_iface(mt_rtnl_t *r, int family, uint32_t table, uint32_t priority,
@@ -554,6 +621,57 @@ static mt_err_t dump_family(mt_rtnl_t *r, uint16_t msg_type, int family,
     if (err != MT_OK) { return err; }
     if (code != 0) { return mt_err_from_errno(code); }
     return MT_OK;
+}
+
+typedef struct exact_rule_ctx {
+    int family;
+    uint32_t mark, table, priority;
+    bool found;
+} exact_rule_ctx_t;
+typedef struct exact_rule_attrs {
+    uint32_t mark, mask, table, priority;
+    bool has_mark, constrained;
+} exact_rule_attrs_t;
+
+static int exact_rule_attr(const struct nlattr *attr, void *ud)
+{
+    exact_rule_attrs_t *a = ud;
+    uint16_t type = mnl_attr_get_type(attr);
+    if (type == FRA_FWMARK || type == FRA_FWMASK || type == FRA_TABLE || type == FRA_PRIORITY) {
+        if (mnl_attr_validate(attr, MNL_TYPE_U32) != 0) { return MNL_CB_ERROR; }
+        uint32_t value = mnl_attr_get_u32(attr);
+        if (type == FRA_FWMARK) { a->mark = value; a->has_mark = true; }
+        else if (type == FRA_FWMASK) { a->mask = value; }
+        else if (type == FRA_TABLE) { a->table = value; }
+        else { a->priority = value; }
+    } else if (type == FRA_SRC || type == FRA_DST || type == FRA_IIFNAME || type == FRA_OIFNAME) {
+        a->constrained = true;
+    }
+    return MNL_CB_OK;
+}
+
+static void exact_rule_msg(const struct nlmsghdr *h, void *ud)
+{
+    exact_rule_ctx_t *ctx = ud;
+    if (h->nlmsg_type != RTM_NEWRULE ||
+        mnl_nlmsg_get_payload_len(h) < sizeof(struct fib_rule_hdr)) { return; }
+    const struct fib_rule_hdr *rule = mnl_nlmsg_get_payload(h);
+    if (rule->family != ctx->family || rule->action != FR_ACT_TO_TBL ||
+        rule->src_len || rule->dst_len || rule->tos || (rule->flags & FIB_RULE_INVERT)) { return; }
+    exact_rule_attrs_t a = {.table = rule->table, .mask = UINT32_MAX};
+    if (mnl_attr_parse(h, sizeof(*rule), exact_rule_attr, &a) < 0) { return; }
+    if (!a.constrained && a.has_mark && a.mask == UINT32_MAX &&
+        a.mark == ctx->mark && a.table == ctx->table && a.priority == ctx->priority) { ctx->found = true; }
+}
+
+mt_err_t mt_rtnl_rule_ensure_at(mt_rtnl_t *r, int family, uint32_t mark,
+                               uint32_t table, uint32_t priority)
+{
+    if (!r || (family != AF_INET && family != AF_INET6)) { return MT_ERR_INVAL; }
+    exact_rule_ctx_t ctx = {.family = family, .mark = mark, .table = table, .priority = priority};
+    mt_err_t err = dump_family(r, RTM_GETRULE, family, exact_rule_msg, &ctx);
+    if (err != MT_OK || ctx.found) { return err; }
+    return mt_rtnl_rule_add_at(r, family, mark, table, priority);
 }
 
 typedef struct current_route_ctx {

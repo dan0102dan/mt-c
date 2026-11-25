@@ -340,6 +340,26 @@ static void emit_config(emitter_ctx_t *ctx, const mt_config_t *cfg, const char *
     emit_plain(ctx, "app");
     map_start(ctx);
 
+    if (a->adaptive.present || a->adaptive.enabled) {
+        const mt_adaptive_config_t *adaptive = &a->adaptive;
+        emit_plain(ctx, "adaptiveRouting");
+        map_start(ctx);
+        emit_plain(ctx, "enabled"); emit_bool(ctx, adaptive->enabled);
+        emit_plain(ctx, "tcpAllPorts"); emit_bool(ctx, adaptive->tcp_all_ports);
+        emit_plain(ctx, "quicEnabled"); emit_bool(ctx, adaptive->quic_enabled);
+        emit_plain(ctx, "interface"); emit_string(ctx, adaptive->interface);
+        emit_plain(ctx, "ingressInterfaces"); seq_start(ctx, !adaptive->n_ingress);
+        for (size_t i = 0; i < adaptive->n_ingress; i++) { emit_string(ctx, adaptive->ingress_interfaces[i]); }
+        seq_end(ctx);
+        emit_plain(ctx, "connectTimeoutMs"); emit_u64(ctx, adaptive->connect_timeout_ms);
+        emit_plain(ctx, "tlsTimeoutMs"); emit_u64(ctx, adaptive->tls_timeout_ms);
+        emit_plain(ctx, "idleTimeoutMs"); emit_u64(ctx, adaptive->idle_timeout_ms);
+        emit_plain(ctx, "ttlSeconds"); emit_u64(ctx, adaptive->ttl_seconds);
+        emit_plain(ctx, "maxConnections"); emit_u64(ctx, adaptive->max_connections);
+        emit_plain(ctx, "maxEntries"); emit_u64(ctx, adaptive->max_entries);
+        map_end(ctx);
+    }
+
     emit_plain(ctx, "httpWeb");
     map_start(ctx);
     emit_plain(ctx, "enabled");

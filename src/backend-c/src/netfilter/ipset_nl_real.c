@@ -202,6 +202,74 @@ static mt_err_t real_del(mt_ipset_nl_t *self, const char *name, const uint8_t *i
     return mt_err_from_errno(code);
 }
 
+static mt_err_t real_create_portset(mt_ipset_nl_t *self, const char *name, int family,
+                                     bool with_ip2, uint32_t default_timeout, uint32_t max_entries)
+{
+    if (!name || !*name || (family != AF_INET && family != AF_INET6) || !max_entries) { return MT_ERR_INVAL; }
+    nl_real_t *r = (nl_real_t *)self;
+    uint8_t buf[MT_IPSET_REQBUF] = {0};
+    struct nlmsghdr *h = put_header(buf, IPSET_CMD_CREATE,
+        ipset_flags(IPSET_CMD_CREATE) | NLM_F_EXCL, ++r->seq);
+    mnl_attr_put_strz(h, IPSET_ATTR_SETNAME, name);
+    mnl_attr_put_strz(h, IPSET_ATTR_TYPENAME, with_ip2 ? "hash:ip,port,ip" : "hash:ip,port");
+    /* Both tuple types use revision 1 as their oldest userspace-supported
+     * revision. Kernels also accept 0, but ipset 7.19 cannot list/save it. */
+    mnl_attr_put_u8(h, IPSET_ATTR_REVISION, 1);
+    mnl_attr_put_u8(h, IPSET_ATTR_FAMILY, (uint8_t)family);
+    struct nlattr *data = mnl_attr_nest_start(h, IPSET_ATTR_DATA);
+    mnl_attr_put_u32(h, IPSET_ATTR_TIMEOUT | NLA_F_NET_BYTEORDER, htonl(default_timeout));
+    mnl_attr_put_u32(h, IPSET_ATTR_MAXELEM | NLA_F_NET_BYTEORDER, htonl(max_entries));
+    mnl_attr_nest_end(h, data);
+    int code = 0;
+    mt_err_t err = nl_execute(r, h, &code, NULL, NULL);
+    return err != MT_OK ? err : code ? mt_err_from_errno(code) : MT_OK;
+}
+
+static void put_port_ip(struct nlmsghdr *h, uint16_t type, const uint8_t *ip, uint8_t iplen)
+{
+    struct nlattr *nested = mnl_attr_nest_start(h, type);
+    uint16_t address_type = (uint16_t)((iplen == 4 ? IPSET_ATTR_IPADDR_IPV4 : IPSET_ATTR_IPADDR_IPV6) |
+                                        NLA_F_NET_BYTEORDER);
+    mnl_attr_put(h, address_type, iplen, ip);
+    mnl_attr_nest_end(h, nested);
+}
+
+static mt_err_t real_port_entry(mt_ipset_nl_t *self, const char *name,
+                                 const mt_ipset_port_key_t *key, uint32_t timeout, bool add)
+{
+    if (!name || !*name || !key || (key->iplen != 4 && key->iplen != 16) ||
+        (key->protocol != IPPROTO_TCP && key->protocol != IPPROTO_UDP) || !key->port) { return MT_ERR_INVAL; }
+    nl_real_t *r = (nl_real_t *)self;
+    uint8_t buf[MT_IPSET_REQBUF] = {0};
+    uint16_t command = add ? IPSET_CMD_ADD : IPSET_CMD_DEL;
+    struct nlmsghdr *h = put_header(buf, command, ipset_flags(command), ++r->seq);
+    mnl_attr_put_strz(h, IPSET_ATTR_SETNAME, name);
+    struct nlattr *data = mnl_attr_nest_start(h, IPSET_ATTR_DATA);
+    put_port_ip(h, IPSET_ATTR_IP, key->ip, key->iplen);
+    mnl_attr_put_u8(h, IPSET_ATTR_PROTO, key->protocol);
+    mnl_attr_put_u16(h, IPSET_ATTR_PORT | NLA_F_NET_BYTEORDER, htons(key->port));
+    if (key->has_ip2) { put_port_ip(h, IPSET_ATTR_IP2, key->ip2, key->iplen); }
+    if (add) { mnl_attr_put_u32(h, IPSET_ATTR_TIMEOUT | NLA_F_NET_BYTEORDER, htonl(timeout)); }
+    mnl_attr_nest_end(h, data);
+    int code = 0;
+    mt_err_t err = nl_execute(r, h, &code, NULL, NULL);
+    if (err != MT_OK) { return err; }
+    if (code == 0 || (!add && code == IPSET_ERR_EXIST)) { return MT_OK; }
+    return mt_err_from_errno(code);
+}
+
+static mt_err_t real_add_port(mt_ipset_nl_t *self, const char *name,
+                              const mt_ipset_port_key_t *key, uint32_t timeout)
+{
+    return real_port_entry(self, name, key, timeout, true);
+}
+
+static mt_err_t real_del_port(mt_ipset_nl_t *self, const char *name,
+                              const mt_ipset_port_key_t *key)
+{
+    return real_port_entry(self, name, key, 0, false);
+}
+
 /* ---- LIST: parse the dump into (subnet, timeout) entries ---------------- */
 
 typedef struct list_ctx {
@@ -393,6 +461,9 @@ static const mt_ipset_nl_ops_t k_real_ops = {
     .list4 = real_list4,
     .list6 = real_list6,
     .destroy_self = real_destroy_self,
+    .create_portset = real_create_portset,
+    .add_port = real_add_port,
+    .del_port = real_del_port,
 };
 
 mt_ipset_nl_t *mt_ipset_nl_real_new(void) {

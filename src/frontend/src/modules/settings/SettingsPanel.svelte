@@ -9,6 +9,7 @@
   import { hide } from "../../lib/tooltip/tooltip.svelte";
   import { persistedState } from "../../utils/persisted-state.svelte";
   import LogsView from "../logs/LogsView.svelte";
+  import AdaptiveSettingsPanel from "./adaptive/AdaptiveSettingsPanel.svelte";
   import DnsQueryLog from "./dns/DnsQueryLog.svelte";
   import GeneralSettingsPanel from "./general/GeneralSettingsPanel.svelte";
   import ProfilesPanel from "./ProfilesPanel.svelte";
@@ -40,6 +41,7 @@
   const tabLabels = $derived<Record<string, string>>({
     general: t("General"),
     profiles: t("Profiles"),
+    adaptive: t("Adaptive routing"),
     keenetic: "Keenetic",
     dns: t("DNS queries"),
     logs: t("Logs"),
@@ -236,6 +238,9 @@
     {/each}
   </div>
   <Tabs.Content value="profiles" class="settings-content"><ProfilesPanel /></Tabs.Content>
+  <Tabs.Content value="adaptive" class="settings-content">
+    <AdaptiveSettingsPanel active={active && selected === "adaptive"} pageSaving={saving} />
+  </Tabs.Content>
   <Tabs.Content value="keenetic" class="settings-content"><PlatformSettings /></Tabs.Content>
   <Tabs.Content value="dns" class="settings-content"
     ><DnsQueryLog active={active && selected === "dns"} /></Tabs.Content
